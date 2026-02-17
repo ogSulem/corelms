@@ -40,6 +40,58 @@ def _format_options_for_prompt(options: object) -> str:
     return "\n" + "\n".join(labeled)
 
 
+def _correct_letter_from_index(idx: object) -> str:
+    try:
+        i = int(idx)
+    except Exception:
+        return ""
+    if i == 0:
+        return "A"
+    if i == 1:
+        return "B"
+    if i == 2:
+        return "C"
+    if i == 3:
+        return "D"
+    return ""
+
+
+def _pick_correct_answer(
+    *,
+    correct_raw: object,
+    correct_index: object,
+    options: object,
+) -> str:
+    # 1) explicit correct_index -> letter
+    letter = _correct_letter_from_index(correct_index)
+    if letter:
+        return letter
+
+    # 2) correct_answer variants -> first letter
+    s = str(correct_raw or "").strip()
+    if s:
+        first = s[:1].upper()
+        if first in {"A", "B", "C", "D"}:
+            return first
+
+    # 3) if correct_raw equals one of options texts, map to index
+    if isinstance(options, list) and s:
+        norm = s.strip().lower()
+        for i, opt in enumerate(options[:4]):
+            o = str(opt or "").strip()
+            if not o:
+                continue
+            o_norm = o.strip().lower()
+            # tolerate already-labeled options
+            for prefix in ("a)", "b)", "c)", "d)"):
+                if o_norm.startswith(prefix):
+                    o_norm = o_norm[len(prefix) :].strip()
+            if norm == o_norm:
+                return _correct_letter_from_index(i)
+
+    return ""
+
+
 def _extract_json(text: str) -> dict[str, Any] | None:
     if not text:
         return None
@@ -262,24 +314,41 @@ def generate_quiz_questions_openrouter(
                 if not isinstance(it, dict):
                     continue
 
-                base_prompt = (it.get("prompt") or it.get("question") or it.get("text") or "")
+                base_prompt = (it.get("prompt") or it.get("question") or it.get("text") or it.get("q") or "")
                 opts = it.get("options")
                 if opts is None:
                     opts = it.get("choices")
+                if opts is None:
+                    opts = it.get("variants")
+                if opts is None:
+                    opts = it.get("answers")
                 prompt = str(base_prompt or "")
                 if opts is not None:
                     prompt = prompt.strip() + _format_options_for_prompt(opts)
 
+                correct_raw = (
+                    it.get("correct_answer")
+                    or it.get("answer")
+                    or it.get("correct")
+                    or it.get("correctOption")
+                    or it.get("correct_option")
+                    or it.get("correct_text")
+                    or ""
+                )
+                correct_index = (
+                    it.get("correct_index")
+                    or it.get("correctIndex")
+                    or it.get("correct_option_index")
+                    or it.get("correctOptionIndex")
+                    or it.get("answer_index")
+                    or it.get("answerIndex")
+                )
+                correct_answer = _pick_correct_answer(correct_raw=correct_raw, correct_index=correct_index, options=opts)
+
                 cand = {
                     "type": (it.get("type") or it.get("qtype") or it.get("question_type") or "single"),
                     "prompt": prompt,
-                    "correct_answer": (
-                        it.get("correct_answer")
-                        or it.get("answer")
-                        or it.get("correct")
-                        or it.get("correctOption")
-                        or ""
-                    ),
+                    "correct_answer": correct_answer,
                     "explanation": (it.get("explanation") or it.get("rationale") or it.get("reason") or None),
                 }
                 try:

@@ -19,16 +19,13 @@ type AssignmentItem = {
   deadline: string | null;
 };
 
-type FeedItem = {
-  kind: string;
-  created_at: string;
-  title: string;
-  subtitle?: string | null;
+type MyProfile = {
+  last_activity_at?: string | null;
 };
 
 export default function DashboardPage() {
   const { user } = useAuth();
-  const [feedAll, setFeedAll] = useState<FeedItem[]>([]);
+  const [profile, setProfile] = useState<MyProfile | null>(null);
   const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,11 +35,11 @@ export default function DashboardPage() {
     try {
       setError(null);
       setLoading(true);
-      const [af, as] = await Promise.all([
-        apiFetch<{ items: FeedItem[] }>("/me/activity-feed"),
+      const [p, as] = await Promise.all([
+        apiFetch<MyProfile>("/me/profile"),
         apiFetch<{ items: AssignmentItem[] }>("/me/assignments"),
       ]);
-      setFeedAll(af.items || []);
+      setProfile(p || null);
       setAssignments(as.items || []);
     } catch (e) {
       const anyErr = e as any;
@@ -61,8 +58,9 @@ export default function DashboardPage() {
 
   const didSomethingToday = useMemo(() => {
     const day = new Date().toISOString().slice(0, 10);
-    return (feedAll || []).some((it) => String(it.created_at || "").slice(0, 10) === day);
-  }, [feedAll]);
+    const last = String(profile?.last_activity_at || "");
+    return last ? last.slice(0, 10) === day : false;
+  }, [profile?.last_activity_at]);
 
   return (
     <AppShell>
@@ -160,35 +158,6 @@ export default function DashboardPage() {
               </Link>
             )}
           </div>
-        </div>
-
-        <div className="mt-6">
-          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-3">История активности</div>
-          {loading ? (
-            <Skeleton className="h-[120px] rounded-[24px] bg-zinc-100" />
-          ) : !feedAll.length ? (
-            <div className="rounded-[24px] border border-zinc-200 bg-white/70 p-6 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-              Пока нет действий. Открой урок, скачай материал или пройди тест.
-            </div>
-          ) : (
-            <div className="grid gap-3">
-              {feedAll.slice(0, 10).map((it, idx) => (
-                <div key={idx} className="rounded-[24px] border border-zinc-200 bg-white/70 p-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="text-xs font-black uppercase tracking-widest text-zinc-950 truncate">{it.title}</div>
-                      {it.subtitle ? (
-                        <div className="mt-2 text-xs text-zinc-600 font-medium truncate">{it.subtitle}</div>
-                      ) : null}
-                    </div>
-                    <div className="shrink-0 text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                      {String(it.created_at || "").replace("T", " ").slice(0, 16)}
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
     </AppShell>

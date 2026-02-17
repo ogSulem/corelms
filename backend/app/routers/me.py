@@ -34,6 +34,7 @@ def my_profile(user: User = Depends(get_current_user)):
         "xp": int(user.xp),
         "level": int(user.level),
         "streak": int(user.streak),
+        "last_activity_at": user.last_activity_at.isoformat() if user.last_activity_at else None,
     }
 
 

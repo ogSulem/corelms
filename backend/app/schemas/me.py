@@ -24,6 +24,7 @@ class MyProfileResponse(BaseModel):
     xp: int
     level: int
     streak: int
+    last_activity_at: str | None = None
 
 
 class RecentAttempt(BaseModel):
