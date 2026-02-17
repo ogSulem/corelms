@@ -10,6 +10,21 @@ import { useAuth } from "@/lib/hooks/use-auth";
 
 type Module = { id: string; title: string };
 
+type RegenJobItem = {
+  job_id: string;
+  module_id?: string;
+  module_title?: string;
+  target_questions?: number;
+  created_at?: string;
+  status?: string;
+  stage?: string;
+  detail?: string;
+  error_code?: string;
+  error_hint?: string;
+  error_message?: string;
+  error?: string | null;
+};
+
 type ImportJobItem = {
   job_id: string;
   object_key?: string;
@@ -282,7 +297,7 @@ export default function AdminPanelClient() {
   async function cancelImportJob(jobId: string) {
     const id = String(jobId || "").trim();
     if (!id) return;
-    const ok = window.confirm(`Отменить импорт job ${id}?`);
+    const ok = window.confirm(`Отменить задачу ${id}?`);
     if (!ok) return;
     try {
       await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" } as any);
@@ -361,6 +376,9 @@ export default function AdminPanelClient() {
   const [jobError, setJobError] = useState<string>("");
   const [jobErrorCode, setJobErrorCode] = useState<string>("");
   const [jobErrorHint, setJobErrorHint] = useState<string>("");
+  const [jobKind, setJobKind] = useState<string>("");
+  const [jobModuleTitle, setJobModuleTitle] = useState<string>("");
+  const [jobModuleId, setJobModuleId] = useState<string>("");
 
   const [jobPanelOpen, setJobPanelOpen] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
@@ -377,6 +395,7 @@ export default function AdminPanelClient() {
 
   const [regenHistory, setRegenHistory] = useState<any[]>([]);
   const [regenHistoryLoading, setRegenHistoryLoading] = useState(false);
+  const [regenQueueModalOpen, setRegenQueueModalOpen] = useState(false);
 
   const [importQueue, setImportQueue] = useState<ImportJobItem[]>([]);
   const [importQueueLoading, setImportQueueLoading] = useState(false);
@@ -497,6 +516,33 @@ export default function AdminPanelClient() {
       setRegenHistoryLoading(false);
     }
   }
+
+  const regenQueue = useMemo(() => {
+    const items: RegenJobItem[] = [];
+    for (const it of regenHistory || []) {
+      const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
+      if (!jid) continue;
+      const st = String((it as any)?.status || "").trim();
+      const stage = String((it as any)?.stage || "").trim();
+      const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
+      if (terminal) continue;
+      items.push({
+        job_id: jid,
+        module_id: String((it as any)?.module_id || "") || undefined,
+        module_title: String((it as any)?.module_title || "") || undefined,
+        target_questions: typeof (it as any)?.target_questions === "number" ? (it as any).target_questions : undefined,
+        created_at: String((it as any)?.created_at || "") || undefined,
+        status: st || undefined,
+        stage: stage || undefined,
+        detail: String((it as any)?.detail || "") || undefined,
+        error_code: String((it as any)?.error_code || "") || undefined,
+        error_hint: String((it as any)?.error_hint || "") || undefined,
+        error_message: String((it as any)?.error_message || "") || undefined,
+        error: (it as any)?.error ? String((it as any).error) : null,
+      });
+    }
+    return items;
+  }, [regenHistory]);
 
   async function loadRuntimeLlmSettings() {
     try {
@@ -1077,6 +1123,9 @@ export default function AdminPanelClient() {
         setJobErrorCode(String(s?.error_code || ""));
         setJobErrorHint(String(s?.error_hint || ""));
         setJobResult(s?.result ?? null);
+        setJobKind(String(s?.job_kind || ""));
+        setJobModuleTitle(String(s?.module_title || ""));
+        setJobModuleId(String(s?.module_id || ""));
 
         const st = String(s?.status || "");
         const terminal = st === "finished" || st === "failed" || String(s?.stage || "") === "canceled";
@@ -2309,12 +2358,167 @@ export default function AdminPanelClient() {
                   </div>
                 </Modal>
 
+                <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                      ОЧЕРЕДЬ РЕГЕНА
+                      <span className="ml-3 text-[9px] font-black uppercase tracking-widest text-zinc-400">
+                        {regenHistoryLoading ? "..." : `ЗАДАЧ: ${regenQueue.length}`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                        onClick={() => void loadRegenHistory()}
+                        disabled={regenHistoryLoading}
+                      >
+                        {regenHistoryLoading ? "..." : "ОБНОВИТЬ"}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                        onClick={() => setRegenQueueModalOpen(true)}
+                      >
+                        ВСЯ ИСТОРИЯ
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid gap-2">
+                    {(regenQueue || []).slice(0, 3).map((it) => {
+                      const st = String(it.status || "").toLowerCase();
+                      const stage = String(it.stage || "").toLowerCase();
+                      const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
+                      const name = String(it.module_title || it.module_id || "МОДУЛЬ");
+                      const badge = (() => {
+                        if (st === "queued" || st === "deferred") return "В ОЧЕРЕДИ";
+                        if (st === "started") return "В РАБОТЕ";
+                        return "В РАБОТЕ";
+                      })();
+                      return (
+                        <div key={it.job_id} className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{name}</div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                {badge}
+                              </div>
+                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                {stage ? stage.toUpperCase() : "—"}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="shrink-0 flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                              onClick={() => {
+                                setSelectedJobId(String(it.job_id));
+                                setJobPanelOpen(true);
+                              }}
+                            >
+                              ОТКРЫТЬ
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
+                              disabled={terminal}
+                              onClick={() => void cancelImportJob(String(it.job_id))}
+                            >
+                              ОТМЕНА
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {!regenHistoryLoading && !(regenQueue || []).length ? (
+                      <div className="text-[10px] font-bold text-zinc-500">—</div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <Modal open={regenQueueModalOpen} onClose={() => setRegenQueueModalOpen(false)} title="РЕГЕНЕРАЦИЯ: ИСТОРИЯ">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                        ИСТОРИЯ
+                        <span className="ml-2 text-zinc-400">{regenHistoryLoading ? "..." : (regenHistory || []).length}</span>
+                      </div>
+                      <Button
+                        variant="outline"
+                        className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                        onClick={() => void loadRegenHistory()}
+                      >
+                        ОБНОВИТЬ
+                      </Button>
+                    </div>
+                    <div className="max-h-[520px] overflow-auto pr-1 grid gap-2">
+                      {(regenHistory || []).map((it: any) => {
+                        const jid = String(it?.job_id || it?.id || "").trim();
+                        const st = String(it?.status || "").toLowerCase();
+                        const stage = String(it?.stage || "").toLowerCase();
+                        const name = String(it?.module_title || it?.module_id || "МОДУЛЬ");
+                        const badge = (() => {
+                          if (st === "finished") return "ГОТОВО";
+                          if (st === "failed") return "ОШИБКА";
+                          if (stage === "canceled" || st === "canceled") return "ОТМЕНЕНО";
+                          if (st === "queued" || st === "deferred") return "В ОЧЕРЕДИ";
+                          if (st === "started") return "В РАБОТЕ";
+                          return (st || "—").toUpperCase();
+                        })();
+                        const key = `${jid}:${String(it?.module_id || "").trim()}:${String(it?.created_at || "").trim()}`;
+                        return (
+                          <div key={key} className="rounded-xl border border-zinc-200 bg-white p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{name}</div>
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                    {badge}
+                                  </div>
+                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                    {String(jid || "").slice(0, 10)}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="shrink-0 flex items-center gap-2">
+                                <Button
+                                  variant="outline"
+                                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                  disabled={!jid}
+                                  onClick={() => {
+                                    if (!jid) return;
+                                    setSelectedJobId(String(jid));
+                                    setJobPanelOpen(true);
+                                    setRegenQueueModalOpen(false);
+                                  }}
+                                >
+                                  ОТКРЫТЬ
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </Modal>
+
                 {jobPanelOpen ? (
                   <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0">
                         <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ЗАДАЧА</div>
                         <div className="mt-1 truncate text-[11px] font-black text-zinc-950">{selectedJobId || "—"}</div>
+                        {jobKind || jobModuleTitle ? (
+                          <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words">
+                            {jobKind ? `ТИП: ${String(jobKind || "").toUpperCase()}` : ""}
+                            {jobModuleTitle ? `${jobKind ? " · " : ""}${jobModuleTitle}` : ""}
+                          </div>
+                        ) : null}
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                             {(jobStatus || "—").toUpperCase()}
@@ -2337,7 +2541,12 @@ export default function AdminPanelClient() {
                         <button
                           type="button"
                           className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
-                          disabled={!selectedJobId || cancelBusy || ["finished", "failed"].includes(String(jobStatus || ""))}
+                          disabled={
+                            !selectedJobId ||
+                            cancelBusy ||
+                            ["finished", "failed"].includes(String(jobStatus || "")) ||
+                            String(jobStage || "") === "canceled"
+                          }
                           onClick={() => void cancelCurrentJob()}
                         >
                           {cancelBusy ? "..." : "ОТМЕНА"}

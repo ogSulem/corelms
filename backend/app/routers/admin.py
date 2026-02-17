@@ -1086,6 +1086,10 @@ def job_status(
         "enqueued_at": job.enqueued_at.isoformat() if job.enqueued_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+        "job_kind": meta.get("job_kind"),
+        "module_id": meta.get("module_id"),
+        "module_title": meta.get("module_title"),
+        "target_questions": meta.get("target_questions"),
         "stage": meta.get("stage"),
         "stage_at": meta.get("stage_at"),
         "stage_started_at": meta.get("stage_started_at"),
@@ -1499,6 +1503,18 @@ def regenerate_module_quizzes(
         result_ttl=60 * 60 * 24,
         failure_ttl=60 * 60 * 24,
     )
+
+    # Enrich meta for a better admin UX (/admin/jobs/{id} and unified task panels).
+    try:
+        meta = dict(job.meta or {})
+        meta["job_kind"] = "regen"
+        meta["module_id"] = str(mid)
+        meta["module_title"] = str(m.title)
+        meta["target_questions"] = int(tq)
+        job.meta = meta
+        job.save_meta()
+    except Exception:
+        pass
 
     audit_log(
         db=db,
