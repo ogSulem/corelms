@@ -133,6 +133,33 @@ export default function ModulePage() {
     fetchModuleData();
   }, [moduleId]);
 
+  useEffect(() => {
+    if (!moduleId) return;
+    let inFlight = false;
+    const safeReload = () => {
+      if (inFlight) return;
+      inFlight = true;
+      Promise.resolve(fetchModuleData()).finally(() => {
+        inFlight = false;
+      });
+    };
+
+    const onRefresh = () => safeReload();
+    const onFocus = () => safeReload();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") safeReload();
+    };
+
+    window.addEventListener("corelms:refresh-me", onRefresh as EventListener);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("corelms:refresh-me", onRefresh as EventListener);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [moduleId]);
+
   async function onOpenAsset(assetId: string) {
     try {
       const data = await apiFetch<{ asset_id: string; download_url: string }>(

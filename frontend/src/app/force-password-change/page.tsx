@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { apiFetch } from "@/lib/api";
 
 export default function ForcePasswordChangePage() {
   const router = useRouter();
@@ -43,21 +44,17 @@ export default function ForcePasswordChangePage() {
         throw new Error("Укажите номер телефона");
       }
 
-      const res = await fetch("/api/backend/auth/change-password", {
+      await apiFetch<any>("/auth/change-password", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({
           current_password: currentPassword,
           new_password: newPassword,
           confirm_password: confirmPassword,
           phone: phone,
         }),
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || "Не удалось сменить пароль");
-      }
+        // UX: password change must be responsive; allow slightly longer than default.
+        ...( { timeoutMs: 45_000 } as any ),
+      } as any);
 
       window.dispatchEvent(new Event("corelms:refresh-me"));
       window.dispatchEvent(

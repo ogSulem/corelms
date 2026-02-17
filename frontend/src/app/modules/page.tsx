@@ -123,7 +123,72 @@ export default function ModulesPage() {
           </div>
         )}
 
-        
+        <div className="mt-8 grid gap-4 rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10 md:grid-cols-12">
+          <div className="md:col-span-6">
+            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600 ml-1">Поиск</div>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Название или описание"
+              className="mt-2 h-12 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15"
+            />
+          </div>
+          <div className="md:col-span-3">
+            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600 ml-1">Статус</div>
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value as any)}
+              className="mt-2 h-12 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 appearance-none cursor-pointer"
+            >
+              <option value="all">Все</option>
+              <option value="in_progress">В процессе</option>
+              <option value="completed">Завершено</option>
+            </select>
+          </div>
+          <div className="md:col-span-3">
+            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600 ml-1">Категория</div>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="mt-2 h-12 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 appearance-none cursor-pointer"
+            >
+              <option value="all">Все</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="md:col-span-12 flex flex-wrap items-center justify-between gap-3 pt-2">
+            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">
+              Показано: {loading ? "..." : String(filteredItems.length)}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                disabled={loading}
+                onClick={() => void reload()}
+              >
+                {loading ? "..." : "ОБНОВИТЬ"}
+              </Button>
+              <Button
+                variant="ghost"
+                className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                type="button"
+                onClick={() => {
+                  setQuery("");
+                  setStatus("all");
+                  setCategory("all");
+                }}
+              >
+                СБРОСИТЬ
+              </Button>
+            </div>
+          </div>
+        </div>
 
         <div className="mt-8 grid gap-6 md:grid-cols-2">
           {loading

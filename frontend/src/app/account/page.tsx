@@ -70,6 +70,7 @@ function formatDuration(seconds: number): string {
 export default function AccountPage() {
   const [profile, setProfile] = useState<MyProfile | null>(null);
   const [feed, setFeed] = useState<HistoryItem[]>([]);
+  const [historyAll, setHistoryAll] = useState<HistoryItem[]>([]);
   const [feedFilter, setFeedFilter] = useState<FeedFilter>("all");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -86,15 +87,20 @@ export default function AccountPage() {
 
         const hist = await apiFetch<{ items: HistoryItem[] }>(`/me/history?limit=200`);
         const items = Array.isArray(hist?.items) ? hist.items : [];
-        const filtered = feedFilter === "all" ? items : items.filter((it) => it.kind === feedFilter);
-        setFeed(filtered);
+        setHistoryAll(items);
       } catch (e) {
         setError("НЕ УДАЛОСЬ ЗАГРУЗИТЬ ДАННЫЕ ПРОФИЛЯ");
       } finally {
         setLoading(false);
       }
     })();
-  }, [feedFilter]);
+  }, []);
+
+  useEffect(() => {
+    const items = historyAll;
+    const filtered = feedFilter === "all" ? items : items.filter((it) => it.kind === feedFilter);
+    setFeed(filtered);
+  }, [feedFilter, historyAll]);
 
   const level = profile?.level ?? 1;
   const xp = profile?.xp ?? 0;

@@ -150,7 +150,6 @@ export function LoginClient() {
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
                   className="absolute right-3 top-1/2 -translate-y-1/2 grid h-11 w-11 place-items-center rounded-xl border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 transition-all active:scale-95"
-                  tabIndex={-1}
                   disabled={loading}
                   aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
                 >

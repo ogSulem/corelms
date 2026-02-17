@@ -38,12 +38,32 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     headers.set("X-Request-ID", _makeRequestId());
   }
 
-  const res = await fetch(url, {
-    ...init,
-    headers,
-    credentials: "include",
-    cache: "no-store",
-  });
+  const timeoutMsRaw = (init as any)?.timeoutMs;
+  const timeoutMs = typeof timeoutMsRaw === "number" && Number.isFinite(timeoutMsRaw) ? Math.max(1, timeoutMsRaw) : 25_000;
+  const controller = !init?.signal && typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timeoutId = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...init,
+      headers,
+      credentials: "include",
+      cache: "no-store",
+      signal: init?.signal ?? controller?.signal,
+    });
+  } catch (e) {
+    if ((e as any)?.name === "AbortError") {
+      throw new CoreApiError("Превышено время ожидания ответа сервера. Повторите попытку.", {
+        status: 408,
+        errorCode: "client_timeout",
+        requestId: headers.get("X-Request-ID") || undefined,
+      });
+    }
+    throw e;
+  } finally {
+    if (timeoutId) window.clearTimeout(timeoutId);
+  }
 
   if (res.status === 401 && typeof window !== "undefined") {
     const next = window.location.pathname + window.location.search;

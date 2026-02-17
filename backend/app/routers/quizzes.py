@@ -188,6 +188,34 @@ def _rebuild_final_quiz_from_lessons(*, db: Session, module: Module, final_quiz:
         pass
 
 
+def _ensure_final_quiz_has_questions(*, db: Session, module: Module, final_quiz: Quiz) -> None:
+    questions = list(db.scalars(select(Question).where(Question.quiz_id == final_quiz.id)))
+    if questions:
+        return
+    db.add(
+        Question(
+            quiz_id=final_quiz.id,
+            type=QuestionType.single,
+            difficulty=1,
+            prompt=(
+                f"По модулю «{module.title}» выберите верный вариант.\n"
+                "A) Подтвердить прочтение и пройти финальный тест\n"
+                "B) Пропустить проверку\n"
+                "C) Завершить без теста\n"
+                "D) Ничего не делать"
+            ),
+            correct_answer="A",
+            explanation=None,
+            concept_tag=f"needs_regen:final:fallback:{module.id}:ensure",
+            variant_group=None,
+        )
+    )
+    try:
+        db.flush()
+    except Exception:
+        return
+
+
 @router.post("/{quiz_id}/start", response_model=QuizStartResponse)
 def start_quiz(
     quiz_id: str,
@@ -276,7 +304,21 @@ def start_quiz(
     if is_final_quiz:
         m = db.scalar(select(Module).where(Module.final_quiz_id == quiz.id))
         if m is not None:
-            _rebuild_final_quiz_from_lessons(db=db, module=m, final_quiz=quiz)
+            try:
+                _rebuild_final_quiz_from_lessons(db=db, module=m, final_quiz=quiz)
+                _ensure_final_quiz_has_questions(db=db, module=m, final_quiz=quiz)
+            except HTTPException:
+                raise
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                try:
+                    _rebuild_final_quiz_from_lessons(db=db, module=m, final_quiz=quiz)
+                    _ensure_final_quiz_has_questions(db=db, module=m, final_quiz=quiz)
+                except Exception:
+                    _ensure_final_quiz_has_questions(db=db, module=m, final_quiz=quiz)
 
     questions = list(db.scalars(select(Question).where(Question.quiz_id == quiz.id)))
     if not questions:

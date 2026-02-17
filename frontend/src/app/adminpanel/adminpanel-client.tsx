@@ -1838,6 +1838,7 @@ export default function AdminPanelClient() {
             {(
               [
                 { key: "modules", label: "МОДУЛИ" },
+                { key: "import", label: "ИМПОРТ" },
                 { key: "analytics", label: "АНАЛИТИКА" },
                 { key: "users", label: "ПОЛЬЗОВАТЕЛИ" },
                 { key: "diagnostics", label: "ДИАГНОСТИКА" },
