@@ -10,7 +10,7 @@ from sqlalchemy import func
 
 from app.db.session import SessionLocal
 from app.models.module import Module, Submodule
-from app.models.quiz import Question, QuestionType
+from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.services.llm_handler import choose_llm_provider_order_fast, generate_quiz_questions_ai
 from app.services.quiz_generation import generate_quiz_questions_heuristic
 
@@ -187,12 +187,16 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
                 else:
                     qs = []
 
-            qid = sub.quiz_id
-            if not qid:
-                continue
-
             _set_job_stage(stage="replace", detail=f"{si}/{len(subs)}: {title}")
-            db.execute(delete(Question).where(Question.quiz_id == qid))
+            # IMPORTANT: never delete old questions during regeneration.
+            # QuizAttemptAnswer has FK to Question.id, so deletions can break attempt history.
+            # Instead we version quizzes: create a new quiz, attach to the lesson, and write new questions there.
+            lesson_quiz = Quiz(type=QuizType.submodule, pass_threshold=70, time_limit=None, attempts_limit=3)
+            db.add(lesson_quiz)
+            db.flush()
+            sub.quiz_id = lesson_quiz.id
+            db.add(sub)
+            qid = lesson_quiz.id
 
             if qs:
                 for qi, q in enumerate(qs, start=1):
@@ -247,7 +251,13 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
         final_qid = getattr(m, "final_quiz_id", None)
         if final_qid:
             _set_job_stage(stage="replace", detail="final quiz")
-            db.execute(delete(Question).where(Question.quiz_id == final_qid))
+            # Same rule: do not delete old final questions; create a new final quiz.
+            final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
+            db.add(final_quiz)
+            db.flush()
+            m.final_quiz_id = final_quiz.id
+            db.add(m)
+            final_qid = final_quiz.id
 
             rng = random.Random(f"regen_final:{m.id}:{uuid.uuid4()}")
             final_added = 0
