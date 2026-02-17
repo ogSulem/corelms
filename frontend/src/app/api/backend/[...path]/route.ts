@@ -16,6 +16,8 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   const headers = new Headers(req.headers);
   headers.delete("host");
   headers.delete("connection");
+  headers.delete("content-length");
+  headers.delete("transfer-encoding");
 
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
