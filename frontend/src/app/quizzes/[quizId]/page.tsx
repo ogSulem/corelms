@@ -12,6 +12,32 @@ import { apiFetch } from "@/lib/api";
 
 type QuizQuestion = { id: string; prompt: string; type: string };
 
+function normalizeOptionLabel(ch: string): string | null {
+  const c = String(ch || "").trim().toUpperCase();
+  const map: Record<string, string> = { "А": "A", "Б": "B", "В": "C", "Г": "D", "Д": "E" };
+  const v = map[c] || c;
+  if (!/^[A-E]$/.test(v)) return null;
+  return v;
+}
+
+function extractOptionsFromPrompt(prompt: string): { stem: string[]; options: Array<{ label: string; text: string }> } {
+  const lines = formatPromptLines(prompt);
+  const opts: Array<{ label: string; text: string }> = [];
+  const stem: string[] = [];
+  for (const ln of lines) {
+    const m = /^([АБВГДA-E])\)\s*(.+)$/u.exec(ln);
+    if (m) {
+      const label = normalizeOptionLabel(m[1]);
+      if (label) {
+        opts.push({ label, text: String(m[2] || "").trim() });
+        continue;
+      }
+    }
+    stem.push(ln);
+  }
+  return { stem, options: opts };
+}
+
 function formatPromptLines(prompt: string): string[] {
   const normalized = String(prompt || "")
     .replace(/\r\n/g, "\n")
@@ -319,7 +345,37 @@ export default function QuizPage() {
                   </div>
 
                   <div className="space-y-10">
-                    {quiz.questions.map((q, idx) => (
+                    {quiz.questions.map((q, idx) => {
+                      const parsed = extractOptionsFromPrompt(q.prompt);
+                      const selectedRaw = String(answers[q.id] || "").trim();
+                      const selected = new Set(
+                        selectedRaw
+                          .split(",")
+                          .map((x) => normalizeOptionLabel(x) || "")
+                          .filter(Boolean)
+                      );
+                      const isMulti = String(q.type || "").toLowerCase() === "multi";
+
+                      function setSingle(label: string) {
+                        setAnswers((prev) => ({ ...prev, [q.id]: label }));
+                      }
+
+                      function toggleMulti(label: string) {
+                        setAnswers((prev) => {
+                          const cur = new Set(
+                            String(prev[q.id] || "")
+                              .split(",")
+                              .map((x) => normalizeOptionLabel(x) || "")
+                              .filter(Boolean)
+                          );
+                          if (cur.has(label)) cur.delete(label);
+                          else cur.add(label);
+                          const out = Array.from(cur).sort().join(",");
+                          return { ...prev, [q.id]: out };
+                        });
+                      }
+
+                      return (
                       <div key={q.id} className="group relative overflow-hidden rounded-[28px] bg-white border border-zinc-200 p-8 transition-all duration-300 hover:bg-zinc-50">
                         <div className="flex gap-8">
                           <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#fe9900]/10 border border-[#fe9900]/20 text-zinc-950 text-base font-black tabular-nums">
@@ -327,26 +383,75 @@ export default function QuizPage() {
                           </span>
                           <div className="flex-1">
                             <div className="text-base font-bold text-zinc-950 leading-relaxed tracking-tight mb-6 space-y-2 whitespace-pre-line">
-                              {formatPromptLines(q.prompt).map((ln, i) => (
-                                <div key={i} className={/^[А-Д]\)/.test(ln) ? "pl-4 text-zinc-700" : ""}>
-                                  {ln}
-                                </div>
+                              {parsed.stem.map((ln, i) => (
+                                <div key={i}>{ln}</div>
                               ))}
                             </div>
-                            <input
-                              className="h-12 w-full rounded-2xl bg-white border border-zinc-200 px-6 text-base text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all placeholder:text-zinc-400 font-medium"
-                              value={answers[q.id] || ""}
-                              onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                              placeholder={q.type === "multi" ? "ABC..." : "Ваш ответ..."}
-                              disabled={Boolean(result)}
-                            />
-                            <div className="mt-4 text-[10px] font-black text-zinc-600 uppercase tracking-widest">
-                              {q.type === "multi" ? "НЕСКОЛЬКО ВАРИАНТОВ (БУКВЫ, НАПРИМЕР: A,C)" : "ОДИН ВАРИАНТ (БУКВА A/B/C/D)"}
-                            </div>
+                            {parsed.options.length ? (
+                              <div className="grid gap-3">
+                                <div className="grid gap-2">
+                                  {parsed.options.map((o) => {
+                                    const active = selected.has(o.label);
+                                    return (
+                                      <button
+                                        key={o.label}
+                                        type="button"
+                                        disabled={Boolean(result)}
+                                        onClick={() => (isMulti ? toggleMulti(o.label) : setSingle(o.label))}
+                                        className={
+                                          "w-full rounded-2xl border px-5 py-4 text-left transition-all active:scale-[0.99] " +
+                                          (active
+                                            ? "border-[#fe9900]/45 bg-[#fe9900]/10"
+                                            : "border-zinc-200 bg-white hover:bg-zinc-50")
+                                        }
+                                      >
+                                        <div className="flex items-start gap-4">
+                                          <div
+                                            className={
+                                              "mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl border text-sm font-black tabular-nums " +
+                                              (active
+                                                ? "border-[#fe9900]/40 bg-[#fe9900]/20 text-zinc-950"
+                                                : "border-zinc-200 bg-white text-zinc-700")
+                                            }
+                                          >
+                                            {o.label}
+                                          </div>
+                                          <div className="flex-1">
+                                            <div className="text-sm font-bold text-zinc-950 leading-snug">{o.text}</div>
+                                            {isMulti ? (
+                                              <div className="mt-1 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                                                Нажимай для выбора нескольких
+                                              </div>
+                                            ) : null}
+                                          </div>
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                <div className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">
+                                  {isMulti ? "НЕСКОЛЬКО ВАРИАНТОВ" : "ОДИН ВАРИАНТ"}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="grid gap-3">
+                                <input
+                                  className="h-12 w-full rounded-2xl bg-white border border-zinc-200 px-6 text-base text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all placeholder:text-zinc-400 font-medium"
+                                  value={answers[q.id] || ""}
+                                  onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                                  placeholder={q.type === "multi" ? "ABC..." : "Ваш ответ..."}
+                                  disabled={Boolean(result)}
+                                />
+                                <div className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">
+                                  {q.type === "multi" ? "НЕСКОЛЬКО ВАРИАНТОВ (БУКВЫ, НАПРИМЕР: A,C)" : "ОДИН ВАРИАНТ (БУКВА A/B/C/D)"}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
 

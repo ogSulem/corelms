@@ -72,8 +72,30 @@ export default function ModulePage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  function decodeLegacyPercentUnicode(input: string): string {
+    const raw = String(input || "").trim();
+    if (!raw) return "";
+    try {
+      const replaced = raw.replace(/%[uU]([0-9a-fA-F]{4})/g, (_, hex) => {
+        try {
+          return String.fromCharCode(Number.parseInt(hex, 16));
+        } catch {
+          return _;
+        }
+      });
+      const decoded = decodeURIComponent(replaced);
+      return decoded.normalize("NFC");
+    } catch {
+      try {
+        return raw.normalize("NFC");
+      } catch {
+        return raw;
+      }
+    }
+  }
+
   function formatAssetTitle(name: string): string {
-    const raw = String(name || "").trim();
+    const raw = decodeLegacyPercentUnicode(String(name || "").trim());
     return raw
       .replace(/^\s*\d{1,3}\s*[\.)]\s*/u, "")
       .replace(/^\s*\d{1,3}\s*[-_:]\s*/u, "")
@@ -261,12 +283,18 @@ export default function ModulePage() {
                   </div>
                 ) : (
                   <div className="grid gap-3">
-                    {moduleAssets.map((a) => (
+                    {moduleAssets.map((a, idx) => (
                       <div key={a.asset_id} className="group relative overflow-hidden rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white">
                         <div className="flex items-center justify-between gap-4">
                           <div className="min-w-0">
-                            <div className="truncate text-sm font-bold text-zinc-950 transition-colors">{formatAssetTitle(a.original_filename)}</div>
-                            <div className="mt-1 text-[9px] font-black text-zinc-600 uppercase tracking-widest">{(a.mime_type || "ФАЙЛ").toUpperCase()}</div>
+                            <div className="flex items-center gap-3 min-w-0">
+                              <span className="shrink-0 text-[10px] font-black uppercase tracking-widest text-zinc-500 tabular-nums">
+                                {String(idx + 1).padStart(2, "0")}
+                              </span>
+                              <div className="min-w-0 truncate text-sm font-bold text-zinc-950 transition-colors">
+                                {formatAssetTitle(a.original_filename)}
+                              </div>
+                            </div>
                           </div>
                           <button
                             onClick={() => onOpenAsset(a.asset_id)}

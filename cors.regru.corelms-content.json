@@ -1,0 +1,11 @@
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["https://front-production-fad4.up.railway.app"],
+      "AllowedMethods": ["GET", "HEAD", "PUT"],
+      "AllowedHeaders": ["*"],
+      "ExposeHeaders": ["ETag", "Content-Disposition", "Content-Type"],
+      "MaxAgeSeconds": 3000
+    }
+  ]
+}

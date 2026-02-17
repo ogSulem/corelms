@@ -30,24 +30,41 @@ def _session_key(user_id: str, quiz_id: str) -> str:
     return f"quiz_session:{user_id}:{quiz_id}"
 
 
+def _map_option_letter(ch: str) -> str:
+    c = (ch or "").strip().upper()
+    # Support Russian option letters commonly used in prompts.
+    # А Б В Г Д -> A B C D E
+    if c == "А":
+        return "A"
+    if c == "Б":
+        return "B"
+    if c == "В":
+        return "C"
+    if c == "Г":
+        return "D"
+    if c == "Д":
+        return "E"
+    return c
+
+
 def _normalize_single(answer: str) -> str:
     # Accept formats like: "A", "a", "A)", "answer: a", "(b)".
     # We extract the FIRST option letter A-D from the string.
-    m = re.search(r"[A-Da-d]", (answer or ""))
-    return (m.group(0).upper() if m else "")
+    m = re.search(r"[A-Ea-eАБВГДабвгд]", (answer or ""))
+    return (_map_option_letter(m.group(0)) if m else "")
 
 
 def _normalize_multi(answer: str) -> str:
     # Accept formats like: "A,B,D", "ABD", "a b d".
     # We treat the answer as a set of option letters.
-    letters = re.findall(r"[A-Da-d]", (answer or ""))
-    norm = sorted({ch.upper() for ch in letters})
+    letters = re.findall(r"[A-Ea-eАБВГДабвгд]", (answer or ""))
+    norm = sorted({_map_option_letter(ch) for ch in letters if _map_option_letter(ch)})
     return ",".join(norm)
 
 
 def _looks_like_multi(answer: str) -> bool:
     try:
-        letters = {ch.upper() for ch in re.findall(r"[A-Da-d]", (answer or ""))}
+        letters = {_map_option_letter(ch) for ch in re.findall(r"[A-Ea-eАБВГДабвгд]", (answer or ""))}
         return len(letters) >= 2
     except Exception:
         return False

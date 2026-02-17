@@ -20,6 +20,54 @@ type SubmoduleMeta = {
   quiz_id: string;
 };
 
+function decodeLegacyPercentUnicode(input: string): string {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+  try {
+    const replaced = raw.replace(/%[uU]([0-9a-fA-F]{4})/g, (_, hex) => {
+      try {
+        return String.fromCharCode(Number.parseInt(hex, 16));
+      } catch {
+        return _;
+      }
+    });
+    const decoded = decodeURIComponent(replaced);
+    return decoded.normalize("NFC");
+  } catch {
+    try {
+      return raw.normalize("NFC");
+    } catch {
+      return raw;
+    }
+  }
+}
+
+function normalizeOptionLabel(ch: string): string | null {
+  const c = String(ch || "").trim().toUpperCase();
+  const map: Record<string, string> = { "А": "A", "Б": "B", "В": "C", "Г": "D", "Д": "E" };
+  const v = map[c] || c;
+  if (!/^[A-E]$/.test(v)) return null;
+  return v;
+}
+
+function extractOptionsFromPrompt(prompt: string): { stem: string[]; options: Array<{ label: string; text: string }> } {
+  const lines = formatPromptLines(prompt);
+  const opts: Array<{ label: string; text: string }> = [];
+  const stem: string[] = [];
+  for (const ln of lines) {
+    const m = /^([АБВГДA-E])\)\s*(.+)$/u.exec(ln);
+    if (m) {
+      const label = normalizeOptionLabel(m[1]);
+      if (label) {
+        opts.push({ label, text: String(m[2] || "").trim() });
+        continue;
+      }
+    }
+    stem.push(ln);
+  }
+  return { stem, options: opts };
+}
+
 function formatPromptLines(prompt: string): string[] {
   const normalized = String(prompt || "")
     .replace(/\r\n/g, "\n")
@@ -124,6 +172,14 @@ export default function SubmodulePage() {
   function closeInline() {
     setInlineUrl(null);
     setInlineMime(null);
+  }
+
+  function displayAssetTitle(name: string): string {
+    const raw = decodeLegacyPercentUnicode(String(name || "").trim());
+    return raw
+      .replace(/^\s*\d{1,3}\s*[\.)]\s*/u, "")
+      .replace(/^\s*\d{1,3}\s*[-_:]\s*/u, "")
+      .trim();
   }
 
   const fetchData = async () => {
@@ -609,18 +665,20 @@ export default function SubmodulePage() {
                 </div>
               ) : (
                 <div className="grid gap-3">
-                  {moduleAssets.map((a) => (
+                  {moduleAssets.map((a, idx) => (
                       <div
                         key={a.asset_id}
                         className="group relative overflow-hidden rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <div className="truncate text-sm font-bold text-zinc-950 transition-colors">
-                              {String(a.original_filename || "ФАЙЛ")}
-                            </div>
-                            <div className="mt-1 text-[9px] font-black text-zinc-600 uppercase tracking-widest">
-                              {String(a.mime_type || "ФАЙЛ").toUpperCase()}
+                            <div className="flex items-center gap-3 min-w-0">
+                              <span className="shrink-0 text-[10px] font-black uppercase tracking-widest text-zinc-500 tabular-nums">
+                                {String(idx + 1).padStart(2, "0")}
+                              </span>
+                              <div className="min-w-0 truncate text-sm font-bold text-zinc-950 transition-colors">
+                                {displayAssetTitle(a.original_filename || "ФАЙЛ")}
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -733,20 +791,20 @@ export default function SubmodulePage() {
                   )}
                 </div>
               </div>
-            ) : (
-              !quizData ? (
-                <div className="rounded-[32px] border border-zinc-200 bg-white/70 p-20 animate-in fade-in zoom-in-95 duration-500 text-center shadow-2xl shadow-zinc-950/10">
-                  <div className="inline-flex items-center gap-3 px-4 py-2 rounded-full bg-[#fe9900]/10 border border-[#fe9900]/20 mb-8">
-                    <div className="h-2 w-2 rounded-full bg-[#fe9900] animate-pulse" />
-                    <span className="text-[10px] font-black text-[#fe9900] uppercase tracking-widest">Подготовка теста</span>
-                  </div>
-                  <h3 className="text-3xl font-black text-zinc-950 uppercase tracking-tighter mb-10">Подготавливаем вопросы</h3>
-                  <div className="h-1 w-full max-w-xs mx-auto rounded-full bg-zinc-200 overflow-hidden">
-                    <div className="h-full w-1/2 bg-[#fe9900] animate-[loading_2s_ease-in-out_infinite]" />
-                  </div>
+            ) : !quizData ? (
+              <div className="rounded-[32px] border border-zinc-200 bg-white/70 p-20 animate-in fade-in zoom-in-95 duration-500 text-center shadow-2xl shadow-zinc-950/10">
+                <div className="inline-flex items-center gap-3 px-4 py-2 rounded-full bg-[#fe9900]/10 border border-[#fe9900]/20 mb-8">
+                  <div className="h-2 w-2 rounded-full bg-[#fe9900] animate-pulse" />
+                  <span className="text-[10px] font-black text-[#fe9900] uppercase tracking-widest">Подготовка теста</span>
                 </div>
-              ) : (
-                <div className="rounded-[32px] border border-zinc-200 bg-white/70 p-10 lg:p-12 animate-in fade-in zoom-in-95 duration-500 shadow-2xl shadow-zinc-950/10">
+                <h3 className="text-3xl font-black text-zinc-950 uppercase tracking-tighter mb-10">Подготавливаем вопросы</h3>
+                <div className="h-1 w-full max-w-xs mx-auto rounded-full bg-zinc-200 overflow-hidden">
+                  <div className="h-full w-1/2 bg-[#fe9900] animate-[loading_2s_ease-in-out_infinite]" />
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-10">
+                <div className="rounded-[32px] border border-zinc-200 bg-white/70 p-10 lg:p-16 animate-in fade-in zoom-in-95 duration-500 shadow-2xl shadow-zinc-950/10">
                   <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-16 border-b border-zinc-200 pb-10">
                     <div className="flex flex-col gap-3">
                       <div className="text-[10px] font-black text-[#fe9900] uppercase tracking-[0.3em]">Проверка знаний</div>
@@ -761,36 +819,123 @@ export default function SubmodulePage() {
                   </div>
 
                   <div className="space-y-10">
-                    {quizData.questions.map((q, idx) => (
-                      <div key={q.id} className="group relative overflow-hidden rounded-[28px] bg-white border border-zinc-200 p-8 transition-all duration-300 hover:bg-zinc-50">
-                        <div className="flex gap-8">
-                          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#fe9900]/10 border border-[#fe9900]/20 text-zinc-950 text-base font-black tabular-nums">
-                            {idx + 1}
-                          </span>
-                          <div className="flex-1">
-                            <div className="text-base font-bold text-zinc-950 leading-relaxed tracking-tight mb-6 space-y-2 whitespace-pre-line">
-                              {formatPromptLines(q.prompt).map((ln, i) => (
-                                <div key={i} className={/^[А-ЯA-Z]\)|^[А-ЯA-Z][\).]/.test(ln) ? "pl-4 text-zinc-700" : ""}>
-                                  {ln}
+                    {quizData.questions.map((q, idx) => {
+                      const parsed = extractOptionsFromPrompt(q.prompt);
+                      const selectedRaw = String(answers[q.id] || "").trim();
+                      const selected = new Set(
+                        selectedRaw
+                          .split(",")
+                          .map((x) => normalizeOptionLabel(x) || "")
+                          .filter(Boolean)
+                      );
+                      const isMulti = String(q.type || "").toLowerCase() === "multi";
+
+                      function setSingle(label: string) {
+                        setAnswers((prev) => ({ ...prev, [q.id]: label }));
+                      }
+
+                      function toggleMulti(label: string) {
+                        setAnswers((prev) => {
+                          const cur = new Set(
+                            String(prev[q.id] || "")
+                              .split(",")
+                              .map((x) => normalizeOptionLabel(x) || "")
+                              .filter(Boolean)
+                          );
+                          if (cur.has(label)) cur.delete(label);
+                          else cur.add(label);
+                          const out = Array.from(cur).sort().join(",");
+                          return { ...prev, [q.id]: out };
+                        });
+                      }
+
+                      return (
+                        <div
+                          key={q.id}
+                          className="group relative overflow-hidden rounded-[28px] bg-white border border-zinc-200 p-8 transition-all duration-300 hover:bg-zinc-50"
+                        >
+                          <div className="flex gap-8">
+                            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#fe9900]/10 border border-[#fe9900]/20 text-zinc-950 text-base font-black tabular-nums">
+                              {idx + 1}
+                            </span>
+                            <div className="flex-1">
+                              <div className="text-base font-bold text-zinc-950 leading-relaxed tracking-tight mb-6 space-y-2 whitespace-pre-line">
+                                {parsed.stem.map((ln, i) => (
+                                  <div key={i}>{ln}</div>
+                                ))}
+                              </div>
+
+                              {parsed.options.length ? (
+                                <div className="grid gap-3">
+                                  <div className="grid gap-2">
+                                    {parsed.options.map((o) => {
+                                      const active = selected.has(o.label);
+                                      return (
+                                        <button
+                                          key={o.label}
+                                          type="button"
+                                          disabled={Boolean(quizResult)}
+                                          onClick={() => (isMulti ? toggleMulti(o.label) : setSingle(o.label))}
+                                          className={
+                                            "w-full rounded-2xl border px-5 py-4 text-left transition-all active:scale-[0.99] " +
+                                            (active
+                                              ? "border-[#fe9900]/45 bg-[#fe9900]/10"
+                                              : "border-zinc-200 bg-white hover:bg-zinc-50")
+                                          }
+                                        >
+                                          <div className="flex items-start gap-4">
+                                            <div
+                                              className={
+                                                "mt-0.5 flex h-9 w-9 items-center justify-center rounded-xl border text-sm font-black tabular-nums " +
+                                                (active
+                                                  ? "border-[#fe9900]/40 bg-[#fe9900]/20 text-zinc-950"
+                                                  : "border-zinc-200 bg-white text-zinc-700")
+                                              }
+                                            >
+                                              {o.label}
+                                            </div>
+                                            <div className="flex-1">
+                                              <div className="text-sm font-bold text-zinc-950 leading-snug">{o.text}</div>
+                                              {isMulti ? (
+                                                <div className="mt-1 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                                                  Нажимай для выбора нескольких
+                                                </div>
+                                              ) : null}
+                                            </div>
+                                          </div>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+
+                                  <div className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">
+                                    {isMulti ? "НЕСКОЛЬКО ВАРИАНТОВ" : "ОДИН ВАРИАНТ"}
+                                  </div>
                                 </div>
-                              ))}
-                            </div>
-                            <input
-                              className="h-12 w-full rounded-2xl bg-white border border-zinc-200 px-6 text-base text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all placeholder:text-zinc-400 font-medium"
-                              value={answers[q.id] || ""}
-                              onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                              placeholder={q.type === "multi" ? "ABC..." : "Ваш ответ..."}
-                            />
-                            <div className="mt-4 text-[10px] font-black text-zinc-600 uppercase tracking-widest">
-                              {q.type === "multi" ? "НЕСКОЛЬКО ВАРИАНТОВ (БУКВЫ, НАПРИМЕР: A,C)" : "ОДИН ВАРИАНТ (БУКВА A/B/C/D)"}
+                              ) : (
+                                <div className="grid gap-3">
+                                  <input
+                                    className="h-12 w-full rounded-2xl bg-white border border-zinc-200 px-6 text-base text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all placeholder:text-zinc-400 font-medium"
+                                    value={answers[q.id] || ""}
+                                    onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                                    placeholder={q.type === "multi" ? "ABC..." : "Ваш ответ..."}
+                                    disabled={Boolean(quizResult)}
+                                  />
+                                  <div className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">
+                                    {q.type === "multi"
+                                      ? "НЕСКОЛЬКО ВАРИАНТОВ (БУКВЫ, НАПРИМЕР: A,C)"
+                                      : "ОДИН ВАРИАНТ (БУКВА A/B/C/D)"}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
-              )
+              </div>
             )}
 
           </div>
