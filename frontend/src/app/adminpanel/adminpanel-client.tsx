@@ -10,7 +10,12 @@ import { useAuth } from "@/lib/hooks/use-auth";
 
 type Module = { id: string; title: string };
 
-type RegenJobItem = {
+import { DiagnosticsTab } from "./_components/DiagnosticsTab";
+import { UsersTab } from "./_components/UsersTab";
+import { ModulesTab } from "./_components/ModulesTab";
+import { ImportTab } from "./_components/ImportTab";
+
+export type RegenJobItem = {
   job_id: string;
   module_id?: string;
   module_title?: string;
@@ -25,7 +30,7 @@ type RegenJobItem = {
   error?: string | null;
 };
 
-type ImportJobItem = {
+export type ImportJobItem = {
   job_id: string;
   object_key?: string;
   title?: string;
@@ -70,7 +75,7 @@ type QuestionQualityItem = {
 
 type StatusFilter = "all" | "completed" | "in_progress" | "not_started";
 type SortKey = "name" | "progress" | "last_activity";
-type TabKey = "modules" | "analytics" | "users" | "diagnostics";
+type TabKey = "modules" | "import" | "analytics" | "users" | "diagnostics";
 
 function formatEventTypeRu(eventType: string): string {
   const k = String(eventType || "").trim().toLowerCase();
@@ -97,7 +102,7 @@ function formatEventTypeRu(eventType: string): string {
   return String(eventType || "").replace(/_/g, " ").toUpperCase();
 }
 
-type AdminModuleItem = {
+export type AdminModuleItem = {
   id: string;
   title: string;
   is_active: boolean;
@@ -113,7 +118,7 @@ type AdminModuleItem = {
   };
 };
 
-type AdminSubmoduleItem = {
+export type AdminSubmoduleItem = {
   id: string;
   module_id: string;
   title: string;
@@ -121,7 +126,7 @@ type AdminSubmoduleItem = {
   quiz_id: string;
 };
 
-type AdminQuestionItem = {
+export type AdminQuestionItem = {
   id: string;
   quiz_id: string;
   type: string;
@@ -133,7 +138,7 @@ type AdminQuestionItem = {
   variant_group?: string | null;
 };
 
-type UserItem = {
+export type UserItem = {
   id: string;
   name: string;
   role: string;
@@ -150,7 +155,7 @@ type UserItem = {
   };
 };
 
-type UserModuleProgress = {
+export type UserModuleProgress = {
   module_id: string;
   title: string;
   total: number;
@@ -159,14 +164,14 @@ type UserModuleProgress = {
   completed: boolean;
 };
 
-type UserHistoryItem = {
+export type UserHistoryItem = {
   id: string;
   event_type: string;
   created_at: string;
   meta: any;
 };
 
-type UserHistoryDetailedItem = {
+export type UserHistoryDetailedItem = {
   id: string;
   created_at: string;
   kind: string;
@@ -184,7 +189,7 @@ type UserHistoryDetailedItem = {
   asset_name?: string | null;
 };
 
-type UserDetail = {
+export type UserDetail = {
   id: string;
   name: string;
   role: string;
@@ -810,12 +815,13 @@ export default function AdminPanelClient() {
     }
   }
 
-  function getDraftValue<T extends keyof AdminQuestionItem>(q: AdminQuestionItem, key: T): AdminQuestionItem[T] {
-    const d = questionDraftsById[String(q.id)] || {};
-    if (Object.prototype.hasOwnProperty.call(d, key)) {
-      return (d as any)[key];
+  function getDraftValue(q: any, key: string): any {
+    const qid = String(q.id);
+    const draft = questionDraftsById[qid];
+    if (draft && typeof draft[key as keyof AdminQuestionItem] !== "undefined") {
+      return draft[key as keyof AdminQuestionItem];
     }
-    return q[key];
+    return q[key as keyof AdminQuestionItem];
   }
 
   function isQuestionDirty(q: AdminQuestionItem): boolean {
@@ -1862,1543 +1868,143 @@ export default function AdminPanelClient() {
             {error}
           </div>
         ) : tab === "diagnostics" ? (
-          <div className="mt-8 space-y-6">
-            <div className="grid gap-6 lg:grid-cols-12 items-start">
-              <div className="lg:col-span-6 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-xl">
-                <div className="flex items-end justify-between gap-6">
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">СИСТЕМА</div>
-                    <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">СТАТУС</div>
-                  </div>
-                  <Button
-                    variant="outline"
-                    className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={sysLoading}
-                    onClick={() => void loadSystemStatus()}
-                  >
-                    {sysLoading ? "..." : "ОБНОВИТЬ"}
-                  </Button>
-                </div>
-
-                <div className="mt-6 grid gap-3 sm:grid-cols-2">
-                  {(
-                    [
-                      { key: "db", label: "DB" },
-                      { key: "redis", label: "REDIS" },
-                      { key: "rq", label: "RQ" },
-                      { key: "ollama", label: "OLLAMA" },
-                      { key: "hf_router", label: "HF ROUTER" },
-                      { key: "s3", label: "S3" },
-                    ] as { key: string; label: string }[]
-                  ).map((x) => {
-                    const ok = !!(sys as any)?.[x.key]?.ok;
-                    return (
-                      <div key={x.key} className="rounded-2xl border border-zinc-200 bg-white p-4">
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">{x.label}</div>
-                        <div
-                          className={
-                            "mt-2 inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
-                            (ok
-                              ? "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]"
-                              : "border-rose-200 bg-rose-50 text-rose-800")
-                          }
-                        >
-                          {ok ? "OK" : "FAIL"}
-                        </div>
-                        {x.key === "rq" && (sys as any)?.rq ? (
-                          <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">
-                            workers: {Number((sys as any)?.rq?.workers || 0)} · queued: {Number((sys as any)?.rq?.queued || 0)}
-                          </div>
-                        ) : null}
-                        {x.key === "ollama" && (sys as any)?.ollama ? (
-                          <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest break-words">
-                            {String((sys as any)?.ollama?.base_url || "")} · {String((sys as any)?.ollama?.model || "")}
-                          </div>
-                        ) : null}
-                        {x.key === "hf_router" && (sys as any)?.hf_router ? (
-                          <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest break-words">
-                            {String((sys as any)?.hf_router?.base_url || "")} · {String((sys as any)?.hf_router?.model || "")}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="lg:col-span-6 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-xl">
-                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">НЕЙРОСЕТЬ</div>
-                <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">НАСТРОЙКИ</div>
-
-                <div className="mt-6 grid gap-4">
-                  <label className="flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white px-5 py-4">
-                    <div>
-                      <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">LLM PROVIDER ORDER</div>
-                      <div className="mt-1 text-[11px] font-bold text-zinc-700">например: ollama,hf_router</div>
-                    </div>
-                    <input
-                      value={llmOrderDraft}
-                      onChange={(e) => setLlmOrderDraft(e.target.value)}
-                      placeholder="ollama,hf_router"
-                      className="w-[240px] h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                    />
-                  </label>
-
-                  <div className="grid gap-3 rounded-2xl border border-zinc-200 bg-white p-5">
-                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">OLLAMA</div>
-                    <label className="flex items-center justify-between gap-4">
-                      <div className="text-[11px] font-bold text-zinc-800">ВКЛЮЧЕНО</div>
-                      <input
-                        type="checkbox"
-                        checked={ollamaEnabledDraft}
-                        onChange={(e) => setOllamaEnabledDraft(e.target.checked)}
-                        className="h-5 w-5"
-                      />
-                    </label>
-                    <div className="grid gap-2">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">BASE URL</div>
-                      <input
-                        value={ollamaBaseUrlDraft}
-                        onChange={(e) => setOllamaBaseUrlDraft(e.target.value)}
-                        placeholder="http://host.docker.internal:11434"
-                        className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                      />
-                      {llmEffective?.ollama_base_url ? (
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                          EFFECTIVE: {String(llmEffective.ollama_base_url)}
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="grid gap-2">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">MODEL</div>
-                      <input
-                        value={ollamaModelDraft}
-                        onChange={(e) => setOllamaModelDraft(e.target.value)}
-                        placeholder="gemma3:4b"
-                        className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                      />
-                      {llmEffective?.ollama_model ? (
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                          EFFECTIVE: {String(llmEffective.ollama_model)}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="grid gap-3 rounded-2xl border border-zinc-200 bg-white p-5">
-                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">HF ROUTER</div>
-                    <label className="flex items-center justify-between gap-4">
-                      <div className="text-[11px] font-bold text-zinc-800">ВКЛЮЧЕНО</div>
-                      <input
-                        type="checkbox"
-                        checked={hfEnabledDraft}
-                        onChange={(e) => setHfEnabledDraft(e.target.checked)}
-                        className="h-5 w-5"
-                      />
-                    </label>
-                    <div className="grid gap-2">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">BASE URL</div>
-                      <input
-                        value={hfBaseUrlDraft}
-                        onChange={(e) => setHfBaseUrlDraft(e.target.value)}
-                        placeholder="https://router.huggingface.co/v1"
-                        className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                      />
-                      {llmEffective?.hf_router_base_url ? (
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                          EFFECTIVE: {String(llmEffective.hf_router_base_url)}
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="grid gap-2">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">MODEL</div>
-                      <input
-                        value={hfModelDraft}
-                        onChange={(e) => setHfModelDraft(e.target.value)}
-                        placeholder="deepseek-ai/DeepSeek-R1:novita"
-                        className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                      />
-                      {llmEffective?.hf_router_model ? (
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                          EFFECTIVE: {String(llmEffective.hf_router_model)}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">HF TOKEN</div>
-                    <input
-                      value={hfTokenDraft}
-                      onChange={(e) => setHfTokenDraft(e.target.value)}
-                      placeholder="hf_..."
-                      className="mt-2 w-full h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                    />
-                    <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                      хранится в Redis (runtime), не в .env{hfTokenMasked ? ` · СЕЙЧАС: ${hfTokenMasked}` : ""}
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <Button
-                        variant="outline"
-                        className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                        disabled={diagSaving}
-                        onClick={() => void clearRuntimeHfToken()}
-                      >
-                        ОЧИСТИТЬ TOKEN
-                      </Button>
-                    </div>
-                  </div>
-
-                  <Button
-                    variant="primary"
-                    className="h-11 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={diagSaving}
-                    onClick={() => void saveRuntimeLlmSettings()}
-                  >
-                    {diagSaving ? "..." : "СОХРАНИТЬ"}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {tab === "modules" ? (
-          <div className="mt-8 space-y-6">
-            <div className="grid gap-6 lg:grid-cols-12 items-start">
-              <div className="lg:col-span-7 relative overflow-hidden rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">
-                <div className="flex flex-wrap items-center gap-3 justify-between">
-                  <div className="min-w-[220px]">
-                    <div className="text-[9px] font-black uppercase tracking-[0.28em] text-zinc-500">
-                      ИМПОРТ
-                      <span className="ml-3 text-[9px] font-black uppercase tracking-widest text-zinc-400">
-                        {importFiles.length ? `ФАЙЛОВ: ${importFiles.length}` : "ФАЙЛЫ НЕ ВЫБРАНЫ"}
-                      </span>
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <input
-                        ref={importInputRef}
-                        type="file"
-                        accept=".zip"
-                        multiple
-                        className="hidden"
-                        onChange={(e) => setImportFiles(Array.from(e.target.files || []))}
-                        disabled={importLockedInfo.locked}
-                      />
-                      <button
-                        type="button"
-                        className="h-8 rounded-xl border border-zinc-200 bg-white px-3 text-[9px] font-black uppercase tracking-widest text-zinc-800 hover:bg-zinc-50"
-                        disabled={importLockedInfo.locked}
-                        onClick={() => importInputRef.current?.click()}
-                      >
-                        Выбрать ZIP
-                      </button>
-                      {importFiles.length ? (
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                          {importFiles.length === 1 ? String(importFiles[0]?.name || "") : `Выбрано: ${importFiles.length}`}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                      {importStageLabel}
-                    </div>
-                    {importEnqueueProgress ? (
-                      <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 tabular-nums">
-                        {importEnqueueProgress.done}/{importEnqueueProgress.total}
-                      </div>
-                    ) : null}
-                    {importBatch ? (
-                      <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 tabular-nums">
-                        {importBatch.done}/{importBatch.total}
-                      </div>
-                    ) : null}
-                    <Button
-                      variant="primary"
-                      className="h-8 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                      disabled={
-                        importLockedInfo.locked || importFiles.length === 0
-                      }
-                      onClick={() => void startImport()}
-                    >
-                      {importBusy ? "..." : "ЗАПУСТИТЬ"}
-                    </Button>
-                  </div>
-                </div>
-
-                {importLockedInfo.locked ? (
-                  <div className="mt-3 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-4 py-3 text-[10px] font-black uppercase tracking-widest text-zinc-900">
-                    ИМПОРТ НЕДОСТУПЕН: {importLockedInfo.reason}
-                  </div>
-                ) : null}
-
-                <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                      ОЧЕРЕДЬ ИМПОРТА
-                      <span className="ml-3 text-[9px] font-black uppercase tracking-widest text-zinc-400">
-                        {importQueueLoading ? "..." : `ЗАДАЧ: ${importQueue.length}`}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => void loadImportQueue(20, false)}
-                        disabled={importQueueLoading}
-                      >
-                        {importQueueLoading ? "..." : "ОБНОВИТЬ"}
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => {
-                          setImportQueueView("active");
-                          setImportQueueModalOpen(true);
-                          void loadImportQueue(50, true);
-                        }}
-                      >
-                        ВСЯ ОЧЕРЕДЬ
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 grid gap-2">
-                    {(importQueue || []).slice(0, 3).map((it) => {
-                      const st = String(it.status || "").toLowerCase();
-                      const stage = String(it.stage || "").toLowerCase();
-                      const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
-                      const displayName = String(it.module_title || it.title || it.source_filename || "ZIP");
-                      const badge = (() => {
-                        if (st === "failed") return "ОШИБКА";
-                        if (stage === "canceled" || st === "canceled") return "ОТМЕНЕНО";
-                        if (st === "queued" || st === "deferred") return "В ОЧЕРЕДИ";
-                        if (st === "started") return "В РАБОТЕ";
-                        return "В РАБОТЕ";
-                      })();
-                      const stageHuman = (() => {
-                        const s = stage.trim();
-                        if (!s) return "—";
-                        if (s === "download") return "СКАЧИВАНИЕ";
-                        if (s === "extract") return "РАСПАКОВКА";
-                        if (s === "import") return "ИМПОРТ";
-                        if (s === "regen_enqueue") return "ЗАПУСК ТЕСТОВ";
-                        if (s === "cleanup") return "ОЧИСТКА";
-                        if (s === "done") return "ГОТОВО";
-                        return s.toUpperCase();
-                      })();
-                      return (
-                        <div key={it.job_id} className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                          <div className="min-w-0">
-                            <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">
-                              {displayName}
-                            </div>
-                            <div className="mt-1 flex flex-wrap items-center gap-2">
-                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                {badge}
-                              </div>
-                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                {stageHuman}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="shrink-0 flex items-center gap-2">
-                            <button
-                              type="button"
-                              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                              onClick={() => {
-                                setSelectedJobId(String(it.job_id));
-                                setJobPanelOpen(true);
-                              }}
-                            >
-                              ОТКРЫТЬ
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
-                              disabled={terminal}
-                              onClick={() => void cancelImportJob(String(it.job_id))}
-                            >
-                              ОТМЕНА
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    {!importQueueLoading && !(importQueue || []).length ? (
-                      <div className="text-[10px] font-bold text-zinc-500">—</div>
-                    ) : null}
-                  </div>
-                </div>
-
-                <Modal open={importQueueModalOpen} onClose={() => setImportQueueModalOpen(false)} title="ОЧЕРЕДЬ ИМПОРТА">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                        {importQueueView === "history" ? "ИСТОРИЯ" : "АКТИВНЫЕ"}
-                        <span className="ml-2 text-zinc-400">
-                          {importQueueLoading
-                            ? "..."
-                            : importQueueView === "history"
-                              ? importQueueHistory.length
-                              : importQueue.length}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant={importQueueView === "active" ? "primary" : "outline"}
-                          className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                          onClick={() => setImportQueueView("active")}
-                        >
-                          АКТИВНЫЕ
-                        </Button>
-                        <Button
-                          variant={importQueueView === "history" ? "primary" : "outline"}
-                          className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                          onClick={() => setImportQueueView("history")}
-                        >
-                          ИСТОРИЯ
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                          onClick={() => void loadImportQueue(50, true)}
-                        >
-                          ОБНОВИТЬ
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="max-h-[520px] overflow-auto pr-1 grid gap-2">
-                      {((importQueueView === "history" ? importQueueHistory : importQueue) || []).map((it) => {
-                        const st = String(it.status || "").toLowerCase();
-                        const stage = String(it.stage || "").toLowerCase();
-                        const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
-                        const label = String(it.module_title || it.title || it.source_filename || "ZIP");
-                        const badge = (() => {
-                          if (st === "finished") return "ГОТОВО";
-                          if (st === "failed") return "ОШИБКА";
-                          if (stage === "canceled" || st === "canceled") return "ОТМЕНЕНО";
-                          if (st === "queued" || st === "deferred") return "В ОЧЕРЕДИ";
-                          if (st === "started") return "В РАБОТЕ";
-                          return (st || "—").toUpperCase();
-                        })();
-                        return (
-                          <div key={it.job_id} className="rounded-xl border border-zinc-200 bg-white p-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{label}</div>
-                                <div className="mt-2 flex flex-wrap items-center gap-2">
-                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                    {badge}
-                                  </div>
-                                  {importQueueView === "history" ? (
-                                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                      {String(it.job_id || "").slice(0, 10)}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-
-                              <div className="shrink-0 flex items-center gap-2">
-                                <Button
-                                  variant="outline"
-                                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                                  onClick={() => {
-                                    setSelectedJobId(String(it.job_id));
-                                    setJobPanelOpen(true);
-                                    setImportQueueModalOpen(false);
-                                  }}
-                                >
-                                  ОТКРЫТЬ
-                                </Button>
-                                {st === "finished" && String((it as any)?.module_id || "").trim() ? (
-                                  <Button
-                                    variant="primary"
-                                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                                    onClick={() => openModuleFromImport(it)}
-                                  >
-                                    МОДУЛЬ
-                                  </Button>
-                                ) : null}
-                                {st === "failed" ? (
-                                  <Button
-                                    variant="outline"
-                                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                                    onClick={() => void retryImportJob(String(it.job_id))}
-                                  >
-                                    ПОВТОРИТЬ
-                                  </Button>
-                                ) : null}
-                                <Button
-                                  variant="destructive"
-                                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                                  disabled={terminal}
-                                  onClick={() => void cancelImportJob(String(it.job_id))}
-                                >
-                                  ОТМЕНА
-                                </Button>
-                              </div>
-                            </div>
-
-                            {it.error ? (
-                              <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-[10px] font-bold text-rose-800 break-words">
-                                {it.error_hint ? `${it.error_hint}\n` : ""}
-                                {it.error_code ? `CODE: ${it.error_code}\n` : ""}
-                                {it.error}
-                              </div>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </Modal>
-
-                <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                      ОЧЕРЕДЬ РЕГЕНА
-                      <span className="ml-3 text-[9px] font-black uppercase tracking-widest text-zinc-400">
-                        {regenHistoryLoading ? "..." : `ЗАДАЧ: ${regenQueue.length}`}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => void loadRegenHistory()}
-                        disabled={regenHistoryLoading}
-                      >
-                        {regenHistoryLoading ? "..." : "ОБНОВИТЬ"}
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => setRegenQueueModalOpen(true)}
-                      >
-                        ВСЯ ИСТОРИЯ
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 grid gap-2">
-                    {(regenQueue || []).slice(0, 3).map((it) => {
-                      const st = String(it.status || "").toLowerCase();
-                      const stage = String(it.stage || "").toLowerCase();
-                      const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
-                      const name = String(it.module_title || it.module_id || "МОДУЛЬ");
-                      const badge = (() => {
-                        if (st === "queued" || st === "deferred") return "В ОЧЕРЕДИ";
-                        if (st === "started") return "В РАБОТЕ";
-                        return "В РАБОТЕ";
-                      })();
-                      return (
-                        <div key={it.job_id} className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                          <div className="min-w-0">
-                            <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{name}</div>
-                            <div className="mt-1 flex flex-wrap items-center gap-2">
-                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                {badge}
-                              </div>
-                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                {stage ? stage.toUpperCase() : "—"}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="shrink-0 flex items-center gap-2">
-                            <button
-                              type="button"
-                              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                              onClick={() => {
-                                setSelectedJobId(String(it.job_id));
-                                setJobPanelOpen(true);
-                              }}
-                            >
-                              ОТКРЫТЬ
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
-                              disabled={terminal}
-                              onClick={() => void cancelImportJob(String(it.job_id))}
-                            >
-                              ОТМЕНА
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    {!regenHistoryLoading && !(regenQueue || []).length ? (
-                      <div className="text-[10px] font-bold text-zinc-500">—</div>
-                    ) : null}
-                  </div>
-                </div>
-
-                <Modal open={regenQueueModalOpen} onClose={() => setRegenQueueModalOpen(false)} title="РЕГЕНЕРАЦИЯ: ИСТОРИЯ">
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                        ИСТОРИЯ
-                        <span className="ml-2 text-zinc-400">{regenHistoryLoading ? "..." : (regenHistory || []).length}</span>
-                      </div>
-                      <Button
-                        variant="outline"
-                        className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                        onClick={() => void loadRegenHistory()}
-                      >
-                        ОБНОВИТЬ
-                      </Button>
-                    </div>
-                    <div className="max-h-[520px] overflow-auto pr-1 grid gap-2">
-                      {(regenHistory || []).map((it: any) => {
-                        const jid = String(it?.job_id || it?.id || "").trim();
-                        const st = String(it?.status || "").toLowerCase();
-                        const stage = String(it?.stage || "").toLowerCase();
-                        const name = String(it?.module_title || it?.module_id || "МОДУЛЬ");
-                        const badge = (() => {
-                          if (st === "finished") return "ГОТОВО";
-                          if (st === "failed") return "ОШИБКА";
-                          if (stage === "canceled" || st === "canceled") return "ОТМЕНЕНО";
-                          if (st === "queued" || st === "deferred") return "В ОЧЕРЕДИ";
-                          if (st === "started") return "В РАБОТЕ";
-                          return (st || "—").toUpperCase();
-                        })();
-                        const key = `${jid}:${String(it?.module_id || "").trim()}:${String(it?.created_at || "").trim()}`;
-                        return (
-                          <div key={key} className="rounded-xl border border-zinc-200 bg-white p-3">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{name}</div>
-                                <div className="mt-2 flex flex-wrap items-center gap-2">
-                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                    {badge}
-                                  </div>
-                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                    {String(jid || "").slice(0, 10)}
-                                  </div>
-                                </div>
-                              </div>
-                              <div className="shrink-0 flex items-center gap-2">
-                                <Button
-                                  variant="outline"
-                                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                                  disabled={!jid}
-                                  onClick={() => {
-                                    if (!jid) return;
-                                    setSelectedJobId(String(jid));
-                                    setJobPanelOpen(true);
-                                    setRegenQueueModalOpen(false);
-                                  }}
-                                >
-                                  ОТКРЫТЬ
-                                </Button>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </Modal>
-
-                {jobPanelOpen ? (
-                  <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ЗАДАЧА</div>
-                        <div className="mt-1 truncate text-[11px] font-black text-zinc-950">{selectedJobId || "—"}</div>
-                        {jobKind || jobModuleTitle ? (
-                          <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words">
-                            {jobKind ? `ТИП: ${String(jobKind || "").toUpperCase()}` : ""}
-                            {jobModuleTitle ? `${jobKind ? " · " : ""}${jobModuleTitle}` : ""}
-                          </div>
-                        ) : null}
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            {(jobStatus || "—").toUpperCase()}
-                          </div>
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            {(importJobStageLabel || jobStage || "—").toString()}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="shrink-0 flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                          disabled={!selectedJobId}
-                          onClick={() => void copy(selectedJobId)}
-                        >
-                          КОПИРОВАТЬ
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
-                          disabled={
-                            !selectedJobId ||
-                            cancelBusy ||
-                            ["finished", "failed"].includes(String(jobStatus || "")) ||
-                            String(jobStage || "") === "canceled"
-                          }
-                          onClick={() => void cancelCurrentJob()}
-                        >
-                          {cancelBusy ? "..." : "ОТМЕНА"}
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ДЕТАЛЬ</div>
-                        <div className="mt-2 text-[11px] font-bold text-zinc-950 break-words max-h-[84px] overflow-auto pr-1">
-                          {jobDetail || "—"}
-                        </div>
-                      </div>
-                      <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ОШИБКА</div>
-                        {jobError ? (
-                          <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-[10px] font-bold text-rose-800 break-words max-h-[84px] overflow-auto pr-1">
-                            {jobErrorHint ? `${jobErrorHint}\n` : ""}
-                            {jobErrorCode ? `CODE: ${jobErrorCode}\n` : ""}
-                            {jobError}
-                          </div>
-                        ) : (
-                          <div className="mt-2 text-[11px] font-bold text-zinc-500">—</div>
-                        )}
-                      </div>
-                    </div>
-
-                    {clientImportStage ? (
-                      <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                        CLIENT: {clientImportStage.toUpperCase()} {clientImportFileName ? `· ${clientImportFileName}` : ""}
-                        {importBatch ? ` · ${importBatch.done}/${importBatch.total}` : ""}
-                      </div>
-                    ) : null}
-
-                    {selectedAdminModule ? (
-                      <div className="mt-4 flex flex-wrap items-center gap-2">
-                        <div className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                          AI {selectedAdminModuleQuality.ai_current}
-                        </div>
-                        <div className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                          HEUR {selectedAdminModuleQuality.heur_current}
-                        </div>
-                        <div className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                          TOTAL {selectedAdminModuleQuality.total_current}
-                        </div>
-                        <div
-                          className={
-                            "rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
-                            (selectedAdminModuleQuality.fallback_current > 0
-                              ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
-                              : "border-zinc-200 bg-white text-zinc-700")
-                          }
-                        >
-                          FALLBACK {selectedAdminModuleQuality.fallback_current}
-                        </div>
-                        <div
-                          className={
-                            "rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
-                            (selectedAdminModuleQuality.needs_regen_current > 0
-                              ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
-                              : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
-                          }
-                        >
-                          NEEDS {selectedAdminModuleQuality.needs_regen_current}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="lg:col-span-5">
-                {jobPanelOpen ? (
-                  <div className="relative overflow-hidden rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">
-                    <div className="rounded-2xl border border-zinc-200 bg-white p-3">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">РЕЗУЛЬТАТ</div>
-                          <div className="mt-1 truncate text-[11px] font-black text-zinc-950">{selectedJobId || "—"}</div>
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              {(jobStatus || "—").toUpperCase()}
-                            </div>
-                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              {(importJobStageLabel || jobStage || "—").toString()}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {jobStatus === "finished" && jobResult && typeof jobResult === "object" ? (
-                        <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-4">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">СВОДКА</div>
-                            {typeof (jobResult as any)?.report?.needs_regen_db !== "undefined" ? (
-                              <div
-                                className={
-                                  "rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
-                                  (Number((jobResult as any)?.report?.needs_regen_db || 0) > 0
-                                    ? "border-[#fe9900]/30 bg-[#fe9900]/10 text-zinc-900"
-                                    : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
-                                }
-                              >
-                                ТРЕБУЕТ ДОРАБОТКИ: {Number((jobResult as any)?.report?.needs_regen_db || 0)}
-                              </div>
-                            ) : null}
-                          </div>
-                          {(jobResult as any)?.report && typeof (jobResult as any)?.report === "object" ? (
-                            <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ВОПРОСЫ</div>
-                                <div className="mt-2 text-[11px] font-bold text-zinc-900">
-                                  ВСЕГО: {Number(((jobResult as any)?.report as any)?.questions_total || 0)} · AI: {Number(((jobResult as any)?.report as any)?.questions_ai || 0)} · ФОЛБЭК: {Number(((jobResult as any)?.report as any)?.questions_fallback || 0)}
-                                </div>
-                              </div>
-                              <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">AI</div>
-                                <div className="mt-2 text-[11px] font-bold text-zinc-900">
-                                  СБОЕВ: {Number(((jobResult as any)?.report as any)?.ollama_failures || 0)} · УРОКОВ: {Number(((jobResult as any)?.report as any)?.submodules || 0)}
-                                </div>
-                              </div>
-                            </div>
-                          ) : null}
-                          <div className="mt-3 overflow-hidden rounded-xl border border-zinc-100 bg-white/50 p-3">
-                            <pre className="text-[9px] font-mono text-zinc-600 whitespace-pre-wrap break-words overflow-x-hidden max-h-[320px] overflow-y-auto">
-                              {JSON.stringify(jobResult, null, 2)}
-                            </pre>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-4">
-                          <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">RESULT</div>
-                          <div className="mt-2 text-[11px] font-bold text-zinc-500">—</div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="grid gap-6 lg:grid-cols-12 items-start">
-              <div className="lg:col-span-4 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
-                <div className="flex items-end justify-between gap-6">
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">МОДУЛИ</div>
-                    <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">СПИСОК</div>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={adminModulesLoading}
-                    onClick={() => void loadAdminModules()}
-                  >
-                    {adminModulesLoading ? "..." : "ОБНОВИТЬ"}
-                  </Button>
-                </div>
-
-                <div className="mt-5 grid gap-2 max-h-[520px] overflow-auto pr-1">
-                  {(adminModules || []).map((m) => {
-                    const active = String(m.id) === String(selectedAdminModuleId);
-                    const q = (m as any).question_quality as
-                      | {
-                          total_current: number;
-                          needs_regen_current: number;
-                          fallback_current: number;
-                          ai_current: number;
-                          heur_current: number;
-                        }
-                      | undefined;
-                    return (
-                      <button
-                        key={m.id}
-                        type="button"
-                        onClick={() => setSelectedAdminModuleId(String(m.id))}
-                        className={
-                          "w-full text-left rounded-2xl border px-4 py-3 transition " +
-                          (active ? "border-[#fe9900]/25 bg-[#fe9900]/10" : "border-zinc-200 bg-white hover:bg-zinc-50")
-                        }
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">
-                              {m.title}
-                            </div>
-                            <div className="mt-1 text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                              {m.is_active ? "АКТИВЕН" : "НЕОБХОДИМ РЕГЕН (СКРЫТ ДО ГОТОВНОСТИ)"}
-                            </div>
-                            {q ? (
-                              <div className="mt-2 flex flex-wrap items-center gap-2">
-                                <div className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                  AI {Number(q.ai_current || 0)}
-                                </div>
-                                <div className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                  HEUR {Number(q.heur_current || 0)}
-                                </div>
-                                <div className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                  TOTAL {Number(q.total_current || 0)}
-                                </div>
-                                <div
-                                  className={
-                                    "rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest " +
-                                    (Number(q.fallback_current || 0) > 0
-                                      ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
-                                      : "border-zinc-200 bg-white text-zinc-700")
-                                  }
-                                >
-                                  FALLBACK {Number(q.fallback_current || 0)}
-                                </div>
-                                <div
-                                  className={
-                                    "rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest " +
-                                    (Number(q.needs_regen_current || 0) > 0
-                                      ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
-                                      : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
-                                  }
-                                >
-                                  NEEDS {Number(q.needs_regen_current || 0)}
-                                </div>
-                              </div>
-                            ) : null}
-                          </div>
-                          <div
-                            className={
-                              "shrink-0 rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest border " +
-                              (m.is_active
-                                ? "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]"
-                                : "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]")
-                            }
-                          >
-                            {m.is_active ? "АКТИВЕН" : "РЕГЕН"}
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="lg:col-span-8 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-10 shadow-2xl shadow-zinc-950/10">
-                <div className="flex flex-wrap items-start justify-between gap-6">
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">КАРТОЧКА</div>
-                    <div className="text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none">
-                      {selectedAdminModule ? selectedAdminModule.title : selectedAdminModuleId ? "ЗАГРУЗКА..." : "ВЫБЕРИТЕ МОДУЛЬ"}
-                    </div>
-                    {selectedAdminModule ? (
-                      <div className="mt-3 flex flex-wrap items-center gap-3">
-                        <div className="text-sm text-zinc-500 font-bold uppercase tracking-widest">
-                          {selectedAdminModule.is_active ? "ВИДИМ СОТРУДНИКАМ" : "СКРЫТ"}
-                        </div>
-                        <Button
-                          variant={selectedAdminModule.is_active ? "outline" : "primary"}
-                          className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                          onClick={() => void setSelectedModuleVisibility(!selectedAdminModule.is_active)}
-                        >
-                          {selectedAdminModule.is_active ? "СКРЫТЬ" : "ПОКАЗАТЬ"}
-                        </Button>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="shrink-0 flex flex-col gap-2">
-                    <Button
-                      variant="primary"
-                      className="h-11 rounded-xl shadow-xl shadow-[#fe9900]/20"
-                      disabled={!selectedAdminModuleId || !!activeRegenByModuleId[String(selectedAdminModuleId || "")]}
-                      onClick={() => void regenerateSelectedModuleQuizzes()}
-                    >
-                      {activeRegenByModuleId[String(selectedAdminModuleId || "")]
-                        ? "РЕГЕН ЗАПУЩЕН"
-                        : "РЕГЕН ТЕСТОВ"}
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                      disabled={!selectedAdminModuleId}
-                      onClick={() => void deleteSelectedModule()}
-                    >
-                      УДАЛИТЬ
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="mt-8 grid gap-4">
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Уроки</div>
-                        <div className="mt-2 text-lg font-black text-zinc-950 uppercase">Подмодули</div>
-                      </div>
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                        {selectedAdminModuleSubs.length}
-                      </div>
-                    </div>
-
-                    <div className="mt-5">
-                      {selectedAdminModuleSubsLoading ? (
-                        <div className="py-10 text-center text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                          Загрузка...
-                        </div>
-                      ) : selectedAdminModuleSubs.length === 0 ? (
-                        <div className="py-10 text-center text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                          {selectedAdminModuleId ? "Нет уроков" : "Выберите модуль"}
-                        </div>
-                      ) : (
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          {selectedAdminModuleSubs.map((s) => {
-                            const active = String(s.id) === String(selectedSubmoduleId);
-                            return (
-                              <button
-                                key={s.id}
-                                type="button"
-                                onClick={() => {
-                                  setSelectedSubmoduleId(String(s.id));
-                                  setSelectedQuizId(String(s.quiz_id || ""));
-                                }}
-                                className={
-                                  "w-full text-left rounded-2xl border p-4 transition " +
-                                  (active
-                                    ? "border-[#fe9900]/25 bg-[#fe9900]/10"
-                                    : "border-zinc-200 bg-white hover:bg-zinc-50")
-                                }
-                              >
-                                <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">{s.title}</div>
-                                <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-zinc-600 break-all">
-                                  QUIZ: {String(s.quiz_id || "—")}
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-6">
-                    <div className="flex flex-wrap items-start justify-between gap-4">
-                      <div>
-                        <div className="text-[9px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Квизы и вопросы</div>
-                        <div className="mt-2 text-sm font-bold text-zinc-600">
-                          Выбери урок сверху — ниже появятся вопросы. Финальный тест для сотрудников собирается автоматически.
-                        </div>
-                      </div>
-                      <div className="shrink-0 flex flex-wrap items-center gap-2">
-                        <Button
-                          variant="primary"
-                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                          disabled={!selectedQuizId || newQuestionBusy}
-                          onClick={() => void createQuestionAdmin(selectedQuizId)}
-                        >
-                          {newQuestionBusy ? "..." : "ДОБАВИТЬ ВОПРОС"}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                          disabled={!selectedQuizId || questionsLoadingQuizId === String(selectedQuizId || "")}
-                          onClick={() => void loadQuestionsForQuiz(selectedQuizId)}
-                        >
-                          {questionsLoadingQuizId === String(selectedQuizId || "") ? "..." : "ОБНОВИТЬ"}
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="mt-5">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Вопросы</div>
-                      {!selectedQuizId ? (
-                        <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                          Выбери урок или финальный тест выше
-                        </div>
-                      ) : questionsLoadingQuizId === String(selectedQuizId || "") && !selectedQuizQuestions.length ? (
-                        <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                          Загрузка...
-                        </div>
-                      ) : selectedQuizQuestions.length === 0 ? (
-                        <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                          Вопросов нет
-                        </div>
-                      ) : (
-                        <div className="mt-4 grid gap-3">
-                          {selectedQuizQuestions.map((q, idx) => (
-                              <div key={String(q.id)} className="rounded-2xl border border-zinc-200 bg-white p-4">
-                                <div className="flex items-start justify-between gap-4">
-                                  <div className="min-w-0">
-                                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ВОПРОС {idx + 1}</div>
-                                    <div className="mt-1 text-[10px] font-black text-zinc-950 break-words max-w-full truncate">{String(q.id)}</div>
-                                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                                      {isQuestionDirty(q) ? (
-                                        <div className="rounded-full border border-[#fe9900]/25 bg-[#fe9900]/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-900">
-                                          ИЗМЕНЕНО
-                                        </div>
-                                      ) : (
-                                        <div className="rounded-full border border-[#284e13]/20 bg-[#284e13]/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-[#284e13]">
-                                          СОХРАНЕНО
-                                        </div>
-                                      )}
-                                      {questionSavingId === String(q.id) ? (
-                                        <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                                          СЕЙВ...
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                  <div className="shrink-0 flex items-center gap-2">
-                                    <button
-                                      type="button"
-                                      className="rounded-xl border border-[#284e13]/20 bg-[#284e13]/10 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-[#284e13] hover:bg-[#284e13]/15 disabled:opacity-50"
-                                      disabled={!isQuestionDirty(q) || questionSavingId === String(q.id)}
-                                      onClick={() => void saveQuestionDraft(String(q.id))}
-                                    >
-                                      СОХРАНИТЬ
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                                      onClick={() => void copy(String(q.id))}
-                                    >
-                                      COPY
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
-                                      onClick={() => void deleteQuestionAdmin(String(q.id))}
-                                    >
-                                      УДАЛИТЬ
-                                    </button>
-                                  </div>
-                                </div>
-
-                                <div className="mt-4">
-                                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">PROMPT</div>
-                                  <textarea
-                                    className="mt-2 w-full min-h-[90px] rounded-xl bg-white border border-zinc-200 px-4 py-3 text-[12px] font-bold text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                                    value={String(getDraftValue(q, "prompt") || "")}
-                                    disabled={questionSavingId === String(q.id)}
-                                    onChange={(e) => {
-                                      const v = e.target.value;
-                                      setQuestionDraftsById((prev) => ({
-                                        ...prev,
-                                        [String(q.id)]: { ...(prev[String(q.id)] || {}), prompt: v },
-                                      }));
-                                    }}
-                                  />
-                                </div>
-
-                                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                                  <div>
-                                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">CORRECT_ANSWER</div>
-                                    <textarea
-                                      className="mt-2 w-full min-h-[70px] rounded-xl bg-white border border-zinc-200 px-4 py-3 text-[12px] font-bold text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                                      value={String(getDraftValue(q, "correct_answer") || "")}
-                                      disabled={questionSavingId === String(q.id)}
-                                      onChange={(e) => {
-                                        const v = e.target.value;
-                                        setQuestionDraftsById((prev) => ({
-                                          ...prev,
-                                          [String(q.id)]: { ...(prev[String(q.id)] || {}), correct_answer: v },
-                                        }));
-                                      }}
-                                    />
-                                    <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                                      ФОРМАТ: A / b / ABCD / A,B,C (ЛЮБОЙ)
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">EXPLANATION</div>
-                                    <textarea
-                                      className="mt-2 w-full min-h-[70px] rounded-xl bg-white border border-zinc-200 px-4 py-3 text-[12px] font-bold text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                                      value={String(getDraftValue(q, "explanation") || "")}
-                                      disabled={questionSavingId === String(q.id)}
-                                      onChange={(e) => {
-                                        const v = e.target.value;
-                                        setQuestionDraftsById((prev) => ({
-                                          ...prev,
-                                          [String(q.id)]: { ...(prev[String(q.id)] || {}), explanation: v },
-                                        }));
-                                      }}
-                                    />
-                                  </div>
-                                </div>
-
-                                <div className="mt-4">
-                                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">CONCEPT_TAG</div>
-                                  <input
-                                    className="mt-2 h-11 w-full rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                                    value={String(getDraftValue(q, "concept_tag") || "")}
-                                    disabled={questionSavingId === String(q.id)}
-                                    onChange={(e) => {
-                                      const v = e.target.value;
-                                      setQuestionDraftsById((prev) => ({
-                                        ...prev,
-                                        [String(q.id)]: { ...(prev[String(q.id)] || {}), concept_tag: v },
-                                      }));
-                                    }}
-                                    placeholder="(опционально)"
-                                  />
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <DiagnosticsTab
+            sys={sys}
+            sysLoading={sysLoading}
+            loadSystemStatus={loadSystemStatus}
+            llmOrderDraft={llmOrderDraft}
+            setLlmOrderDraft={setLlmOrderDraft}
+            ollamaEnabledDraft={ollamaEnabledDraft}
+            setOllamaEnabledDraft={setOllamaEnabledDraft}
+            ollamaBaseUrlDraft={ollamaBaseUrlDraft}
+            setOllamaBaseUrlDraft={setOllamaBaseUrlDraft}
+            ollamaModelDraft={ollamaModelDraft}
+            setOllamaModelDraft={setOllamaModelDraft}
+            hfEnabledDraft={hfEnabledDraft}
+            setHfEnabledDraft={setHfEnabledDraft}
+            hfBaseUrlDraft={hfBaseUrlDraft}
+            setHfBaseUrlDraft={setHfBaseUrlDraft}
+            hfModelDraft={hfModelDraft}
+            setHfModelDraft={setHfModelDraft}
+            hfTokenDraft={hfTokenDraft}
+            setHfTokenDraft={setHfTokenDraft}
+            hfTokenMasked={hfTokenMasked}
+            llmEffective={llmEffective}
+            diagSaving={diagSaving}
+            clearRuntimeHfToken={clearRuntimeHfToken}
+            saveRuntimeLlmSettings={saveRuntimeLlmSettings}
+            loadRuntimeLlmSettings={loadRuntimeLlmSettings}
+          />
+        ) : tab === "import" ? (
+          <ImportTab
+            importFiles={importFiles}
+            importInputRef={importInputRef}
+            setImportFiles={setImportFiles}
+            importStageLabel={importStageLabel}
+            importEnqueueProgress={importEnqueueProgress}
+            importBatch={importBatch}
+            importBusy={importBusy}
+            startImport={startImport}
+            importQueue={importQueue}
+            importQueueLoading={importQueueLoading}
+            loadImportQueue={loadImportQueue}
+            setImportQueueView={setImportQueueView}
+            setImportQueueModalOpen={setImportQueueModalOpen}
+            importQueueModalOpen={importQueueModalOpen}
+            importQueueView={importQueueView}
+            importQueueHistory={importQueueHistory}
+            setSelectedJobId={setSelectedJobId}
+            setJobPanelOpen={setJobPanelOpen}
+            cancelImportJob={cancelImportJob}
+            retryImportJob={retryImportJob}
+            openModuleFromImport={openModuleFromImport}
+            regenQueue={regenQueue}
+            regenHistoryLoading={regenHistoryLoading}
+            loadRegenHistory={loadRegenHistory}
+            setRegenQueueModalOpen={setRegenQueueModalOpen}
+            regenQueueModalOpen={regenQueueModalOpen}
+            regenHistory={regenHistory}
+            jobPanelOpen={jobPanelOpen}
+            selectedJobId={selectedJobId}
+            jobStatus={jobStatus}
+            jobStage={jobStage}
+            importJobStageLabel={importJobStageLabel}
+            copy={copy}
+            cancelCurrentJob={cancelCurrentJob}
+            cancelBusy={cancelBusy}
+            jobKind={jobKind}
+            jobModuleTitle={jobModuleTitle}
+            jobDetail={jobDetail}
+            jobError={jobError}
+            jobErrorCode={jobErrorCode}
+            jobErrorHint={jobErrorHint}
+            clientImportStage={clientImportStage}
+            clientImportFileName={clientImportFileName}
+            selectedAdminModule={selectedAdminModule}
+            selectedAdminModuleQuality={selectedAdminModuleQuality}
+            jobResult={jobResult}
+          />
+        ) : tab === "modules" ? (
+          <ModulesTab
+            adminModules={adminModules}
+            adminModulesLoading={adminModulesLoading}
+            loadAdminModules={loadAdminModules}
+            selectedAdminModuleId={selectedAdminModuleId}
+            setSelectedAdminModuleId={setSelectedAdminModuleId}
+            selectedAdminModule={selectedAdminModule}
+            setSelectedModuleVisibility={setSelectedModuleVisibility}
+            activeRegenByModuleId={activeRegenByModuleId}
+            regenerateSelectedModuleQuizzes={regenerateSelectedModuleQuizzes}
+            deleteSelectedModule={deleteSelectedModule}
+            selectedAdminModuleSubsLoading={selectedAdminModuleSubsLoading}
+            selectedAdminModuleSubs={selectedAdminModuleSubs}
+            selectedSubmoduleId={selectedSubmoduleId}
+            setSelectedSubmoduleId={setSelectedSubmoduleId}
+            setSelectedQuizId={setSelectedQuizId}
+            selectedQuizId={selectedQuizId}
+            newQuestionBusy={newQuestionBusy}
+            createQuestionAdmin={createQuestionAdmin}
+            questionsLoadingQuizId={questionsLoadingQuizId}
+            loadQuestionsForQuiz={loadQuestionsForQuiz}
+            selectedQuizQuestions={selectedQuizQuestions}
+            isQuestionDirty={isQuestionDirty}
+            questionSavingId={questionSavingId}
+            saveQuestionDraft={saveQuestionDraft}
+            copy={copy}
+            deleteQuestionAdmin={deleteQuestionAdmin}
+            getDraftValue={getDraftValue}
+            setQuestionDraftsById={setQuestionDraftsById}
+          />
         ) : tab === "users" ? (
-          <div className="mt-8 space-y-6">
-            <div className="grid gap-6 lg:grid-cols-12 items-start">
-              <div className="lg:col-span-8 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
-                <div className="flex items-end justify-between gap-6">
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Пользователи</div>
-                    <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">Быстрая выдача доступа</div>
-                  </div>
-                  <Button
-                    className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={newUserBusy}
-                    onClick={createUser}
-                  >
-                    {newUserBusy ? "СОЗДАНИЕ..." : "СОЗДАТЬ"}
-                  </Button>
-                </div>
-
-                <div className="mt-6 grid gap-4 lg:grid-cols-12 items-end">
-                  <div className="lg:col-span-4">
-                    <div className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">Имя</div>
-                    <input
-                      className="mt-2 w-full h-12 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                      value={newUserName}
-                      onChange={(e) => setNewUserName(e.target.value)}
-                      placeholder="Например: Иван Петров"
-                    />
-                  </div>
-                  <div className="lg:col-span-4">
-                    <div className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">Должность</div>
-                    <input
-                      className="mt-2 w-full h-12 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                      value={newUserPosition}
-                      onChange={(e) => setNewUserPosition(e.target.value)}
-                      placeholder="Например: Менеджер"
-                    />
-                  </div>
-                  <div className="lg:col-span-2">
-                    <div className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">Роль</div>
-                    <select
-                      className="mt-2 w-full h-12 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
-                      value={newUserRole}
-                      onChange={(e) => setNewUserRole(e.target.value as any)}
-                    >
-                      <option value="employee">СОТРУДНИК</option>
-                      <option value="admin">АДМИН</option>
-                    </select>
-                  </div>
-                  <div className="lg:col-span-2 flex items-center justify-end">
-                    <Button
-                      variant="ghost"
-                      className="h-12 w-full rounded-xl font-black uppercase tracking-widest text-[9px]"
-                      disabled={usersLoading}
-                      onClick={() => void loadUsers()}
-                    >
-                      {usersLoading ? "ОБНОВЛЕНИЕ..." : "ОБНОВИТЬ"}
-                    </Button>
-                  </div>
-                </div>
-
-                {newUserTempPassword ? (
-                  <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
-                    <div className="flex items-center justify-between gap-4">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-[#fe9900]">Временный пароль</div>
-                      <button
-                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => void copy(newUserTempPassword)}
-                        type="button"
-                      >
-                        КОПИРОВАТЬ
-                      </button>
-                    </div>
-                    <div className="mt-2 text-sm font-black text-zinc-950 break-all">{newUserTempPassword}</div>
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="lg:col-span-4 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
-                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Подсказка</div>
-                <div className="mt-2 text-sm font-bold text-zinc-600">
-                  Админ видит всё. Сотруднику доступен только контент. После входа пользователь должен сменить временный пароль.
-                </div>
-              </div>
-            </div>
-
-            <div className="grid gap-6 lg:grid-cols-12 items-start">
-              <div className="lg:col-span-5 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
-                <div className="flex items-center justify-between gap-4">
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Сотрудники</div>
-                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">{users.length}</div>
-                </div>
-
-                <div className="mt-4">
-                  <input
-                    className="w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                    value={userQuery}
-                    onChange={(e) => setUserQuery(e.target.value)}
-                    placeholder="ПОИСК ПО ИМЕНИ"
-                  />
-                </div>
-
-                <div className="mt-4 space-y-2 max-h-[520px] overflow-auto pr-1">
-                  {(users || [])
-                    .filter((u) => {
-                      const q = (userQuery || "").trim().toLowerCase();
-                      if (!q) return true;
-                      return String(u.name || "").toLowerCase().includes(q);
-                    })
-                    .map((u) => {
-                      const active = String(u.id) === String(selectedUserId);
-                      return (
-                        <button
-                          key={u.id}
-                          type="button"
-                          onClick={() => setSelectedUserId(String(u.id))}
-                          className={
-                            "w-full text-left rounded-2xl border px-4 py-3 transition " +
-                            (active ? "border-[#fe9900]/25 bg-[#fe9900]/10" : "border-zinc-200 bg-white hover:bg-zinc-50")
-                          }
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">{u.name}</div>
-                              <div className="mt-1 truncate text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                                {u.position ? u.position : u.role}
-                              </div>
-                              <div className="mt-2 flex flex-wrap items-center gap-2">
-                                <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                  ГОТОВО {Number(u.progress_summary?.completed_count || 0)}
-                                </div>
-                                <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                  В РАБОТЕ {Number(u.progress_summary?.in_progress_count || 0)}
-                                </div>
-                                {u.progress_summary?.current ? (
-                                  <div className="min-w-0 rounded-full border border-[#fe9900]/25 bg-[#fe9900]/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-900">
-                                    <span className="truncate">{String(u.progress_summary.current.title || "").toUpperCase()}</span>
-                                    <span className="ml-2 tabular-nums">{Number(u.progress_summary.current.percent || 0)}%</span>
-                                  </div>
-                                ) : null}
-                              </div>
-                            </div>
-                            <div className="shrink-0 text-[9px] font-black uppercase tracking-widest text-zinc-500">{u.role}</div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                </div>
-              </div>
- 
-              <div className="lg:col-span-7 space-y-6">
-                <div className="relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-10 shadow-2xl shadow-zinc-950/10">
-                  <div className="flex items-start justify-between gap-6">
-                    <div>
-                      <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Карточка</div>
-                      <div className="text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none">
-                        {userDetail ? userDetail.name : selectedUserId ? "Загрузка..." : "Выберите сотрудника"}
-                      </div>
-                      {userDetail?.position ? (
-                        <div className="mt-3 text-sm text-zinc-500 font-bold uppercase tracking-widest">{userDetail.position}</div>
-                      ) : null}
-                    </div>
-
-                    <div className="shrink-0 flex flex-col gap-2">
-                      <Button
-                        variant="ghost"
-                        className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                        disabled={!selectedUserId || resetBusy}
-                        onClick={resetPassword}
-                      >
-                        {resetBusy ? "СБРОС..." : "СБРОСИТЬ ПАРОЛЬ"}
-                      </Button>
-                      <Button
-                        variant="destructive"
-                        className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                        disabled={!selectedUserId || deleteUserBusy}
-                        onClick={deleteSelectedUser}
-                      >
-                        {deleteUserBusy ? "УДАЛЕНИЕ..." : "УДАЛИТЬ"}
-                      </Button>
-                    </div>
-                  </div>
-
-                  {userDetailLoading ? (
-                    <div className="mt-8 flex items-center justify-center py-10">
-                      <div className="h-12 w-12 rounded-full border-2 border-[#fe9900]/30 border-t-[#fe9900] animate-spin" />
-                    </div>
-                  ) : userDetail ? (
-                    <div className="mt-8 grid gap-4">
-                      <div className="grid gap-3 sm:grid-cols-3">
-                        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                          <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">XP</div>
-                          <div className="mt-2 text-2xl font-black tabular-nums text-zinc-950">{String(userDetail.xp ?? 0)}</div>
-                        </div>
-                        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                          <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">УРОВЕНЬ</div>
-                          <div className="mt-2 text-2xl font-black tabular-nums text-zinc-950">{String(userDetail.level ?? 0)}</div>
-                        </div>
-                        <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                          <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">СЕРИЯ</div>
-                          <div className="mt-2 text-2xl font-black tabular-nums text-zinc-950">{String(userDetail.streak ?? 0)}</div>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                        <div className="flex flex-wrap items-center justify-between gap-4">
-                          <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Статус</div>
-                          <div
-                            className={
-                              "rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest border " +
-                              (userDetail.must_change_password
-                                ? "border-rose-500/20 bg-rose-500/10 text-rose-700"
-                                : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
-                            }
-                          >
-                            {userDetail.must_change_password ? "ТРЕБУЕТ СМЕНЫ ПАРОЛЯ" : "ПАРОЛЬ АКТУАЛЕН"}
-                          </div>
-                        </div>
-                        <div className="mt-4 grid gap-3 sm:grid-cols-5">
-                          <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Назнач.</div>
-                            <div className="mt-2 text-lg font-black tabular-nums text-zinc-950">{String(userDetail.stats.assignments_total)}</div>
-                          </div>
-                          <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Выполн.</div>
-                            <div className="mt-2 text-lg font-black tabular-nums text-zinc-950">{String(userDetail.stats.assignments_completed)}</div>
-                          </div>
-                          <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Попыток</div>
-                            <div className="mt-2 text-lg font-black tabular-nums text-zinc-950">{String(userDetail.stats.attempts_total)}</div>
-                          </div>
-                          <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Сдал</div>
-                            <div className="mt-2 text-lg font-black tabular-nums text-zinc-950">{String(userDetail.stats.attempts_passed)}</div>
-                          </div>
-                          <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Событий</div>
-                            <div className="mt-2 text-lg font-black tabular-nums text-zinc-950">{String(userDetail.stats.events_total)}</div>
-                          </div>
-                        </div>
-
-                        {/* Модули в процессе и завершенные */}
-                        <div className="mt-6 grid gap-6 sm:grid-cols-2">
-                          <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-4">В процессе</div>
-                            {userDetail.modules_progress.in_progress.length > 0 ? (
-                              <div className="space-y-3">
-                                {userDetail.modules_progress.in_progress.map((m) => (
-                                  <div key={m.module_id} className="space-y-2">
-                                    <div className="flex items-center justify-between gap-4">
-                                      <div className="text-[11px] font-black text-zinc-950 truncate">{m.title}</div>
-                                      <div className="text-[10px] font-black text-[#fe9900] tabular-nums">{m.percent}%</div>
-                                    </div>
-                                    <div className="h-1.5 w-full rounded-full bg-zinc-100 overflow-hidden">
-                                      <div 
-                                        className="h-full bg-[#fe9900] transition-all duration-500" 
-                                        style={{ width: `${m.percent}%` }}
-                                      />
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет активных модулей</div>
-                            )}
-                          </div>
-
-                          <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-4">Завершено</div>
-                            {userDetail.modules_progress.completed.length > 0 ? (
-                              <div className="space-y-2">
-                                {userDetail.modules_progress.completed.map((m) => (
-                                  <div key={m.module_id} className="flex items-center justify-between gap-4 rounded-xl bg-zinc-50 p-2 border border-zinc-100">
-                                    <div className="text-[11px] font-black text-zinc-950 truncate">{m.title}</div>
-                                    <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[#284e13] text-[8px] text-white">✓</div>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет завершенных модулей</div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Последняя история */}
-                        <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5">
-                          <div className="flex items-center justify-between mb-4">
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Последняя активность</div>
-                            <button 
-                              onClick={() => setHistoryModalOpen(true)}
-                              className="text-[9px] font-black uppercase tracking-widest text-[#fe9900] hover:underline"
-                            >
-                              ВСЯ ИСТОРИЯ
-                            </button>
-                          </div>
-                          <div className="space-y-2">
-                            {userHistoryLoading ? (
-                              <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Загрузка…</div>
-                            ) : (
-                              (userHistoryDetailed || []).slice(0, 5).map((h) => (
-                                <div key={h.id} className="flex items-center justify-between gap-4 text-[11px]">
-                                  <div className="min-w-0 flex-1">
-                                    <div className="font-bold text-zinc-900 uppercase tracking-tight truncate">{h.title}</div>
-                                    {h.subtitle ? (
-                                      <div className="mt-0.5 text-[10px] font-bold text-zinc-500 uppercase tracking-tight truncate">{h.subtitle}</div>
-                                    ) : null}
-                                  </div>
-                                  <div className="text-[10px] text-zinc-500 tabular-nums shrink-0">
-                                    {new Date(h.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                                  </div>
-                                </div>
-                              ))
-                            )}
-                            {!userHistoryLoading && (!userHistoryDetailed || userHistoryDetailed.length === 0) && (
-                              <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">История пуста</div>
-                            )}
-                          </div>
-                        </div>
-
-                        {resetTempPassword ? (
-                          <div className="mt-5 rounded-2xl border border-zinc-200 bg-white p-4">
-                            <div className="flex items-center justify-between gap-4">
-                              <div className="text-[9px] font-black uppercase tracking-widest text-[#fe9900]">Временный пароль</div>
-                              <button
-                                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                                onClick={() => void copy(resetTempPassword)}
-                                type="button"
-                              >
-                                КОПИРОВАТЬ
-                              </button>
-                            </div>
-                            <div className="mt-2 text-sm font-black text-zinc-950 break-all">{resetTempPassword}</div>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="mt-8 py-12 text-center text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                      {selectedUserId ? "НЕТ ДАННЫХ" : "ВЫБЕРИТЕ СОТРУДНИКА"}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
+          <UsersTab
+            newUserBusy={newUserBusy}
+            createUser={createUser}
+            newUserName={newUserName}
+            setNewUserName={setNewUserName}
+            newUserPosition={newUserPosition}
+            setNewUserPosition={setNewUserPosition}
+            newUserRole={newUserRole}
+            setNewUserRole={setNewUserRole}
+            usersLoading={usersLoading}
+            loadUsers={loadUsers}
+            newUserTempPassword={newUserTempPassword}
+            copy={copy}
+            users={users}
+            userQuery={userQuery}
+            setUserQuery={setUserQuery}
+            selectedUserId={selectedUserId}
+            setSelectedUserId={setSelectedUserId}
+            userDetail={userDetail}
+            userDetailLoading={userDetailLoading}
+            resetBusy={resetBusy}
+            resetPassword={resetPassword}
+            deleteUserBusy={deleteUserBusy}
+            deleteSelectedUser={deleteSelectedUser}
+            userHistoryLoading={userHistoryLoading}
+            userHistoryDetailed={userHistoryDetailed}
+            setHistoryModalOpen={setHistoryModalOpen}
+            resetTempPassword={resetTempPassword}
+          />
         ) : tab === "analytics" ? (
           <div className="mt-8 space-y-6">
             <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">

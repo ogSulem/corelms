@@ -53,6 +53,25 @@ def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
         return
 
 
+def _job_heartbeat(*, detail: str | None = None) -> None:
+    try:
+        job = get_current_job()
+    except Exception:
+        job = None
+    if job is None:
+        return
+    try:
+        now = datetime.utcnow().isoformat()
+        meta = dict(job.meta or {})
+        meta["stage_at"] = now
+        if detail is not None:
+            meta["detail"] = str(detail)
+        job.meta = meta
+        job.save_meta()
+    except Exception:
+        return
+
+
 def _is_cancel_requested() -> bool:
     try:
         job = get_current_job()
@@ -152,6 +171,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
             text = str(sub.content or "")
 
             _set_job_stage(stage="ai", detail=f"{si}/{len(subs)}: {title}")
+            _job_heartbeat(detail=f"{si}/{len(subs)}: {title}")
             ollama_debug: dict[str, object] = {}
             provider_order = None
             try:
@@ -176,6 +196,12 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
             except Exception as e:
                 qs = []
                 ollama_debug.setdefault("error", f"ai_exception:{type(e).__name__}")
+
+            try:
+                provider_used = str(ollama_debug.get("provider") or "").strip() or "unknown"
+                _job_heartbeat(detail=f"{si}/{len(subs)}: {title} · {provider_used} · {ai_elapsed_s:.1f}s")
+            except Exception:
+                pass
 
             try:
                 if ai_elapsed_s > ai_budget_seconds_per_lesson:
@@ -249,6 +275,8 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
 
             if qs:
                 for qi, q in enumerate(qs, start=1):
+                    if qi == 1 or qi % 2 == 0:
+                        _job_heartbeat(detail=f"{si}/{len(subs)}: {title} · вопрос {qi}/{len(qs)}")
                     raw_type = str(getattr(q, "type", "") or "").strip().lower()
                     if raw_type == "multi":
                         qt = QuestionType.multi
@@ -312,6 +340,8 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
             rng = random.Random(f"regen_final:{m.id}:{uuid.uuid4()}")
             final_added = 0
             for lqi, sub in enumerate(subs, start=1):
+                if lqi == 1 or lqi % 2 == 0:
+                    _job_heartbeat(detail=f"final quiz · lesson {lqi}/{len(subs)}")
                 try:
                     items = (
                         db.scalars(

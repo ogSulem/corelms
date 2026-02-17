@@ -67,6 +67,25 @@ def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
         return
 
 
+def _job_heartbeat(*, detail: str | None = None) -> None:
+    try:
+        job = get_current_job()
+    except Exception:
+        job = None
+    if job is None:
+        return
+    try:
+        now = datetime.utcnow().isoformat()
+        meta = dict(job.meta or {})
+        meta["stage_at"] = now
+        if detail is not None:
+            meta["detail"] = str(detail)
+        job.meta = meta
+        job.save_meta()
+    except Exception:
+        return
+
+
 def _is_cancel_requested() -> bool:
     try:
         job = get_current_job()
@@ -244,6 +263,7 @@ def import_module_zip_job(
             try:
                 while True:
                     _cancel_checkpoint(s3_object_key=s3_object_key, stage="download")
+                    _job_heartbeat(detail=f"download: {s3_object_key}")
                     chunk = body.read(1024 * 1024) if body is not None else b""
                     if not chunk:
                         break
@@ -271,7 +291,9 @@ def import_module_zip_job(
         with zipfile.ZipFile(str(zip_path), "r") as zf:
             print(f"import_module_zip_job: extracting zip to {str(base)}", flush=True)
             log.info("import_module_zip_job: extracting zip to %s", str(base))
+            _job_heartbeat(detail="extract: start")
             _safe_extract_zip(zf=zf, dest=base)
+            _job_heartbeat(detail="extract: done")
         print("import_module_zip_job: extract done", flush=True)
         log.info("import_module_zip_job: extract done")
 
@@ -293,6 +315,7 @@ def import_module_zip_job(
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="import")
             print("import_module_zip_job: importing to DB", flush=True)
             log.info("import_module_zip_job: importing to DB")
+            _job_heartbeat(detail="import: start")
             mid = import_module_from_dir(
                 db=db,
                 module_dir=module_dir,
@@ -300,6 +323,7 @@ def import_module_zip_job(
                 report_out=report,
                 generate_questions=False,
             )
+            _job_heartbeat(detail="import: done")
 
             _set_job_stage(stage="commit")
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="commit")
