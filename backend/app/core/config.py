@@ -44,11 +44,23 @@ class Settings(BaseSettings):
     uploads_admin_ttl_hours: int = Field(default=6, validation_alias="UPLOADS_ADMIN_TTL_HOURS")
     uploads_admin_cleanup_interval_minutes: int = Field(default=15, validation_alias="UPLOADS_ADMIN_CLEANUP_INTERVAL_MINUTES")
 
+    openrouter_enabled: bool = Field(default=False, validation_alias="OPENROUTER_ENABLED")
+    openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1", validation_alias="OPENROUTER_BASE_URL")
+    openrouter_model: str = Field(default="openai/gpt-4o-mini", validation_alias="OPENROUTER_MODEL")
+    openrouter_api_key: str | None = Field(default=None, validation_alias="OPENROUTER_API_KEY")
+    openrouter_http_referer: str | None = Field(default=None, validation_alias="OPENROUTER_HTTP_REFERER")
+    openrouter_app_title: str | None = Field(default=None, validation_alias="OPENROUTER_APP_TITLE")
+
+    openrouter_timeout_connect: float = Field(default=3.0, validation_alias="OPENROUTER_TIMEOUT_CONNECT")
+    openrouter_timeout_read: float = Field(default=15.0, validation_alias="OPENROUTER_TIMEOUT_READ")
+    openrouter_timeout_write: float = Field(default=15.0, validation_alias="OPENROUTER_TIMEOUT_WRITE")
+    openrouter_temperature: float = Field(default=0.2, validation_alias="OPENROUTER_TEMPERATURE")
+
     ollama_enabled: bool = Field(default=False, validation_alias="OLLAMA_ENABLED")
     ollama_base_url: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="gemma3:4b", validation_alias="OLLAMA_MODEL")
 
-    llm_provider_order: str = Field(default="hf_router,ollama", validation_alias="LLM_PROVIDER_ORDER")
+    llm_provider_order: str = Field(default="openrouter,hf_router,ollama", validation_alias="LLM_PROVIDER_ORDER")
 
     hf_router_enabled: bool = Field(default=True, validation_alias="HF_ROUTER_ENABLED")
     hf_router_base_url: str = Field(default="https://router.huggingface.co/v1", validation_alias="HF_ROUTER_BASE_URL")
@@ -89,3 +101,8 @@ if _is_prod():
         raise RuntimeError("S3_ACCESS_KEY_ID must be set to a non-default value in production")
     if (settings.s3_secret_access_key or "").strip() in {"minio12345", "change-me", "your-secret-key"}:
         raise RuntimeError("S3_SECRET_ACCESS_KEY must be set to a non-default value in production")
+
+    order = [x.strip().lower() for x in str(settings.llm_provider_order or "").split(",") if x.strip()]
+    if settings.openrouter_enabled or (order and order[0] == "openrouter"):
+        if not (settings.openrouter_api_key or "").strip():
+            raise RuntimeError("OPENROUTER_API_KEY must be set when OpenRouter is enabled/selected in production")

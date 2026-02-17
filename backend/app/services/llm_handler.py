@@ -7,6 +7,8 @@ from app.core.redis_client import get_redis
 from app.services.hf_router import generate_quiz_questions_hf_router
 from app.services.ollama import generate_quiz_questions_ollama, ollama_chat_preflight, ollama_healthcheck
 from app.services.hf_router_health import hf_router_healthcheck
+from app.services.openrouter import generate_quiz_questions_openrouter
+from app.services.openrouter_health import openrouter_healthcheck
 
 
 def generate_quiz_questions_ai(
@@ -49,18 +51,41 @@ def generate_quiz_questions_ai(
     runtime_hf_base_url = (runtime.get("hf_router_base_url") or "").strip() or None
     runtime_hf_model = (runtime.get("hf_router_model") or "").strip() or None
 
+    runtime_or_enabled = (runtime.get("openrouter_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+    runtime_or_base_url = (runtime.get("openrouter_base_url") or "").strip() or None
+    runtime_or_model = (runtime.get("openrouter_model") or "").strip() or None
+
     if provider_order is not None:
         order = [str(s).strip().lower() for s in (provider_order or []) if str(s).strip()]
     else:
         order_src = runtime_order if runtime_order else str(settings.llm_provider_order or "")
         order = [s.strip().lower() for s in str(order_src).split(",") if s.strip()]
     if not order:
-        order = ["ollama", "hf_router"]
+        order = ["openrouter", "hf_router", "ollama"]
 
     errors: list[str] = []
 
     for provider in order:
         try:
+            if provider in {"openrouter", "or"}:
+                if not (bool(settings.openrouter_enabled) or bool(runtime_or_enabled)):
+                    continue
+                local_debug = {}
+                out = generate_quiz_questions_openrouter(
+                    title=title,
+                    text=text,
+                    n_questions=n_questions,
+                    debug_out=local_debug,
+                    base_url=runtime_or_base_url,
+                    model=runtime_or_model,
+                )
+                if out:
+                    _set_debug("provider", "openrouter")
+                    _set_debug("provider_error", None)
+                    return out
+                errors.append("openrouter:" + str(local_debug.get("error") or "empty"))
+                continue
+
             if provider == "ollama":
                 eff_ollama_enabled = bool(settings.ollama_enabled) if runtime_ollama_enabled is None else bool(runtime_ollama_enabled)
                 if not eff_ollama_enabled:
@@ -134,22 +159,29 @@ def choose_llm_provider_order_fast(*, ttl_seconds: int = 300, use_cache: bool = 
 
     ok_ollama, _ = (False, None)
     ok_hf, _ = (False, None)
+    ok_or, _ = (False, None)
     try:
         # Prefer a real /api/chat preflight so we don't pick Ollama when it is reachable but times out on chat.
         ok_ollama, _ = ollama_chat_preflight(enabled=bool(settings.ollama_enabled), timeout_s=2.2)
     except Exception:
         ok_ollama = False
     try:
+        ok_or, _ = openrouter_healthcheck()
+    except Exception:
+        ok_or = False
+    try:
         ok_hf, _ = hf_router_healthcheck()
     except Exception:
         ok_hf = False
 
+    if ok_or:
+        order.append("openrouter")
     if ok_ollama:
         order.append("ollama")
     if ok_hf:
         order.append("hf_router")
     if not order:
-        order = ["ollama", "hf_router"]
+        order = ["openrouter", "hf_router", "ollama"]
 
     if use_cache:
         try:
