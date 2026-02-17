@@ -215,6 +215,17 @@ def import_module_from_dir(
     log.info("module_importer: created module id=%s title=%s", str(m.id), module_title)
     print(f"module_importer: module created id={m.id} title={module_title}", flush=True)
 
+    # Normalize module_dir if the ZIP has an extra nesting level.
+    for _ in range(2):
+        lesson_dirs_probe = [d for d in module_dir.iterdir() if d.is_dir() and d.name not in {"_module", "__MACOSX"}]
+        if lesson_dirs_probe:
+            break
+        nested = [d for d in module_dir.iterdir() if d.is_dir() and d.name not in {"__MACOSX"}]
+        if len(nested) == 1:
+            module_dir = nested[0]
+            continue
+        break
+
     module_material_dir = module_dir / "_module"
     if module_material_dir.exists() and module_material_dir.is_dir():
         for fp in sorted([p for p in module_material_dir.iterdir() if p.is_file() and not p.name.startswith("~$")]):
@@ -237,10 +248,16 @@ def import_module_from_dir(
             if report is not None:
                 report["module_assets"] = int(report.get("module_assets") or 0) + 1
 
-    lesson_dirs = sorted(
-        [d for d in module_dir.iterdir() if d.is_dir() and d.name != "_module"],
-        key=lambda x: _parse_order(x.name, 999),
-    )
+    lesson_candidates = [d for d in module_dir.iterdir() if d.is_dir() and d.name not in {"_module", "__MACOSX"}]
+    if not lesson_candidates:
+        for d in sorted([p for p in module_dir.iterdir() if p.is_dir() and p.name not in {"_module", "__MACOSX"}]):
+            inner = [x for x in d.iterdir() if x.is_dir() and x.name not in {"_module", "__MACOSX"}]
+            if inner:
+                module_dir = d
+                lesson_candidates = inner
+                break
+
+    lesson_dirs = sorted(lesson_candidates, key=lambda x: _parse_order(x.name, 999))
 
     for i, ld in enumerate(lesson_dirs, start=1):
         title = _guess_title(ld.name)
@@ -274,7 +291,7 @@ def import_module_from_dir(
         # Phase 2: if generate_questions=True (background regen), call AI/Heuristic.
         if generate_questions:
             qs = []
-            if settings.ollama_enabled or settings.hf_router_enabled:
+            if settings.ollama_enabled or settings.hf_router_enabled or settings.openrouter_enabled:
                 provider_order = choose_llm_provider_order_fast(ttl_seconds=300, use_cache=False)
                 qs = generate_quiz_questions_ai(
                     title=title,
