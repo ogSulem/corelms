@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +18,22 @@ class Settings(BaseSettings):
         default="redis://localhost:6379/0",
         validation_alias="REDIS_URL",
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def _normalize_database_url(cls, v: object) -> object:
+        if not isinstance(v, str):
+            return v
+        s = v.strip()
+        if not s:
+            return v
+        if s.startswith("postgres://"):
+            # Heroku-style
+            s = "postgresql://" + s[len("postgres://") :]
+        if s.startswith("postgresql://") and "+" not in s.split("://", 1)[0]:
+            # Force psycopg v3 driver to avoid implicit psycopg2 dependency.
+            s = "postgresql+psycopg://" + s[len("postgresql://") :]
+        return s
 
     jwt_secret_key: str = Field(default="change-me", validation_alias="JWT_SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", validation_alias="JWT_ALGORITHM")
