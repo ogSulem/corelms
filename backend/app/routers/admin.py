@@ -572,6 +572,7 @@ class AdminPresignImportZipResponse(BaseModel):
 def presign_import_zip(
     request: Request,
     body: AdminPresignImportZipRequest,
+    db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
     __: object = rate_limit(key_prefix="admin_presign_import_zip", limit=60, window_seconds=60),
 ):
@@ -581,15 +582,19 @@ def presign_import_zip(
 
     # Keep the uploaded zip in the same prefix used by legacy flow.
     object_key = f"uploads/admin/{uuid.uuid4()}.zip"
-    url = presign_put(object_key=object_key, content_type=(body.content_type or "application/zip"))
+    try:
+        url = presign_put(object_key=object_key, content_type=(body.content_type or "application/zip"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="failed to presign upload url") from e
 
     audit_log(
-        db=None,
+        db=db,
         request=request,
         event_type="admin_presign_import_module_zip",
         actor_user_id=None,
         meta={"object_key": object_key, "filename": fn},
     )
+    db.commit()
 
     return {"ok": True, "object_key": object_key, "upload_url": url}
 
