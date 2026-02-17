@@ -8,7 +8,7 @@ import secrets
 import string
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from passlib.context import CryptContext
 from sqlalchemy import and_, bindparam, case, delete, func, or_, select, text
@@ -63,7 +63,7 @@ from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job
 from app.services.llm_handler import generate_quiz_questions_ai
 from app.services.ollama import generate_quiz_questions_ollama
 from app.services.hf_router import generate_quiz_questions_hf_router
-from app.services.storage import ensure_bucket_exists, get_s3_client
+from app.services.storage import ensure_bucket_exists, get_s3_client, presign_put
 from app.services.ollama import ollama_healthcheck
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -552,6 +552,121 @@ async def import_module_zip(
         meta={"job_id": job.id, "object_key": object_key, "title": effective_title},
     )
 
+    db.commit()
+
+    return {"ok": True, "job_id": job.id, "object_key": object_key}
+
+
+class AdminPresignImportZipRequest(BaseModel):
+    filename: str
+    content_type: str | None = None
+
+
+class AdminPresignImportZipResponse(BaseModel):
+    ok: bool = True
+    object_key: str
+    upload_url: str
+
+
+@router.post("/modules/presign-import-zip", response_model=AdminPresignImportZipResponse)
+def presign_import_zip(
+    request: Request,
+    body: AdminPresignImportZipRequest,
+    _: User = Depends(require_roles(UserRole.admin)),
+    __: object = rate_limit(key_prefix="admin_presign_import_zip", limit=60, window_seconds=60),
+):
+    fn = str(body.filename or "").strip()
+    if not fn.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="only .zip is supported")
+
+    # Keep the uploaded zip in the same prefix used by legacy flow.
+    object_key = f"uploads/admin/{uuid.uuid4()}.zip"
+    url = presign_put(object_key=object_key, content_type=(body.content_type or "application/zip"))
+
+    audit_log(
+        db=None,
+        request=request,
+        event_type="admin_presign_import_module_zip",
+        actor_user_id=None,
+        meta={"object_key": object_key, "filename": fn},
+    )
+
+    return {"ok": True, "object_key": object_key, "upload_url": url}
+
+
+class AdminEnqueueImportZipRequest(BaseModel):
+    object_key: str
+    title: str | None = None
+    source_filename: str | None = None
+
+
+@router.post("/modules/enqueue-import-zip")
+def enqueue_import_zip(
+    request: Request,
+    body: AdminEnqueueImportZipRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_enqueue_import_zip", limit=30, window_seconds=60),
+):
+    object_key = str(body.object_key or "").strip()
+    if not object_key:
+        raise HTTPException(status_code=400, detail="missing object_key")
+
+    title = (str(body.title or "").strip() or None)
+    if title:
+        exists = (
+            db.scalar(select(func.count()).select_from(Module).where(func.lower(Module.title) == func.lower(title))) or 0
+        )
+        if int(exists) > 0:
+            raise HTTPException(status_code=409, detail="module title already exists")
+
+    # Optional guard: ensure object exists before enqueue.
+    try:
+        ensure_bucket_exists()
+        s3 = get_s3_client()
+        s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+    except Exception:
+        raise HTTPException(status_code=404, detail="source zip not found in s3")
+
+    try:
+        q = get_queue("corelms")
+        job = q.enqueue(
+            import_module_zip_job,
+            s3_object_key=object_key,
+            title=title,
+            source_filename=(str(body.source_filename or "").strip() or None),
+            actor_user_id=str(current.id),
+            job_timeout=60 * 60 * 3,
+            result_ttl=60 * 60 * 24,
+            failure_ttl=60 * 60 * 24,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="failed to enqueue import job") from e
+
+    try:
+        r = get_redis()
+        meta = {
+            "job_id": job.id,
+            "object_key": object_key,
+            "title": title or "",
+            "created_at": datetime.utcnow().isoformat(),
+            "actor_user_id": str(current.id),
+            "source_filename": str(body.source_filename or "")[:200],
+            "source": "direct_s3",
+        }
+        r.lpush("admin:import_jobs", json.dumps(meta, ensure_ascii=False))
+        r.ltrim("admin:import_jobs", 0, 49)
+        r.expire("admin:import_jobs", 60 * 60 * 24 * 30)
+    except Exception:
+        pass
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_enqueue_import_module_zip",
+        actor_user_id=current.id,
+        meta={"job_id": job.id, "object_key": object_key, "title": title or ""},
+    )
     db.commit()
 
     return {"ok": True, "job_id": job.id, "object_key": object_key}

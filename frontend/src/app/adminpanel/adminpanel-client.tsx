@@ -1116,11 +1116,50 @@ export default function AdminPanelClient() {
         let res: { ok: boolean; job_id: string } | null = null;
         try {
           const qs = title ? `?title=${encodeURIComponent(title)}` : "";
-          res = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/import-zip${qs}` as any, {
-            method: "POST",
-            body: form,
+          // Ideal: upload large ZIPs directly to S3 to avoid Railway edge/proxy timeouts.
+          // 1) presign
+          const presign = await apiFetch<{ ok: boolean; object_key: string; upload_url: string }>(
+            `/admin/modules/presign-import-zip` as any,
+            {
+              method: "POST",
+              body: JSON.stringify({ filename: String(f?.name || "module.zip"), content_type: String((f as any)?.type || "application/zip") }),
+            }
+          );
+
+          // 2) upload to S3 (direct)
+          const up = await fetch(String(presign?.upload_url || ""), {
+            method: "PUT",
+            body: f,
+            headers: {
+              "Content-Type": String((f as any)?.type || "application/zip"),
+            },
           });
+          if (!up.ok) {
+            const t = await up.text().catch(() => "");
+            throw new Error(`S3 upload failed: HTTP ${up.status}${t ? ` ${t.slice(0, 200)}` : ""}`);
+          }
+
+          // 3) enqueue import job
+          const enq = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/enqueue-import-zip${qs}` as any, {
+            method: "POST",
+            body: JSON.stringify({
+              object_key: String(presign?.object_key || ""),
+              title: title || null,
+              source_filename: String(f?.name || ""),
+            }),
+          });
+          res = { ok: true, job_id: String((enq as any)?.job_id || "") };
         } catch (e) {
+          // Fallback: legacy flow (works for small zips)
+          try {
+            const qs = title ? `?title=${encodeURIComponent(title)}` : "";
+            res = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/import-zip${qs}` as any, {
+              method: "POST",
+              body: form,
+            });
+          } catch {
+            // keep original handling below
+          }
           const msg = e instanceof Error ? e.message : String(e);
           if ((msg || "").toLowerCase().includes("409") || (msg || "").toLowerCase().includes("already exists")) {
             window.dispatchEvent(
@@ -1139,7 +1178,11 @@ export default function AdminPanelClient() {
             await new Promise<void>((resolve) => setTimeout(() => resolve(), 150));
             continue;
           }
-          throw e;
+          if (res && String((res as any).job_id || "").trim()) {
+            // If fallback succeeded, continue the flow.
+          } else {
+            throw e;
+          }
         }
 
         lastJobId = String(res?.job_id || "");
