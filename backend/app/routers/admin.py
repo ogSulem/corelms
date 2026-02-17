@@ -557,6 +557,95 @@ async def import_module_zip(
     return {"ok": True, "job_id": job.id, "object_key": object_key}
 
 
+class AdminBucketCorsRule(BaseModel):
+    allowed_origins: list[str]
+    allowed_methods: list[str]
+    allowed_headers: list[str] | None = None
+    expose_headers: list[str] | None = None
+    max_age_seconds: int | None = None
+
+
+class AdminBucketCorsRequest(BaseModel):
+    rules: list[AdminBucketCorsRule]
+
+
+@router.get("/storage/bucket-cors")
+def get_bucket_cors(
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+    try:
+        cfg = s3.get_bucket_cors(Bucket=settings.s3_bucket) or {}
+    except Exception as e:
+        # Some providers return NoSuchCORSConfiguration
+        return {"ok": True, "bucket": settings.s3_bucket, "rules": [], "detail": str(e)[:300]}
+
+    rules = cfg.get("CORSRules") or []
+    out: list[dict[str, object]] = []
+    for r in rules:
+        if not isinstance(r, dict):
+            continue
+        out.append(
+            {
+                "allowed_origins": list(r.get("AllowedOrigins") or []),
+                "allowed_methods": list(r.get("AllowedMethods") or []),
+                "allowed_headers": list(r.get("AllowedHeaders") or []),
+                "expose_headers": list(r.get("ExposeHeaders") or []),
+                "max_age_seconds": r.get("MaxAgeSeconds"),
+            }
+        )
+    return {"ok": True, "bucket": settings.s3_bucket, "rules": out}
+
+
+@router.post("/storage/bucket-cors")
+def set_bucket_cors(
+    request: Request,
+    body: AdminBucketCorsRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_set_bucket_cors", limit=10, window_seconds=60),
+):
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+
+    cors_rules: list[dict[str, object]] = []
+    for r in body.rules or []:
+        origins = [str(x or "").strip() for x in (r.allowed_origins or []) if str(x or "").strip()]
+        methods = [str(x or "").strip().upper() for x in (r.allowed_methods or []) if str(x or "").strip()]
+        if not origins or not methods:
+            continue
+        rule: dict[str, object] = {
+            "AllowedOrigins": origins,
+            "AllowedMethods": methods,
+            "AllowedHeaders": ["*"] if not r.allowed_headers else [str(x) for x in (r.allowed_headers or [])],
+        }
+        if r.expose_headers:
+            rule["ExposeHeaders"] = [str(x) for x in (r.expose_headers or [])]
+        if r.max_age_seconds is not None:
+            rule["MaxAgeSeconds"] = int(r.max_age_seconds)
+        cors_rules.append(rule)
+
+    if not cors_rules:
+        raise HTTPException(status_code=400, detail="no valid cors rules")
+
+    try:
+        s3.put_bucket_cors(Bucket=settings.s3_bucket, CORSConfiguration={"CORSRules": cors_rules})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="failed to set bucket cors") from e
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_set_bucket_cors",
+        actor_user_id=current.id,
+        meta={"bucket": settings.s3_bucket, "rules": cors_rules},
+    )
+    db.commit()
+
+    return {"ok": True, "bucket": settings.s3_bucket, "rules": cors_rules}
+
+
 class AdminPresignImportZipRequest(BaseModel):
     filename: str
     content_type: str | None = None
