@@ -17,6 +17,9 @@ export const Button = React.forwardRef<
   ButtonProps
 >(({ variant = "primary", size = "default", className, asChild = false, ...props }, ref) => {
   const Comp = asChild ? Slot : "button";
+  const effectiveType = (!asChild && !(props as any).type ? "button" : (props as any).type) as
+    | React.ButtonHTMLAttributes<HTMLButtonElement>["type"]
+    | undefined;
   
   const variants: Record<ButtonVariant, string> = {
     primary:
@@ -49,6 +52,7 @@ export const Button = React.forwardRef<
         className
       )}
       ref={ref}
+      {...(!asChild ? { type: effectiveType } : {})}
       {...props}
     />
   );
