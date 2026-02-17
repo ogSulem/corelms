@@ -99,7 +99,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
 
         report: dict[str, object] = {
             "ok": True,
-            "module_id": str(m.id),
+            "module_id": str(module_id),
             "module_title": str(m.title),
             "lessons": int(len(subs)),
             "questions_total": 0,
@@ -108,7 +108,9 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
             "questions_fallback": 0,
             "ollama_failures": 0,
             "hf_router_failures": 0,
+            "openrouter_failures": 0,
             "needs_regen": 0,
+            "needs_regen_db": 0,
         }
 
         # Product rule: each lesson must have exactly 5 questions.
@@ -139,12 +141,21 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
             if not qs:
                 reason = str(ollama_debug.get("provider_error") or ollama_debug.get("error") or "unknown")
                 perr = str(ollama_debug.get("provider_error") or "")
+                # Keep last AI error visible in report for debugging.
+                report["last_ai_error"] = reason
+                report["last_ai_provider_error"] = perr
                 if "ollama:" in perr or perr.startswith("ollama"):
                     report["ollama_failures"] = int(report.get("ollama_failures") or 0) + 1
                 if "hf_router:" in perr or perr.startswith("hf_router") or perr.startswith("hf"):
                     report["hf_router_failures"] = int(report.get("hf_router_failures") or 0) + 1
+                if "openrouter:" in perr or perr.startswith("openrouter") or perr.startswith("or"):
+                    report["openrouter_failures"] = int(report.get("openrouter_failures") or 0) + 1
                 provider_used = str(ollama_debug.get("provider") or "").strip() or "unknown"
                 _set_job_stage(stage="fallback", detail=f"{si}/{len(subs)}: {provider_used}: {reason}")
+                try:
+                    log.warning("regen ai empty module_id=%s sub_id=%s provider_used=%s reason=%s perr=%s", str(module_id), str(sub.id), provider_used, reason, perr)
+                except Exception:
+                    pass
                 ai_failed = True
                 report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
 
