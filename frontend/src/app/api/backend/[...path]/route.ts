@@ -51,10 +51,27 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   const responseHeaders = new Headers(res.headers);
   responseHeaders.delete("set-cookie");
 
-  return new NextResponse(res.body, {
+  const out = new NextResponse(res.body, {
     status: res.status,
     headers: responseHeaders,
   });
+
+  if (res.status === 401) {
+    const isProd = process.env.NODE_ENV === "production";
+    out.cookies.set({
+      name: "core_token",
+      value: "",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProd,
+      path: "/",
+      maxAge: 0,
+      expires: new Date(0),
+      priority: "high",
+    });
+  }
+
+  return out;
 }
 
 export async function GET(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {

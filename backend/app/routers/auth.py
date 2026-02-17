@@ -24,6 +24,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    expires_in: int | None = None
 
 
 class MeResponse(BaseModel):
@@ -114,7 +115,16 @@ def register(
     audit_log(db=db, request=request, event_type="auth_register_success", actor_user_id=user.id, target_user_id=user.id)
     db.commit()
 
-    return TokenResponse(access_token=_create_access_token(user_id=str(user.id), role=_public_role(user.role)))
+    expires_in = None
+    try:
+        expires_in = int(settings.jwt_access_token_minutes) * 60
+    except Exception:
+        expires_in = None
+
+    return TokenResponse(
+        access_token=_create_access_token(user_id=str(user.id), role=_public_role(user.role)),
+        expires_in=expires_in,
+    )
 
 
 @router.post("/token", response_model=TokenResponse)

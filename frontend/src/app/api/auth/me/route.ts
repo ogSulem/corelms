@@ -25,7 +25,20 @@ export async function GET() {
   }
 
   if (!res.ok) {
-    return NextResponse.json({ authenticated: false });
+    const out = NextResponse.json({ authenticated: false });
+    const isProd = process.env.NODE_ENV === "production";
+    out.cookies.set({
+      name: "core_token",
+      value: "",
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProd,
+      path: "/",
+      maxAge: 0,
+      expires: new Date(0),
+      priority: "high",
+    });
+    return out;
   }
 
   const user = (await res.json()) as {

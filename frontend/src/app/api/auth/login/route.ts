@@ -45,14 +45,13 @@ export async function POST(req: Request) {
     );
   }
 
-  const data = (await res.json()) as { access_token: string };
+  const data = (await res.json()) as { access_token: string; expires_in?: number | null };
 
   const response = NextResponse.json({ ok: true });
   const isProd = process.env.NODE_ENV === "production";
   const configuredMaxAge = Number.parseInt(process.env.CORE_TOKEN_MAX_AGE_SECONDS || "3600", 10) || 3600;
-  const jwtMinutesRaw = Number.parseInt(process.env.JWT_ACCESS_TOKEN_MINUTES || "", 10);
-  const jwtMaxAge = Number.isFinite(jwtMinutesRaw) && jwtMinutesRaw > 0 ? jwtMinutesRaw * 60 : null;
-  const maxAge = jwtMaxAge ? Math.min(configuredMaxAge, jwtMaxAge) : configuredMaxAge;
+  const upstreamExpiresIn = Number.isFinite(Number(data.expires_in)) ? Number(data.expires_in) : null;
+  const maxAge = upstreamExpiresIn ? Math.min(configuredMaxAge, upstreamExpiresIn) : configuredMaxAge;
   const expires = new Date(Date.now() + maxAge * 1000);
   response.cookies.set({
     name: "core_token",
