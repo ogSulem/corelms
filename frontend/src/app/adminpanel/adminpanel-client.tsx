@@ -311,6 +311,9 @@ export default function AdminPanelClient() {
 
   const importBatchJobIdsRef = useRef<string[]>([]);
   const importCancelRequestedRef = useRef(false);
+  const importUploadAbortRef = useRef<AbortController | null>(null);
+  const importUploadObjectKeyRef = useRef<string>("");
+  const importUploadFilenameRef = useRef<string>("");
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [clientImportStage, setClientImportStage] = useState<string>("");
@@ -562,6 +565,27 @@ export default function AdminPanelClient() {
       setCancelBusy(true);
       importCancelRequestedRef.current = true;
       setClientImportStage("canceled");
+
+      try {
+        if (importUploadAbortRef.current) {
+          importUploadAbortRef.current.abort();
+        }
+      } catch {
+        // ignore
+      }
+
+      try {
+        const objKey = String(importUploadObjectKeyRef.current || "").trim();
+        const fn = String(importUploadFilenameRef.current || "").trim();
+        if (objKey) {
+          await apiFetch<any>(`/admin/modules/abort-import-zip` as any, {
+            method: "POST",
+            body: JSON.stringify({ object_key: objKey, filename: fn || null }),
+          } as any);
+        }
+      } catch {
+        // ignore
+      }
 
       const ids = (importBatchJobIdsRef.current.length ? importBatchJobIdsRef.current : [selectedJobId])
         .map((x) => String(x || "").trim())
@@ -1193,6 +1217,10 @@ export default function AdminPanelClient() {
         setClientImportStage("upload");
         setClientImportFileName(String(f?.name || ""));
 
+        importUploadFilenameRef.current = String(f?.name || "");
+        importUploadObjectKeyRef.current = "";
+        importUploadAbortRef.current = null;
+
         const title = deriveTitleFromZipName(String(f?.name || ""));
 
         if (title && existingTitlesLower.has(String(title).trim().toLowerCase())) {
@@ -1230,6 +1258,20 @@ export default function AdminPanelClient() {
             }
           );
 
+          if (importCancelRequestedRef.current) {
+            try {
+              await apiFetch<any>(`/admin/modules/abort-import-zip` as any, {
+                method: "POST",
+                body: JSON.stringify({ object_key: String((presign as any)?.object_key || ""), filename: String(f?.name || "") }),
+              } as any);
+            } catch {
+              // ignore
+            }
+            break;
+          }
+
+          importUploadObjectKeyRef.current = String((presign as any)?.object_key || "");
+
           if ((presign as any)?.reused) {
             window.dispatchEvent(
               new CustomEvent("corelms:toast", {
@@ -1242,9 +1284,12 @@ export default function AdminPanelClient() {
           } else {
             // 2) upload to S3 (direct)
             setClientImportStage("upload_s3");
+            const ac = new AbortController();
+            importUploadAbortRef.current = ac;
             const up = await fetch(String(presign?.upload_url || ""), {
               method: "PUT",
               body: f,
+              signal: ac.signal,
               // Do not set Content-Type explicitly: it can break some S3-compatible presigned URLs
               // (SignatureDoesNotMatch) and also triggers stricter CORS.
             });
@@ -1252,6 +1297,10 @@ export default function AdminPanelClient() {
               const t = await up.text().catch(() => "");
               throw new Error(`S3 upload failed: HTTP ${up.status}${t ? ` ${t.slice(0, 200)}` : ""}`);
             }
+          }
+
+          if (importCancelRequestedRef.current) {
+            break;
           }
 
           // 3) enqueue import job

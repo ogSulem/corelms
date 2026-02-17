@@ -562,6 +562,56 @@ async def import_module_zip(
     return {"ok": True, "job_id": job.id, "object_key": object_key}
 
 
+class AdminAbortUploadRequest(BaseModel):
+    object_key: str
+    filename: str | None = None
+
+
+@router.post("/modules/abort-import-zip")
+def abort_import_zip(
+    request: Request,
+    body: AdminAbortUploadRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+    __: object = rate_limit(key_prefix="admin_abort_import_zip", limit=30, window_seconds=60),
+):
+    object_key = str(body.object_key or "").strip()
+    if not object_key:
+        raise HTTPException(status_code=400, detail="missing object_key")
+
+    # Best-effort delete the uploaded (or partially uploaded) object.
+    try:
+        ensure_bucket_exists()
+        s3 = get_s3_client()
+        s3.delete_object(Bucket=settings.s3_bucket, Key=object_key)
+    except Exception:
+        pass
+
+    # Best-effort clear filename->object_key mapping to avoid future 'reused' pointing to an aborted upload.
+    fn = str(body.filename or "").strip()
+    if fn:
+        norm_fn = re.sub(r"\s+", " ", fn).strip().lower()
+        try:
+            r = get_redis()
+            k = f"admin:import_zip_by_filename:{norm_fn}"
+            existing = str(r.get(k) or "").strip()
+            if existing == object_key:
+                r.delete(k)
+        except Exception:
+            pass
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_abort_import_module_zip",
+        actor_user_id=None,
+        meta={"object_key": object_key, "filename": fn or None},
+    )
+    db.commit()
+
+    return {"ok": True}
+
+
 class AdminBucketCorsRule(BaseModel):
     allowed_origins: list[str]
     allowed_methods: list[str]
@@ -754,12 +804,30 @@ def enqueue_import_zip(
         pass
 
     title = (str(body.title or "").strip() or None)
+    norm_title = None
+    if title:
+        norm_title = re.sub(r"\s+", " ", title).strip().lower()
     if title:
         exists = (
             db.scalar(select(func.count()).select_from(Module).where(func.lower(Module.title) == func.lower(title))) or 0
         )
         if int(exists) > 0:
             raise HTTPException(status_code=409, detail="module title already exists")
+
+    # Dedupe: avoid enqueuing multiple jobs for the same target module title.
+    # This prevents queue spam when the UI retries / user clicks repeatedly.
+    title_lock_key = None
+    try:
+        if norm_title:
+            r = get_redis()
+            title_lock_key = f"admin:import_enqueued_by_title:{norm_title}"
+            existing_title_job_id = str(r.get(title_lock_key) or "").strip()
+            if existing_title_job_id:
+                raise HTTPException(status_code=409, detail=f"module title already enqueued: {existing_title_job_id}")
+    except HTTPException:
+        raise
+    except Exception:
+        title_lock_key = None
 
     # Optional guard: ensure object exists before enqueue.
     try:
@@ -784,10 +852,24 @@ def enqueue_import_zip(
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to enqueue import job") from e
 
+    # Store normalized title in job.meta so the worker can release title locks on end.
+    try:
+        if norm_title:
+            jm = dict(job.meta or {})
+            jm["import_title_norm"] = norm_title
+            jm["import_object_key"] = object_key
+            job.meta = jm
+            job.save_meta()
+    except Exception:
+        pass
+
     try:
         r = get_redis()
         r.set(lock_key, str(job.id))
         r.expire(lock_key, 60 * 60 * 6)
+        if title_lock_key:
+            r.set(title_lock_key, str(job.id))
+            r.expire(title_lock_key, 60 * 60 * 24 * 30)
     except Exception:
         pass
 
@@ -987,6 +1069,19 @@ def cancel_job(
     try:
         if prev_status in {"queued", "deferred", "scheduled"}:
             job.cancel()
+    except Exception:
+        pass
+
+    # Release import enqueue locks so the user can re-enqueue immediately.
+    try:
+        r = get_redis()
+        meta = dict(job.meta or {})
+        obj_key = str(meta.get("import_object_key") or "").strip()
+        if obj_key:
+            r.delete(f"admin:import_enqueued_by_object_key:{obj_key}")
+        norm_title = str(meta.get("import_title_norm") or "").strip()
+        if norm_title:
+            r.delete(f"admin:import_enqueued_by_title:{norm_title}")
     except Exception:
         pass
 

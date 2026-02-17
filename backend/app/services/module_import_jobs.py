@@ -184,6 +184,27 @@ def import_module_zip_job(
 
     cleanup_done = False
 
+    def _release_enqueue_locks() -> None:
+        try:
+            r = get_redis()
+        except Exception:
+            return
+        try:
+            r.delete(f"admin:import_enqueued_by_object_key:{str(s3_object_key or '').strip()}")
+        except Exception:
+            pass
+        try:
+            norm_title = ""
+            try:
+                job = get_current_job()
+                norm_title = str((job.meta or {}).get("import_title_norm") or "").strip()
+            except Exception:
+                norm_title = ""
+            if norm_title:
+                r.delete(f"admin:import_enqueued_by_title:{norm_title}")
+        except Exception:
+            pass
+
     _cancel_checkpoint(s3_object_key=s3_object_key, stage="start")
 
     with tempfile.TemporaryDirectory() as td:
@@ -213,8 +234,26 @@ def import_module_zip_job(
                 )
                 raise err
             raise
+
+        # IMPORTANT: allow cancellation during download.
+        # boto3.download_fileobj blocks for a long time and cannot be interrupted.
+        # Use get_object streaming and check cancel_requested between chunks.
         with zip_path.open("wb") as f:
-            s3.download_fileobj(settings.s3_bucket, s3_object_key, f)
+            resp = s3.get_object(Bucket=settings.s3_bucket, Key=s3_object_key)
+            body = resp.get("Body")
+            try:
+                while True:
+                    _cancel_checkpoint(s3_object_key=s3_object_key, stage="download")
+                    chunk = body.read(1024 * 1024) if body is not None else b""
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            finally:
+                try:
+                    if body is not None:
+                        body.close()
+                except Exception:
+                    pass
 
         _cancel_checkpoint(s3_object_key=s3_object_key, stage="download")
 
@@ -311,12 +350,14 @@ def import_module_zip_job(
             report["regen_job_id"] = regen_job_id
 
             _set_job_stage(stage="done", detail=str(mid))
+            _release_enqueue_locks()
             return {"ok": True, "module_id": str(mid), "report": report, "regen_job_id": regen_job_id}
         except ImportCanceledError as e:
             try:
                 db.rollback()
             except Exception:
                 pass
+            _release_enqueue_locks()
             return {"ok": False, "canceled": True}
         except Exception as e:
             _set_job_stage(stage="failed", detail=str(e))
@@ -324,6 +365,7 @@ def import_module_zip_job(
             print(f"import_module_zip_job: failed err={e}", flush=True)
             log.exception("import_module_zip_job: failed")
             db.rollback()
+            _release_enqueue_locks()
             raise
         finally:
             db.close()
