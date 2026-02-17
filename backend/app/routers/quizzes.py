@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
@@ -18,7 +18,7 @@ from app.db.session import get_db
 from app.models.attempt import QuizAttempt, QuizAttemptAnswer
 from app.models.audit import LearningEvent, LearningEventType
 from app.models.module import Submodule, Module
-from app.models.quiz import Question, Quiz, QuizType
+from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.models.user import User
 from app.schemas.quiz import QuizStartResponse, QuizSubmitRequest, QuizSubmitResponse
 from app.services.skills import record_activity_and_award_xp
@@ -83,6 +83,80 @@ def _is_final_quiz(quiz: Quiz) -> bool:
     return getattr(quiz.type, "value", str(quiz.type)) == QuizType.final.value
 
 
+def _rebuild_final_quiz_from_lessons(*, db: Session, module: Module, final_quiz: Quiz) -> None:
+    """Rebuild final quiz questions from lesson quiz questions.
+
+    Product rule:
+    - Each lesson contributes up to 2 random questions.
+    - Final quiz is reassembled on each /start (fresh mix).
+    """
+
+    subs = db.scalars(
+        select(Submodule).where(Submodule.module_id == module.id).order_by(Submodule.order)
+    ).all()
+
+    # Clear previous final questions.
+    db.execute(delete(Question).where(Question.quiz_id == final_quiz.id))
+
+    rng = random.Random(f"final_open:{module.id}:{uuid.uuid4()}")
+    added = 0
+    for si, sub in enumerate(subs, start=1):
+        if not sub.quiz_id:
+            continue
+
+        items = list(db.scalars(select(Question).where(Question.quiz_id == sub.quiz_id).order_by(Question.id)))
+        pool = [q for q in (items or []) if (q.prompt or "").strip()]
+        if not pool:
+            continue
+
+        rng.shuffle(pool)
+        take = pool[:2]
+        for qi, src in enumerate(take, start=1):
+            db.add(
+                Question(
+                    quiz_id=final_quiz.id,
+                    type=src.type,
+                    difficulty=int(getattr(src, "difficulty", 1) or 1),
+                    prompt=str(getattr(src, "prompt", "") or ""),
+                    correct_answer=str(getattr(src, "correct_answer", "") or ""),
+                    explanation=(
+                        str(getattr(src, "explanation", ""))
+                        if getattr(src, "explanation", None)
+                        else None
+                    ),
+                    concept_tag=f"final:from_lesson:{module.id}:{si}:{qi}",
+                    variant_group=None,
+                )
+            )
+            added += 1
+
+    if added <= 0:
+        # Hard fallback so /start never breaks.
+        db.add(
+            Question(
+                quiz_id=final_quiz.id,
+                type=QuestionType.single,
+                difficulty=1,
+                prompt=(
+                    f"По модулю «{module.title}» выберите верный вариант.\n"
+                    "A) Подтвердить прочтение и пройти финальный тест\n"
+                    "B) Пропустить проверку\n"
+                    "C) Завершить без теста\n"
+                    "D) Ничего не делать"
+                ),
+                correct_answer="A",
+                explanation=None,
+                concept_tag=f"needs_regen:final:fallback:{module.id}:1",
+                variant_group=None,
+            )
+        )
+
+    try:
+        db.flush()
+    except Exception:
+        pass
+
+
 @router.post("/{quiz_id}/start", response_model=QuizStartResponse)
 def start_quiz(
     quiz_id: str,
@@ -98,6 +172,8 @@ def start_quiz(
     quiz = db.scalar(select(Quiz).where(Quiz.id == quiz_uuid))
     if quiz is None:
         raise HTTPException(status_code=404, detail="quiz not found")
+
+    is_final_quiz = _is_final_quiz(quiz)
 
     # Product rule: quiz is available only after the learner explicitly confirms reading the submodule.
     sub = db.scalar(select(Submodule).where(Submodule.quiz_id == quiz.id))
@@ -131,9 +207,10 @@ def start_quiz(
 
     # Idempotency: if a quiz session already exists, reuse it.
     # This prevents re-rolling questions, restarting timers, and duplicating quiz_started events.
+    # IMPORTANT: final quizzes must be rebuilt on each open (fresh mix), so we bypass reuse for final.
     r = get_redis()
     key = _session_key(str(user.id), str(quiz.id))
-    existing_raw = r.get(key)
+    existing_raw = None if is_final_quiz else r.get(key)
     if existing_raw is not None:
         try:
             session = json.loads(existing_raw)
@@ -161,8 +238,12 @@ def start_quiz(
             # If session is corrupted, fall through and create a fresh one.
             pass
 
-    # Product rule: final quiz questions are materialized into the final quiz itself
-    # (assembled during import/regen). So runtime uses the quiz's own question list.
+    # Final quizzes are rebuilt on each /start from lesson quiz questions.
+    if is_final_quiz:
+        m = db.scalar(select(Module).where(Module.final_quiz_id == quiz.id))
+        if m is not None:
+            _rebuild_final_quiz_from_lessons(db=db, module=m, final_quiz=quiz)
+
     questions = list(db.scalars(select(Question).where(Question.quiz_id == quiz.id)))
     if not questions:
         raise HTTPException(status_code=400, detail="quiz has no questions")
