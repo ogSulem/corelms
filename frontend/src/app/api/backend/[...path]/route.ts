@@ -33,7 +33,7 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     cache: "no-store",
   };
 
-  const timeoutMs = Number.parseInt(process.env.BACKEND_PROXY_TIMEOUT_MS || "30000", 10) || 30000;
+  const timeoutMs = Number.parseInt(process.env.BACKEND_PROXY_TIMEOUT_MS || "180000", 10) || 180000;
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), Math.max(1000, timeoutMs));
 
@@ -74,5 +74,9 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ path?: string
 }
 
 export async function DELETE(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
+  return proxy(req, ctx);
+}
+
+export async function OPTIONS(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
   return proxy(req, ctx);
 }
