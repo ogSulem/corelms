@@ -66,15 +66,8 @@ print("MinIO bucket ensured")
 PY
 
 if [ "${CORELMS_AUTO_SEED:-0}" = "1" ]; then
-  if [ ! -f "/data/.seeded" ]; then
-    echo "Seeding Start module + users..."
-    python /app/scripts/import_start_module.py
-    mkdir -p /data
-    touch /data/.seeded
-  else
-    echo "Seed already done"
-
-    python - <<'PY'
+  echo "Checking seed state in DB..."
+  python - <<'PY'
 import os
 import subprocess
 
@@ -82,32 +75,24 @@ from sqlalchemy import select
 
 from app.db.session import SessionLocal
 from app.models.module import Module, Submodule
+from app.models.user import User
+
+admin_name = os.environ.get("CORELMS_SEED_ADMIN_NAME", "admin")
 
 with SessionLocal() as db:
+    has_admin = db.scalar(select(User).where(User.name == admin_name)) is not None
     m = db.scalar(select(Module).where(Module.title == "Старт"))
-    if m is None:
-        raise SystemExit(0)
+    has_start = m is not None
+    has_start_lessons = False
+    if m is not None:
+        has_start_lessons = db.query(Submodule).filter(Submodule.module_id == m.id).count() > 0
 
-    cnt = db.query(Submodule).filter(Submodule.module_id == m.id).count()
-    if cnt == 0:
-        subprocess.check_call(["python", "/app/scripts/import_start_module.py", "--path", "/__missing__"])
+if not has_admin or not has_start or not has_start_lessons:
+    print("Seeding Start module + users...", flush=True)
+    subprocess.check_call(["python", "/app/scripts/import_start_module.py"])
+else:
+    print("Seed already present; skipping", flush=True)
 PY
-
-    if [ ! -f "/data/.folder_seeded" ]; then
-      python - <<'PY'
-import pathlib
-import subprocess
-
-root = pathlib.Path("/app/Модули обучения")
-if not root.exists() or not root.is_dir():
-    raise SystemExit(0)
-
-subprocess.check_call(["python", "/app/scripts/import_modules_from_folder.py", "--root", str(root), "--skip-existing"])
-PY
-      mkdir -p /data
-      touch /data/.folder_seeded
-    fi
-  fi
 fi
 
 exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"

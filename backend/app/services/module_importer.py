@@ -281,7 +281,7 @@ def import_module_from_dir(
         content_key = f"modules/{m.id}/{order:02d}/theory.md"
         _upload_markdown_text(s3=s3, object_key=content_key, text_value=theory)
 
-        qz = Quiz(type=QuizType.practice, pass_threshold=70, time_limit=None, attempts_limit=None)
+        qz = Quiz(type=QuizType.submodule, pass_threshold=70, time_limit=None, attempts_limit=None)
         db.add(qz)
         db.flush()
 
