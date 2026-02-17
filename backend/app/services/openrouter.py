@@ -22,6 +22,24 @@ class OpenRouterQuizResponse(BaseModel):
     questions: list[OpenRouterQuestion]
 
 
+def _format_options_for_prompt(options: object) -> str:
+    if not isinstance(options, list):
+        return ""
+    items = [str(x or "").strip() for x in options if str(x or "").strip()]
+    if not items:
+        return ""
+
+    has_labels = any(it.startswith("A)") or it.startswith("B)") or it.startswith("C)") or it.startswith("D)") for it in items)
+    if has_labels:
+        return "\n" + "\n".join(items)
+
+    letters = ["A", "B", "C", "D"]
+    labeled: list[str] = []
+    for i, it in enumerate(items[:4]):
+        labeled.append(f"{letters[i]}) {it}")
+    return "\n" + "\n".join(labeled)
+
+
 def _extract_json(text: str) -> dict[str, Any] | None:
     if not text:
         return None
@@ -243,9 +261,18 @@ def generate_quiz_questions_openrouter(
             for it in raw_items or []:
                 if not isinstance(it, dict):
                     continue
+
+                base_prompt = (it.get("prompt") or it.get("question") or it.get("text") or "")
+                opts = it.get("options")
+                if opts is None:
+                    opts = it.get("choices")
+                prompt = str(base_prompt or "")
+                if opts is not None:
+                    prompt = prompt.strip() + _format_options_for_prompt(opts)
+
                 cand = {
                     "type": (it.get("type") or it.get("qtype") or it.get("question_type") or "single"),
-                    "prompt": (it.get("prompt") or it.get("question") or it.get("text") or ""),
+                    "prompt": prompt,
                     "correct_answer": (
                         it.get("correct_answer")
                         or it.get("answer")
