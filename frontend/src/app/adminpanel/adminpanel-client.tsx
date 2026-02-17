@@ -1127,6 +1127,7 @@ export default function AdminPanelClient() {
           );
 
           // 2) upload to S3 (direct)
+          setClientImportStage("upload_s3");
           const up = await fetch(String(presign?.upload_url || ""), {
             method: "PUT",
             body: f,
@@ -1139,6 +1140,7 @@ export default function AdminPanelClient() {
           }
 
           // 3) enqueue import job
+          setClientImportStage("enqueue");
           const enq = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/enqueue-import-zip${qs}` as any, {
             method: "POST",
             body: JSON.stringify({
@@ -1149,6 +1151,30 @@ export default function AdminPanelClient() {
           });
           res = { ok: true, job_id: String((enq as any)?.job_id || "") };
         } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+
+          // For large archives, do NOT fallback to legacy import (it will likely hit Railway 499/502).
+          const isLargeZip = typeof (f as any)?.size === "number" && Number((f as any).size) > 50 * 1024 * 1024;
+          const looksLikeS3UploadIssue =
+            (msg || "").toLowerCase().includes("s3 upload failed") ||
+            (msg || "").toLowerCase().includes("signature") ||
+            (msg || "").toLowerCase().includes("failed to fetch") ||
+            (msg || "").toLowerCase().includes("cors");
+
+          if (isLargeZip && looksLikeS3UploadIssue) {
+            const hint =
+              "ЗАГРУЗКА В STORAGE НЕ ПРОШЛА. НУЖЕН CORS ДЛЯ BUCKET (PUT) ИЛИ ПРОБЛЕМА С PRESIGNED URL. " +
+              "ОТКРОЙ DEVTOOLS → CONSOLE/NETWORK И ПРОВЕРЬ PUT НА S3.";
+            setError((msg || "НЕ УДАЛОСЬ ЗАГРУЗИТЬ В STORAGE") + `\n${hint}`);
+            setClientImportStage("failed");
+            setImportBatch((prev) => {
+              if (!prev) return prev;
+              return { ...prev, done: Math.min(prev.total, prev.done + 1) };
+            });
+            await new Promise<void>((resolve) => setTimeout(() => resolve(), 150));
+            continue;
+          }
+
           // Fallback: legacy flow (works for small zips)
           try {
             const qs = title ? `?title=${encodeURIComponent(title)}` : "";
@@ -1159,7 +1185,6 @@ export default function AdminPanelClient() {
           } catch {
             // keep original handling below
           }
-          const msg = e instanceof Error ? e.message : String(e);
           if ((msg || "").toLowerCase().includes("409") || (msg || "").toLowerCase().includes("already exists")) {
             window.dispatchEvent(
               new CustomEvent("corelms:toast", {
