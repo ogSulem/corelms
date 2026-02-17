@@ -100,6 +100,20 @@ def _is_final_quiz(quiz: Quiz) -> bool:
     return getattr(quiz.type, "value", str(quiz.type)) == QuizType.final.value
 
 
+def _meta_action_is_read(meta: str | None) -> bool:
+    if not meta:
+        return False
+    if str(meta).strip().lower() == "read":
+        return True
+    try:
+        obj = json.loads(str(meta))
+        if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def _rebuild_final_quiz_from_lessons(*, db: Session, module: Module, final_quiz: Quiz) -> None:
     """Rebuild final quiz questions from lesson quiz questions.
 
@@ -207,15 +221,18 @@ def start_quiz(
         # ONLY require read confirmation for non-final submodules (lessons)
         # Because final tests in Taiga LMS don't have theory blocks.
         if not is_final:
-            read_confirmed = db.scalar(
-                select(func.count(LearningEvent.id)).where(
+            metas = db.scalars(
+                select(LearningEvent.meta)
+                .where(
                     LearningEvent.user_id == user.id,
                     LearningEvent.type == LearningEventType.submodule_opened,
                     LearningEvent.ref_id == sub.id,
-                    LearningEvent.meta == "read",
+                    LearningEvent.meta.is_not(None),
                 )
-            )
-            if not read_confirmed or read_confirmed <= 0:
+                .order_by(LearningEvent.created_at.desc())
+                .limit(20)
+            ).all()
+            if not any(_meta_action_is_read(m) for m in (metas or [])):
                 raise HTTPException(status_code=403, detail="confirm reading before starting quiz")
 
     attempts_used = db.scalar(
@@ -290,7 +307,28 @@ def start_quiz(
     # Important: update streak BEFORE inserting the learning event to avoid autoflush affecting streak init.
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
 
-    db.add(LearningEvent(user_id=user.id, type=LearningEventType.quiz_started, ref_id=quiz.id))
+    # Enrich with module/submodule context when possible.
+    sub_row = db.execute(
+        select(Submodule.id, Submodule.module_id).where(Submodule.quiz_id == quiz.id).limit(1)
+    ).first()
+    sub_id = str(sub_row[0]) if sub_row and sub_row[0] else None
+    mod_id = str(sub_row[1]) if sub_row and sub_row[1] else None
+
+    meta = {
+        "action": "start",
+        "quiz_id": str(quiz.id),
+        "attempt_no": int((attempts_used or 0) + 1),
+        "module_id": mod_id,
+        "submodule_id": sub_id,
+    }
+    db.add(
+        LearningEvent(
+            user_id=user.id,
+            type=LearningEventType.quiz_started,
+            ref_id=quiz.id,
+            meta=json.dumps(meta, ensure_ascii=False),
+        )
+    )
     db.commit()
 
     return QuizStartResponse(
@@ -421,7 +459,19 @@ def submit_quiz(
             user_id=user.id,
             type=LearningEventType.quiz_completed,
             ref_id=quiz.id,
-            meta=str({"score": score, "passed": passed}),
+            meta=json.dumps(
+                {
+                    "action": "finish",
+                    "quiz_id": str(quiz.id),
+                    "attempt_no": int(attempt_no),
+                    "score": int(score),
+                    "passed": bool(passed),
+                    "correct": int(correct),
+                    "total": int(total),
+                    "time_spent_seconds": int(time_spent) if time_spent is not None else None,
+                },
+                ensure_ascii=False,
+            ),
         )
     )
 

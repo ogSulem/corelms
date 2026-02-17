@@ -81,3 +81,31 @@ class ActivityFeedItem(BaseModel):
 
 class MyActivityFeedResponse(BaseModel):
     items: list[ActivityFeedItem]
+
+
+class HistoryItem(BaseModel):
+    id: str
+    created_at: str
+    kind: str
+    title: str
+    subtitle: str | None = None
+    status: str | None = None
+    score: int | None = None
+    passed: bool | None = None
+    duration_seconds: int | None = None
+    href: str | None = None
+    # raw
+    event_type: str | None = None
+    ref_id: str | None = None
+    meta: str | None = None
+    # context
+    module_id: str | None = None
+    module_title: str | None = None
+    submodule_id: str | None = None
+    submodule_title: str | None = None
+    asset_id: str | None = None
+    asset_name: str | None = None
+
+
+class HistoryResponse(BaseModel):
+    items: list[HistoryItem]

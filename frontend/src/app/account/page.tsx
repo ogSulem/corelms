@@ -36,6 +36,28 @@ type FeedItem = {
   href?: string | null;
 };
 
+type HistoryItem = {
+  id: string;
+  created_at: string;
+  kind: string;
+  title: string;
+  subtitle?: string | null;
+  status?: string | null;
+  score?: number | null;
+  passed?: boolean | null;
+  duration_seconds?: number | null;
+  href?: string | null;
+  event_type?: string | null;
+  ref_id?: string | null;
+  meta?: string | null;
+  module_id?: string | null;
+  module_title?: string | null;
+  submodule_id?: string | null;
+  submodule_title?: string | null;
+  asset_id?: string | null;
+  asset_name?: string | null;
+};
+
 type FeedFilter = "all" | "quiz_attempt" | "lesson" | "asset";
 
 function formatDuration(seconds: number): string {
@@ -47,7 +69,7 @@ function formatDuration(seconds: number): string {
 
 export default function AccountPage() {
   const [profile, setProfile] = useState<MyProfile | null>(null);
-  const [feed, setFeed] = useState<FeedItem[]>([]);
+  const [feed, setFeed] = useState<HistoryItem[]>([]);
   const [feedFilter, setFeedFilter] = useState<FeedFilter>("all");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,9 +84,10 @@ export default function AccountPage() {
         const p = await apiFetch<MyProfile>("/me/profile");
         setProfile(p);
 
-        const qp = feedFilter === "all" ? "" : `?kinds=${encodeURIComponent(feedFilter)}`;
-        const af = await apiFetch<{ items: FeedItem[] }>(`/me/activity-feed${qp}`);
-        setFeed(af.items || []);
+        const hist = await apiFetch<{ items: HistoryItem[] }>(`/me/history?limit=200`);
+        const items = Array.isArray(hist?.items) ? hist.items : [];
+        const filtered = feedFilter === "all" ? items : items.filter((it) => it.kind === feedFilter);
+        setFeed(filtered);
       } catch (e) {
         setError("НЕ УДАЛОСЬ ЗАГРУЗИТЬ ДАННЫЕ ПРОФИЛЯ");
       } finally {

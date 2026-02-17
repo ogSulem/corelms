@@ -55,6 +55,8 @@ from app.schemas.admin import (
     UserResetPasswordResponse,
 )
 
+from app.schemas.me import HistoryResponse
+
 from app.services.learning import LearningService
 from app.core.queue import fetch_job, get_queue
 from app.services.module_import_jobs import import_module_zip_job
@@ -1843,18 +1845,36 @@ def list_users(
 
     read_by_user_module: dict[tuple[uuid.UUID, uuid.UUID], int] = defaultdict(int)
     if user_ids and all_sub_ids:
+        # Legacy meta=="read" or JSON {"action":"read"}
         read_rows = db.execute(
-            select(LearningEvent.user_id, Submodule.module_id, LearningEvent.ref_id)
+            select(LearningEvent.user_id, Submodule.module_id, LearningEvent.ref_id, LearningEvent.meta)
             .join(Submodule, Submodule.id == LearningEvent.ref_id)
             .where(
                 LearningEvent.user_id.in_(user_ids),
                 LearningEvent.type == LearningEventType.submodule_opened,
-                LearningEvent.meta == "read",
                 LearningEvent.ref_id.in_(list(all_sub_ids)),
+                LearningEvent.meta.is_not(None),
             )
-            .group_by(LearningEvent.user_id, Submodule.module_id, LearningEvent.ref_id)
         ).all()
-        for uid, mid, _sid in read_rows:
+
+        seen: set[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = set()
+        for uid, mid, sid, meta in read_rows:
+            key = (uid, mid, sid)
+            if key in seen:
+                continue
+            ok = False
+            try:
+                if str(meta).strip().lower() == "read":
+                    ok = True
+                else:
+                    obj = json.loads(str(meta))
+                    if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
+                        ok = True
+            except Exception:
+                ok = False
+            if not ok:
+                continue
+            seen.add(key)
             read_by_user_module[(uid, mid)] += 1
 
     def _progress_summary_for_user(u: User) -> dict[str, object]:
@@ -2044,6 +2064,225 @@ def get_user_detail(
         },
         "history": history,
     }
+
+
+@router.get("/users/{user_id}/history", response_model=HistoryResponse)
+def admin_user_history(
+    user_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+    limit: int = Query(default=200),
+):
+    # Same output as /me/history but for any user.
+    uid = _uuid(user_id, field="user_id")
+    take = max(1, min(int(limit or 200), 500))
+
+    attempts = db.scalars(
+        select(QuizAttempt)
+        .where(QuizAttempt.user_id == uid)
+        .order_by(QuizAttempt.started_at.desc())
+        .limit(take)
+    ).all()
+    events = db.scalars(
+        select(LearningEvent)
+        .where(LearningEvent.user_id == uid)
+        .order_by(LearningEvent.created_at.desc())
+        .limit(take)
+    ).all()
+
+    attempt_quiz_ids = list({a.quiz_id for a in attempts if a.quiz_id is not None})
+    subs_by_quiz: dict[str, dict] = {}
+    if attempt_quiz_ids:
+        rows = db.execute(
+            select(Submodule.quiz_id, Submodule.id, Submodule.title, Module.id, Module.title)
+            .select_from(Submodule)
+            .join(Module, Module.id == Submodule.module_id)
+            .where(Submodule.quiz_id.in_(attempt_quiz_ids))
+        ).all()
+        for quiz_id, sub_id, sub_title, mod_id, mod_title in rows:
+            subs_by_quiz[str(quiz_id)] = {
+                "submodule_id": str(sub_id),
+                "submodule_title": str(sub_title),
+                "module_id": str(mod_id),
+                "module_title": str(mod_title),
+            }
+
+    sub_ids = [e.ref_id for e in events if e.ref_id is not None and e.type.value == "submodule_opened"]
+    quiz_ids = [e.ref_id for e in events if e.ref_id is not None and e.type.value in ("quiz_started", "quiz_completed")]
+    asset_ids = [e.ref_id for e in events if e.ref_id is not None and e.type.value == "asset_viewed"]
+
+    subs_by_id: dict[str, dict] = {}
+    if sub_ids:
+        rows = db.execute(
+            select(Submodule.id, Submodule.title, Module.id, Module.title)
+            .select_from(Submodule)
+            .join(Module, Module.id == Submodule.module_id)
+            .where(Submodule.id.in_(sub_ids))
+        ).all()
+        for sid, stitle, mid, mtitle in rows:
+            subs_by_id[str(sid)] = {
+                "submodule_id": str(sid),
+                "submodule_title": str(stitle),
+                "module_id": str(mid),
+                "module_title": str(mtitle),
+            }
+
+    subs_by_quiz_event: dict[str, dict] = {}
+    if quiz_ids:
+        rows = db.execute(
+            select(Submodule.quiz_id, Submodule.id, Submodule.title, Module.id, Module.title)
+            .select_from(Submodule)
+            .join(Module, Module.id == Submodule.module_id)
+            .where(Submodule.quiz_id.in_(quiz_ids))
+        ).all()
+        for qid, sid, stitle, mid, mtitle in rows:
+            subs_by_quiz_event[str(qid)] = {
+                "submodule_id": str(sid),
+                "submodule_title": str(stitle),
+                "module_id": str(mid),
+                "module_title": str(mtitle),
+            }
+
+    assets_by_id: dict[str, dict] = {}
+    if asset_ids:
+        rows = db.execute(
+            select(ContentAsset.id, ContentAsset.original_filename)
+            .where(ContentAsset.id.in_(asset_ids))
+        ).all()
+        for aid, name in rows:
+            assets_by_id[str(aid)] = {"asset_id": str(aid), "asset_name": str(name)}
+
+    def _try_parse_meta(meta: str | None) -> dict | None:
+        if not meta:
+            return None
+        try:
+            obj = json.loads(str(meta))
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+
+    def _event_display(e: LearningEvent) -> tuple[str, str, str | None]:
+        t = e.type.value
+        meta = _try_parse_meta(e.meta)
+        action = str((meta or {}).get("action") or "").strip().lower() if meta else ""
+        if t == "submodule_opened":
+            if action == "read" or (e.meta or "").strip().lower() == "read":
+                return ("lesson", "Теория подтверждена", "Отмечено как прочитано")
+            return ("lesson", "Открыт урок", "Просмотр")
+        if t == "asset_viewed":
+            fname = str((meta or {}).get("filename") or "").strip() if meta else ""
+            if action == "view":
+                return ("asset", "Открыл материал", fname or None)
+            if action == "download":
+                return ("asset", "Скачал материал", fname or None)
+            return ("asset", "Материал", fname or None)
+        if t == "quiz_started":
+            return ("quiz", "Начат тест", None)
+        if t == "quiz_completed":
+            if meta and meta.get("score") is not None:
+                try:
+                    score = int(meta.get("score"))
+                    passed = bool(meta.get("passed"))
+                    return ("quiz", "Завершён тест", f"{score}% · {'зачёт' if passed else 'не зачёт'}")
+                except Exception:
+                    pass
+            return ("quiz", "Завершён тест", None)
+        return ("event", "Событие", None)
+
+    items: list[dict] = []
+    for a in attempts:
+        ctx = subs_by_quiz.get(str(a.quiz_id), {}) if a.quiz_id else {}
+        is_finished = bool(a.finished_at)
+        status = "в процессе"
+        if is_finished:
+            status = "засчитан" if bool(a.passed) else "не засчитан"
+        duration_seconds = None
+        try:
+            if a.started_at and a.finished_at:
+                duration_seconds = int(max(0, (a.finished_at - a.started_at).total_seconds()))
+        except Exception:
+            duration_seconds = None
+        items.append(
+            {
+                "id": f"attempt:{a.id}",
+                "created_at": a.finished_at.isoformat() if a.finished_at else a.started_at.isoformat(),
+                "kind": "quiz_attempt",
+                "title": "Тест завершён" if a.finished_at else "Тест в процессе",
+                "subtitle": (f"{int(a.score)}% · {'зачёт' if a.passed else 'не зачёт'}" if a.score is not None else None),
+                "status": status,
+                "score": int(a.score) if a.score is not None else None,
+                "passed": bool(a.passed) if a.score is not None else bool(a.passed),
+                "duration_seconds": duration_seconds,
+                "href": (
+                    f"/submodules/{ctx.get('submodule_id')}?module={ctx.get('module_id')}&quiz={a.quiz_id}"
+                    if ctx.get("submodule_id")
+                    else None
+                ),
+                "event_type": None,
+                "ref_id": str(a.quiz_id) if a.quiz_id else None,
+                "meta": None,
+                "module_id": ctx.get("module_id"),
+                "module_title": ctx.get("module_title"),
+                "submodule_id": ctx.get("submodule_id"),
+                "submodule_title": ctx.get("submodule_title"),
+                "asset_id": None,
+                "asset_name": None,
+            }
+        )
+
+    for e in events:
+        kind, title, subtitle = _event_display(e)
+        module_id = (
+            subs_by_id.get(str(e.ref_id), {}).get("module_id")
+            if e.ref_id and e.type.value == "submodule_opened"
+            else subs_by_quiz_event.get(str(e.ref_id), {}).get("module_id")
+        )
+        module_title = (
+            subs_by_id.get(str(e.ref_id), {}).get("module_title")
+            if e.ref_id and e.type.value == "submodule_opened"
+            else subs_by_quiz_event.get(str(e.ref_id), {}).get("module_title")
+        )
+        submodule_id = (
+            subs_by_id.get(str(e.ref_id), {}).get("submodule_id")
+            if e.ref_id and e.type.value == "submodule_opened"
+            else subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_id")
+        )
+        submodule_title = (
+            subs_by_id.get(str(e.ref_id), {}).get("submodule_title")
+            if e.ref_id and e.type.value == "submodule_opened"
+            else subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_title")
+        )
+        asset_id = assets_by_id.get(str(e.ref_id), {}).get("asset_id") if e.ref_id else None
+        asset_name = assets_by_id.get(str(e.ref_id), {}).get("asset_name") if e.ref_id else None
+
+        href = None
+        if e.ref_id and e.type.value == "submodule_opened" and submodule_id and module_id:
+            href = f"/submodules/{submodule_id}?module={module_id}"
+        elif e.ref_id and e.type.value in ("quiz_started", "quiz_completed") and submodule_id and module_id:
+            href = f"/submodules/{submodule_id}?module={module_id}&quiz={e.ref_id}"
+
+        items.append(
+            {
+                "id": str(e.id),
+                "created_at": e.created_at.isoformat(),
+                "kind": kind,
+                "title": title,
+                "subtitle": subtitle or asset_name,
+                "href": href,
+                "event_type": e.type.value,
+                "ref_id": str(e.ref_id) if e.ref_id else None,
+                "meta": e.meta,
+                "module_id": module_id,
+                "module_title": module_title,
+                "submodule_id": submodule_id,
+                "submodule_title": submodule_title,
+                "asset_id": asset_id,
+                "asset_name": asset_name,
+            }
+        )
+
+    items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
+    return {"items": items[:take]}
 
 
 @router.delete("/users/{user_id}")

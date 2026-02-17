@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,6 +28,20 @@ def _uuid(value: str, *, field: str) -> uuid.UUID:
         raise HTTPException(status_code=400, detail=f"invalid {field}") from e
 
 
+def _meta_action_is_read(meta: str | None) -> bool:
+    if not meta:
+        return False
+    if str(meta).strip().lower() == "read":
+        return True
+    try:
+        obj = json.loads(str(meta))
+        if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
+            return True
+    except Exception:
+        return False
+    return False
+
+
 @router.post("/{submodule_id}/open")
 def open_submodule(
     submodule_id: str,
@@ -40,7 +55,14 @@ def open_submodule(
         raise HTTPException(status_code=404, detail="submodule not found")
 
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
-    db.add(LearningEvent(user_id=user.id, type=LearningEventType.submodule_opened, ref_id=sub.id))
+    db.add(
+        LearningEvent(
+            user_id=user.id,
+            type=LearningEventType.submodule_opened,
+            ref_id=sub.id,
+            meta=json.dumps({"action": "open"}, ensure_ascii=False),
+        )
+    )
     db.commit()
 
     return {"ok": True}
@@ -94,13 +116,30 @@ def read_submodule(
             LearningEvent.user_id == user.id,
             LearningEvent.type == LearningEventType.submodule_opened,
             LearningEvent.ref_id == sub.id,
-            LearningEvent.meta == "read",
+            LearningEvent.meta.is_not(None),
         )
     )
     if already_read and already_read > 0:
-        return {"ok": True, "xp_awarded": 0}
+        # Soft check: if there is ANY read meta already, skip awarding XP.
+        # We keep a separate query to preserve old meta=="read" semantics.
+        existing = db.scalars(
+            select(LearningEvent.meta)
+            .where(
+                LearningEvent.user_id == user.id,
+                LearningEvent.type == LearningEventType.submodule_opened,
+                LearningEvent.ref_id == sub.id,
+                LearningEvent.meta.is_not(None),
+            )
+            .order_by(LearningEvent.created_at.desc())
+            .limit(10)
+        ).all()
+        if any(_meta_action_is_read(m) for m in (existing or [])):
+            return {"ok": True, "xp_awarded": 0}
 
-    db.add(LearningEvent(user_id=user.id, type=LearningEventType.submodule_opened, ref_id=sub.id, meta="read"))
+    # Legacy compatibility: keep meta=="read" in addition to JSON.
+    meta_value = json.dumps({"action": "read"}, ensure_ascii=False)
+
+    db.add(LearningEvent(user_id=user.id, type=LearningEventType.submodule_opened, ref_id=sub.id, meta=meta_value))
     try:
         db.flush()
     except IntegrityError:
@@ -115,12 +154,15 @@ def read_submodule(
 @router.get("/{submodule_id}/read-status")
 def read_status(submodule_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     sid = _uuid(submodule_id, field="submodule_id")
-    exists = db.scalar(
-        select(func.count(LearningEvent.id)).where(
+    metas = db.scalars(
+        select(LearningEvent.meta)
+        .where(
             LearningEvent.user_id == user.id,
             LearningEvent.type == LearningEventType.submodule_opened,
             LearningEvent.ref_id == sid,
-            LearningEvent.meta == "read",
+            LearningEvent.meta.is_not(None),
         )
-    )
-    return {"read": bool(exists and exists > 0)}
+        .order_by(LearningEvent.created_at.desc())
+        .limit(20)
+    ).all()
+    return {"read": bool(any(_meta_action_is_read(m) for m in (metas or [])))}

@@ -136,7 +136,7 @@ export default function ModulePage() {
   async function onOpenAsset(assetId: string) {
     try {
       const data = await apiFetch<{ asset_id: string; download_url: string }>(
-        `/assets/${assetId}/presign-download`
+        `/assets/${assetId}/presign-download?action=download`
       );
       window.open(data.download_url, "_blank", "noopener,noreferrer");
     } catch (e) {

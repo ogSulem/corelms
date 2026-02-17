@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -62,6 +63,7 @@ def presign_upload(
 def presign_download(
     request: Request,
     asset_id: str,
+    action: str | None = Query(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     _: object = rate_limit(key_prefix="asset_presign_download", limit=120, window_seconds=60),
@@ -112,7 +114,47 @@ def presign_download(
     # Important: update streak BEFORE inserting the learning event to avoid autoflush affecting streak init.
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
 
-    db.add(LearningEvent(user_id=user.id, type=LearningEventType.asset_viewed, ref_id=asset.id))
+    # Enrich meta: this is the most reliable place to log file-level activity.
+    # Note: we intentionally treat "presign download" as a learning event, because it reflects intent to open/download.
+    module_id = None
+    submodule_id = None
+    try:
+        row = db.execute(
+            select(Submodule.id, Module.id)
+            .select_from(SubmoduleAssetMap)
+            .join(Submodule, Submodule.id == SubmoduleAssetMap.submodule_id)
+            .join(Module, Module.id == Submodule.module_id)
+            .where(SubmoduleAssetMap.asset_id == asset.id)
+            .limit(1)
+        ).first()
+        if row:
+            submodule_id = str(row[0]) if row[0] else None
+            module_id = str(row[1]) if row[1] else None
+    except Exception:
+        module_id = None
+        submodule_id = None
+
+    act = str(action or "").strip().lower()
+    if act not in {"view", "download"}:
+        act = "download"
+
+    meta = {
+        "action": act,
+        "filename": str(asset.original_filename or ""),
+        "object_key": str(asset.object_key or ""),
+        "mime_type": str(asset.mime_type or ""),
+        "module_id": module_id,
+        "submodule_id": submodule_id,
+    }
+
+    db.add(
+        LearningEvent(
+            user_id=user.id,
+            type=LearningEventType.asset_viewed,
+            ref_id=asset.id,
+            meta=json.dumps(meta, ensure_ascii=False),
+        )
+    )
     db.commit()
 
     audit_log(

@@ -127,6 +127,24 @@ type UserHistoryItem = {
   meta: any;
 };
 
+type UserHistoryDetailedItem = {
+  id: string;
+  created_at: string;
+  kind: string;
+  title: string;
+  subtitle?: string | null;
+  href?: string | null;
+  event_type?: string | null;
+  ref_id?: string | null;
+  meta?: string | null;
+  module_id?: string | null;
+  module_title?: string | null;
+  submodule_id?: string | null;
+  submodule_title?: string | null;
+  asset_id?: string | null;
+  asset_name?: string | null;
+};
+
 type UserDetail = {
   id: string;
   name: string;
@@ -256,6 +274,8 @@ export default function AdminPanelClient() {
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [userDetail, setUserDetail] = useState<UserDetail | null>(null);
   const [userDetailLoading, setUserDetailLoading] = useState(false);
+  const [userHistoryDetailed, setUserHistoryDetailed] = useState<UserHistoryDetailedItem[]>([]);
+  const [userHistoryLoading, setUserHistoryLoading] = useState(false);
   const [deleteUserBusy, setDeleteUserBusy] = useState(false);
 
   const [newUserName, setNewUserName] = useState("");
@@ -1391,6 +1411,18 @@ export default function AdminPanelClient() {
       setUserDetail(null);
     } finally {
       setUserDetailLoading(false);
+    }
+
+    try {
+      setUserHistoryLoading(true);
+      const hist = await apiFetch<{ items: UserHistoryDetailedItem[] }>(
+        `/admin/users/${encodeURIComponent(id)}/history?limit=200`
+      );
+      setUserHistoryDetailed(Array.isArray(hist?.items) ? hist.items : []);
+    } catch {
+      setUserHistoryDetailed([]);
+    } finally {
+      setUserHistoryLoading(false);
     }
   }
 
@@ -2586,15 +2618,24 @@ export default function AdminPanelClient() {
                             </button>
                           </div>
                           <div className="space-y-2">
-                            {userDetail.history?.slice(0, 5).map((h) => (
-                              <div key={h.id} className="flex items-center justify-between gap-4 text-[11px]">
-                                <div className="font-bold text-zinc-900 uppercase tracking-tight">{formatEventTypeRu(h.event_type)}</div>
-                                <div className="text-[10px] text-zinc-500 tabular-nums">
-                                  {new Date(h.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                            {userHistoryLoading ? (
+                              <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Загрузка…</div>
+                            ) : (
+                              (userHistoryDetailed || []).slice(0, 5).map((h) => (
+                                <div key={h.id} className="flex items-center justify-between gap-4 text-[11px]">
+                                  <div className="min-w-0 flex-1">
+                                    <div className="font-bold text-zinc-900 uppercase tracking-tight truncate">{h.title}</div>
+                                    {h.subtitle ? (
+                                      <div className="mt-0.5 text-[10px] font-bold text-zinc-500 uppercase tracking-tight truncate">{h.subtitle}</div>
+                                    ) : null}
+                                  </div>
+                                  <div className="text-[10px] text-zinc-500 tabular-nums shrink-0">
+                                    {new Date(h.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                                  </div>
                                 </div>
-                              </div>
-                            ))}
-                            {(!userDetail.history || userDetail.history.length === 0) && (
+                              ))
+                            )}
+                            {!userHistoryLoading && (!userHistoryDetailed || userHistoryDetailed.length === 0) && (
                               <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">История пуста</div>
                             )}
                           </div>
@@ -2728,39 +2769,48 @@ export default function AdminPanelClient() {
           </div>
 
           <div className="space-y-3">
-            {userDetail?.history?.map((h) => (
-              <div key={h.id} className="group rounded-2xl border border-zinc-100 bg-zinc-50/50 p-4 transition-all hover:bg-white hover:border-[#fe9900]/20 hover:shadow-xl hover:shadow-zinc-950/5">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="space-y-1">
-                    <div className="text-[11px] font-black text-zinc-950 uppercase tracking-tight">
-                      {formatEventTypeRu(h.event_type)}
-                    </div>
-                    <div className="text-[10px] text-zinc-500 font-bold tabular-nums">
-                      {new Date(h.created_at).toLocaleString("ru-RU", {
-                        day: "2-digit",
-                        month: "2-digit",
-                        year: "numeric",
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </div>
-                  </div>
-                  {h.meta && Object.keys(h.meta).length > 0 && (
-                    <div className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-[9px] font-black text-zinc-600 uppercase">
-                      ДЕТАЛИ
-                    </div>
-                  )}
-                </div>
-                {h.meta && Object.keys(h.meta).length > 0 && (
-                  <div className="mt-3 overflow-hidden rounded-xl border border-zinc-100 bg-white/50 p-3">
-                    <pre className="text-[9px] font-mono text-zinc-600 whitespace-pre-wrap break-words overflow-x-hidden max-h-[140px] overflow-y-auto">
-                      {JSON.stringify(h.meta, null, 2)}
-                    </pre>
-                  </div>
-                )}
+            {userHistoryLoading ? (
+              <div className="py-12 text-center text-[11px] font-black uppercase tracking-widest text-zinc-400">
+                Загрузка…
               </div>
-            ))}
-            {(!userDetail?.history || userDetail.history.length === 0) && (
+            ) : (
+              (userHistoryDetailed || []).map((h) => (
+                <div key={h.id} className="group rounded-2xl border border-zinc-100 bg-zinc-50/50 p-4 transition-all hover:bg-white hover:border-[#fe9900]/20 hover:shadow-xl hover:shadow-zinc-950/5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1 min-w-0">
+                      <div className="text-[11px] font-black text-zinc-950 uppercase tracking-tight truncate">
+                        {h.title}
+                      </div>
+                      {h.subtitle ? (
+                        <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-tight truncate">
+                          {h.subtitle}
+                        </div>
+                      ) : null}
+                      {(h.module_title || h.submodule_title || h.asset_name) ? (
+                        <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-tight">
+                          {[h.module_title, h.submodule_title, h.asset_name].filter(Boolean).join(" · ")}
+                        </div>
+                      ) : null}
+                      <div className="text-[10px] text-zinc-500 font-bold tabular-nums">
+                        {new Date(h.created_at).toLocaleString("ru-RU", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          year: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </div>
+                    </div>
+                    {h.meta ? (
+                      <div className="rounded-lg border border-zinc-200 bg-white px-2 py-1 text-[9px] font-black text-zinc-600 uppercase">
+                        META
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            )}
+            {!userHistoryLoading && (!userHistoryDetailed || userHistoryDetailed.length === 0) && (
               <div className="py-12 text-center text-[11px] font-black uppercase tracking-widest text-zinc-400">
                 История пуста
               </div>

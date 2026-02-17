@@ -216,16 +216,16 @@ export default function SubmodulePage() {
     }
   };
 
-  async function presign(assetId: string) {
+  async function presign(assetId: string, action: "view" | "download") {
     const data = await apiFetch<{ asset_id: string; download_url: string }>(
-      `/assets/${assetId}/presign-download`
+      `/assets/${assetId}/presign-download?action=${encodeURIComponent(action)}`
     );
     return data.download_url;
   }
 
   async function onOpenInline(a: AssetLike) {
     try {
-      const url = await presign(a.asset_id);
+      const url = await presign(a.asset_id, "view");
       setInlineUrl(url);
       setInlineMime(a.mime_type || null);
     } catch (e) {
@@ -245,7 +245,7 @@ export default function SubmodulePage() {
 
   async function onDownload(a: AssetLike) {
     try {
-      const url = await presign(a.asset_id);
+      const url = await presign(a.asset_id, "download");
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
