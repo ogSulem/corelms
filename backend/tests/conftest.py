@@ -182,6 +182,7 @@ def db():
 
 @pytest.fixture()
 def user_token(client, monkeypatch):
+    from app.core.config import settings
     username = f"test_{uuid.uuid4().hex[:8]}"
     password = "testpass123"
 
