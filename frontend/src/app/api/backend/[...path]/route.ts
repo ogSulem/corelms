@@ -78,5 +78,20 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ path?: strin
 }
 
 export async function OPTIONS(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
-  return proxy(req, ctx);
+  // Some environments/browsers may send a preflight even for same-origin requests.
+  // Do not forward it to FastAPI (which may return 405 for OPTIONS).
+  const origin = req.headers.get("origin") || "*";
+  const reqHeaders = req.headers.get("access-control-request-headers") || "*";
+  const reqMethod = req.headers.get("access-control-request-method") || "*";
+  return new NextResponse(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Credentials": "true",
+      "Access-Control-Allow-Methods": reqMethod === "*" ? "GET,POST,PUT,PATCH,DELETE,OPTIONS" : reqMethod,
+      "Access-Control-Allow-Headers": reqHeaders,
+      "Access-Control-Max-Age": "86400",
+      Vary: "Origin, Access-Control-Request-Headers, Access-Control-Request-Method",
+    },
+  });
 }
