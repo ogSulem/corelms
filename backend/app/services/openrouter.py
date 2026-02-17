@@ -306,10 +306,16 @@ def generate_quiz_questions_openrouter(
             continue
         if "A)" not in q.prompt or "B)" not in q.prompt or "C)" not in q.prompt or "D)" not in q.prompt:
             continue
-        if not q.correct_answer or (q.correct_answer or "").strip() not in {"A", "B", "C", "D"}:
+        ca_raw = str(q.correct_answer or "").strip()
+        # Models sometimes return 'A)' / 'a' / 'A.' etc.
+        ca = (ca_raw[:1].upper() if ca_raw else "")
+        if ca not in {"A", "B", "C", "D"}:
             continue
+        q.correct_answer = ca
+
+        # Explanation improves quality but should not block question delivery.
         if not q.explanation or not str(q.explanation).strip():
-            continue
+            q.explanation = None
         out.append(q)
 
     if not out:
