@@ -259,9 +259,20 @@ def import_module_from_dir(
 
     lesson_dirs = sorted(lesson_candidates, key=lambda x: _parse_order(x.name, 999))
 
+    root_as_lesson = False
+    if not lesson_dirs:
+        # Some ZIPs come as a flat folder: theory files are placed directly in module root.
+        # In this case we import the module root as a single lesson.
+        root_as_lesson = True
+        lesson_dirs = [module_dir]
+
     for i, ld in enumerate(lesson_dirs, start=1):
-        title = _guess_title(ld.name)
-        order = _parse_order(ld.name, i)
+        if root_as_lesson:
+            title = module_title
+            order = 1
+        else:
+            title = _guess_title(ld.name)
+            order = _parse_order(ld.name, i)
         _set_job_detail(f"lesson {i}/{len(lesson_dirs)}: {title}")
 
         files = sorted([p for p in ld.iterdir() if p.is_file() and not p.name.startswith("~$")])
