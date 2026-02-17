@@ -53,6 +53,31 @@ def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
         return
 
 
+def _is_cancel_requested() -> bool:
+    try:
+        job = get_current_job()
+    except Exception:
+        job = None
+    if job is None:
+        return False
+    try:
+        meta = dict(job.meta or {})
+        return bool(meta.get("cancel_requested"))
+    except Exception:
+        return False
+
+
+class RegenCanceledError(RuntimeError):
+    pass
+
+
+def _cancel_checkpoint(*, stage: str) -> None:
+    if not _is_cancel_requested():
+        return
+    _set_job_stage(stage="canceled", detail=f"{stage}: cancel")
+    raise RegenCanceledError("regen canceled")
+
+
 def _set_job_error(*, error: Exception, error_code: str | None = None, error_hint: str | None = None) -> None:
     try:
         job = get_current_job()
@@ -96,6 +121,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
         subs = db.scalars(select(Submodule).where(Submodule.module_id == m.id).order_by(Submodule.order)).all()
 
         _set_job_stage(stage="load", detail=f"lessons: {len(subs)}")
+        _cancel_checkpoint(stage="load")
 
         report: dict[str, object] = {
             "ok": True,
@@ -116,27 +142,49 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
         # Product rule: each lesson must have exactly 5 questions.
         tq = 5
 
+        # Product rule: the queue must never hang.
+        # Enforce a per-lesson AI time budget; if exceeded, fall back to heuristic.
+        ai_budget_seconds_per_lesson = 90.0
+
         for si, sub in enumerate(subs, start=1):
+            _cancel_checkpoint(stage="lesson")
             title = str(sub.title or f"Урок {si}")
             text = str(sub.content or "")
 
-            _set_job_stage(stage="ollama", detail=f"{si}/{len(subs)}: {title}")
+            _set_job_stage(stage="ai", detail=f"{si}/{len(subs)}: {title}")
             ollama_debug: dict[str, object] = {}
             provider_order = None
             try:
                 provider_order = choose_llm_provider_order_fast(ttl_seconds=300, use_cache=False)
             except Exception:
                 provider_order = None
-            qs = generate_quiz_questions_ai(
-                title=title,
-                text=text,
-                n_questions=int(tq),
-                min_questions=int(tq),
-                retries=5,
-                backoff_seconds=0.9,
-                debug_out=ollama_debug,
-                provider_order=provider_order,
-            )
+            qs: list[object] = []
+            ai_elapsed_s = 0.0
+            try:
+                t0 = datetime.utcnow()
+                qs = generate_quiz_questions_ai(
+                    title=title,
+                    text=text,
+                    n_questions=int(tq),
+                    min_questions=int(tq),
+                    retries=5,
+                    backoff_seconds=0.9,
+                    debug_out=ollama_debug,
+                    provider_order=provider_order,
+                )
+                ai_elapsed_s = max(0.0, (datetime.utcnow() - t0).total_seconds())
+            except Exception as e:
+                qs = []
+                ollama_debug.setdefault("error", f"ai_exception:{type(e).__name__}")
+
+            try:
+                if ai_elapsed_s > ai_budget_seconds_per_lesson:
+                    ollama_debug.setdefault("error", f"ai_timeout_budget:{ai_elapsed_s:.1f}s")
+                    qs = []
+            except Exception:
+                pass
+
+            _cancel_checkpoint(stage="ai")
 
             ai_failed = False
             used_heuristic = False
@@ -188,6 +236,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
                     qs = []
 
             _set_job_stage(stage="replace", detail=f"{si}/{len(subs)}: {title}")
+            _cancel_checkpoint(stage="replace")
             # IMPORTANT: never delete old questions during regeneration.
             # QuizAttemptAnswer has FK to Question.id, so deletions can break attempt history.
             # Instead we version quizzes: create a new quiz, attach to the lesson, and write new questions there.
@@ -251,6 +300,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
         final_qid = getattr(m, "final_quiz_id", None)
         if final_qid:
             _set_job_stage(stage="replace", detail="final quiz")
+            _cancel_checkpoint(stage="final")
             # Same rule: do not delete old final questions; create a new final quiz.
             final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
             db.add(final_quiz)
@@ -319,35 +369,18 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
             pass
 
         needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
-        lesson_quiz_ids_subq = select(Submodule.quiz_id).where(Submodule.module_id == m.id).where(Submodule.quiz_id.is_not(None))
-        needs_regen_by_quiz = (
-            db.scalar(
-                select(func.count())
-                .select_from(Question)
-                .where(Question.quiz_id.in_(lesson_quiz_ids_subq))
-                .where(needs_regen_cond)
-            )
-            or 0
-        )
-        # Extra safety: if quiz/submodule linkage is inconsistent for any reason,
-        # fall back to tag-based scan (our tags always include module id).
-        needs_regen_by_tag = (
-            db.scalar(
-                select(func.count())
-                .select_from(Question)
-                .where(needs_regen_cond)
-                .where(Question.concept_tag.like(f"%{m.id}%"))
-            )
-            or 0
-        )
-
-        needs_regen_db = max(int(needs_regen_by_quiz), int(needs_regen_by_tag))
+        active_quiz_ids: list[uuid.UUID] = [sub.quiz_id for sub in (subs or []) if getattr(sub, "quiz_id", None)]
         if getattr(m, "final_quiz_id", None):
-            needs_regen_db += (
+            active_quiz_ids.append(m.final_quiz_id)
+        active_quiz_ids = [qid for qid in active_quiz_ids if qid is not None]
+
+        needs_regen_db = 0
+        if active_quiz_ids:
+            needs_regen_db = (
                 db.scalar(
                     select(func.count())
                     .select_from(Question)
-                    .where(Question.quiz_id == m.final_quiz_id)
+                    .where(Question.quiz_id.in_(active_quiz_ids))
                     .where(needs_regen_cond)
                 )
                 or 0
@@ -359,9 +392,16 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
         # Visibility is controlled by admin; regeneration must not auto-publish/hide modules.
 
         _set_job_stage(stage="commit")
+        _cancel_checkpoint(stage="commit")
         db.commit()
         _set_job_stage(stage="done", detail=str(m.id))
         return report
+    except RegenCanceledError:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return {"ok": False, "canceled": True, "module_id": str(module_id)}
     except Exception as e:
         try:
             db.rollback()

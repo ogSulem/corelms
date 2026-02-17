@@ -89,12 +89,6 @@ def _cancel_checkpoint(*, s3_object_key: str, stage: str) -> None:
     if not _is_cancel_requested():
         return
     _set_job_stage(stage="canceled", detail=f"{stage}: cancel")
-    try:
-        ensure_bucket_exists()
-        s3 = get_s3_client()
-        s3.delete_object(Bucket=settings.s3_bucket, Key=str(s3_object_key))
-    except Exception:
-        pass
     raise ImportCanceledError("import canceled")
 
 
@@ -276,18 +270,9 @@ def import_module_zip_job(
 
             _set_job_stage(stage="cleanup", detail=s3_object_key)
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="cleanup")
-            deleted = False
-            delete_error: str | None = None
-            try:
-                s3.delete_object(Bucket=settings.s3_bucket, Key=s3_object_key)
-                deleted = True
-            except Exception as e:
-                delete_error = str(e)
-                deleted = False
             cleanup_done = True
-            report["source_zip_deleted"] = bool(deleted)
-            if delete_error:
-                report["source_zip_delete_error"] = str(delete_error)
+            report["source_zip_deleted"] = False
+            report["source_zip_kept"] = True
 
             regen_job_id: str | None = None
             if enqueue_regen:
@@ -332,12 +317,6 @@ def import_module_zip_job(
                 db.rollback()
             except Exception:
                 pass
-            # Best effort: remove uploaded zip if still exists
-            if not cleanup_done:
-                try:
-                    s3.delete_object(Bucket=settings.s3_bucket, Key=s3_object_key)
-                except Exception:
-                    pass
             return {"ok": False, "canceled": True}
         except Exception as e:
             _set_job_stage(stage="failed", detail=str(e))
@@ -345,12 +324,6 @@ def import_module_zip_job(
             print(f"import_module_zip_job: failed err={e}", flush=True)
             log.exception("import_module_zip_job: failed")
             db.rollback()
-
-            if not cleanup_done:
-                try:
-                    s3.delete_object(Bucket=settings.s3_bucket, Key=s3_object_key)
-                except Exception:
-                    pass
             raise
         finally:
             db.close()

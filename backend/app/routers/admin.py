@@ -540,6 +540,8 @@ async def import_module_zip(
             "title": (effective_title or "").strip(),
             "created_at": datetime.utcnow().isoformat(),
             "actor_user_id": str(current.id),
+            "source_filename": str(file.filename or "")[:200],
+            "source": "legacy_multipart",
         }
         r.lpush("admin:import_jobs", json.dumps(meta, ensure_ascii=False))
         r.ltrim("admin:import_jobs", 0, 49)
@@ -657,7 +659,8 @@ class AdminPresignImportZipRequest(BaseModel):
 class AdminPresignImportZipResponse(BaseModel):
     ok: bool = True
     object_key: str
-    upload_url: str
+    upload_url: str | None = None
+    reused: bool = False
 
 
 @router.post("/modules/presign-import-zip", response_model=AdminPresignImportZipResponse)
@@ -672,6 +675,25 @@ def presign_import_zip(
     if not fn.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="only .zip is supported")
 
+    # Dedupe: if a ZIP with the same filename was already uploaded, reuse it.
+    # This allows resume without re-upload (upload to storage first, then enqueue processing).
+    norm_fn = re.sub(r"\s+", " ", fn).strip().lower()
+    try:
+        r = get_redis()
+        existing_key = str(r.get(f"admin:import_zip_by_filename:{norm_fn}") or "").strip()
+    except Exception:
+        existing_key = ""
+
+    if existing_key:
+        try:
+            ensure_bucket_exists()
+            s3 = get_s3_client()
+            s3.head_object(Bucket=settings.s3_bucket, Key=existing_key)
+            return {"ok": True, "object_key": existing_key, "upload_url": None, "reused": True}
+        except Exception:
+            # If object is missing, fall through to generating a new presign.
+            pass
+
     # Keep the uploaded zip in the same prefix used by legacy flow.
     object_key = f"uploads/admin/{uuid.uuid4()}.zip"
     try:
@@ -680,6 +702,13 @@ def presign_import_zip(
         url = presign_put(object_key=object_key, content_type=None)
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to presign upload url") from e
+
+    try:
+        r = get_redis()
+        r.set(f"admin:import_zip_by_filename:{norm_fn}", object_key)
+        r.expire(f"admin:import_zip_by_filename:{norm_fn}", 60 * 60 * 24 * 30)
+    except Exception:
+        pass
 
     audit_log(
         db=db,
@@ -690,7 +719,7 @@ def presign_import_zip(
     )
     db.commit()
 
-    return {"ok": True, "object_key": object_key, "upload_url": url}
+    return {"ok": True, "object_key": object_key, "upload_url": url, "reused": False}
 
 
 class AdminEnqueueImportZipRequest(BaseModel):
@@ -710,6 +739,19 @@ def enqueue_import_zip(
     object_key = str(body.object_key or "").strip()
     if not object_key:
         raise HTTPException(status_code=400, detail="missing object_key")
+
+    # Dedupe: avoid enqueuing the same uploaded ZIP multiple times.
+    # Allows UI to safely retry enqueue after refresh without duplicating work.
+    try:
+        r = get_redis()
+        lock_key = f"admin:import_enqueued_by_object_key:{object_key}"
+        existing_job_id = str(r.get(lock_key) or "").strip()
+        if existing_job_id:
+            raise HTTPException(status_code=409, detail=f"zip already enqueued: {existing_job_id}")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     title = (str(body.title or "").strip() or None)
     if title:
@@ -741,6 +783,13 @@ def enqueue_import_zip(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to enqueue import job") from e
+
+    try:
+        r = get_redis()
+        r.set(lock_key, str(job.id))
+        r.expire(lock_key, 60 * 60 * 6)
+    except Exception:
+        pass
 
     try:
         r = get_redis()
@@ -941,25 +990,8 @@ def cancel_job(
     except Exception:
         pass
 
-    # Best-effort cleanup of uploaded ZIP in MinIO/S3.
-    s3_key = None
-    try:
-        s3_key = (job.kwargs or {}).get("s3_object_key")
-    except Exception:
-        s3_key = None
-    if not s3_key:
-        try:
-            s3_key = (job.meta or {}).get("detail") if str((job.meta or {}).get("stage") or "") in {"start", "download", "cleanup"} else None
-        except Exception:
-            s3_key = None
-
-    if s3_key:
-        try:
-            ensure_bucket_exists()
-            s3 = get_s3_client()
-            s3.delete_object(Bucket=settings.s3_bucket, Key=str(s3_key))
-        except Exception:
-            pass
+    # IMPORTANT: do NOT delete the source ZIP from storage on cancel.
+    # Product requirement: upload to storage first, then allow resume/enqueue without re-upload.
 
     # Best-effort cleanup of any objects uploaded by the job during import.
     try:
@@ -1125,6 +1157,74 @@ def list_modules_admin(
     _: User = Depends(require_roles(UserRole.admin)),
 ):
     mods = db.scalars(select(Module).order_by(Module.title)).all()
+
+    stats_by_module: dict[str, dict[str, int]] = {}
+    needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
+    fallback_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("%fallback%"))
+    ai_cond = (Question.concept_tag.is_not(None)) & (
+        Question.concept_tag.like("ai:%") | Question.concept_tag.like("regen:%")
+    )
+    heur_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:heur:%"))
+
+    lesson_rows = (
+        db.execute(
+            select(
+                Submodule.module_id.label("module_id"),
+                func.count(Question.id).label("total_current"),
+                func.sum(case((needs_regen_cond, 1), else_=0)).label("needs_regen_current"),
+                func.sum(case((fallback_cond, 1), else_=0)).label("fallback_current"),
+                func.sum(case((ai_cond, 1), else_=0)).label("ai_current"),
+                func.sum(case((heur_cond, 1), else_=0)).label("heur_current"),
+            )
+            .select_from(Submodule)
+            .join(Question, Question.quiz_id == Submodule.quiz_id, isouter=True)
+            .where(Submodule.quiz_id.is_not(None))
+            .group_by(Submodule.module_id)
+        )
+        .all()
+    )
+
+    final_rows = (
+        db.execute(
+            select(
+                Module.id.label("module_id"),
+                func.count(Question.id).label("total_current"),
+                func.sum(case((needs_regen_cond, 1), else_=0)).label("needs_regen_current"),
+                func.sum(case((fallback_cond, 1), else_=0)).label("fallback_current"),
+                func.sum(case((ai_cond, 1), else_=0)).label("ai_current"),
+                func.sum(case((heur_cond, 1), else_=0)).label("heur_current"),
+            )
+            .select_from(Module)
+            .join(Question, Question.quiz_id == Module.final_quiz_id, isouter=True)
+            .where(Module.final_quiz_id.is_not(None))
+            .group_by(Module.id)
+        )
+        .all()
+    )
+
+    def _acc(mid: str, row: object) -> None:
+        cur = stats_by_module.get(
+            mid,
+            {
+                "total_current": 0,
+                "needs_regen_current": 0,
+                "fallback_current": 0,
+                "ai_current": 0,
+                "heur_current": 0,
+            },
+        )
+        cur["total_current"] += int(getattr(row, "total_current", 0) or 0)
+        cur["needs_regen_current"] += int(getattr(row, "needs_regen_current", 0) or 0)
+        cur["fallback_current"] += int(getattr(row, "fallback_current", 0) or 0)
+        cur["ai_current"] += int(getattr(row, "ai_current", 0) or 0)
+        cur["heur_current"] += int(getattr(row, "heur_current", 0) or 0)
+        stats_by_module[mid] = cur
+
+    for r in lesson_rows:
+        _acc(str(r.module_id), r)
+    for r in final_rows:
+        _acc(str(r.module_id), r)
+
     return {
         "items": [
             {
@@ -1134,6 +1234,16 @@ def list_modules_admin(
                 "category": m.category,
                 "difficulty": int(m.difficulty or 1),
                 "final_quiz_id": str(m.final_quiz_id) if getattr(m, "final_quiz_id", None) else None,
+                "question_quality": stats_by_module.get(
+                    str(m.id),
+                    {
+                        "total_current": 0,
+                        "needs_regen_current": 0,
+                        "fallback_current": 0,
+                        "ai_current": 0,
+                        "heur_current": 0,
+                    },
+                ),
             }
             for m in mods
         ]

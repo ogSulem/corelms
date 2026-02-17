@@ -292,21 +292,10 @@ def generate_quiz_questions_openrouter(
             write=float(settings.openrouter_timeout_write),
             pool=3.0,
         )
-        data = None
-        last_err: Exception | None = None
         with httpx.Client(timeout=timeout) as client:
-            for _attempt in range(1, 4):
-                try:
-                    r = client.post(url, json=payload, headers=headers)
-                    r.raise_for_status()
-                    data = r.json()
-                    last_err = None
-                    break
-                except Exception as e:
-                    last_err = e
-                    continue
-        if data is None:
-            raise last_err or RuntimeError("request_failed")
+            r = client.post(url, json=payload, headers=headers)
+            r.raise_for_status()
+            data = r.json()
     except Exception as e:
         status = None
         body_snip = None

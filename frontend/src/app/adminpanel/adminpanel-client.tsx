@@ -10,6 +10,21 @@ import { useAuth } from "@/lib/hooks/use-auth";
 
 type Module = { id: string; title: string };
 
+type ImportJobItem = {
+  job_id: string;
+  object_key?: string;
+  title?: string;
+  source_filename?: string;
+  created_at?: string;
+  status?: string;
+  stage?: string;
+  detail?: string;
+  error_code?: string;
+  error_hint?: string;
+  error_message?: string;
+  error?: string | null;
+};
+
 type Row = {
   user_id: string;
   name: string;
@@ -72,6 +87,13 @@ type AdminModuleItem = {
   final_quiz_id?: string | null;
   category?: string | null;
   difficulty?: number | null;
+  question_quality?: {
+    total_current: number;
+    needs_regen_current: number;
+    fallback_current: number;
+    ai_current: number;
+    heur_current: number;
+  };
 };
 
 type AdminSubmoduleItem = {
@@ -173,6 +195,53 @@ export default function AdminPanelClient() {
 
   const IMPORT_STATE_KEY = "corelms:admin_import_state";
 
+  async function loadImportQueue(limit = 20) {
+    try {
+      setImportQueueLoading(true);
+      const res = await apiFetch<{ items: any[] }>(`/admin/import-jobs?limit=${encodeURIComponent(String(limit))}` as any);
+      const items = Array.isArray(res?.items) ? res.items : [];
+      setImportQueue(
+        items.map((x) => ({
+          job_id: String((x as any)?.job_id || (x as any)?.id || ""),
+          object_key: String((x as any)?.object_key || ""),
+          title: String((x as any)?.title || ""),
+          source_filename: String((x as any)?.source_filename || ""),
+          created_at: (x as any)?.created_at ? String((x as any).created_at) : undefined,
+          status: (x as any)?.status ? String((x as any).status) : undefined,
+          stage: (x as any)?.stage ? String((x as any).stage) : undefined,
+          detail: (x as any)?.detail ? String((x as any).detail) : undefined,
+          error_code: (x as any)?.error_code ? String((x as any).error_code) : undefined,
+          error_hint: (x as any)?.error_hint ? String((x as any).error_hint) : undefined,
+          error_message: (x as any)?.error_message ? String((x as any).error_message) : undefined,
+          error: (x as any)?.error ? String((x as any).error) : null,
+        }))
+      );
+    } catch {
+      setImportQueue([]);
+    } finally {
+      setImportQueueLoading(false);
+    }
+  }
+
+  async function cancelImportJob(jobId: string) {
+    const id = String(jobId || "").trim();
+    if (!id) return;
+    const ok = window.confirm(`Отменить импорт job ${id}?`);
+    if (!ok) return;
+    try {
+      await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" } as any);
+      window.dispatchEvent(
+        new CustomEvent("corelms:toast", {
+          detail: { title: "ОТМЕНА ЗАПРОШЕНА", description: `JOB: ${id}` },
+        })
+      );
+      await loadImportQueue(50);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ОТМЕНИТЬ JOB");
+    }
+  }
+
   function saveImportState(partial?: any) {
     try {
       const cur = (() => {
@@ -249,6 +318,10 @@ export default function AdminPanelClient() {
 
   const [regenHistory, setRegenHistory] = useState<any[]>([]);
   const [regenHistoryLoading, setRegenHistoryLoading] = useState(false);
+
+  const [importQueue, setImportQueue] = useState<ImportJobItem[]>([]);
+  const [importQueueLoading, setImportQueueLoading] = useState(false);
+  const [importQueueModalOpen, setImportQueueModalOpen] = useState(false);
 
   const [adminModules, setAdminModules] = useState<AdminModuleItem[]>([]);
   const [adminModulesLoading, setAdminModulesLoading] = useState(false);
@@ -481,6 +554,7 @@ export default function AdminPanelClient() {
   useEffect(() => {
     if (tab !== "modules") return;
     void loadRegenHistory();
+    void loadImportQueue(20);
   }, [tab]);
   async function cancelCurrentJob() {
     if (!selectedJobId && importBatchJobIdsRef.current.length === 0) return;
@@ -499,7 +573,7 @@ export default function AdminPanelClient() {
         new CustomEvent("corelms:toast", {
           detail: {
             title: "ОТМЕНА ЗАПРОШЕНА",
-            description: ids.length > 1 ? `BATCH: ${ids.length} JOBS` : "ЗАДАЧА БУДЕТ ОСТАНОВЛЕНА И ZIP УДАЛЁН",
+            description: ids.length > 1 ? `BATCH: ${ids.length} JOBS` : "ЗАДАЧА БУДЕТ ОСТАНОВЛЕНА, ZIP ОСТАНЕТСЯ В STORAGE",
           },
         })
       );
@@ -524,6 +598,16 @@ export default function AdminPanelClient() {
           final_quiz_id: (m as any).final_quiz_id ? String((m as any).final_quiz_id) : null,
           category: (m as any).category ?? null,
           difficulty: typeof (m as any).difficulty === "number" ? (m as any).difficulty : null,
+          question_quality:
+            (m as any).question_quality && typeof (m as any).question_quality === "object"
+              ? {
+                  total_current: Number((m as any).question_quality.total_current || 0),
+                  needs_regen_current: Number((m as any).question_quality.needs_regen_current || 0),
+                  fallback_current: Number((m as any).question_quality.fallback_current || 0),
+                  ai_current: Number((m as any).question_quality.ai_current || 0),
+                  heur_current: Number((m as any).question_quality.heur_current || 0),
+                }
+              : undefined,
         }))
         .sort((a, b) => {
           if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
@@ -1138,7 +1222,7 @@ export default function AdminPanelClient() {
           const qs = title ? `?title=${encodeURIComponent(title)}` : "";
           // Ideal: upload large ZIPs directly to S3 to avoid Railway edge/proxy timeouts.
           // 1) presign
-          const presign = await apiFetch<{ ok: boolean; object_key: string; upload_url: string }>(
+          const presign = await apiFetch<{ ok: boolean; object_key: string; upload_url: string | null; reused?: boolean }>(
             `/admin/modules/presign-import-zip` as any,
             {
               method: "POST",
@@ -1146,17 +1230,28 @@ export default function AdminPanelClient() {
             }
           );
 
-          // 2) upload to S3 (direct)
-          setClientImportStage("upload_s3");
-          const up = await fetch(String(presign?.upload_url || ""), {
-            method: "PUT",
-            body: f,
-            // Do not set Content-Type explicitly: it can break some S3-compatible presigned URLs
-            // (SignatureDoesNotMatch) and also triggers stricter CORS.
-          });
-          if (!up.ok) {
-            const t = await up.text().catch(() => "");
-            throw new Error(`S3 upload failed: HTTP ${up.status}${t ? ` ${t.slice(0, 200)}` : ""}`);
+          if ((presign as any)?.reused) {
+            window.dispatchEvent(
+              new CustomEvent("corelms:toast", {
+                detail: {
+                  title: "ZIP УЖЕ ЗАГРУЖЕН",
+                  description: "ПОВТОРНАЯ ЗАГРУЗКА НЕ НУЖНА — ИСПОЛЬЗУЮ STORAGE",
+                },
+              })
+            );
+          } else {
+            // 2) upload to S3 (direct)
+            setClientImportStage("upload_s3");
+            const up = await fetch(String(presign?.upload_url || ""), {
+              method: "PUT",
+              body: f,
+              // Do not set Content-Type explicitly: it can break some S3-compatible presigned URLs
+              // (SignatureDoesNotMatch) and also triggers stricter CORS.
+            });
+            if (!up.ok) {
+              const t = await up.text().catch(() => "");
+              throw new Error(`S3 upload failed: HTTP ${up.status}${t ? ` ${t.slice(0, 200)}` : ""}`);
+            }
           }
 
           // 3) enqueue import job
@@ -1260,6 +1355,7 @@ export default function AdminPanelClient() {
       setClientImportStage(importCancelRequestedRef.current ? "canceled" : "processing");
       void loadAdminModules();
       void reloadModules();
+      void loadImportQueue(20);
 
       window.dispatchEvent(
         new CustomEvent("corelms:toast", {
@@ -1541,6 +1637,26 @@ export default function AdminPanelClient() {
   const selectedAdminModule = useMemo(() => {
     return adminModules.find((m) => String(m.id) === String(selectedAdminModuleId)) || null;
   }, [adminModules, selectedAdminModuleId]);
+
+  const selectedAdminModuleQuality = useMemo(() => {
+    const q = (selectedAdminModule as any)?.question_quality;
+    if (!q) {
+      return {
+        total_current: 0,
+        needs_regen_current: 0,
+        fallback_current: 0,
+        ai_current: 0,
+        heur_current: 0,
+      };
+    }
+    return {
+      total_current: Number(q.total_current || 0),
+      needs_regen_current: Number(q.needs_regen_current || 0),
+      fallback_current: Number(q.fallback_current || 0),
+      ai_current: Number(q.ai_current || 0),
+      heur_current: Number(q.heur_current || 0),
+    };
+  }, [selectedAdminModule]);
 
   const selectedQuizQuestions = useMemo(() => {
     const qid = String(selectedQuizId || "").trim();
@@ -1862,6 +1978,157 @@ export default function AdminPanelClient() {
                   </div>
                 ) : null}
 
+                <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                      ОЧЕРЕДЬ ИМПОРТА
+                      <span className="ml-3 text-[9px] font-black uppercase tracking-widest text-zinc-400">
+                        {importQueueLoading ? "..." : `ЗАДАЧ: ${importQueue.length}`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                        onClick={() => void loadImportQueue(20)}
+                        disabled={importQueueLoading}
+                      >
+                        {importQueueLoading ? "..." : "ОБНОВИТЬ"}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                        onClick={() => setImportQueueModalOpen(true)}
+                        disabled={!importQueue.length}
+                      >
+                        ВСЯ ОЧЕРЕДЬ
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid gap-2">
+                    {(importQueue || []).slice(0, 3).map((it) => {
+                      const st = String(it.status || "").toLowerCase();
+                      const stage = String(it.stage || "").toLowerCase();
+                      const terminal = st === "finished" || st === "failed" || stage === "canceled";
+                      return (
+                        <div key={it.job_id} className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">
+                              {(it.title || it.source_filename || it.object_key || "ZIP").toString()}
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-2">
+                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                {(it.status || "—").toString().toUpperCase()}
+                              </div>
+                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                {(it.stage || "—").toString().toUpperCase()}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="shrink-0 flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                              onClick={() => {
+                                setSelectedJobId(String(it.job_id));
+                                setJobPanelOpen(true);
+                              }}
+                            >
+                              ОТКРЫТЬ
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
+                              disabled={terminal}
+                              onClick={() => void cancelImportJob(String(it.job_id))}
+                            >
+                              ОТМЕНА
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {!importQueueLoading && !(importQueue || []).length ? (
+                      <div className="text-[10px] font-bold text-zinc-500">—</div>
+                    ) : null}
+                  </div>
+                </div>
+
+                <Modal open={importQueueModalOpen} onClose={() => setImportQueueModalOpen(false)} title="ОЧЕРЕДЬ ИМПОРТА">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                        ВСЕ ЗАДАЧИ
+                        <span className="ml-2 text-zinc-400">{importQueueLoading ? "..." : importQueue.length}</span>
+                      </div>
+                      <Button variant="outline" className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]" onClick={() => void loadImportQueue(50)}>
+                        ОБНОВИТЬ
+                      </Button>
+                    </div>
+
+                    <div className="max-h-[520px] overflow-auto pr-1 grid gap-2">
+                      {(importQueue || []).map((it) => {
+                        const st = String(it.status || "").toLowerCase();
+                        const stage = String(it.stage || "").toLowerCase();
+                        const terminal = st === "finished" || st === "failed" || stage === "canceled";
+                        const label = (it.title || it.source_filename || it.object_key || "ZIP").toString();
+                        return (
+                          <div key={it.job_id} className="rounded-xl border border-zinc-200 bg-white p-3">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{label}</div>
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                    {(it.status || "—").toString().toUpperCase()}
+                                  </div>
+                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                    {(it.stage || "—").toString().toUpperCase()}
+                                  </div>
+                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                    {String(it.job_id || "").slice(0, 10)}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="shrink-0 flex items-center gap-2">
+                                <Button
+                                  variant="outline"
+                                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                  onClick={() => {
+                                    setSelectedJobId(String(it.job_id));
+                                    setJobPanelOpen(true);
+                                    setImportQueueModalOpen(false);
+                                  }}
+                                >
+                                  ОТКРЫТЬ
+                                </Button>
+                                <Button
+                                  variant="destructive"
+                                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                  disabled={terminal}
+                                  onClick={() => void cancelImportJob(String(it.job_id))}
+                                >
+                                  ОТМЕНА
+                                </Button>
+                              </div>
+                            </div>
+
+                            {it.error ? (
+                              <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 p-3 text-[10px] font-bold text-rose-800 break-words">
+                                {it.error_hint ? `${it.error_hint}\n` : ""}
+                                {it.error_code ? `CODE: ${it.error_code}\n` : ""}
+                                {it.error}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </Modal>
+
                 {jobPanelOpen ? (
                   <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
                     <div className="flex items-start justify-between gap-4">
@@ -1923,6 +2190,40 @@ export default function AdminPanelClient() {
                       <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-600">
                         CLIENT: {clientImportStage.toUpperCase()} {clientImportFileName ? `· ${clientImportFileName}` : ""}
                         {importBatch ? ` · ${importBatch.done}/${importBatch.total}` : ""}
+                      </div>
+                    ) : null}
+
+                    {selectedAdminModule ? (
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
+                        <div className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                          AI {selectedAdminModuleQuality.ai_current}
+                        </div>
+                        <div className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                          HEUR {selectedAdminModuleQuality.heur_current}
+                        </div>
+                        <div className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                          TOTAL {selectedAdminModuleQuality.total_current}
+                        </div>
+                        <div
+                          className={
+                            "rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
+                            (selectedAdminModuleQuality.fallback_current > 0
+                              ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
+                              : "border-zinc-200 bg-white text-zinc-700")
+                          }
+                        >
+                          FALLBACK {selectedAdminModuleQuality.fallback_current}
+                        </div>
+                        <div
+                          className={
+                            "rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
+                            (selectedAdminModuleQuality.needs_regen_current > 0
+                              ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
+                              : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
+                          }
+                        >
+                          NEEDS {selectedAdminModuleQuality.needs_regen_current}
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -2019,6 +2320,15 @@ export default function AdminPanelClient() {
                 <div className="mt-5 grid gap-2 max-h-[520px] overflow-auto pr-1">
                   {(adminModules || []).map((m) => {
                     const active = String(m.id) === String(selectedAdminModuleId);
+                    const q = (m as any).question_quality as
+                      | {
+                          total_current: number;
+                          needs_regen_current: number;
+                          fallback_current: number;
+                          ai_current: number;
+                          heur_current: number;
+                        }
+                      | undefined;
                     return (
                       <button
                         key={m.id}
@@ -2037,6 +2347,39 @@ export default function AdminPanelClient() {
                             <div className="mt-1 text-[9px] font-black uppercase tracking-widest text-zinc-600">
                               {m.is_active ? "АКТИВЕН" : "НЕОБХОДИМ РЕГЕН (СКРЫТ ДО ГОТОВНОСТИ)"}
                             </div>
+                            {q ? (
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <div className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                  AI {Number(q.ai_current || 0)}
+                                </div>
+                                <div className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                  HEUR {Number(q.heur_current || 0)}
+                                </div>
+                                <div className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                  TOTAL {Number(q.total_current || 0)}
+                                </div>
+                                <div
+                                  className={
+                                    "rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest " +
+                                    (Number(q.fallback_current || 0) > 0
+                                      ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
+                                      : "border-zinc-200 bg-white text-zinc-700")
+                                  }
+                                >
+                                  FALLBACK {Number(q.fallback_current || 0)}
+                                </div>
+                                <div
+                                  className={
+                                    "rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest " +
+                                    (Number(q.needs_regen_current || 0) > 0
+                                      ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
+                                      : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
+                                  }
+                                >
+                                  NEEDS {Number(q.needs_regen_current || 0)}
+                                </div>
+                              </div>
+                            ) : null}
                           </div>
                           <div
                             className={
