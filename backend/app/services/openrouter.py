@@ -22,6 +22,59 @@ class OpenRouterQuizResponse(BaseModel):
     questions: list[OpenRouterQuestion]
 
 
+def _extract_abcd_options(prompt: str) -> list[str] | None:
+    # Expect lines like "A) ...". We keep it strict to ensure predictable UX.
+    if not prompt:
+        return None
+    lines = [ln.strip() for ln in str(prompt).splitlines() if ln.strip()]
+    opts: dict[str, str] = {}
+    for ln in lines:
+        if len(ln) < 3:
+            continue
+        head = ln[:2].upper()
+        if head in {"A)", "B)", "C)", "D)"}:
+            key = head[0]
+            val = ln[2:].strip()
+            if val:
+                opts[key] = val
+    if all(k in opts for k in ("A", "B", "C", "D")):
+        return [opts["A"], opts["B"], opts["C"], opts["D"]]
+    return None
+
+
+def _is_good_question(q: OpenRouterQuestion, *, seen_prompts: set[str]) -> bool:
+    prompt = str(q.prompt or "").strip()
+    if not prompt or len(prompt) < 25:
+        return False
+
+    # Avoid duplicates inside a single response.
+    norm_p = re.sub(r"\s+", " ", prompt).strip().lower()
+    if norm_p in seen_prompts:
+        return False
+
+    # Must have 4 options and they must be distinct and non-trivial.
+    opts = _extract_abcd_options(prompt)
+    if not opts:
+        return False
+    norm_opts = [re.sub(r"\s+", " ", str(o)).strip().lower() for o in opts]
+    if len({o for o in norm_opts if o}) != 4:
+        return False
+    if any(len(o) < 2 for o in norm_opts):
+        return False
+
+    ca = str(q.correct_answer or "").strip().upper()[:1]
+    if ca not in {"A", "B", "C", "D"}:
+        return False
+
+    # Explanation is required for quality.
+    exp = str(q.explanation or "").strip()
+    if len(exp) < 10:
+        return False
+
+    seen_prompts.add(norm_p)
+    return True
+
+
 def _format_options_for_prompt(options: object) -> str:
     if not isinstance(options, list):
         return ""
@@ -377,6 +430,7 @@ def generate_quiz_questions_openrouter(
             return []
 
     out: list[OpenRouterQuestion] = []
+    seen_prompts: set[str] = set()
     for q in parsed.questions[: int(n_questions)]:
         t = (q.type or "").strip().lower()
         if t != "single":
@@ -392,9 +446,8 @@ def generate_quiz_questions_openrouter(
             continue
         q.correct_answer = ca
 
-        # Explanation improves quality but should not block question delivery.
-        if not q.explanation or not str(q.explanation).strip():
-            q.explanation = None
+        if not _is_good_question(q, seen_prompts=seen_prompts):
+            continue
         out.append(q)
 
     if not out:
