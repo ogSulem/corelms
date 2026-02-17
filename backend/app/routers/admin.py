@@ -905,47 +905,106 @@ def enqueue_import_zip(
 @router.get("/import-jobs")
 def list_import_jobs(
     limit: int = 20,
+    include_terminal: bool = False,
     _: User = Depends(require_roles(UserRole.admin)),
 ):
     take = max(1, min(int(limit or 20), 50))
+    include_terminal = bool(include_terminal)
     try:
         r = get_redis()
-        raw = r.lrange("admin:import_jobs", 0, take - 1)
+        raw = r.lrange("admin:import_jobs", 0, 200)
+        raw_hist = r.lrange("admin:import_jobs_history", 0, 200) if include_terminal else []
     except Exception:
         raw = []
+        raw_hist = []
 
-    items: list[dict] = []
+    def _enrich(obj: dict) -> tuple[dict, bool]:
+        job_id = str(obj.get("job_id") or "").strip()
+        job = fetch_job(job_id) if job_id else None
+        if job is None:
+            return obj, False
+
+        st = str(job.get_status(refresh=True) or "").strip().lower()
+        meta = dict(job.meta or {})
+        stage = str(meta.get("stage") or "").strip().lower()
+
+        obj["status"] = st
+        obj["stage"] = meta.get("stage")
+        obj["stage_at"] = meta.get("stage_at")
+        obj["detail"] = meta.get("detail")
+        obj["error_code"] = meta.get("error_code")
+        obj["error_hint"] = meta.get("error_hint")
+        obj["error_message"] = meta.get("error_message")
+        obj["cancel_requested"] = bool(meta.get("cancel_requested"))
+
+        terminal = st in {"finished", "failed", "canceled"} or stage == "canceled"
+
+        try:
+            if terminal and st == "finished":
+                res = job.result
+                if isinstance(res, dict):
+                    if not obj.get("module_id") and res.get("module_id"):
+                        obj["module_id"] = str(res.get("module_id"))
+                    rep = res.get("report") if isinstance(res.get("report"), dict) else None
+                    if rep and not obj.get("module_title") and rep.get("module_title"):
+                        obj["module_title"] = str(rep.get("module_title"))
+        except Exception:
+            pass
+
+        try:
+            if terminal and st == "failed":
+                err = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
+                obj["error"] = err.splitlines()[0][:500] if err else None
+        except Exception:
+            obj["error"] = None
+
+        return obj, terminal
+
+    active_items: list[dict] = []
+    terminal_moved: list[dict] = []
     for s in raw or []:
         try:
             obj = json.loads(s)
-            if isinstance(obj, dict):
-                job_id = str(obj.get("job_id") or "").strip()
-                if job_id:
-                    job = fetch_job(job_id)
-                else:
-                    job = None
-
-                if job is not None:
-                    st = job.get_status(refresh=True)
-                    meta = dict(job.meta or {})
-                    obj["status"] = st
-                    obj["stage"] = meta.get("stage")
-                    obj["stage_at"] = meta.get("stage_at")
-                    obj["detail"] = meta.get("detail")
-                    obj["error_code"] = meta.get("error_code")
-                    obj["error_hint"] = meta.get("error_hint")
-                    obj["error_message"] = meta.get("error_message")
-                    try:
-                        if st == "failed":
-                            err = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
-                            obj["error"] = err.splitlines()[0][:500] if err else None
-                    except Exception:
-                        obj["error"] = None
-                items.append(obj)
+            if not isinstance(obj, dict):
+                continue
+            obj2, terminal = _enrich(obj)
+            if terminal:
+                terminal_moved.append(obj2)
+            else:
+                active_items.append(obj2)
         except Exception:
             continue
 
-    return {"items": items}
+    # Move terminal jobs out of active queue into history (best-effort), and keep the active list clean.
+    try:
+        r = get_redis()
+        if terminal_moved:
+            for it in terminal_moved:
+                r.lpush("admin:import_jobs_history", json.dumps(it, ensure_ascii=False))
+            r.ltrim("admin:import_jobs_history", 0, 199)
+            r.expire("admin:import_jobs_history", 60 * 60 * 24 * 30)
+
+        r.delete("admin:import_jobs")
+        for it in active_items[:200]:
+            r.rpush("admin:import_jobs", json.dumps(it, ensure_ascii=False))
+        r.ltrim("admin:import_jobs", 0, 199)
+        r.expire("admin:import_jobs", 60 * 60 * 24 * 30)
+    except Exception:
+        pass
+
+    items_out = active_items[:take]
+    out: dict[str, object] = {"items": items_out}
+    if include_terminal:
+        hist_items: list[dict] = []
+        for s in raw_hist or []:
+            try:
+                obj = json.loads(s)
+                if isinstance(obj, dict):
+                    hist_items.append(obj)
+            except Exception:
+                continue
+        out["history"] = hist_items[:take]
+    return out
 
 
 @router.post("/import-jobs/{job_id}/retry")

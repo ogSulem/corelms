@@ -15,6 +15,8 @@ type ImportJobItem = {
   object_key?: string;
   title?: string;
   source_filename?: string;
+  module_id?: string;
+  module_title?: string;
   created_at?: string;
   status?: string;
   stage?: string;
@@ -195,17 +197,40 @@ export default function AdminPanelClient() {
 
   const IMPORT_STATE_KEY = "corelms:admin_import_state";
 
-  async function loadImportQueue(limit = 20) {
+  async function loadImportQueue(limit = 20, includeTerminal: boolean = false) {
     try {
       setImportQueueLoading(true);
-      const res = await apiFetch<{ items: any[] }>(`/admin/import-jobs?limit=${encodeURIComponent(String(limit))}` as any);
+      const res = await apiFetch<{ items: any[]; history?: any[] }>(
+        `/admin/import-jobs?limit=${encodeURIComponent(String(limit))}&include_terminal=${includeTerminal ? "true" : "false"}` as any
+      );
       const items = Array.isArray(res?.items) ? res.items : [];
+      const hist = Array.isArray((res as any)?.history) ? (res as any).history : [];
       setImportQueue(
-        items.map((x) => ({
+        items.map((x: any) => ({
           job_id: String((x as any)?.job_id || (x as any)?.id || ""),
           object_key: String((x as any)?.object_key || ""),
           title: String((x as any)?.title || ""),
           source_filename: String((x as any)?.source_filename || ""),
+          module_id: (x as any)?.module_id ? String((x as any).module_id) : undefined,
+          module_title: (x as any)?.module_title ? String((x as any).module_title) : undefined,
+          created_at: (x as any)?.created_at ? String((x as any).created_at) : undefined,
+          status: (x as any)?.status ? String((x as any).status) : undefined,
+          stage: (x as any)?.stage ? String((x as any).stage) : undefined,
+          detail: (x as any)?.detail ? String((x as any).detail) : undefined,
+          error_code: (x as any)?.error_code ? String((x as any).error_code) : undefined,
+          error_hint: (x as any)?.error_hint ? String((x as any).error_hint) : undefined,
+          error_message: (x as any)?.error_message ? String((x as any).error_message) : undefined,
+          error: (x as any)?.error ? String((x as any).error) : null,
+        }))
+      );
+      setImportQueueHistory(
+        hist.map((x: any) => ({
+          job_id: String((x as any)?.job_id || (x as any)?.id || ""),
+          object_key: String((x as any)?.object_key || ""),
+          title: String((x as any)?.title || ""),
+          source_filename: String((x as any)?.source_filename || ""),
+          module_id: (x as any)?.module_id ? String((x as any).module_id) : undefined,
+          module_title: (x as any)?.module_title ? String((x as any).module_title) : undefined,
           created_at: (x as any)?.created_at ? String((x as any).created_at) : undefined,
           status: (x as any)?.status ? String((x as any).status) : undefined,
           stage: (x as any)?.stage ? String((x as any).stage) : undefined,
@@ -218,8 +243,39 @@ export default function AdminPanelClient() {
       );
     } catch {
       setImportQueue([]);
+      setImportQueueHistory([]);
     } finally {
       setImportQueueLoading(false);
+    }
+  }
+
+  async function retryImportJob(jobId: string) {
+    const id = String(jobId || "").trim();
+    if (!id) return;
+    try {
+      await apiFetch<any>(`/admin/import-jobs/${encodeURIComponent(id)}/retry`, { method: "POST" } as any);
+      window.dispatchEvent(
+        new CustomEvent("corelms:toast", {
+          detail: { title: "ПОВТОР ЗАПУЩЕН", description: `JOB: ${id}` },
+        })
+      );
+      await loadImportQueue(50, true);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ПОВТОРИТЬ JOB");
+    }
+  }
+
+  function openModuleFromImport(it: ImportJobItem) {
+    const mid = String((it as any)?.module_id || "").trim();
+    if (!mid) return;
+    try {
+      // In this admin UI, selecting a module is enough to open its details and submodules.
+      setSelectedAdminModuleId(mid);
+      setTab("modules");
+      setImportQueueModalOpen(false);
+    } catch {
+      // ignore
     }
   }
 
@@ -235,7 +291,7 @@ export default function AdminPanelClient() {
           detail: { title: "ОТМЕНА ЗАПРОШЕНА", description: `JOB: ${id}` },
         })
       );
-      await loadImportQueue(50);
+      await loadImportQueue(50, true);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg || "НЕ УДАЛОСЬ ОТМЕНИТЬ JOB");
@@ -325,6 +381,8 @@ export default function AdminPanelClient() {
   const [importQueue, setImportQueue] = useState<ImportJobItem[]>([]);
   const [importQueueLoading, setImportQueueLoading] = useState(false);
   const [importQueueModalOpen, setImportQueueModalOpen] = useState(false);
+  const [importQueueHistory, setImportQueueHistory] = useState<ImportJobItem[]>([]);
+  const [importQueueView, setImportQueueView] = useState<"active" | "history">("active");
 
   const [adminModules, setAdminModules] = useState<AdminModuleItem[]>([]);
   const [adminModulesLoading, setAdminModulesLoading] = useState(false);
@@ -557,7 +615,7 @@ export default function AdminPanelClient() {
   useEffect(() => {
     if (tab !== "modules") return;
     void loadRegenHistory();
-    void loadImportQueue(20);
+    void loadImportQueue(20, false);
   }, [tab]);
   async function cancelCurrentJob() {
     if (!selectedJobId && importBatchJobIdsRef.current.length === 0) return;
@@ -2039,7 +2097,7 @@ export default function AdminPanelClient() {
                       <button
                         type="button"
                         className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => void loadImportQueue(20)}
+                        onClick={() => void loadImportQueue(20, false)}
                         disabled={importQueueLoading}
                       >
                         {importQueueLoading ? "..." : "ОБНОВИТЬ"}
@@ -2047,8 +2105,11 @@ export default function AdminPanelClient() {
                       <button
                         type="button"
                         className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => setImportQueueModalOpen(true)}
-                        disabled={!importQueue.length}
+                        onClick={() => {
+                          setImportQueueView("active");
+                          setImportQueueModalOpen(true);
+                          void loadImportQueue(50, true);
+                        }}
                       >
                         ВСЯ ОЧЕРЕДЬ
                       </button>
@@ -2059,19 +2120,38 @@ export default function AdminPanelClient() {
                     {(importQueue || []).slice(0, 3).map((it) => {
                       const st = String(it.status || "").toLowerCase();
                       const stage = String(it.stage || "").toLowerCase();
-                      const terminal = st === "finished" || st === "failed" || stage === "canceled";
+                      const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
+                      const displayName = String(it.module_title || it.title || it.source_filename || "ZIP");
+                      const badge = (() => {
+                        if (st === "failed") return "ОШИБКА";
+                        if (stage === "canceled" || st === "canceled") return "ОТМЕНЕНО";
+                        if (st === "queued" || st === "deferred") return "В ОЧЕРЕДИ";
+                        if (st === "started") return "В РАБОТЕ";
+                        return "В РАБОТЕ";
+                      })();
+                      const stageHuman = (() => {
+                        const s = stage.trim();
+                        if (!s) return "—";
+                        if (s === "download") return "СКАЧИВАНИЕ";
+                        if (s === "extract") return "РАСПАКОВКА";
+                        if (s === "import") return "ИМПОРТ";
+                        if (s === "regen_enqueue") return "ЗАПУСК ТЕСТОВ";
+                        if (s === "cleanup") return "ОЧИСТКА";
+                        if (s === "done") return "ГОТОВО";
+                        return s.toUpperCase();
+                      })();
                       return (
                         <div key={it.job_id} className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
                           <div className="min-w-0">
                             <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">
-                              {(it.title || it.source_filename || it.object_key || "ZIP").toString()}
+                              {displayName}
                             </div>
                             <div className="mt-1 flex flex-wrap items-center gap-2">
                               <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                {(it.status || "—").toString().toUpperCase()}
+                                {badge}
                               </div>
                               <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                {(it.stage || "—").toString().toUpperCase()}
+                                {stageHuman}
                               </div>
                             </div>
                           </div>
@@ -2109,20 +2189,54 @@ export default function AdminPanelClient() {
                   <div className="space-y-2">
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                        ВСЕ ЗАДАЧИ
-                        <span className="ml-2 text-zinc-400">{importQueueLoading ? "..." : importQueue.length}</span>
+                        {importQueueView === "history" ? "ИСТОРИЯ" : "АКТИВНЫЕ"}
+                        <span className="ml-2 text-zinc-400">
+                          {importQueueLoading
+                            ? "..."
+                            : importQueueView === "history"
+                              ? importQueueHistory.length
+                              : importQueue.length}
+                        </span>
                       </div>
-                      <Button variant="outline" className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]" onClick={() => void loadImportQueue(50)}>
-                        ОБНОВИТЬ
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant={importQueueView === "active" ? "primary" : "outline"}
+                          className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                          onClick={() => setImportQueueView("active")}
+                        >
+                          АКТИВНЫЕ
+                        </Button>
+                        <Button
+                          variant={importQueueView === "history" ? "primary" : "outline"}
+                          className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                          onClick={() => setImportQueueView("history")}
+                        >
+                          ИСТОРИЯ
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                          onClick={() => void loadImportQueue(50, true)}
+                        >
+                          ОБНОВИТЬ
+                        </Button>
+                      </div>
                     </div>
 
                     <div className="max-h-[520px] overflow-auto pr-1 grid gap-2">
-                      {(importQueue || []).map((it) => {
+                      {((importQueueView === "history" ? importQueueHistory : importQueue) || []).map((it) => {
                         const st = String(it.status || "").toLowerCase();
                         const stage = String(it.stage || "").toLowerCase();
-                        const terminal = st === "finished" || st === "failed" || stage === "canceled";
-                        const label = (it.title || it.source_filename || it.object_key || "ZIP").toString();
+                        const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
+                        const label = String(it.module_title || it.title || it.source_filename || "ZIP");
+                        const badge = (() => {
+                          if (st === "finished") return "ГОТОВО";
+                          if (st === "failed") return "ОШИБКА";
+                          if (stage === "canceled" || st === "canceled") return "ОТМЕНЕНО";
+                          if (st === "queued" || st === "deferred") return "В ОЧЕРЕДИ";
+                          if (st === "started") return "В РАБОТЕ";
+                          return (st || "—").toUpperCase();
+                        })();
                         return (
                           <div key={it.job_id} className="rounded-xl border border-zinc-200 bg-white p-3">
                             <div className="flex items-start justify-between gap-3">
@@ -2130,14 +2244,13 @@ export default function AdminPanelClient() {
                                 <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{label}</div>
                                 <div className="mt-2 flex flex-wrap items-center gap-2">
                                   <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                    {(it.status || "—").toString().toUpperCase()}
+                                    {badge}
                                   </div>
-                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                    {(it.stage || "—").toString().toUpperCase()}
-                                  </div>
-                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                    {String(it.job_id || "").slice(0, 10)}
-                                  </div>
+                                  {importQueueView === "history" ? (
+                                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                      {String(it.job_id || "").slice(0, 10)}
+                                    </div>
+                                  ) : null}
                                 </div>
                               </div>
 
@@ -2153,6 +2266,24 @@ export default function AdminPanelClient() {
                                 >
                                   ОТКРЫТЬ
                                 </Button>
+                                {st === "finished" && String((it as any)?.module_id || "").trim() ? (
+                                  <Button
+                                    variant="primary"
+                                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                    onClick={() => openModuleFromImport(it)}
+                                  >
+                                    МОДУЛЬ
+                                  </Button>
+                                ) : null}
+                                {st === "failed" ? (
+                                  <Button
+                                    variant="outline"
+                                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                    onClick={() => void retryImportJob(String(it.job_id))}
+                                  >
+                                    ПОВТОРИТЬ
+                                  </Button>
+                                ) : null}
                                 <Button
                                   variant="destructive"
                                   className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
