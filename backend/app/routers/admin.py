@@ -27,6 +27,7 @@ from app.models.audit import LearningEvent, LearningEventType
 from app.models.asset import ContentAsset
 from app.models.module import Module, Submodule
 from app.models.quiz import Question, Quiz
+from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User, UserRole
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.quiz import QuestionType, QuizType
@@ -2090,6 +2091,14 @@ def admin_user_history(
         .limit(take)
     ).all()
 
+    sec_events = db.scalars(
+        select(SecurityAuditEvent)
+        .where(SecurityAuditEvent.target_user_id == uid)
+        .where(SecurityAuditEvent.event_type.in_(["auth_login_new_context"]))
+        .order_by(SecurityAuditEvent.created_at.desc())
+        .limit(take)
+    ).all()
+
     attempt_quiz_ids = list({a.quiz_id for a in attempts if a.quiz_id is not None})
     subs_by_quiz: dict[str, dict] = {}
     if attempt_quiz_ids:
@@ -2160,6 +2169,23 @@ def admin_user_history(
             return obj if isinstance(obj, dict) else None
         except Exception:
             return None
+
+    def _sec_event_display(e: SecurityAuditEvent) -> tuple[str, str | None]:
+        meta = _try_parse_meta(e.meta)
+        new_device = bool((meta or {}).get("new_device"))
+        new_ip = bool((meta or {}).get("new_ip"))
+        ip = str(e.ip or (meta or {}).get("ip") or "").strip()
+
+        title = "Вход в аккаунт"
+        if new_device and new_ip:
+            title = "Вход с нового устройства и IP"
+        elif new_device:
+            title = "Вход с нового устройства"
+        elif new_ip:
+            title = "Вход с нового IP"
+
+        subtitle = f"IP: {ip}" if ip else None
+        return title, subtitle
 
     def _event_display(e: LearningEvent) -> tuple[str, str, str | None]:
         t = e.type.value

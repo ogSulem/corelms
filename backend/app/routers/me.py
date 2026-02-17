@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from fastapi import APIRouter, Depends, Query
 from datetime import datetime
 from sqlalchemy import func, select
@@ -12,6 +13,7 @@ from app.models.assignment import Assignment
 from app.models.audit import LearningEvent
 from app.models.asset import ContentAsset
 from app.models.module import Module, Submodule
+from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User
 from app.schemas.me import (
     MyActivityFeedResponse,
@@ -364,6 +366,14 @@ def my_history(
         .limit(take)
     ).all()
 
+    sec_events = db.scalars(
+        select(SecurityAuditEvent)
+        .where(SecurityAuditEvent.target_user_id == user.id)
+        .where(SecurityAuditEvent.event_type.in_(["auth_login_new_context"]))
+        .order_by(SecurityAuditEvent.created_at.desc())
+        .limit(take)
+    ).all()
+
     # Enrich attempts with module/submodule
     attempt_quiz_ids = list({a.quiz_id for a in attempts if a.quiz_id is not None})
     subs_by_quiz: dict[str, dict] = {}
@@ -437,6 +447,23 @@ def my_history(
         except Exception:
             return None
 
+    def _sec_event_display(e: SecurityAuditEvent) -> tuple[str, str | None]:
+        meta = _try_parse_meta(e.meta)
+        new_device = bool((meta or {}).get("new_device"))
+        new_ip = bool((meta or {}).get("new_ip"))
+        ip = str(e.ip or (meta or {}).get("ip") or "").strip()
+
+        title = "Вход в аккаунт"
+        if new_device and new_ip:
+            title = "Вход с нового устройства и IP"
+        elif new_device:
+            title = "Вход с нового устройства"
+        elif new_ip:
+            title = "Вход с нового IP"
+
+        subtitle = f"IP: {ip}" if ip else None
+        return title, subtitle
+
     def _event_display(e: LearningEvent) -> tuple[str, str | None, str | None, str]:
         t = e.type.value
         meta = _try_parse_meta(e.meta)
@@ -507,6 +534,28 @@ def my_history(
                 "module_title": ctx.get("module_title"),
                 "submodule_id": ctx.get("submodule_id"),
                 "submodule_title": ctx.get("submodule_title"),
+                "asset_id": None,
+                "asset_name": None,
+            }
+        )
+
+    for se in sec_events:
+        title, subtitle = _sec_event_display(se)
+        items.append(
+            {
+                "id": f"security:{se.id}",
+                "created_at": se.created_at.isoformat(),
+                "kind": "security",
+                "title": title,
+                "subtitle": subtitle,
+                "href": None,
+                "event_type": se.event_type,
+                "ref_id": None,
+                "meta": se.meta,
+                "module_id": None,
+                "module_title": None,
+                "submodule_id": None,
+                "submodule_title": None,
                 "asset_id": None,
                 "asset_name": None,
             }
