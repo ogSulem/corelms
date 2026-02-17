@@ -38,7 +38,14 @@ import os
 import time
 import urllib.request
 
-url = os.environ.get("S3_ENDPOINT_URL", "http://minio:9000").rstrip("/") + "/minio/health/ready"
+s3 = os.environ.get("S3_ENDPOINT_URL", "http://minio:9000").rstrip("/")
+
+# Only MinIO exposes /minio/health/ready. For real S3 (REG.RU, AWS, etc.) skip this probe.
+if "minio" not in s3:
+    print("MinIO readiness probe skipped")
+    raise SystemExit(0)
+
+url = s3 + "/minio/health/ready"
 for _ in range(60):
     try:
         with urllib.request.urlopen(url, timeout=2) as r:
@@ -103,4 +110,4 @@ PY
   fi
 fi
 
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
