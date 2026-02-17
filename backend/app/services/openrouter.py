@@ -214,11 +214,61 @@ def generate_quiz_questions_openrouter(
         _set_debug("invalid_json")
         return []
 
+    if debug_out is not None:
+        debug_out.setdefault("raw_snip", raw[:600])
+        try:
+            debug_out.setdefault("json_keys", list(obj.keys()))
+        except Exception:
+            pass
+
     try:
         parsed = OpenRouterQuizResponse.model_validate(obj)
     except ValidationError:
-        _set_debug("schema_validation_failed")
-        return []
+        # Be forgiving: OpenRouter models may return slightly different schemas.
+        # Try to normalize common shapes into {"questions": [{type,prompt,correct_answer,explanation}]}.
+        try:
+            raw_items = None
+            for k in ("questions", "items", "data", "result"):
+                v = obj.get(k) if isinstance(obj, dict) else None
+                if isinstance(v, list):
+                    raw_items = v
+                    break
+
+            if raw_items is None and isinstance(obj, dict):
+                # Sometimes the model returns a single question object.
+                if any(x in obj for x in ("prompt", "question")):
+                    raw_items = [obj]
+
+            normalized: list[OpenRouterQuestion] = []
+            for it in raw_items or []:
+                if not isinstance(it, dict):
+                    continue
+                cand = {
+                    "type": (it.get("type") or it.get("qtype") or it.get("question_type") or "single"),
+                    "prompt": (it.get("prompt") or it.get("question") or it.get("text") or ""),
+                    "correct_answer": (
+                        it.get("correct_answer")
+                        or it.get("answer")
+                        or it.get("correct")
+                        or it.get("correctOption")
+                        or ""
+                    ),
+                    "explanation": (it.get("explanation") or it.get("rationale") or it.get("reason") or None),
+                }
+                try:
+                    q = OpenRouterQuestion.model_validate(cand)
+                except Exception:
+                    continue
+                normalized.append(q)
+
+            if normalized:
+                parsed = OpenRouterQuizResponse(questions=normalized)
+            else:
+                _set_debug("schema_validation_failed")
+                return []
+        except Exception:
+            _set_debug("schema_validation_failed")
+            return []
 
     out: list[OpenRouterQuestion] = []
     for q in parsed.questions[: int(n_questions)]:
