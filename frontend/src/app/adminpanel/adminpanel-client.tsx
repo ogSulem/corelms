@@ -1130,9 +1130,8 @@ export default function AdminPanelClient() {
           const up = await fetch(String(presign?.upload_url || ""), {
             method: "PUT",
             body: f,
-            headers: {
-              "Content-Type": String((f as any)?.type || "application/zip"),
-            },
+            // Do not set Content-Type explicitly: it can break some S3-compatible presigned URLs
+            // (SignatureDoesNotMatch) and also triggers stricter CORS.
           });
           if (!up.ok) {
             const t = await up.text().catch(() => "");

@@ -583,7 +583,9 @@ def presign_import_zip(
     # Keep the uploaded zip in the same prefix used by legacy flow.
     object_key = f"uploads/admin/{uuid.uuid4()}.zip"
     try:
-        url = presign_put(object_key=object_key, content_type=(body.content_type or "application/zip"))
+        # Do not bind the presigned URL to Content-Type.
+        # Browsers may send a slightly different content-type (or none), which would cause SignatureDoesNotMatch.
+        url = presign_put(object_key=object_key, content_type=None)
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to presign upload url") from e
 
