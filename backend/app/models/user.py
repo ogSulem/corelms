@@ -22,6 +22,8 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), index=True)
     position: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
     xp: Mapped[int] = mapped_column(Integer, default=0)
     level: Mapped[int] = mapped_column(Integer, default=1)
     streak: Mapped[int] = mapped_column(Integer, default=0)

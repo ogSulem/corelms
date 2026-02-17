@@ -40,6 +40,8 @@ class MeResponse(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
+    confirm_password: str | None = None
+    phone: str | None = None
 
 
 class RegisterRequest(BaseModel):
@@ -163,6 +165,20 @@ def change_password(
 
     if not body.new_password or len(body.new_password) < int(settings.password_min_length or 0):
         raise HTTPException(status_code=400, detail="password too short")
+
+    # Product rule: when admin issued a temporary password, enforce extra confirmation + phone collection.
+    if bool(getattr(user, "must_change_password", False)):
+        if str(body.confirm_password or "") != str(body.new_password or ""):
+            raise HTTPException(status_code=400, detail="passwords do not match")
+
+        phone = str(body.phone or "").strip()
+        if not phone:
+            raise HTTPException(status_code=400, detail="phone is required")
+        # Minimal validation: keep digits and leading +, enforce sane length.
+        norm = "+" + "".join([ch for ch in phone if ch.isdigit()]) if phone.startswith("+") else "".join([ch for ch in phone if ch.isdigit()])
+        if len(norm) < 10 or len(norm) > 16:
+            raise HTTPException(status_code=400, detail="invalid phone")
+        user.phone = norm
 
     user.password_hash = _hash_password(body.new_password)
     user.must_change_password = False

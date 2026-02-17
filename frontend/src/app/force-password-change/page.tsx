@@ -11,6 +11,8 @@ export default function ForcePasswordChangePage() {
   const router = useRouter();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [phone, setPhone] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,11 +36,23 @@ export default function ForcePasswordChangePage() {
     setLoading(true);
     setError(null);
     try {
+      if (String(newPassword || "") !== String(confirmPassword || "")) {
+        throw new Error("Пароли не совпадают");
+      }
+      if (!String(phone || "").trim()) {
+        throw new Error("Укажите номер телефона");
+      }
+
       const res = await fetch("/api/backend/auth/change-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+          confirm_password: confirmPassword,
+          phone: phone,
+        }),
       });
       if (!res.ok) {
         const text = await res.text();
@@ -90,6 +104,29 @@ export default function ForcePasswordChangePage() {
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
+                  required
+                />
+              </label>
+
+              <label className="grid gap-1 text-sm">
+                <span className="text-zinc-600">Подтверждение пароля</span>
+                <input
+                  className="h-10 rounded-xl border border-zinc-200 bg-white px-3 text-zinc-950 outline-none placeholder:text-zinc-400 focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15"
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  required
+                />
+              </label>
+
+              <label className="grid gap-1 text-sm">
+                <span className="text-zinc-600">Номер телефона</span>
+                <input
+                  className="h-10 rounded-xl border border-zinc-200 bg-white px-3 text-zinc-950 outline-none placeholder:text-zinc-400 focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15"
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="+7..."
                   required
                 />
               </label>

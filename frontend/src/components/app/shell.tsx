@@ -68,6 +68,47 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           </div>
 
           <div className="flex items-center justify-end gap-4">
+            <button
+              type="button"
+              aria-label="Частые вопросы"
+              title="Частые вопросы"
+              onClick={() => router.push("/faq")}
+              className={
+                "grid h-11 w-11 place-items-center rounded-2xl " +
+                "bg-[#fe9900]/15 border border-[#fe9900]/25 ring-4 ring-[#fe9900]/10 " +
+                "text-[#284e13] shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-[#fe9900]/20"
+              }
+            >
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true"
+              >
+                <path
+                  d="M12 18h.01"
+                  stroke="currentColor"
+                  strokeWidth="2.6"
+                  strokeLinecap="round"
+                />
+                <path
+                  d="M9.25 9.5a2.75 2.75 0 1 1 4.2 2.33c-.84.56-1.45 1.15-1.45 2.17v.25"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10Z"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
             {!loading && authenticated && user ? (
               <div className="hidden items-center gap-3 rounded-2xl border border-zinc-200 bg-white/85 px-4 py-2 shadow-sm shadow-zinc-950/5 sm:flex">
                 <div className="rounded-xl border border-[#284e13]/20 bg-[#284e13]/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-[#284e13]">
@@ -107,49 +148,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         </div>
       </header>
       <main className="animate-in fade-in duration-700">{children}</main>
-
-      <button
-        type="button"
-        aria-label="Частые вопросы"
-        title="Частые вопросы"
-        onClick={() => router.push("/faq")}
-        className={
-          "fixed right-6 bottom-6 z-50 h-14 w-14 rounded-full " +
-          "bg-[#fe9900] shadow-2xl shadow-[#fe9900]/25 border border-[#fe9900]/30 ring-4 ring-[#fe9900]/10 " +
-          "grid place-items-center transition-all active:scale-[0.98] hover:translate-y-[-1px] hover:ring-[#fe9900]/15"
-        }
-      >
-        <svg
-          width="22"
-          height="22"
-          viewBox="0 0 24 24"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-          className="text-[#284e13]"
-          aria-hidden="true"
-        >
-          <path
-            d="M12 18h.01"
-            stroke="currentColor"
-            strokeWidth="2.6"
-            strokeLinecap="round"
-          />
-          <path
-            d="M9.25 9.5a2.75 2.75 0 1 1 4.2 2.33c-.84.56-1.45 1.15-1.45 2.17v.25"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10Z"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
 
       <footer className="border-t border-zinc-200/80 bg-white/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl flex-col gap-2 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
