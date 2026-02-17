@@ -74,20 +74,14 @@ import subprocess
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
-from app.models.module import Module, Submodule
 from app.models.user import User
 
 admin_name = os.environ.get("CORELMS_SEED_ADMIN_NAME", "admin")
 
 with SessionLocal() as db:
     has_admin = db.scalar(select(User).where(User.name == admin_name)) is not None
-    m = db.scalar(select(Module).where(Module.title == "Старт"))
-    has_start = m is not None
-    has_start_lessons = False
-    if m is not None:
-        has_start_lessons = db.query(Submodule).filter(Submodule.module_id == m.id).count() > 0
 
-if not has_admin or not has_start or not has_start_lessons:
+if not has_admin:
     print("Seeding Start module + users...", flush=True)
     subprocess.check_call(["python", "/app/scripts/import_start_module.py"])
 else:

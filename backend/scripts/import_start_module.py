@@ -30,7 +30,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def slugify(name: str) -> str:
     s = name.strip().lower()
-    s = re.sub(r"[^a-zР В°-РЎРЏ0-9._-]+", "-", s, flags=re.IGNORECASE)
+    s = re.sub(r"[^a-zа-я0-9._-]+", "-", s, flags=re.IGNORECASE)
     s = re.sub(r"-+", "-", s).strip("-")
     return s or "file"
 
@@ -527,10 +527,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Import 'Start' module content into CoreLMS (Postgres + MinIO)")
     parser.add_argument(
         "--path",
-        default="/app/Р СљР С•Р Т‘РЎС“Р В»Р С‘ Р С•Р В±РЎС“РЎвЂЎР ВµР Р…Р С‘РЎРЏ/1. Р РЋРЎвЂљР В°РЎР‚РЎвЂљ",
+        default="/app/Модули обучения/1. Старт",
         help="Path to folder with Start module files",
     )
-    parser.add_argument("--module-title", default="Р РЋРЎвЂљР В°РЎР‚РЎвЂљ")
+    parser.add_argument("--module-title", default="Старт")
     parser.add_argument("--admin-name", default=os.environ.get("CORELMS_SEED_ADMIN_NAME", "admin"))
     parser.add_argument("--admin-password", default=os.environ.get("CORELMS_SEED_ADMIN_PASSWORD", "admin"))
     parser.add_argument("--employee-name", default=os.environ.get("CORELMS_SEED_EMPLOYEE_NAME", "employee"))
@@ -550,11 +550,22 @@ def main() -> None:
         admin = ensure_user(db, name=args.admin_name, role=UserRole.admin, password=args.admin_password)
         ensure_user(db, name=args.employee_name, role=UserRole.employee, password=args.employee_password)
 
+        # In many production deployments (Railway), the backend image does not ship training content.
+        # In this case we must not create placeholder modules with broken encoding.
+        allow_placeholder = (os.environ.get("CORELMS_SEED_ALLOW_PLACEHOLDER_MODULE") or "").strip().lower() in {"1", "true", "yes", "on"}
+        if not has_folder and not allow_placeholder:
+            print(f"Folder not found: {folder}")
+            print("Skipping Start module import; users ensured.")
+            print("Users created/ensured:")
+            print(f"  admin: {args.admin_name} / {args.admin_password}")
+            print(f"  employee: {args.employee_name} / {args.employee_password}")
+            return
+
         module = db.scalar(select(Module).where(Module.title == args.module_title))
         if module is None:
             module = Module(
                 title=args.module_title, 
-                description="Р С›РЎРѓР Р…Р С•Р Р†РЎвЂ№ РЎР‚Р В°Р В±Р С•РЎвЂљРЎвЂ№, Р С•РЎР‚Р С–РЎРѓРЎвЂљРЎР‚РЎС“Р С”РЎвЂљРЎС“РЎР‚Р В° Р С‘ РЎР‚Р ВµР С–Р В»Р В°Р СР ВµР Р…РЎвЂљРЎвЂ№ Р С”Р С•Р СР С—Р В°Р Р…Р С‘Р С‘ Р С™Р В°РЎР‚Р С”Р В°РЎРѓ Р СћР В°Р в„–Р С–Р С‘.", 
+                description="Основы работы, оргструктура и регламенты компании.", 
                 difficulty=1, 
                 category="Onboarding", 
                 is_active=True

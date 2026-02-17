@@ -147,6 +147,10 @@ def _theory_from_files(files: list[pathlib.Path]) -> str:
     return "\n\n".join(chunks).strip()
 
 
+def _is_theory_file(p: pathlib.Path) -> bool:
+    return p.suffix.lower() in {".docx", ".pdf", ".txt", ".md"}
+
+
 def _upload_file(*, s3, object_key: str, file_path: pathlib.Path) -> tuple[str | None, int | None]:
     ct = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
     with file_path.open("rb") as f:
@@ -266,16 +270,29 @@ def import_module_from_dir(
         root_as_lesson = True
         lesson_dirs = [module_dir]
 
-    for i, ld in enumerate(lesson_dirs, start=1):
-        if root_as_lesson:
-            title = module_title
-            order = 1
+    if root_as_lesson:
+        root_files = sorted([p for p in module_dir.iterdir() if p.is_file() and not p.name.startswith("~$")])
+        theory_files = [p for p in root_files if _is_theory_file(p)]
+        if len(theory_files) > 1:
+            theory_files = sorted(theory_files, key=lambda x: _parse_order(x.name, 999))
+            lesson_specs: list[tuple[int, str, list[pathlib.Path]]] = []
+            for i, tf in enumerate(theory_files, start=1):
+                lesson_specs.append((i, _guess_title(tf.stem), [tf]))
+            extra_assets = [p for p in root_files if p not in set(theory_files)]
         else:
-            title = _guess_title(ld.name)
-            order = _parse_order(ld.name, i)
-        _set_job_detail(f"lesson {i}/{len(lesson_dirs)}: {title}")
+            # Single-file (or no-file) flat module.
+            lesson_specs = [(1, module_title, root_files)]
+            extra_assets = []
+    else:
+        lesson_specs = []
+        extra_assets = []
+        for i, ld in enumerate(lesson_dirs, start=1):
+            lesson_specs.append((_parse_order(ld.name, i), _guess_title(ld.name), sorted([p for p in ld.iterdir() if p.is_file() and not p.name.startswith("~$")])) )
 
-        files = sorted([p for p in ld.iterdir() if p.is_file() and not p.name.startswith("~$")])
+    total_lessons = len(lesson_specs)
+
+    for i, (order, title, files) in enumerate(lesson_specs, start=1):
+        _set_job_detail(f"lesson {i}/{total_lessons}: {title}")
         theory = _theory_from_files(files)
 
         content_key = f"modules/{m.id}/{order:02d}/theory.md"
@@ -376,6 +393,9 @@ def import_module_from_dir(
                 report["questions_total"] = int(report.get("questions_total") or 0) + 1
 
         per_asset_order = 1
+        # If this module is flat (no lesson folders), attach non-theory assets to the first lesson.
+        if root_as_lesson and i == 1 and extra_assets:
+            files = list(files) + list(extra_assets)
         for fp in files:
             if not _is_lesson_asset(fp) and not _is_module_material(fp):
                 continue
