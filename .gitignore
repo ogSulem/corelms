@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.*
+!.env.example
+
+# Backend local secrets
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Frontend
+frontend/.env.local
+frontend/.env.*
+!frontend/.env.example
+frontend/node_modules/
+
+# Large local content (do not commit)
+Модули обучения/
+**/*.zip
+
+# Next.js build artifacts
+frontend/.next/
+frontend/out/
+
+# Tooling caches
+.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.cache/
+
+# Coverage
+coverage/
+**/.coverage*
+
+# Local backups
+backup.sql
+backup.dump
+backups/
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# Local TLS keys/certs
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+
+# Frontend caches
+frontend/.turbo/
+
+# OS
+.DS_Store
+Thumbs.db

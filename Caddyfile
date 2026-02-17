@@ -1,0 +1,16 @@
+{
+	# Required for ACME (Let's Encrypt)
+	email {$ACME_EMAIL}
+}
+
+{$CORELMS_DOMAIN} {
+	encode zstd gzip
+
+	# Admin/frontend (Next.js)
+	reverse_proxy frontend:3000
+}
+
+# Optional: expose MinIO console behind auth/VPN only.
+# {$CORELMS_DOMAIN}:9001 {
+# 	reverse_proxy minio:9001
+# }

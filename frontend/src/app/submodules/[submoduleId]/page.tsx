@@ -1,0 +1,787 @@
+"use client";
+
+import Link from "next/link";
+import { useParams, useSearchParams } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronLeft } from "lucide-react";
+
+import { AppShell } from "@/components/app/shell";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { apiFetch } from "@/lib/api";
+import { LockIcon } from "@/components/ui/lock";
+
+type SubmoduleMeta = {
+  id: string;
+  module_id: string;
+  title: string;
+  content: string;
+  order: number;
+  quiz_id: string;
+};
+
+function formatPromptLines(prompt: string): string[] {
+  const normalized = String(prompt || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+(?=[А-ЯA-Z]\))/g, "\n")
+    .replace(/\s+(?=[А-ЯA-Z][\).])/g, "\n");
+
+  return normalized
+    .split("\n")
+    .map((x) => x.trim())
+    .filter(Boolean);
+}
+
+type ModuleMeta = {
+  id: string;
+  title: string;
+};
+
+type QuizQuestion = { id: string; prompt: string; type: string };
+type QuizStart = {
+  quiz_id: string;
+  attempt_no: number;
+  time_limit: number | null;
+  questions: QuizQuestion[];
+};
+
+type QuizSubmit = {
+  quiz_id: string;
+  score: number;
+  passed: boolean;
+  correct: number;
+  total: number;
+  xp_awarded: number;
+};
+
+type SubmoduleAsset = {
+  asset_id: string;
+  object_key: string;
+  original_filename: string;
+  mime_type: string | null;
+  order: number;
+};
+
+export default function SubmodulePage() {
+  const params = useParams<{ submoduleId: string }>();
+  const search = useSearchParams();
+  const submoduleId = params.submoduleId;
+  const moduleId = search.get("module") || "";
+
+  const [submodule, setSubmodule] = useState<SubmoduleMeta | null>(null);
+  const [moduleMeta, setModuleMeta] = useState<ModuleMeta | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [moduleProgress, setModuleProgress] = useState<{
+    passed: number;
+    total: number;
+    submodules?: Array<{
+      submodule_id: string;
+      order?: number;
+      passed: boolean;
+      best_score: number | null;
+      last_score?: number | null;
+      last_passed?: boolean | null;
+      locked?: boolean;
+    }>;
+  } | null>(null);
+  
+  const [readConfirmed, setReadConfirmed] = useState<boolean>(false);
+  const [isQuizActive, setIsQuizActive] = useState(false);
+  const [isStartingQuiz, setIsStartingQuiz] = useState(false);
+  const [quizData, setQuizData] = useState<QuizStart | null>(null);
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [quizResult, setQuizResult] = useState<QuizSubmit | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [assets, setAssets] = useState<SubmoduleAsset[]>([]);
+  const [inlineUrl, setInlineUrl] = useState<string | null>(null);
+  const [inlineMime, setInlineMime] = useState<string | null>(null);
+
+  const resultRef = useRef<HTMLDivElement | null>(null);
+
+  const canInlinePreview = useMemo(() => {
+    const mime = String(inlineMime || "").toLowerCase();
+    if (!inlineUrl) return false;
+    if (!mime) return true;
+    if (mime.includes("pdf")) return true;
+    if (mime.startsWith("image/")) return true;
+    if (mime.startsWith("text/")) return true;
+    return false;
+  }, [inlineMime, inlineUrl]);
+
+  function closeInline() {
+    setInlineUrl(null);
+    setInlineMime(null);
+  }
+
+  const fetchData = async () => {
+    try {
+      setError(null);
+      await apiFetch(`/submodules/${submoduleId}/open`, { method: "POST" });
+      const meta = await apiFetch<SubmoduleMeta>(`/submodules/${submoduleId}`);
+      setSubmodule(meta);
+
+      const a = await apiFetch<{ submodule_id: string; assets: SubmoduleAsset[] }>(
+        `/modules/submodules/${submoduleId}/assets`
+      );
+      setAssets(a.assets || []);
+      
+      const rs = await apiFetch<{ read: boolean }>(`/submodules/${submoduleId}/read-status`);
+      setReadConfirmed(Boolean(rs.read));
+
+      if (moduleId) {
+        const mm = await apiFetch<ModuleMeta>(`/modules/${moduleId}`);
+        setModuleMeta(mm);
+        const prog = await apiFetch<any>(`/progress/modules/${moduleId}`);
+        setModuleProgress(prog);
+      }
+    } catch (e) {
+      const anyErr = e as any;
+      const msg = e instanceof Error ? e.message : String(e);
+      const rid = String(anyErr?.requestId || anyErr?.request_id || "").trim();
+      setError((msg || "Не удалось загрузить данные урока") + (rid ? ` (код: ${rid})` : ""));
+    }
+  };
+
+  async function presign(assetId: string) {
+    const data = await apiFetch<{ asset_id: string; download_url: string }>(
+      `/assets/${assetId}/presign-download`
+    );
+    return data.download_url;
+  }
+
+  async function onOpenInline(a: SubmoduleAsset) {
+    try {
+      const url = await presign(a.asset_id);
+      setInlineUrl(url);
+      setInlineMime(a.mime_type || null);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: {
+              title: "НЕ УДАЛОСЬ ОТКРЫТЬ ФАЙЛ",
+              description: msg || "Проверьте доступ к хранилищу и попробуйте снова",
+            },
+          })
+        );
+      }
+    }
+  }
+
+  async function onDownload(a: SubmoduleAsset) {
+    try {
+      const url = await presign(a.asset_id);
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: {
+              title: "НЕ УДАЛОСЬ СКАЧАТЬ ФАЙЛ",
+              description: msg || "Проверьте доступ к хранилищу и попробуйте снова",
+            },
+          })
+        );
+      }
+    }
+  }
+
+  useEffect(() => {
+    fetchData();
+  }, [submoduleId, moduleId]);
+
+  useEffect(() => {
+    const handler = (e: BeforeUnloadEvent) => {
+      if (!isQuizActive) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isQuizActive]);
+
+  const thisQuizPassed = useMemo(() => {
+    const subs = moduleProgress?.submodules || [];
+    const row = subs.find((s) => s.submodule_id === submoduleId);
+    return Boolean(row?.passed);
+  }, [moduleProgress, submoduleId]);
+
+  const thisLastQuizScore = useMemo(() => {
+    const subs = moduleProgress?.submodules || [];
+    const row = subs.find((s) => s.submodule_id === submoduleId);
+    const v = row?.last_score;
+    return typeof v === "number" ? v : null;
+  }, [moduleProgress, submoduleId]);
+
+  const thisLastQuizPassed = useMemo(() => {
+    const subs = moduleProgress?.submodules || [];
+    const row = subs.find((s) => s.submodule_id === submoduleId);
+    const v = row?.last_passed;
+    return typeof v === "boolean" ? v : null;
+  }, [moduleProgress, submoduleId]);
+
+  const hasQuizAttempt = useMemo(() => {
+    const subs = moduleProgress?.submodules || [];
+    const row = subs.find((s) => s.submodule_id === submoduleId);
+    const scorePresent = row?.last_score !== undefined && row?.last_score !== null;
+    const passedPresent = row?.last_passed !== undefined && row?.last_passed !== null;
+    return Boolean(scorePresent || passedPresent);
+  }, [moduleProgress, submoduleId]);
+
+  const displayLastQuizScore = useMemo(() => {
+    if (!hasQuizAttempt) return null;
+    return typeof thisLastQuizScore === "number" ? thisLastQuizScore : 0;
+  }, [hasQuizAttempt, thisLastQuizScore]);
+
+  const nextSubmoduleId = useMemo(() => {
+    const subs = (moduleProgress?.submodules || []).slice();
+    if (!subs.length) return "";
+    subs.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+    const idx = subs.findIndex((s) => String(s.submodule_id) === String(submoduleId));
+    if (idx < 0) return "";
+    for (let i = idx + 1; i < subs.length; i++) {
+      const s = subs[i];
+      if (s && !s.locked) return String(s.submodule_id || "");
+    }
+    return "";
+  }, [moduleProgress, submoduleId]);
+
+  const theoryDotClass = useMemo(() => {
+    return readConfirmed
+      ? "bg-[#284e13] shadow-[0_0_8px_rgba(40,78,19,0.25)]"
+      : "bg-zinc-600";
+  }, [readConfirmed]);
+
+  const quizDotClass = useMemo(() => {
+    if (thisQuizPassed) return "bg-[#284e13] shadow-[0_0_8px_rgba(40,78,19,0.25)]";
+    if (hasQuizAttempt) return "bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.35)]";
+    return "bg-zinc-600";
+  }, [hasQuizAttempt, thisQuizPassed]);
+
+  const quizTotals = useMemo(() => {
+    if (!moduleProgress) return { passed: 0, total: 0 };
+    return { passed: moduleProgress.passed || 0, total: moduleProgress.total || 0 };
+  }, [moduleProgress]);
+
+  const answeredCount = useMemo(() => {
+    if (!quizData) return 0;
+    return quizData.questions.reduce((acc, q) => acc + (answers[q.id]?.trim() ? 1 : 0), 0);
+  }, [answers, quizData]);
+
+  const canSubmit = useMemo(() => {
+    if (!quizData) return false;
+    return answeredCount === quizData.questions.length;
+  }, [answeredCount, quizData]);
+
+  const formatPrompt = (prompt: string) => {
+    return (prompt || "")
+      .replace(/\s+(?=А\))/g, "\n")
+      .replace(/\s+(?=Б\))/g, "\n")
+      .replace(/\s+(?=В\))/g, "\n")
+      .replace(/\s+(?=Г\))/g, "\n")
+      .replace(/\s+(?=Д\))/g, "\n");
+  };
+
+  const theoryBlocks = useMemo(() => {
+    const raw = String(submodule?.content || "").replace(/\r\n/g, "\n").trim();
+    if (!raw) return [] as Array<{ kind: "h" | "p" | "ul"; text?: string; items?: string[] }>;
+
+    const lines = raw.split("\n");
+    const blocks: Array<{ kind: "h" | "p" | "ul"; text?: string; items?: string[] }> = [];
+    let paragraph: string[] = [];
+    let list: string[] = [];
+
+    const flushParagraph = () => {
+      const t = paragraph.join(" ").replace(/\s+/g, " ").trim();
+      paragraph = [];
+      if (t) blocks.push({ kind: "p", text: t });
+    };
+    const flushList = () => {
+      const items = list.map((x) => x.trim()).filter(Boolean);
+      list = [];
+      if (items.length) blocks.push({ kind: "ul", items });
+    };
+
+    for (const lnRaw of lines) {
+      const ln = String(lnRaw || "").trim();
+
+      if (!ln) {
+        flushList();
+        flushParagraph();
+        continue;
+      }
+
+      const isList = /^(-|•|\*)\s+/.test(ln) || /^\d{1,3}[.)]\s+/.test(ln);
+      if (isList) {
+        flushParagraph();
+        list.push(ln.replace(/^(-|•|\*)\s+/, "").replace(/^\d{1,3}[.)]\s+/, "").trim());
+        continue;
+      }
+
+      const isHeading =
+        ln.length <= 80 &&
+        (ln.startsWith("##") || ln.startsWith("###") || /:$/.test(ln) || (/^[А-Я0-9\s-]{6,}$/.test(ln) && ln.replace(/\s/g, "").length >= 6));
+      if (isHeading) {
+        flushList();
+        flushParagraph();
+        blocks.push({ kind: "h", text: ln.replace(/^#{2,3}\s*/, "").replace(/:$/, "").trim() });
+        continue;
+      }
+
+      flushList();
+      paragraph.push(ln);
+    }
+
+    flushList();
+    flushParagraph();
+    return blocks;
+  }, [submodule?.content]);
+
+  async function onConfirmRead() {
+    try {
+      const resp = await apiFetch<{ ok: boolean; xp_awarded?: number }>(`/submodules/${submoduleId}/read`, { method: "POST" });
+      setReadConfirmed(true);
+      const xp = Number(resp?.xp_awarded || 0);
+      if (xp > 0 && typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("corelms:toast", {
+          detail: { title: `+${xp} XP`, description: "Теория изучена" },
+        }));
+      }
+      window.dispatchEvent(new Event("corelms:refresh-me"));
+    } catch (e) {
+      setError("Ошибка при подтверждении прочтения");
+    }
+  }
+
+  async function onStartQuiz() {
+    if (isStartingQuiz) return;
+    try {
+      if (!submodule?.quiz_id) {
+        setError("Не удалось начать тест: quiz_id не найден");
+        return;
+      }
+      setIsStartingQuiz(true);
+      setQuizData(null);
+      setIsQuizActive(true);
+      setQuizResult(null);
+      setAnswers({});
+      const data = await apiFetch<QuizStart>(`/quizzes/${submodule?.quiz_id}/start`, { method: "POST" });
+      setQuizData(data);
+    } catch (e) {
+      setError("Не удалось начать тест");
+      setIsQuizActive(false);
+    } finally {
+      setIsStartingQuiz(false);
+    }
+  }
+
+  async function onSubmitQuiz() {
+    if (!quizData || isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      const payload = {
+        answers: quizData.questions.map((q) => ({ question_id: q.id, answer: answers[q.id] || "" })),
+      };
+      const result = await apiFetch<QuizSubmit>(`/quizzes/${quizData.quiz_id}/submit`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setQuizResult(result);
+      setIsQuizActive(false);
+
+      try {
+        window.setTimeout(() => {
+          try {
+            resultRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          } catch {
+            // ignore
+          }
+        }, 50);
+      } catch {
+        // ignore
+      }
+      
+      const xp = Number(result?.xp_awarded || 0);
+      if (xp > 0 && typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("corelms:toast", {
+          detail: { title: `+${xp} XP`, description: result.passed ? "Тест пройден" : "Попытка засчитана" },
+        }));
+      }
+      
+      await fetchData();
+      window.dispatchEvent(new Event("corelms:refresh-me"));
+    } catch (e) {
+      setError("Ошибка при сдаче теста");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <AppShell>
+      <div className="mx-auto max-w-7xl px-6 py-12 lg:py-20">
+        {error && (
+          <div className="mb-10 rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 text-sm text-rose-400 font-bold uppercase tracking-widest text-center">
+            {error}
+          </div>
+        )}
+        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-10">
+          <div className="flex-1">
+            <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Урок курса</div>
+            <h1 className="text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-none">
+              {moduleMeta?.title || "Загрузка..."}
+            </h1>
+
+            <div className="mt-8 max-w-xl">
+              <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-zinc-600 mb-2">
+                <div>Прогресс модуля</div>
+                <div className="tabular-nums text-[#284e13]">
+                  {quizTotals.passed} / {quizTotals.total}
+                </div>
+              </div>
+              <div className="h-1 w-full rounded-full bg-zinc-200 overflow-hidden">
+                <div 
+                  className="h-full bg-[#fe9900] transition-all duration-1000"
+                  style={{ width: `${quizTotals.total > 0 ? Math.round((quizTotals.passed / quizTotals.total) * 100) : 0}%` }}
+                />
+              </div>
+            </div>
+          </div>
+          
+          <Link href={`/modules/${moduleId}`}>
+            <Button variant="ghost" size="sm" className="rounded-xl font-black uppercase tracking-widest text-[10px]">
+              <ChevronLeft className="mr-2 h-4 w-4" />
+              оглавление
+            </Button>
+          </Link>
+        </div>
+
+        <div className="mt-16 grid gap-10 lg:grid-cols-12 items-start">
+          <div className="lg:col-span-4 space-y-6 lg:sticky lg:top-24">
+            <div className="relative overflow-hidden border border-zinc-200 bg-white/70 backdrop-blur-md rounded-[28px] shadow-2xl shadow-zinc-950/10 p-8">
+              <div className="absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-[#fe9900]/40 to-transparent" />
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-8">Статус шага</div>
+              
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200">
+                  <div className="flex items-center gap-3">
+                    <div className={`h-2 w-2 rounded-full ${theoryDotClass}`} />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-700">Теория</span>
+                  </div>
+                  <span className={`text-[10px] font-black uppercase tracking-widest ${readConfirmed ? "text-[#284e13]" : "text-zinc-600"}`}>
+                    {readConfirmed ? "ГОТОВО" : "ОЖИДАНИЕ"}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between p-4 rounded-2xl bg-white border border-zinc-200">
+                  <div className="flex items-center gap-3">
+                    <div className={`h-2 w-2 rounded-full ${quizDotClass}`} />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-700">Тест</span>
+                  </div>
+                  <span
+                    className={`text-[10px] font-black uppercase tracking-widest ${
+                      thisQuizPassed ? "text-[#284e13]" : hasQuizAttempt ? "text-rose-700" : "text-zinc-600"
+                    }`}
+                  >
+                    {typeof displayLastQuizScore === "number" ? `${displayLastQuizScore}%` : "—"}
+                  </span>
+                </div>
+
+                <div className="pt-6">
+                  {!readConfirmed ? (
+                    <Button className="w-full h-14 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-sm" onClick={onConfirmRead}>
+                      Изучил теорию
+                    </Button>
+                  ) : !isQuizActive ? (
+                    <Button
+                      className="w-full h-14 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-sm"
+                      onClick={onStartQuiz}
+                      disabled={isStartingQuiz}
+                    >
+                      {thisQuizPassed ? "Пересдать тест" : "Начать тест"}
+                    </Button>
+                  ) : (
+                    <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                      <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                        <span>Прогресс</span>
+                        <span className="tabular-nums text-[#284e13]">{answeredCount} / {quizData?.questions.length || 0}</span>
+                      </div>
+                      <div className="mt-3 h-1 w-full overflow-hidden rounded-full bg-zinc-200">
+                        <div
+                          className="h-full bg-[#fe9900] transition-all duration-500"
+                          style={{
+                            width: `${quizData?.questions.length ? Math.round((answeredCount / quizData.questions.length) * 100) : 0}%`,
+                          }}
+                        />
+                      </div>
+
+                      <div className="mt-6 grid gap-2">
+                        <Button
+                          className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-[10px]"
+                          onClick={onSubmitQuiz}
+                          disabled={isSubmitting || !canSubmit}
+                        >
+                          {isSubmitting ? "Отправка..." : "Сдать"}
+                        </Button>
+                        <Button variant="ghost" className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-[10px]" onClick={() => setIsQuizActive(false)}>
+                          Отмена
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {(quizResult || typeof thisLastQuizScore === "number") && !isQuizActive && (
+                <div
+                  ref={resultRef}
+                  className={
+                    "mt-6 p-6 rounded-2xl border animate-in fade-in slide-in-from-top-2 duration-300 " +
+                    ((quizResult?.passed ?? thisLastQuizPassed)
+                      ? "border-[#284e13]/20 bg-[#284e13]/5"
+                      : "border-rose-500/20 bg-rose-500/5")
+                  }
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <span
+                      className={
+                        "text-[10px] font-black uppercase tracking-widest " +
+                        ((quizResult?.passed ?? thisLastQuizPassed) ? "text-[#284e13]" : "text-rose-700")
+                      }
+                    >
+                      {(quizResult?.passed ?? thisLastQuizPassed) ? "ЗАЧЁТ" : "НЕ ЗАЧЁТ"}
+                    </span>
+                    <span
+                      className={
+                        "text-3xl font-black " + ((quizResult?.passed ?? thisLastQuizPassed) ? "text-[#284e13]" : "text-rose-700")
+                      }
+                    >
+                      {quizResult ? `${quizResult.score}%` : `${thisLastQuizScore}%`}
+                    </span>
+                  </div>
+                  <div className="text-xs text-zinc-500 font-medium leading-relaxed">
+                    {quizResult
+                      ? `${quizResult.correct} из ${quizResult.total} правильных. ${quizResult.passed ? "Отличная работа!" : "Нужно минимум 70%."}`
+                      : (thisLastQuizPassed ? "Результат засчитан. Можно идти дальше." : "Результат не засчитан. Попробуй еще раз.")}
+                  </div>
+
+                  {moduleId && nextSubmoduleId ? (
+                    <div className="mt-5">
+                      <Link href={`/submodules/${encodeURIComponent(nextSubmoduleId)}?module=${encodeURIComponent(moduleId)}`} className="block">
+                        <Button className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-[10px]">
+                          Следующий урок
+                        </Button>
+                      </Link>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            <div className="relative overflow-hidden border border-zinc-200 bg-white/70 backdrop-blur-md rounded-[28px] shadow-2xl shadow-zinc-950/10 p-8">
+              <div className="absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-[#fe9900]/40 to-transparent" />
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-8">Материалы урока</div>
+
+              {!assets.length ? (
+                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600 py-10 text-center border border-dashed border-zinc-200 rounded-2xl">
+                  Нет файлов
+                </div>
+              ) : (
+                <div className="grid gap-3">
+                  {assets
+                    .slice()
+                    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
+                    .map((a) => (
+                      <div
+                        key={a.asset_id}
+                        className="group relative overflow-hidden rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-bold text-zinc-950 transition-colors">
+                              {String(a.original_filename || "ФАЙЛ")}
+                            </div>
+                            <div className="mt-1 text-[9px] font-black text-zinc-600 uppercase tracking-widest">
+                              {String(a.mime_type || "ФАЙЛ").toUpperCase()}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void onOpenInline(a)}
+                            className="rounded-xl bg-[#fe9900]/10 border border-[#fe9900]/25 px-3 py-2 text-[9px] font-black text-[#284e13] uppercase tracking-widest hover:bg-[#fe9900] hover:text-zinc-950 transition-all active:scale-95"
+                          >
+                            просмотр
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void onDownload(a)}
+                            className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50 transition-all active:scale-95"
+                          >
+                            скачать
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="lg:col-span-8 space-y-10">
+            {!isQuizActive ? (
+              <div className="relative group overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-10 lg:p-12 shadow-2xl shadow-zinc-950/10 transition-all duration-300 hover:bg-white">
+                <div className="absolute top-0 left-0 h-full w-[4px] bg-[#fe9900] opacity-20" />
+                <div className="flex items-center gap-6 mb-12">
+                  <div className="rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-4 py-3 text-3xl font-black text-zinc-950 tabular-nums uppercase leading-none">
+                    #{String(submodule?.order).padStart(2, '0')}
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="text-4xl font-black text-zinc-950 uppercase tracking-tighter leading-tight break-words">
+                      {submodule?.title}
+                    </h2>
+                  </div>
+                </div>
+
+                {inlineUrl ? (
+                  <div className="mb-10 rounded-[24px] border border-zinc-200 bg-white p-6 shadow-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">
+                        Просмотр файла
+                      </div>
+                      <button
+                        type="button"
+                        onClick={closeInline}
+                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50 transition-all active:scale-95"
+                      >
+                        закрыть
+                      </button>
+                    </div>
+
+                    {canInlinePreview ? (
+                      <div className="mt-4 overflow-hidden rounded-2xl border border-zinc-200 bg-white">
+                        {String(inlineMime || "").toLowerCase().startsWith("image/") ? (
+                          <img src={inlineUrl} alt="" className="w-full h-auto" />
+                        ) : (
+                          <iframe
+                            src={inlineUrl}
+                            className="w-full h-[520px]"
+                            sandbox="allow-same-origin allow-scripts allow-forms"
+                          />
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-zinc-700">Этот формат не поддерживает просмотр</div>
+                        <div className="mt-2 text-xs text-zinc-600 font-medium">Используйте кнопку “скачать” в списке материалов.</div>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+                
+                <div className="prose max-w-none">
+                  {theoryBlocks.length === 0 ? (
+                    <div className="whitespace-pre-wrap leading-relaxed text-zinc-700 text-base font-medium selection:bg-[#fe9900]/25">
+                      {submodule?.content || "Загрузка контента..."}
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {theoryBlocks.map((b, idx) =>
+                        b.kind === "h" ? (
+                          <div key={idx} className="pt-2">
+                            <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Раздел</div>
+                            <div className="mt-2 text-2xl font-black tracking-tight text-zinc-950">{b.text}</div>
+                          </div>
+                        ) : b.kind === "ul" ? (
+                          <div key={idx} className="rounded-[24px] border border-zinc-200 bg-white p-6">
+                            <div className="grid gap-3">
+                              {(b.items || []).map((it, i) => (
+                                <div key={i} className="flex items-start gap-3">
+                                  <div className="mt-1.5 h-2 w-2 rounded-full bg-[#fe9900]/70 shadow-[0_0_10px_rgba(254,153,0,0.18)]" />
+                                  <div className="min-w-0 text-zinc-700 text-base leading-relaxed">{it}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : (
+                          <div key={idx} className="text-zinc-700 text-base leading-relaxed">
+                            {b.text}
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              !quizData ? (
+                <div className="rounded-[32px] border border-zinc-200 bg-white/70 p-20 animate-in fade-in zoom-in-95 duration-500 text-center shadow-2xl shadow-zinc-950/10">
+                  <div className="inline-flex items-center gap-3 px-4 py-2 rounded-full bg-[#fe9900]/10 border border-[#fe9900]/20 mb-8">
+                    <div className="h-2 w-2 rounded-full bg-[#fe9900] animate-pulse" />
+                    <span className="text-[10px] font-black text-[#fe9900] uppercase tracking-widest">Подготовка теста</span>
+                  </div>
+                  <h3 className="text-3xl font-black text-zinc-950 uppercase tracking-tighter mb-10">Подготавливаем вопросы</h3>
+                  <div className="h-1 w-full max-w-xs mx-auto rounded-full bg-zinc-200 overflow-hidden">
+                    <div className="h-full w-1/2 bg-[#fe9900] animate-[loading_2s_ease-in-out_infinite]" />
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-[32px] border border-zinc-200 bg-white/70 p-10 lg:p-12 animate-in fade-in zoom-in-95 duration-500 shadow-2xl shadow-zinc-950/10">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-16 border-b border-zinc-200 pb-10">
+                    <div className="flex flex-col gap-3">
+                      <div className="text-[10px] font-black text-[#fe9900] uppercase tracking-[0.3em]">Проверка знаний</div>
+                      <h2 className="text-4xl font-black text-zinc-950 uppercase tracking-tighter leading-none">{submodule?.title}</h2>
+                    </div>
+                    <div className="flex items-center gap-8">
+                      <div className="text-right">
+                        <div className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Попытка</div>
+                        <div className="text-4xl font-black text-zinc-950 tabular-nums">#{quizData.attempt_no}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-10">
+                    {quizData.questions.map((q, idx) => (
+                      <div key={q.id} className="group relative overflow-hidden rounded-[28px] bg-white border border-zinc-200 p-8 transition-all duration-300 hover:bg-zinc-50">
+                        <div className="flex gap-8">
+                          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#fe9900]/10 border border-[#fe9900]/20 text-zinc-950 text-base font-black tabular-nums">
+                            {idx + 1}
+                          </span>
+                          <div className="flex-1">
+                            <div className="text-base font-bold text-zinc-950 leading-relaxed tracking-tight mb-6 space-y-2 whitespace-pre-line">
+                              {formatPromptLines(q.prompt).map((ln, i) => (
+                                <div key={i} className={/^[А-ЯA-Z]\)|^[А-ЯA-Z][\).]/.test(ln) ? "pl-4 text-zinc-700" : ""}>
+                                  {ln}
+                                </div>
+                              ))}
+                            </div>
+                            <input
+                              className="h-12 w-full rounded-2xl bg-white border border-zinc-200 px-6 text-base text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all placeholder:text-zinc-400 font-medium"
+                              value={answers[q.id] || ""}
+                              onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                              placeholder={q.type === "multi" ? "ABC..." : "Ваш ответ..."}
+                            />
+                            <div className="mt-4 text-[10px] font-black text-zinc-600 uppercase tracking-widest">
+                              {q.type === "multi" ? "НЕСКОЛЬКО ВАРИАНТОВ (БУКВЫ, НАПРИМЕР: A,C)" : "ОДИН ВАРИАНТ (БУКВА A/B/C/D)"}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            )}
+
+          </div>
+        </div>
+      </div>
+    </AppShell>
+  );
+}

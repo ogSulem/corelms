@@ -1,0 +1,2088 @@
+from __future__ import annotations
+
+import json
+import re
+import uuid
+from datetime import datetime
+import secrets
+import string
+from collections import defaultdict
+
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from pydantic import BaseModel
+from passlib.context import CryptContext
+from sqlalchemy import and_, bindparam, case, delete, func, or_, select, text
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.core.rate_limit import rate_limit
+from app.core.security import require_roles
+from app.core.security_audit_log import audit_log
+from app.core.redis_client import get_redis
+from app.db.session import get_db
+from app.models.assignment import Assignment, AssignmentStatus, AssignmentType
+from app.models.attempt import QuizAttempt
+from app.models.attempt import QuizAttemptAnswer
+from app.models.audit import LearningEvent, LearningEventType
+from app.models.asset import ContentAsset
+from app.models.module import Module, Submodule
+from app.models.quiz import Question, Quiz
+from app.models.user import User, UserRole
+from app.models.submodule_asset import SubmoduleAssetMap
+from app.models.quiz import QuestionType, QuizType
+from app.models.skill import UserSkill
+from app.schemas.analytics import ModuleAnalyticsResponse
+from app.schemas.admin import (
+    AssignmentCreateRequest,
+    AssignmentCreateResponse,
+    LinkAssetToSubmoduleRequest,
+    LinkAssetToSubmoduleResponse,
+    ModuleCreateRequest,
+    ModuleCreateResponse,
+    QuestionCreateRequest,
+    QuestionCreateResponse,
+    QuestionPublic,
+    QuestionsListResponse,
+    QuestionUpdateRequest,
+    QuestionUpdateResponse,
+    QuizCreateRequest,
+    QuizCreateResponse,
+    SubmoduleCreateRequest,
+    SubmoduleCreateResponse,
+    UserCreateRequest,
+    UserCreateResponse,
+    UserResetPasswordRequest,
+    UserResetPasswordResponse,
+)
+
+from app.services.learning import LearningService
+from app.core.queue import fetch_job, get_queue
+from app.services.module_import_jobs import import_module_zip_job
+from app.services.content_migration_jobs import migrate_legacy_submodule_content_job
+from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job
+from app.services.llm_handler import generate_quiz_questions_ai
+from app.services.ollama import generate_quiz_questions_ollama
+from app.services.hf_router import generate_quiz_questions_hf_router
+from app.services.storage import ensure_bucket_exists, get_s3_client
+from app.services.ollama import ollama_healthcheck
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _random_password(length: int = 12) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(int(length)))
+
+
+def _hash_password(password: str) -> str:
+    return pwd_context.hash(password)
+
+
+def _normalize_abcd_answer(raw: str) -> tuple[str, set[str]]:
+    s = str(raw or "")
+    letters = {ch.upper() for ch in re.findall(r"[A-Da-d]", s)}
+    if not letters:
+        return (s.strip(), set())
+    canon = ",".join(sorted(letters))
+    return (canon, letters)
+
+
+def _normalize_correct_answer_for_type(*, qtype: str, raw: str) -> str:
+    t = str(qtype or "").strip().lower()
+    if t == "case":
+        return str(raw or "")
+    canon, letters = _normalize_abcd_answer(raw)
+    if not letters:
+        return str(raw or "")
+    if t == "multi":
+        return canon
+    # single
+    return sorted(letters)[0]
+
+
+def _uuid(value: str, *, field: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(value)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"invalid {field}") from e
+
+
+def _delete_s3_prefix_best_effort(*, prefix: str) -> None:
+    try:
+        s3 = get_s3_client()
+        token: str | None = None
+        while True:
+            kwargs: dict[str, object] = {
+                "Bucket": settings.s3_bucket,
+                "Prefix": prefix,
+                "MaxKeys": 1000,
+            }
+            if token:
+                kwargs["ContinuationToken"] = token
+            resp = s3.list_objects_v2(**kwargs)
+            contents = resp.get("Contents") or []
+            if contents:
+                keys = [{"Key": str(o.get("Key"))} for o in contents if o.get("Key")]
+                if keys:
+                    s3.delete_objects(Bucket=settings.s3_bucket, Delete={"Objects": keys, "Quiet": True})
+            if not resp.get("IsTruncated"):
+                break
+            token = str(resp.get("NextContinuationToken") or "") or None
+    except Exception:
+        return
+
+
+@router.get("/system/status")
+def system_status(
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    runtime: dict[str, str] = {}
+    try:
+        r = get_redis()
+        raw = r.hgetall("runtime:llm") or {}
+        for k, v in (raw or {}).items():
+            kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+            vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+            runtime[kk] = vv
+    except Exception:
+        runtime = {}
+
+    def _rt_bool(key: str) -> bool | None:
+        v = (runtime.get(key) or "").strip().lower()
+        if not v:
+            return None
+        return v in {"1", "true", "yes", "on"}
+
+    def _rt_str(key: str) -> str:
+        return str(runtime.get(key) or "").strip()
+
+    eff_ollama_enabled = _rt_bool("ollama_enabled")
+    if eff_ollama_enabled is None:
+        eff_ollama_enabled = bool(getattr(settings, "ollama_enabled", False))
+    eff_ollama_base_url = _rt_str("ollama_base_url") or str(getattr(settings, "ollama_base_url", ""))
+    eff_ollama_model = _rt_str("ollama_model") or str(getattr(settings, "ollama_model", ""))
+
+    eff_hf_enabled = _rt_bool("hf_router_enabled")
+    if eff_hf_enabled is None:
+        eff_hf_enabled = bool(getattr(settings, "hf_router_enabled", False))
+    eff_hf_base_url = _rt_str("hf_router_base_url") or str(getattr(settings, "hf_router_base_url", ""))
+    eff_hf_model = _rt_str("hf_router_model") or str(getattr(settings, "hf_router_model", ""))
+    eff_hf_token = _rt_str("hf_router_token") or str(getattr(settings, "hf_router_token", "") or "")
+
+    out: dict[str, object] = {
+        "db": {"ok": False},
+        "redis": {"ok": False},
+        "rq": {"ok": False, "workers": 0, "queued": 0},
+        "ollama": {"enabled": bool(eff_ollama_enabled), "ok": False, "reason": None},
+        "s3": {"ok": False},
+        "hf_router": {"enabled": bool(eff_hf_enabled), "ok": False, "reason": None},
+    }
+
+    try:
+        db.execute(text("SELECT 1"))
+        out["db"] = {"ok": True}
+    except Exception as e:
+        out["db"] = {"ok": False}
+
+    try:
+        r = get_redis()
+        r.ping()
+        out["redis"] = {"ok": True}
+    except Exception:
+        out["redis"] = {"ok": False}
+
+    try:
+        import redis as _redis
+        from rq import Queue
+        from rq.worker import Worker
+
+        conn = _redis.Redis.from_url(settings.redis_url)
+        q = Queue(name="corelms", connection=conn)
+        workers = Worker.all(connection=conn)
+        out["rq"] = {
+            "ok": True,
+            "workers": int(len(workers)),
+            "queued": int(q.count),
+        }
+    except Exception:
+        out["rq"] = {"ok": False, "workers": 0, "queued": 0}
+
+    ok, reason = ollama_healthcheck(
+        enabled=bool(eff_ollama_enabled),
+        base_url=str(eff_ollama_base_url or "").strip() or None,
+    )
+    out["ollama"] = {
+        "enabled": bool(eff_ollama_enabled),
+        "ok": bool(ok),
+        "reason": reason,
+        "base_url": eff_ollama_base_url,
+        "model": eff_ollama_model,
+    }
+
+    # S3
+    try:
+        ensure_bucket_exists()
+        s3 = get_s3_client()
+        s3.head_bucket(Bucket=settings.s3_bucket)
+        out["s3"] = {"ok": True, "bucket": settings.s3_bucket, "endpoint": settings.s3_endpoint_url}
+    except Exception:
+        out["s3"] = {"ok": False, "bucket": settings.s3_bucket, "endpoint": settings.s3_endpoint_url}
+
+    enabled = bool(eff_hf_enabled)
+    token_present = bool((eff_hf_token or "").strip())
+    out["hf_router"] = {
+        "enabled": bool(enabled),
+        "ok": bool(enabled and token_present),
+        "reason": None if (enabled and token_present) else ("missing_token" if enabled else "disabled"),
+        "base_url": eff_hf_base_url,
+        "model": eff_hf_model,
+    }
+
+    return out
+
+
+class RuntimeLlmSettingsRequest(BaseModel):
+    llm_provider_order: str | None = None
+
+    ollama_enabled: bool | None = None
+    ollama_base_url: str | None = None
+    ollama_model: str | None = None
+
+    hf_router_enabled: bool | None = None
+    hf_router_base_url: str | None = None
+    hf_router_model: str | None = None
+    hf_router_token: str | None = None
+
+
+@router.get("/runtime/llm")
+def get_runtime_llm_settings(
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    try:
+        r = get_redis()
+        data = r.hgetall("runtime:llm") or {}
+    except Exception:
+        data = {}
+
+    def _get(k: str) -> str:
+        v = data.get(k)
+        if v is None:
+            return ""
+        try:
+            return v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+        except Exception:
+            return str(v)
+
+    token = _get("hf_router_token")
+    masked = ""
+    if token:
+        masked = token[:4] + "…" + token[-4:]
+
+    enabled_raw = _get("hf_router_enabled")
+    enabled = enabled_raw.lower() in {"1", "true", "yes", "on"}
+
+    ollama_enabled_raw = _get("ollama_enabled")
+    ollama_enabled = ollama_enabled_raw.lower() in {"1", "true", "yes", "on"}
+
+    def _eff_bool(rt_raw: str, env_val: bool) -> bool:
+        s = (rt_raw or "").strip().lower()
+        if not s:
+            return bool(env_val)
+        return s in {"1", "true", "yes", "on"}
+
+    def _eff_str(rt_val: str, env_val: str | None) -> str:
+        v = (rt_val or "").strip()
+        if v:
+            return v
+        return str(env_val or "").strip()
+
+    eff_token = _eff_str(_get("hf_router_token"), str(getattr(settings, "hf_router_token", "") or ""))
+
+    eff = {
+        "llm_provider_order": _eff_str(_get("llm_provider_order"), str(getattr(settings, "llm_provider_order", ""))),
+        "ollama_enabled": _eff_bool(_get("ollama_enabled"), bool(getattr(settings, "ollama_enabled", False))),
+        "ollama_base_url": _eff_str(_get("ollama_base_url"), str(getattr(settings, "ollama_base_url", ""))),
+        "ollama_model": _eff_str(_get("ollama_model"), str(getattr(settings, "ollama_model", ""))),
+        "hf_router_enabled": _eff_bool(_get("hf_router_enabled"), bool(getattr(settings, "hf_router_enabled", False))),
+        "hf_router_base_url": _eff_str(_get("hf_router_base_url"), str(getattr(settings, "hf_router_base_url", ""))),
+        "hf_router_model": _eff_str(_get("hf_router_model"), str(getattr(settings, "hf_router_model", ""))),
+        "hf_router_token_present": bool((eff_token or "").strip()),
+    }
+
+    return {
+        "llm_provider_order": _get("llm_provider_order"),
+
+        "ollama_enabled": bool(ollama_enabled),
+        "ollama_base_url": _get("ollama_base_url"),
+        "ollama_model": _get("ollama_model"),
+
+        "hf_router_enabled": bool(enabled),
+        "hf_router_base_url": _get("hf_router_base_url"),
+        "hf_router_model": _get("hf_router_model"),
+        "hf_router_token_masked": masked,
+
+        "effective": eff,
+    }
+
+
+@router.post("/runtime/llm")
+def set_runtime_llm_settings(
+    request: Request,
+    body: RuntimeLlmSettingsRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    try:
+        r = get_redis()
+    except Exception:
+        raise HTTPException(status_code=500, detail="redis unavailable")
+
+    updates: dict[str, str] = {}
+    if body.llm_provider_order is not None:
+        updates["llm_provider_order"] = str(body.llm_provider_order or "").strip()
+
+    if body.ollama_enabled is not None:
+        updates["ollama_enabled"] = "1" if bool(body.ollama_enabled) else "0"
+    if body.ollama_base_url is not None:
+        updates["ollama_base_url"] = str(body.ollama_base_url or "").strip()
+    if body.ollama_model is not None:
+        updates["ollama_model"] = str(body.ollama_model or "").strip()
+
+    if body.hf_router_enabled is not None:
+        updates["hf_router_enabled"] = "1" if bool(body.hf_router_enabled) else "0"
+    if body.hf_router_base_url is not None:
+        updates["hf_router_base_url"] = str(body.hf_router_base_url or "").strip()
+    if body.hf_router_model is not None:
+        updates["hf_router_model"] = str(body.hf_router_model or "").strip()
+    if body.hf_router_token is not None:
+        # Allow clearing by sending empty string.
+        updates["hf_router_token"] = str(body.hf_router_token or "").strip()
+
+    if updates:
+        try:
+            r.hset("runtime:llm", mapping=updates)
+            r.expire("runtime:llm", 60 * 60 * 24 * 30)
+        except Exception:
+            raise HTTPException(status_code=500, detail="failed to save settings")
+
+    try:
+        audit_log(
+            db=db,
+            request=request,
+            event_type="admin_set_runtime_llm_settings",
+            actor_user_id=_.id,
+            meta={"keys": list(updates.keys())},
+        )
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+class LlmProbeRequest(BaseModel):
+    title: str = "Проба"
+    text: str = ""
+    n_questions: int = 3
+    providers: list[str] | None = None
+
+
+@router.post("/llm/probe")
+def llm_probe(
+    body: LlmProbeRequest,
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    title = str(body.title or "Проба")
+    text = str(body.text or "")
+    n = max(1, min(int(body.n_questions or 3), 10))
+    providers = [p.strip().lower() for p in (body.providers or ["ollama", "hf_router", "auto"]) if str(p).strip()]
+
+    # Snapshot runtime overrides
+    runtime: dict[str, str] = {}
+    try:
+        r = get_redis()
+        raw = r.hgetall("runtime:llm") or {}
+        for k, v in (raw or {}).items():
+            kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+            vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+            runtime[kk] = vv
+    except Exception:
+        runtime = {}
+
+    out: dict[str, object] = {
+        "settings": {
+            "ollama_enabled": bool(settings.ollama_enabled),
+            "ollama_base_url": settings.ollama_base_url,
+            "ollama_model": settings.ollama_model,
+            "hf_router_enabled": bool(settings.hf_router_enabled),
+            "hf_router_base_url": settings.hf_router_base_url,
+            "hf_router_model": settings.hf_router_model,
+            "llm_provider_order": settings.llm_provider_order,
+        },
+        "runtime": {
+            "llm_provider_order": runtime.get("llm_provider_order") or "",
+            "hf_router_enabled": runtime.get("hf_router_enabled") or "",
+            "hf_router_token_present": bool((runtime.get("hf_router_token") or "").strip()),
+        },
+        "results": {},
+    }
+
+    if "ollama" in providers:
+        dbg: dict[str, object] = {}
+        qs = generate_quiz_questions_ollama(title=title, text=text, n_questions=n, debug_out=dbg)
+        out["results"]["ollama"] = {
+            "ok": bool(qs),
+            "count": int(len(qs or [])),
+            "debug": dbg,
+            "sample": [q.model_dump() if hasattr(q, "model_dump") else dict(q) for q in (qs or [])[:2]],
+        }
+
+    if "hf_router" in providers:
+        dbg2: dict[str, object] = {}
+        qs2 = generate_quiz_questions_hf_router(title=title, text=text, n_questions=n, debug_out=dbg2)
+        out["results"]["hf_router"] = {
+            "ok": bool(qs2),
+            "count": int(len(qs2 or [])),
+            "debug": dbg2,
+            "sample": [q.model_dump() if hasattr(q, "model_dump") else dict(q) for q in (qs2 or [])[:2]],
+        }
+
+    if "auto" in providers:
+        dbg3: dict[str, object] = {}
+        qs3 = generate_quiz_questions_ai(title=title, text=text, n_questions=n, debug_out=dbg3)
+        out["results"]["auto"] = {
+            "ok": bool(qs3),
+            "count": int(len(qs3 or [])),
+            "debug": dbg3,
+            "sample": [getattr(q, "model_dump", lambda: dict(q))() if q is not None else {} for q in (qs3 or [])[:2]],
+        }
+
+    return out
+
+
+@router.post("/modules/import-zip")
+async def import_module_zip(
+    request: Request,
+    title: str | None = None,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_import_module_zip", limit=10, window_seconds=60),
+):
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="only .zip is supported")
+
+    t = (title or "").strip()
+    inferred_title: str | None = None
+    try:
+        fn = str(file.filename or "").strip()
+        if fn:
+            inferred_title = re.sub(r"\.zip$", "", fn, flags=re.IGNORECASE).strip() or None
+    except Exception:
+        inferred_title = None
+
+    effective_title = t or inferred_title
+    if effective_title:
+        exists = (
+            db.scalar(
+                select(func.count()).select_from(Module).where(func.lower(Module.title) == func.lower(effective_title))
+            )
+            or 0
+        )
+        if int(exists) > 0:
+            raise HTTPException(status_code=409, detail="module title already exists")
+
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+
+    object_key = f"uploads/admin/{uuid.uuid4()}.zip"
+    try:
+        try:
+            file.file.seek(0)
+        except Exception:
+            pass
+
+        s3.put_object(Bucket=settings.s3_bucket, Key=object_key, Body=file.file, ContentType="application/zip")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="failed to upload zip") from e
+
+    try:
+        q = get_queue("corelms")
+        job = q.enqueue(
+            import_module_zip_job,
+            s3_object_key=object_key,
+            title=(effective_title or None),
+            source_filename=(file.filename or None),
+            actor_user_id=str(current.id),
+            job_timeout=60 * 60 * 3,
+            result_ttl=60 * 60 * 24,
+            failure_ttl=60 * 60 * 24,
+        )
+    except Exception as e:
+        try:
+            s3.delete_object(Bucket=settings.s3_bucket, Key=object_key)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail="failed to enqueue import job") from e
+
+    try:
+        r = get_redis()
+        meta = {
+            "job_id": job.id,
+            "object_key": object_key,
+            "title": (effective_title or "").strip(),
+            "created_at": datetime.utcnow().isoformat(),
+            "actor_user_id": str(current.id),
+        }
+        r.lpush("admin:import_jobs", json.dumps(meta, ensure_ascii=False))
+        r.ltrim("admin:import_jobs", 0, 49)
+        r.expire("admin:import_jobs", 60 * 60 * 24 * 30)
+    except Exception:
+        pass
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_import_module_zip",
+        actor_user_id=current.id,
+        meta={"job_id": job.id, "object_key": object_key, "title": effective_title},
+    )
+
+    db.commit()
+
+    return {"ok": True, "job_id": job.id, "object_key": object_key}
+
+
+@router.get("/import-jobs")
+def list_import_jobs(
+    limit: int = 20,
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    take = max(1, min(int(limit or 20), 50))
+    try:
+        r = get_redis()
+        raw = r.lrange("admin:import_jobs", 0, take - 1)
+    except Exception:
+        raw = []
+
+    items: list[dict] = []
+    for s in raw or []:
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                job_id = str(obj.get("job_id") or "").strip()
+                if job_id:
+                    job = fetch_job(job_id)
+                else:
+                    job = None
+
+                if job is not None:
+                    st = job.get_status(refresh=True)
+                    meta = dict(job.meta or {})
+                    obj["status"] = st
+                    obj["stage"] = meta.get("stage")
+                    obj["stage_at"] = meta.get("stage_at")
+                    obj["detail"] = meta.get("detail")
+                    obj["error_code"] = meta.get("error_code")
+                    obj["error_hint"] = meta.get("error_hint")
+                    obj["error_message"] = meta.get("error_message")
+                    try:
+                        if st == "failed":
+                            err = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
+                            obj["error"] = err.splitlines()[0][:500] if err else None
+                    except Exception:
+                        obj["error"] = None
+                items.append(obj)
+        except Exception:
+            continue
+
+    return {"items": items}
+
+
+@router.post("/import-jobs/{job_id}/retry")
+def retry_import_job(
+    job_id: str,
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    # Find import meta in Redis history by job_id.
+    try:
+        r = get_redis()
+        raw = r.lrange("admin:import_jobs", 0, 200)
+    except Exception:
+        raw = []
+
+    meta: dict | None = None
+    for s in raw or []:
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict) and str(obj.get("job_id") or "") == str(job_id):
+                meta = obj
+                break
+        except Exception:
+            continue
+
+    if not meta:
+        raise HTTPException(status_code=404, detail="import job meta not found")
+
+    object_key = str(meta.get("object_key") or "").strip()
+    if not object_key:
+        raise HTTPException(status_code=400, detail="import job has no object_key")
+
+    title = str(meta.get("title") or "").strip() or None
+
+    q = get_queue("corelms")
+    job = q.enqueue(
+        import_module_zip_job,
+        s3_object_key=object_key,
+        title=title,
+        source_filename=None,
+        job_timeout=60 * 60 * 3,
+        result_ttl=60 * 60 * 24,
+        failure_ttl=60 * 60 * 24,
+    )
+
+    return {"ok": True, "job_id": job.id}
+
+
+@router.get("/jobs/{job_id}")
+def job_status(
+    job_id: str,
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    job = fetch_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    status = job.get_status(refresh=True)
+    meta = dict(job.meta or {})
+
+    error_summary = None
+    try:
+        if status == "failed":
+            error_summary = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
+            if error_summary:
+                error_summary = error_summary.splitlines()[0][:500]
+    except Exception:
+        error_summary = None
+
+    result_payload = None
+    try:
+        if status == "finished":
+            result_payload = job.result
+    except Exception:
+        result_payload = None
+
+    resp: dict[str, object] = {
+        "id": job.id,
+        "status": status,
+        "enqueued_at": job.enqueued_at.isoformat() if job.enqueued_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+        "stage": meta.get("stage"),
+        "stage_at": meta.get("stage_at"),
+        "stage_started_at": meta.get("stage_started_at"),
+        "stage_durations_s": meta.get("stage_durations_s"),
+        "job_started_at": meta.get("job_started_at"),
+        "detail": meta.get("detail"),
+        "error_code": meta.get("error_code"),
+        "error_class": meta.get("error_class"),
+        "error_hint": meta.get("error_hint"),
+        "error_message": meta.get("error_message"),
+        "cancel_requested": bool(meta.get("cancel_requested")),
+        "cancel_requested_at": meta.get("cancel_requested_at"),
+        "result": result_payload,
+        "error": error_summary,
+    }
+    return resp
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(
+    job_id: str,
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    job = fetch_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    prev_status = job.get_status(refresh=True)
+
+    try:
+        meta = dict(job.meta or {})
+        meta["cancel_requested"] = True
+        meta["cancel_requested_at"] = datetime.utcnow().isoformat()
+        job.meta = meta
+        job.save_meta()
+    except Exception:
+        pass
+
+    # If job is queued/deferred we can cancel it immediately.
+    try:
+        if prev_status in {"queued", "deferred", "scheduled"}:
+            job.cancel()
+    except Exception:
+        pass
+
+    # Best-effort cleanup of uploaded ZIP in MinIO/S3.
+    s3_key = None
+    try:
+        s3_key = (job.kwargs or {}).get("s3_object_key")
+    except Exception:
+        s3_key = None
+    if not s3_key:
+        try:
+            s3_key = (job.meta or {}).get("detail") if str((job.meta or {}).get("stage") or "") in {"start", "download", "cleanup"} else None
+        except Exception:
+            s3_key = None
+
+    if s3_key:
+        try:
+            ensure_bucket_exists()
+            s3 = get_s3_client()
+            s3.delete_object(Bucket=settings.s3_bucket, Key=str(s3_key))
+        except Exception:
+            pass
+
+    # Best-effort cleanup of any objects uploaded by the job during import.
+    try:
+        uploaded_keys = list((job.meta or {}).get("uploaded_keys") or [])
+    except Exception:
+        uploaded_keys = []
+    if uploaded_keys:
+        try:
+            ensure_bucket_exists()
+            s3 = get_s3_client()
+            for k in uploaded_keys:
+                try:
+                    kk = str(k or "").strip()
+                    if kk:
+                        s3.delete_object(Bucket=settings.s3_bucket, Key=kk)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    return {"ok": True, "status": prev_status, "job_id": job.id}
+
+
+@router.post("/content/migrate-legacy")
+def migrate_legacy_content(
+    request: Request,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_migrate_legacy_content", limit=10, window_seconds=60),
+):
+    q = get_queue("corelms")
+    job = q.enqueue(migrate_legacy_submodule_content_job, limit=int(limit or 200))
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_migrate_legacy_content",
+        actor_user_id=current.id,
+        meta={"job_id": job.id, "limit": int(limit or 200)},
+    )
+    db.commit()
+
+    return {"ok": True, "job_id": job.id}
+
+
+@router.post("/modules", response_model=ModuleCreateResponse)
+def create_module(
+    request: Request,
+    body: ModuleCreateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_create_module", limit=30, window_seconds=60),
+):
+    m = Module(
+        title=body.title,
+        description=body.description,
+        difficulty=body.difficulty,
+        category=body.category,
+        is_active=body.is_active,
+    )
+    db.add(m)
+    db.commit()
+    db.refresh(m)
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_create_module",
+        actor_user_id=current.id,
+        meta={"module_id": str(m.id), "title": m.title},
+    )
+    db.commit()
+    return {"id": str(m.id)}
+
+
+@router.delete("/modules/{module_id}")
+def delete_module(
+    request: Request,
+    module_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_delete_module", limit=30, window_seconds=60),
+):
+    mid = _uuid(module_id, field="module_id")
+    m = db.scalar(select(Module).where(Module.id == mid))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    sub_ids = list(db.scalars(select(Submodule.id).where(Submodule.module_id == m.id)).all())
+    quiz_ids = list(db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == m.id)).all())
+    if m.final_quiz_id:
+        quiz_ids.append(m.final_quiz_id)
+
+    quiz_ids = [qid for qid in quiz_ids if qid is not None]
+    quiz_ids = list({qid for qid in quiz_ids})
+
+    # Asset ids: linked lesson assets + module-level assets by convention.
+    asset_ids: set[uuid.UUID] = set()
+    if sub_ids:
+        rows = db.scalars(select(SubmoduleAssetMap.asset_id).where(SubmoduleAssetMap.submodule_id.in_(sub_ids))).all()
+        for aid in rows:
+            if aid:
+                asset_ids.add(aid)
+
+    prefix = f"modules/{module_id}/_module/"
+    module_level_assets = db.scalars(select(ContentAsset.id).where(ContentAsset.object_key.like(prefix + "%"))).all()
+    for aid in module_level_assets:
+        if aid:
+            asset_ids.add(aid)
+
+    # Break FK module.final_quiz_id -> quizzes
+    m.final_quiz_id = None
+    db.flush()
+
+    if asset_ids:
+        db.execute(delete(LearningEvent).where(LearningEvent.ref_id.in_(list(asset_ids))))
+
+    if sub_ids:
+        db.execute(delete(LearningEvent).where(LearningEvent.ref_id.in_(sub_ids)))
+        db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.submodule_id.in_(sub_ids)))
+
+        # submodules.quiz_id is NOT NULL in some DB schemas. We must delete submodules
+        # before deleting quizzes to avoid FK violations.
+        db.execute(text("DELETE FROM submodules WHERE module_id = :mid"), {"mid": str(m.id)})
+
+    if quiz_ids:
+        attempt_ids = list(db.scalars(select(QuizAttempt.id).where(QuizAttempt.quiz_id.in_(quiz_ids))).all())
+        if attempt_ids:
+            db.execute(
+                text("DELETE FROM quiz_attempt_answers WHERE attempt_id IN :ids").bindparams(
+                    bindparam("ids", expanding=True, value=attempt_ids)
+                )
+            )
+        db.execute(delete(QuizAttempt).where(QuizAttempt.quiz_id.in_(quiz_ids)))
+
+        db.execute(delete(Question).where(Question.quiz_id.in_(quiz_ids)))
+        db.execute(delete(Quiz).where(Quiz.id.in_(quiz_ids)))
+
+    if asset_ids:
+        db.execute(delete(ContentAsset).where(ContentAsset.id.in_(list(asset_ids))))
+
+    # Legacy table still exists in DB.
+    db.execute(text("DELETE FROM module_skill_map WHERE module_id = :mid"), {"mid": str(m.id)})
+    db.execute(text("DELETE FROM modules WHERE id = :mid"), {"mid": str(m.id)})
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_delete_module",
+        actor_user_id=current.id,
+        meta={"module_id": str(mid), "module_title": m.title},
+    )
+    db.commit()
+
+    _delete_s3_prefix_best_effort(prefix=f"modules/{module_id}/")
+
+    return {"ok": True}
+
+
+@router.get("/modules")
+def list_modules_admin(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    mods = db.scalars(select(Module).order_by(Module.title)).all()
+    return {
+        "items": [
+            {
+                "id": str(m.id),
+                "title": str(m.title),
+                "is_active": bool(m.is_active),
+                "category": m.category,
+                "difficulty": int(m.difficulty or 1),
+                "final_quiz_id": str(m.final_quiz_id) if getattr(m, "final_quiz_id", None) else None,
+            }
+            for m in mods
+        ]
+    }
+
+
+class ModuleVisibilityRequest(BaseModel):
+    is_active: bool
+
+
+@router.post("/modules/{module_id}/visibility")
+def set_module_visibility(
+    request: Request,
+    module_id: str,
+    body: ModuleVisibilityRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_set_module_visibility", limit=60, window_seconds=60),
+):
+    mid = _uuid(module_id, field="module_id")
+    m = db.scalar(select(Module).where(Module.id == mid))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    target = bool(body.is_active)
+
+    # Update tags:
+    # - publishing: needs_regen:* -> suppressed_needs_regen:*
+    # - unpublishing: suppressed_needs_regen:* -> needs_regen:*
+    from sqlalchemy import update
+
+    needs_prefix = "needs_regen:"
+    suppressed_prefix = "suppressed_needs_regen:"
+
+    lesson_quiz_ids = list(
+        db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == m.id).where(Submodule.quiz_id.is_not(None))).all()
+    )
+    if getattr(m, "final_quiz_id", None):
+        lesson_quiz_ids.append(m.final_quiz_id)
+    lesson_quiz_ids = [qid for qid in lesson_quiz_ids if qid is not None]
+
+    def _apply_replace(prefix_from: str, prefix_to: str) -> None:
+        cond_prefix = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like(prefix_from + "%"))
+        # Prefer quiz scoping; also keep a tag scan safety net.
+        if lesson_quiz_ids:
+            db.execute(
+                update(Question)
+                .where(Question.quiz_id.in_(lesson_quiz_ids))
+                .where(cond_prefix)
+                .values(concept_tag=func.replace(Question.concept_tag, prefix_from, prefix_to))
+            )
+        db.execute(
+            update(Question)
+            .where(cond_prefix)
+            .where(Question.concept_tag.like(f"%{m.id}%"))
+            .values(concept_tag=func.replace(Question.concept_tag, prefix_from, prefix_to))
+        )
+
+    if target:
+        _apply_replace(needs_prefix, suppressed_prefix)
+    else:
+        _apply_replace(suppressed_prefix, needs_prefix)
+
+    m.is_active = target
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_set_module_visibility",
+        actor_user_id=current.id,
+        meta={"module_id": str(m.id), "is_active": bool(target)},
+    )
+    db.commit()
+    return {"ok": True, "module_id": str(m.id), "is_active": bool(m.is_active)}
+
+
+@router.post("/modules/{module_id}/regenerate-quizzes")
+def regenerate_module_quizzes(
+    request: Request,
+    module_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_regenerate_module_quizzes", limit=30, window_seconds=60),
+):
+    mid = _uuid(module_id, field="module_id")
+    m = db.scalar(select(Module).where(Module.id == mid))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    # Product rule: each lesson quiz always has exactly 5 questions.
+    tq = 5
+
+    q = get_queue("corelms")
+    job = q.enqueue(
+        regenerate_module_quizzes_job,
+        module_id=str(mid),
+        target_questions=tq,
+        job_timeout=60 * 60 * 2,
+        result_ttl=60 * 60 * 24,
+        failure_ttl=60 * 60 * 24,
+    )
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_regenerate_module_quizzes",
+        actor_user_id=current.id,
+        meta={"job_id": job.id, "module_id": str(mid), "target_questions": tq},
+    )
+    db.commit()
+
+    try:
+        r = get_redis()
+        meta = {
+            "job_id": job.id,
+            "module_id": str(mid),
+            "module_title": str(m.title),
+            "target_questions": int(tq),
+            "created_at": datetime.utcnow().isoformat(),
+            "actor_user_id": str(current.id),
+        }
+        r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
+        r.ltrim("admin:regen_jobs", 0, 49)
+        r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
+    except Exception:
+        pass
+
+    return {"ok": True, "job_id": job.id, "module_id": str(mid), "target_questions": tq}
+
+
+@router.get("/regen-jobs")
+def list_regen_jobs(
+    limit: int = 20,
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    take = max(1, min(int(limit or 20), 50))
+    try:
+        r = get_redis()
+        raw = r.lrange("admin:regen_jobs", 0, take - 1)
+    except Exception:
+        raw = []
+
+    items: list[dict] = []
+    for s in raw or []:
+        try:
+            obj = json.loads(s)
+            if isinstance(obj, dict):
+                job_id = str(obj.get("job_id") or "").strip()
+                job = fetch_job(job_id) if job_id else None
+                if job is not None:
+                    st = job.get_status(refresh=True)
+                    meta = dict(job.meta or {})
+                    obj["status"] = st
+                    obj["stage"] = meta.get("stage")
+                    obj["stage_at"] = meta.get("stage_at")
+                    obj["detail"] = meta.get("detail")
+                    obj["error_code"] = meta.get("error_code")
+                    obj["error_hint"] = meta.get("error_hint")
+                    obj["error_message"] = meta.get("error_message")
+                    try:
+                        if st == "failed":
+                            err = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
+                            obj["error"] = err.splitlines()[0][:500] if err else None
+                    except Exception:
+                        obj["error"] = None
+                items.append(obj)
+        except Exception:
+            continue
+
+    return {"items": items}
+
+
+@router.get("/modules/needs-regen")
+def modules_needs_regen(
+    _: User = Depends(require_roles(UserRole.admin)),
+    db: Session = Depends(get_db),
+):
+    # Count questions tagged with needs_regen:* per module.
+    # Uses outer joins to return 0 for modules without flagged questions.
+    needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
+
+    rows = (
+        db.execute(
+            select(
+                Module.id.label("module_id"),
+                func.sum(case((needs_regen_cond, 1), else_=0)).label("needs_regen_questions"),
+            )
+            .select_from(Module)
+            .join(Submodule, Submodule.module_id == Module.id, isouter=True)
+            .join(Question, Question.quiz_id == Submodule.quiz_id, isouter=True)
+            .group_by(Module.id)
+        )
+        .all()
+    )
+
+    items: list[dict[str, object]] = []
+    for r in rows:
+        items.append(
+            {
+                "module_id": str(r.module_id),
+                "needs_regen_questions": int(r.needs_regen_questions or 0),
+            }
+        )
+    return {"items": items}
+
+
+@router.post("/quizzes", response_model=QuizCreateResponse)
+def create_quiz(
+    request: Request,
+    body: QuizCreateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_create_quiz", limit=30, window_seconds=60),
+):
+    try:
+        qt = QuizType(body.type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid quiz type") from e
+
+    q = Quiz(
+        type=qt,
+        pass_threshold=body.pass_threshold,
+        time_limit=body.time_limit,
+        attempts_limit=body.attempts_limit,
+    )
+    db.add(q)
+    db.commit()
+    db.refresh(q)
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_create_quiz",
+        actor_user_id=current.id,
+        meta={"quiz_id": str(q.id), "type": getattr(q.type, "value", str(q.type))},
+    )
+    db.commit()
+    return {"id": str(q.id)}
+
+
+@router.post("/questions", response_model=QuestionCreateResponse)
+def create_question(
+    request: Request,
+    body: QuestionCreateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_create_question", limit=60, window_seconds=60),
+):
+    quiz_id = _uuid(body.quiz_id, field="quiz_id")
+    quiz = db.scalar(select(Quiz).where(Quiz.id == quiz_id))
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="quiz not found")
+
+    try:
+        t = QuestionType(body.type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid question type") from e
+
+    correct_answer = _normalize_correct_answer_for_type(qtype=getattr(t, "value", str(t)), raw=str(body.correct_answer))
+
+    question = Question(
+        quiz_id=quiz.id,
+        type=t,
+        difficulty=body.difficulty,
+        prompt=body.prompt,
+        correct_answer=correct_answer,
+        explanation=body.explanation,
+        concept_tag=body.concept_tag,
+        variant_group=body.variant_group,
+    )
+    db.add(question)
+    db.commit()
+    db.refresh(question)
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_create_question",
+        actor_user_id=current.id,
+        meta={"quiz_id": str(quiz.id), "question_id": str(question.id), "type": getattr(question.type, "value", str(question.type))},
+    )
+    db.commit()
+    return {"id": str(question.id)}
+
+
+@router.get("/quizzes/{quiz_id}/questions", response_model=QuestionsListResponse)
+def list_questions_for_quiz(
+    request: Request,
+    quiz_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+):
+    qid = _uuid(quiz_id, field="quiz_id")
+    quiz = db.scalar(select(Quiz).where(Quiz.id == qid))
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="quiz not found")
+
+    questions = db.scalars(select(Question).where(Question.quiz_id == quiz.id).order_by(Question.id)).all()
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_list_questions",
+        actor_user_id=current.id,
+        meta={"quiz_id": str(quiz.id), "count": len(questions)},
+    )
+    db.commit()
+
+    def _q_public(q: Question) -> dict[str, object]:
+        return {
+            "id": str(q.id),
+            "quiz_id": str(q.quiz_id),
+            "type": getattr(getattr(q, "type", None), "value", str(getattr(q, "type", ""))),
+            "difficulty": int(getattr(q, "difficulty", 1) or 1),
+            "prompt": str(getattr(q, "prompt", "") or ""),
+            "correct_answer": str(getattr(q, "correct_answer", "") or ""),
+            "explanation": getattr(q, "explanation", None),
+            "concept_tag": getattr(q, "concept_tag", None),
+            "variant_group": getattr(q, "variant_group", None),
+        }
+
+    return {"items": [_q_public(q) for q in questions]}
+
+
+@router.get("/questions/{question_id}", response_model=QuestionPublic)
+def get_question(
+    request: Request,
+    question_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+):
+    qid = _uuid(question_id, field="question_id")
+    q = db.scalar(select(Question).where(Question.id == qid))
+    if q is None:
+        raise HTTPException(status_code=404, detail="question not found")
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_get_question",
+        actor_user_id=current.id,
+        meta={"question_id": str(q.id), "quiz_id": str(q.quiz_id)},
+    )
+    db.commit()
+
+    return {
+        "id": str(q.id),
+        "quiz_id": str(q.quiz_id),
+        "type": getattr(getattr(q, "type", None), "value", str(getattr(q, "type", ""))),
+        "difficulty": int(getattr(q, "difficulty", 1) or 1),
+        "prompt": str(getattr(q, "prompt", "") or ""),
+        "correct_answer": str(getattr(q, "correct_answer", "") or ""),
+        "explanation": getattr(q, "explanation", None),
+        "concept_tag": getattr(q, "concept_tag", None),
+        "variant_group": getattr(q, "variant_group", None),
+    }
+
+
+@router.patch("/questions/{question_id}", response_model=QuestionUpdateResponse)
+def update_question(
+    request: Request,
+    question_id: str,
+    body: QuestionUpdateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_update_question", limit=120, window_seconds=60),
+):
+    qid = _uuid(question_id, field="question_id")
+    q = db.scalar(select(Question).where(Question.id == qid))
+    if q is None:
+        raise HTTPException(status_code=404, detail="question not found")
+
+    before = {
+        "type": getattr(getattr(q, "type", None), "value", str(getattr(q, "type", ""))),
+        "difficulty": int(getattr(q, "difficulty", 1) or 1),
+        "prompt": str(getattr(q, "prompt", "") or ""),
+        "correct_answer": str(getattr(q, "correct_answer", "") or ""),
+        "explanation": getattr(q, "explanation", None),
+        "concept_tag": getattr(q, "concept_tag", None),
+        "variant_group": getattr(q, "variant_group", None),
+    }
+
+    if body.type is not None:
+        try:
+            q.type = QuestionType(body.type)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="invalid question type") from e
+    if body.difficulty is not None:
+        q.difficulty = max(1, int(body.difficulty))
+    if body.prompt is not None:
+        q.prompt = str(body.prompt)
+    if body.correct_answer is not None:
+        raw = str(body.correct_answer)
+        # Product UX: accept any separators/case/order and store canonical form.
+        # Also infer type from letters when admin didn't explicitly set type.
+        letters = set()
+        try:
+            _, letters = _normalize_abcd_answer(raw)
+        except Exception:
+            letters = set()
+
+        if body.type is None:
+            try:
+                if getattr(q.type, "value", str(q.type)) != "case":
+                    if len(letters) >= 2:
+                        q.type = QuestionType.multi
+                    elif len(letters) == 1:
+                        q.type = QuestionType.single
+            except Exception:
+                pass
+
+        q.correct_answer = _normalize_correct_answer_for_type(qtype=getattr(q.type, "value", str(q.type)), raw=raw)
+    if body.explanation is not None:
+        q.explanation = body.explanation
+    if body.concept_tag is not None:
+        q.concept_tag = body.concept_tag
+    if body.variant_group is not None:
+        q.variant_group = body.variant_group
+
+    db.add(q)
+    db.commit()
+    db.refresh(q)
+
+    after = {
+        "type": getattr(getattr(q, "type", None), "value", str(getattr(q, "type", ""))),
+        "difficulty": int(getattr(q, "difficulty", 1) or 1),
+        "prompt": str(getattr(q, "prompt", "") or ""),
+        "correct_answer": str(getattr(q, "correct_answer", "") or ""),
+        "explanation": getattr(q, "explanation", None),
+        "concept_tag": getattr(q, "concept_tag", None),
+        "variant_group": getattr(q, "variant_group", None),
+    }
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_update_question",
+        actor_user_id=current.id,
+        meta={"question_id": str(q.id), "quiz_id": str(q.quiz_id), "before": before, "after": after},
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "item": {
+            "id": str(q.id),
+            "quiz_id": str(q.quiz_id),
+            "type": after["type"],
+            "difficulty": int(after["difficulty"]),
+            "prompt": str(after["prompt"]),
+            "correct_answer": str(after["correct_answer"]),
+            "explanation": after["explanation"],
+            "concept_tag": after["concept_tag"],
+            "variant_group": after["variant_group"],
+        },
+    }
+
+
+@router.delete("/questions/{question_id}")
+def delete_question(
+    request: Request,
+    question_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_delete_question", limit=60, window_seconds=60),
+):
+    qid = _uuid(question_id, field="question_id")
+    q = db.scalar(select(Question).where(Question.id == qid))
+    if q is None:
+        raise HTTPException(status_code=404, detail="question not found")
+
+    # Delete dependent attempt answers first to keep FK integrity.
+    deleted_answers = db.execute(delete(QuizAttemptAnswer).where(QuizAttemptAnswer.question_id == q.id)).rowcount
+    db.execute(delete(Question).where(Question.id == q.id))
+    db.commit()
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_delete_question",
+        actor_user_id=current.id,
+        meta={"question_id": str(q.id), "quiz_id": str(q.quiz_id), "deleted_attempt_answers": int(deleted_answers or 0)},
+    )
+    db.commit()
+
+    return {"ok": True}
+
+
+@router.post("/submodules", response_model=SubmoduleCreateResponse)
+def create_submodule(
+    request: Request,
+    body: SubmoduleCreateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_create_submodule", limit=30, window_seconds=60),
+):
+    module_id = _uuid(body.module_id, field="module_id")
+    quiz_id = _uuid(body.quiz_id, field="quiz_id")
+
+    m = db.scalar(select(Module).where(Module.id == module_id))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    q = db.scalar(select(Quiz).where(Quiz.id == quiz_id))
+    if q is None:
+        raise HTTPException(status_code=404, detail="quiz not found")
+
+    s = Submodule(module_id=m.id, title=body.title, order=body.order, quiz_id=q.id, content="")
+    db.add(s)
+    db.commit()
+    db.refresh(s)
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_create_submodule",
+        actor_user_id=current.id,
+        meta={"module_id": str(m.id), "submodule_id": str(s.id), "quiz_id": str(q.id), "order": int(s.order)},
+    )
+    db.commit()
+    return {"id": str(s.id)}
+
+
+@router.post("/submodules/link-asset", response_model=LinkAssetToSubmoduleResponse)
+def link_asset_to_submodule(
+    request: Request,
+    body: LinkAssetToSubmoduleRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_link_asset", limit=60, window_seconds=60),
+):
+    submodule_id = _uuid(body.submodule_id, field="submodule_id")
+    asset_id = _uuid(body.asset_id, field="asset_id")
+
+    existing = db.scalar(
+        select(SubmoduleAssetMap).where(
+            SubmoduleAssetMap.submodule_id == submodule_id,
+            SubmoduleAssetMap.asset_id == asset_id,
+        )
+    )
+    if existing is not None:
+        return {"ok": True}
+
+    link = SubmoduleAssetMap(submodule_id=submodule_id, asset_id=asset_id, order=body.order)
+    db.add(link)
+    db.commit()
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_link_asset_to_submodule",
+        actor_user_id=current.id,
+        meta={"submodule_id": str(submodule_id), "asset_id": str(asset_id), "order": int(body.order)},
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/assignments", response_model=AssignmentCreateResponse)
+def create_assignment(
+    request: Request,
+    body: AssignmentCreateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_create_assignment", limit=30, window_seconds=60),
+):
+    assigned_to = _uuid(body.assigned_to, field="assigned_to")
+    target_id = _uuid(body.target_id, field="target_id")
+
+    try:
+        t = AssignmentType(body.type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid assignment type") from e
+
+    deadline_dt = None
+    if body.deadline:
+        try:
+            deadline_dt = datetime.fromisoformat(body.deadline)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="invalid deadline") from e
+
+    a = Assignment(
+        assigned_by=current.id,
+        assigned_to=assigned_to,
+        type=t,
+        target_id=target_id,
+        priority=body.priority,
+        deadline=deadline_dt,
+        status=AssignmentStatus.pending,
+    )
+    db.add(a)
+    db.commit()
+    db.refresh(a)
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_create_assignment",
+        actor_user_id=current.id,
+        target_user_id=assigned_to,
+        meta={"assignment_id": str(a.id), "type": a.type.value, "target_id": str(a.target_id), "deadline": body.deadline},
+    )
+    db.commit()
+    return {"id": str(a.id)}
+
+
+@router.get("/modules/{module_id}/answers")
+def get_module_answers(
+    module_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    """Return correct answers for all questions in a module (admin-only, for demo/QA)."""
+    try:
+        mod_uuid = uuid.UUID(module_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="invalid module_id") from e
+
+    # Verify module exists
+    mod = db.scalar(select(Module).where(Module.id == mod_uuid))
+    if mod is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    # Fetch all questions via submodule->quiz->question
+    rows = db.execute(
+        text(
+            """
+            SELECT
+                q.id AS question_id,
+                q.prompt,
+                q.type,
+                q.correct_answer,
+                q.variant_group,
+                qz.id AS quiz_id,
+                sm.id AS submodule_id,
+                sm.title AS submodule_title,
+                sm.order AS submodule_order
+            FROM questions q
+            JOIN quizzes qz ON q.quiz_id = qz.id
+            JOIN submodules sm ON qz.id = sm.quiz_id
+            WHERE sm.module_id = :module_id
+            ORDER BY sm.order, qz.id, q.id
+            """
+        ),
+        {"module_id": mod_uuid}
+    ).fetchall()
+
+    answers = [
+        {
+            "question_id": str(row.question_id),
+            "quiz_id": str(row.quiz_id),
+            "submodule_id": str(row.submodule_id),
+            "submodule_title": row.submodule_title,
+            "submodule_order": int(row.submodule_order),
+            "prompt": row.prompt,
+            "type": row.type,
+            "correct_answer": row.correct_answer,
+            "variant_group": row.variant_group,
+        }
+        for row in rows
+    ]
+
+    return {"module_id": module_id, "module_title": mod.title, "answers": answers}
+
+
+@router.get("/users")
+def list_users(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    rows = db.scalars(select(User).order_by(User.name)).all()
+
+    modules = db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()
+    module_by_id: dict[uuid.UUID, Module] = {m.id: m for m in modules}
+
+    sub_rows = db.execute(
+        select(Submodule.module_id, Submodule.id, Submodule.quiz_id)
+        .where(Submodule.module_id.in_([m.id for m in modules]))
+        .order_by(Submodule.module_id, Submodule.order)
+    ).all()
+
+    quiz_to_module: dict[uuid.UUID, uuid.UUID] = {}
+    steps_by_module: dict[uuid.UUID, int] = defaultdict(int)
+    all_quiz_ids: set[uuid.UUID] = set()
+    all_sub_ids: set[uuid.UUID] = set()
+    for mid, sid, qid in sub_rows:
+        quiz_to_module[qid] = mid
+        steps_by_module[mid] += 1
+        all_quiz_ids.add(qid)
+        all_sub_ids.add(sid)
+
+    for m in modules:
+        if m.final_quiz_id:
+            quiz_to_module[m.final_quiz_id] = m.id
+            steps_by_module[m.id] += 1
+            all_quiz_ids.add(m.final_quiz_id)
+
+    user_ids = [u.id for u in rows]
+
+    passed_by_user_module: dict[tuple[uuid.UUID, uuid.UUID], int] = defaultdict(int)
+    if user_ids and all_quiz_ids:
+        passed_rows = db.execute(
+            select(QuizAttempt.user_id, QuizAttempt.quiz_id)
+            .where(
+                QuizAttempt.user_id.in_(user_ids),
+                QuizAttempt.quiz_id.in_(list(all_quiz_ids)),
+                QuizAttempt.passed == True,
+            )
+            .group_by(QuizAttempt.user_id, QuizAttempt.quiz_id)
+        ).all()
+        for uid, qid in passed_rows:
+            mid = quiz_to_module.get(qid)
+            if mid is None:
+                continue
+            passed_by_user_module[(uid, mid)] += 1
+
+    read_by_user_module: dict[tuple[uuid.UUID, uuid.UUID], int] = defaultdict(int)
+    if user_ids and all_sub_ids:
+        read_rows = db.execute(
+            select(LearningEvent.user_id, Submodule.module_id, LearningEvent.ref_id)
+            .join(Submodule, Submodule.id == LearningEvent.ref_id)
+            .where(
+                LearningEvent.user_id.in_(user_ids),
+                LearningEvent.type == LearningEventType.submodule_opened,
+                LearningEvent.meta == "read",
+                LearningEvent.ref_id.in_(list(all_sub_ids)),
+            )
+            .group_by(LearningEvent.user_id, Submodule.module_id, LearningEvent.ref_id)
+        ).all()
+        for uid, mid, _sid in read_rows:
+            read_by_user_module[(uid, mid)] += 1
+
+    def _progress_summary_for_user(u: User) -> dict[str, object]:
+        completed_count = 0
+        in_progress_count = 0
+        current: dict[str, object] | None = None
+        current_pct = -1
+
+        for mid, m in module_by_id.items():
+            total = int(steps_by_module.get(mid) or 0)
+            passed = int(passed_by_user_module.get((u.id, mid)) or 0)
+            read = int(read_by_user_module.get((u.id, mid)) or 0)
+
+            if total <= 0:
+                continue
+
+            completed = passed >= total and total > 0
+            started = passed > 0 or read > 0
+            pct = int(round((passed / total) * 100)) if total > 0 else 0
+            pct = max(0, min(100, pct))
+
+            if completed:
+                completed_count += 1
+                continue
+
+            if started:
+                in_progress_count += 1
+                if pct > current_pct:
+                    current_pct = pct
+                    current = {
+                        "module_id": str(mid),
+                        "title": m.title,
+                        "total": total,
+                        "passed": passed,
+                        "percent": pct,
+                    }
+
+        return {
+            "completed_count": int(completed_count),
+            "in_progress_count": int(in_progress_count),
+            "current": current,
+        }
+
+    return {
+        "items": [
+            {
+                "id": str(u.id),
+                "name": u.name,
+                "role": u.role.value,
+                "position": u.position,
+                "xp": int(u.xp or 0),
+                "level": int(u.level or 0),
+                "streak": int(u.streak or 0),
+                "last_activity_at": u.last_activity_at.isoformat() if getattr(u, "last_activity_at", None) else None,
+                "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
+                "progress_summary": _progress_summary_for_user(u),
+            }
+            for u in rows
+        ]
+    }
+
+
+@router.get("/users/{user_id}")
+def get_user_detail(
+    user_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    uid = _uuid(user_id, field="user_id")
+    u = db.scalar(select(User).where(User.id == uid))
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    assignments_total = db.scalar(select(func.count()).select_from(Assignment).where(Assignment.assigned_to == uid)) or 0
+    assignments_completed = (
+        db.scalar(
+            select(func.count())
+            .select_from(Assignment)
+            .where(Assignment.assigned_to == uid)
+            .where(Assignment.status == AssignmentStatus.completed)
+        )
+        or 0
+    )
+    attempts_total = db.scalar(select(func.count()).select_from(QuizAttempt).where(QuizAttempt.user_id == uid)) or 0
+    attempts_passed = (
+        db.scalar(select(func.count()).select_from(QuizAttempt).where(QuizAttempt.user_id == uid).where(QuizAttempt.passed == True))
+        or 0
+    )
+    events_total = db.scalar(select(func.count()).select_from(LearningEvent).where(LearningEvent.user_id == uid)) or 0
+
+    modules = db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()
+    module_ids = [m.id for m in modules]
+    progress_map = LearningService(db).get_modules_progress(u, module_ids)
+
+    completed_modules: list[dict[str, object]] = []
+    in_progress_modules: list[dict[str, object]] = []
+    for m in modules:
+        prog = progress_map.get(m.id) or {}
+        total = int(prog.get("total") or 0)
+        passed = int(prog.get("passed") or 0)
+        completed = bool(prog.get("completed") or False)
+        submods = prog.get("submodules") or []
+        started = passed > 0 or any(bool(x.get("read")) for x in submods if isinstance(x, dict))
+
+        pct = 0
+        if total > 0:
+            pct = int(round((passed / total) * 100))
+
+        item = {
+            "module_id": str(m.id),
+            "title": m.title,
+            "total": total,
+            "passed": passed,
+            "percent": pct,
+            "completed": completed,
+        }
+
+        if completed:
+            completed_modules.append(item)
+        elif started:
+            in_progress_modules.append(item)
+
+    # Fetch recent history (last 20 events)
+    recent_events = db.scalars(
+        select(LearningEvent)
+        .where(LearningEvent.user_id == uid)
+        .order_by(LearningEvent.created_at.desc())
+        .limit(20)
+    ).all()
+
+    history = []
+    for ev in recent_events:
+        et = None
+        try:
+            if hasattr(ev, "event_type"):
+                et = getattr(ev, "event_type")
+            else:
+                et = getattr(ev, "type")
+        except Exception:
+            et = None
+
+        meta_val: object = {}
+        try:
+            raw_meta = getattr(ev, "meta", None)
+            if raw_meta is None:
+                meta_val = {}
+            elif isinstance(raw_meta, (dict, list)):
+                meta_val = raw_meta
+            else:
+                s = str(raw_meta)
+                if s.strip().startswith("{") or s.strip().startswith("["):
+                    meta_val = json.loads(s)
+                else:
+                    meta_val = {"value": s}
+        except Exception:
+            meta_val = {}
+
+        history.append({
+            "id": str(ev.id),
+            "event_type": (et.value if hasattr(et, "value") else str(et)) if et is not None else "",
+            "created_at": ev.created_at.isoformat(),
+            "meta": meta_val or {},
+        })
+
+    return {
+        "id": str(u.id),
+        "name": u.name,
+        "role": u.role.value,
+        "position": u.position,
+        "xp": int(u.xp or 0),
+        "level": int(u.level or 0),
+        "streak": int(u.streak or 0),
+        "must_change_password": bool(getattr(u, "must_change_password", False)),
+        "password_changed_at": u.password_changed_at.isoformat() if getattr(u, "password_changed_at", None) else None,
+        "last_activity_at": u.last_activity_at.isoformat() if getattr(u, "last_activity_at", None) else None,
+        "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
+        "stats": {
+            "assignments_total": int(assignments_total),
+            "assignments_completed": int(assignments_completed),
+            "attempts_total": int(attempts_total),
+            "attempts_passed": int(attempts_passed),
+            "events_total": int(events_total),
+        },
+        "modules_progress": {
+            "completed": completed_modules,
+            "in_progress": in_progress_modules,
+        },
+        "history": history,
+    }
+
+
+@router.delete("/users/{user_id}")
+def delete_user(
+    request: Request,
+    user_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_delete_user", limit=10, window_seconds=60),
+):
+    uid = _uuid(user_id, field="user_id")
+    if uid == current.id:
+        raise HTTPException(status_code=400, detail="cannot delete self")
+
+    u = db.scalar(select(User).where(User.id == uid))
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    try:
+        attempt_ids = db.scalars(select(QuizAttempt.id).where(QuizAttempt.user_id == uid)).all()
+        if attempt_ids:
+            db.execute(delete(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id.in_(attempt_ids)))
+            db.execute(delete(QuizAttempt).where(QuizAttempt.id.in_(attempt_ids)))
+
+        db.execute(delete(LearningEvent).where(LearningEvent.user_id == uid))
+        db.execute(delete(UserSkill).where(UserSkill.user_id == uid))
+
+        db.execute(delete(Assignment).where(Assignment.assigned_to == uid))
+        db.execute(delete(Assignment).where(Assignment.assigned_by == uid))
+
+        # Keep audit trail shape, but remove hard references to deleted user.
+        db.execute(
+            text("UPDATE security_audit_events SET actor_user_id = NULL WHERE actor_user_id = :uid"),
+            {"uid": uid},
+        )
+        db.execute(
+            text("UPDATE security_audit_events SET target_user_id = NULL WHERE target_user_id = :uid"),
+            {"uid": uid},
+        )
+
+        db.execute(delete(User).where(User.id == uid))
+
+        audit_log(db=db, request=request, event_type="admin_delete_user", actor_user_id=current.id, target_user_id=uid)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="failed to delete user") from e
+
+    return {"ok": True}
+
+
+@router.post("/users", response_model=UserCreateResponse)
+def create_user(
+    request: Request,
+    body: UserCreateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_create_user", limit=20, window_seconds=60),
+):
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="invalid name")
+
+    existing = db.scalar(select(User).where(User.name == name))
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="user already exists")
+
+    temp_password = (body.password or "").strip() or _random_password(12)
+    if len(temp_password) < int(settings.password_min_length or 0):
+        raise HTTPException(status_code=400, detail="password too short")
+
+    user = User(
+        name=name,
+        position=body.position,
+        role=UserRole(str(body.role)),
+        xp=0,
+        level=1,
+        streak=0,
+        password_hash=_hash_password(temp_password),
+        must_change_password=bool(body.must_change_password),
+        password_changed_at=None,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    audit_log(db=db, request=request, event_type="admin_create_user", actor_user_id=current.id, target_user_id=user.id)
+    db.commit()
+
+    return {"id": str(user.id), "temp_password": temp_password}
+
+
+@router.post("/users/{user_id}/reset-password", response_model=UserResetPasswordResponse)
+def reset_user_password(
+    request: Request,
+    user_id: str,
+    body: UserResetPasswordRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_reset_password", limit=20, window_seconds=60),
+):
+    uid = _uuid(user_id, field="user_id")
+    user = db.scalar(select(User).where(User.id == uid))
+    if user is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    temp_password = (body.password or "").strip() or _random_password(12)
+    if len(temp_password) < int(settings.password_min_length or 0):
+        raise HTTPException(status_code=400, detail="password too short")
+
+    user.password_hash = _hash_password(temp_password)
+    user.must_change_password = bool(body.must_change_password)
+    user.password_changed_at = None
+    db.add(user)
+    db.commit()
+
+    audit_log(db=db, request=request, event_type="admin_reset_password", actor_user_id=current.id, target_user_id=user.id)
+    db.commit()
+
+    return {"ok": True, "temp_password": temp_password}
+
+
+@router.get("/analytics/modules/{module_id}", response_model=ModuleAnalyticsResponse)
+def module_analytics(
+    module_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    mid = _uuid(module_id, field="module_id")
+    m = db.scalar(select(Module).where(Module.id == mid))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    learning_service = LearningService(db)
+    rows = learning_service.get_modules_analytics_batch(mid)
+
+    return {"module_id": str(m.id), "module_title": m.title, "rows": rows}
+
+
+@router.get("/analytics/modules/{module_id}/question-quality")
+def module_question_quality(
+    module_id: str,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    mid = _uuid(module_id, field="module_id")
+    m = db.scalar(select(Module).where(Module.id == mid))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    # Collect all quiz ids participating in the module (submodules + final)
+    quiz_ids = [
+        qid
+        for (qid,) in db.execute(select(Submodule.quiz_id).where(Submodule.module_id == mid)).all()
+        if qid is not None
+    ]
+    if m.final_quiz_id:
+        quiz_ids.append(m.final_quiz_id)
+
+    quiz_ids = list(dict.fromkeys(quiz_ids))
+    if not quiz_ids:
+        return {"module_id": str(m.id), "module_title": m.title, "items": []}
+
+    take = max(1, min(int(limit or 50), 200))
+
+    incorrect_sum = func.sum(case((QuizAttemptAnswer.is_correct == False, 1), else_=0)).label("incorrect")
+    total_cnt = func.count(QuizAttemptAnswer.id).label("total")
+
+    rows = (
+        db.execute(
+            select(
+                Question.id.label("question_id"),
+                Question.prompt.label("prompt"),
+                Question.type.label("type"),
+                Question.concept_tag.label("concept_tag"),
+                Quiz.id.label("quiz_id"),
+                Quiz.type.label("quiz_type"),
+                total_cnt,
+                incorrect_sum,
+            )
+            .select_from(QuizAttemptAnswer)
+            .join(QuizAttempt, QuizAttempt.id == QuizAttemptAnswer.attempt_id)
+            .join(Question, Question.id == QuizAttemptAnswer.question_id)
+            .join(Quiz, Quiz.id == Question.quiz_id)
+            .where(QuizAttempt.quiz_id.in_(quiz_ids))
+            .where(Question.quiz_id.in_(quiz_ids))
+            .group_by(Question.id, Question.prompt, Question.type, Question.concept_tag, Quiz.id, Quiz.type)
+        )
+        .all()
+    )
+
+    items: list[dict[str, object]] = []
+    for r in rows:
+        total = int(getattr(r, "total") or 0)
+        incorrect = int(getattr(r, "incorrect") or 0)
+        failure_rate = float(incorrect) / float(total) if total > 0 else 0.0
+        items.append(
+            {
+                "question_id": str(getattr(r, "question_id")),
+                "quiz_id": str(getattr(r, "quiz_id")),
+                "quiz_type": getattr(getattr(r, "quiz_type"), "value", str(getattr(r, "quiz_type"))),
+                "type": getattr(getattr(r, "type"), "value", str(getattr(r, "type"))),
+                "concept_tag": getattr(r, "concept_tag"),
+                "prompt": getattr(r, "prompt") or "",
+                "total": total,
+                "incorrect": incorrect,
+                "failure_rate": round(failure_rate, 4),
+            }
+        )
+
+    items.sort(key=lambda x: (float(x.get("failure_rate") or 0.0), int(x.get("total") or 0)), reverse=True)
+    items = items[:take]
+
+    return {"module_id": str(m.id), "module_title": m.title, "items": items}
+
+
+@router.get("/quizzes/{quiz_id}/answer-key")
+def quiz_answer_key(
+    request: Request,
+    quiz_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+):
+    qid = _uuid(quiz_id, field="quiz_id")
+    quiz = db.scalar(select(Quiz).where(Quiz.id == qid))
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="quiz not found")
+
+    questions = db.scalars(select(Question).where(Question.quiz_id == quiz.id)).all()
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_view_quiz_answer_key",
+        actor_user_id=current.id,
+        meta={"quiz_id": str(quiz.id), "question_count": len(questions)},
+    )
+    db.commit()
+    return {
+        "quiz_id": str(quiz.id),
+        "type": getattr(quiz.type, "value", str(quiz.type)),
+        "pass_threshold": int(quiz.pass_threshold or 0),
+        "questions": [
+            {
+                "id": str(q.id),
+                "type": getattr(q.type, "value", str(q.type)),
+                "prompt": q.prompt,
+                "correct_answer": q.correct_answer,
+                "concept_tag": q.concept_tag,
+            }
+            for q in questions
+        ],
+    }
