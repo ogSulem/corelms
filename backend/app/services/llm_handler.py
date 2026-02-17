@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app.core.config import settings
@@ -16,6 +17,9 @@ def generate_quiz_questions_ai(
     title: str,
     text: str,
     n_questions: int = 3,
+    min_questions: int | None = None,
+    retries: int = 1,
+    backoff_seconds: float = 0.8,
     debug_out: dict[str, Any] | None = None,
     provider_order: list[str] | None = None,
 ) -> list[Any]:
@@ -65,25 +69,66 @@ def generate_quiz_questions_ai(
 
     errors: list[str] = []
 
+    want = int(n_questions or 0)
+    min_q = int(min_questions) if min_questions is not None else want
+    min_q = max(1, min(min_q, want if want > 0 else min_q))
+    max_tries = max(1, min(int(retries or 1), 8))
+
     for provider in order:
         try:
             if provider in {"openrouter", "or"}:
                 if not (bool(settings.openrouter_enabled) or bool(runtime_or_enabled)):
                     continue
+                ok_or, _meta = (False, None)
+                try:
+                    ok_or, _meta = openrouter_healthcheck()
+                except Exception:
+                    ok_or = False
+
                 local_debug = {}
-                out = generate_quiz_questions_openrouter(
-                    title=title,
-                    text=text,
-                    n_questions=n_questions,
-                    debug_out=local_debug,
-                    base_url=runtime_or_base_url,
-                    model=runtime_or_model,
+                best: list[Any] = []
+                last_err = None
+
+                strict_prompt = (
+                    "Верни ТОЛЬКО валидный JSON без Markdown и без текста вокруг. "
+                    "Структура: {\"questions\":[{" 
+                    "\"type\":\"single\",\"prompt\":\"...\\nA) ...\\nB) ...\\nC) ...\\nD) ...\","
+                    "\"correct_answer\":\"A\",\"explanation\":\"...\"}]}. "
+                    "Никаких лишних ключей. correct_answer строго одна буква A|B|C|D."
                 )
-                if out:
+
+                for attempt in range(1, max_tries + 1):
+                    local_debug = {}
+                    out = generate_quiz_questions_openrouter(
+                        title=title,
+                        text=text,
+                        n_questions=n_questions,
+                        debug_out=local_debug,
+                        base_url=runtime_or_base_url,
+                        model=runtime_or_model,
+                        system_prompt=(strict_prompt if attempt >= 2 else None),
+                        temperature=(0.2 if attempt >= 2 else None),
+                    )
+                    if out and len(out) >= min_q:
+                        _set_debug("provider", "openrouter")
+                        _set_debug("provider_error", None)
+                        if debug_out is not None:
+                            debug_out.setdefault("openrouter_attempts", attempt)
+                        return out
+                    if out and len(out) > len(best):
+                        best = out
+                    last_err = str(local_debug.get("error") or "empty")
+
+                    if not ok_or:
+                        break
+                    if attempt < max_tries:
+                        time.sleep(max(0.1, float(backoff_seconds) * float(attempt)))
+
+                if best and len(best) >= min_q:
                     _set_debug("provider", "openrouter")
                     _set_debug("provider_error", None)
-                    return out
-                errors.append("openrouter:" + str(local_debug.get("error") or "empty"))
+                    return best
+                errors.append("openrouter:" + str(last_err or "empty"))
                 continue
 
             if provider == "ollama":

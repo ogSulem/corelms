@@ -121,6 +121,8 @@ def generate_quiz_questions_openrouter(
     debug_out: dict[str, Any] | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    system_prompt: str | None = None,
+    temperature: float | None = None,
 ) -> list[OpenRouterQuestion]:
     if not settings.openrouter_enabled:
         # Allow runtime enabling via Redis.
@@ -182,20 +184,28 @@ def generate_quiz_questions_openrouter(
         _set_debug("missing_model")
         return []
 
+    sys_prompt = (
+        str(system_prompt).strip()
+        if system_prompt is not None and str(system_prompt).strip()
+        else (
+            "Ты методист и экзаменатор корпоративного обучения. Цель — контроль понимания, не формальность. "
+            "Генерируй вопросы СТРОГО по тексту урока и терминам из него. "
+            'Верни ТОЛЬКО JSON: {\"questions\": [...]} без Markdown. '
+            "Тип только single. В prompt обязательно 4 варианта A) B) C) D) (каждый с новой строки). "
+            "correct_answer: одна буква 'A'|'B'|'C'|'D' — вариант, который действительно верен по тексту. "
+            "НЕЛЬЗЯ всегда отвечать 'A'. explanation обязательна: 1–2 предложения с опорой на смысл из текста."
+        )
+    )
+
+    use_temp = float(temperature) if temperature is not None else float(settings.openrouter_temperature)
+
     payload = {
         "model": use_model,
         "stream": False,
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "Ты методист и экзаменатор корпоративного обучения. Цель — контроль понимания, не формальность. "
-                    "Генерируй вопросы СТРОГО по тексту урока и терминам из него. "
-                    'Верни ТОЛЬКО JSON: {"questions": [...]} без Markdown. '
-                    "Тип только single. В prompt обязательно 4 варианта A) B) C) D) (каждый с новой строки). "
-                    "correct_answer: одна буква 'A'|'B'|'C'|'D' — вариант, который действительно верен по тексту. "
-                    "НЕЛЬЗЯ всегда отвечать 'A'. explanation обязательна: 1–2 предложения с опорой на смысл из текста."
-                ),
+                "content": sys_prompt,
             },
             {
                 "role": "user",
@@ -204,7 +214,7 @@ def generate_quiz_questions_openrouter(
                 ),
             },
         ],
-        "temperature": float(settings.openrouter_temperature),
+        "temperature": use_temp,
     }
 
     base = (

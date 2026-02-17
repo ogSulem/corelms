@@ -323,20 +323,25 @@ def import_module_from_dir(
                 provider_order = choose_llm_provider_order_fast(ttl_seconds=300, use_cache=False)
                 qs = generate_quiz_questions_ai(
                     title=title,
-                    theory_text=theory or "",
-                    target=5,
+                    text=theory or "",
+                    n_questions=5,
+                    min_questions=5,
+                    retries=5,
+                    backoff_seconds=0.9,
                     provider_order=provider_order,
                 )
                 if qs:
                     for qi, q in enumerate(qs, start=1):
+                        raw_type = str(getattr(q, "qtype", None) or getattr(q, "type", "") or "").strip().lower()
+                        qtype = "multi" if raw_type == "multi" else "single"
                         db.add(
                             Question(
                                 quiz_id=qz.id,
-                                type=QuestionType.single if q.qtype == "single" else QuestionType.multi,
-                                difficulty=2 if q.qtype == "multi" else 1,
-                                prompt=q.prompt,
-                                correct_answer=q.correct_answer,
-                                explanation=q.explanation,
+                                type=QuestionType.single if qtype == "single" else QuestionType.multi,
+                                difficulty=2 if qtype == "multi" else 1,
+                                prompt=str(getattr(q, "prompt", "") or ""),
+                                correct_answer=str(getattr(q, "correct_answer", "") or ""),
+                                explanation=(getattr(q, "explanation", None) if getattr(q, "explanation", None) else None),
                                 concept_tag=f"ai:{m.id}:{order}:{qi}",
                                 variant_group=None,
                             )

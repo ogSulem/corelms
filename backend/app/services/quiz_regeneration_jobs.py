@@ -131,6 +131,9 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
                 title=title,
                 text=text,
                 n_questions=int(tq),
+                min_questions=int(tq),
+                retries=5,
+                backoff_seconds=0.9,
                 debug_out=ollama_debug,
                 provider_order=provider_order,
             )
