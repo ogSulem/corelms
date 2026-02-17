@@ -67,6 +67,19 @@ class Settings(BaseSettings):
     openrouter_http_referer: str | None = Field(default=None, validation_alias="OPENROUTER_HTTP_REFERER")
     openrouter_app_title: str | None = Field(default=None, validation_alias="OPENROUTER_APP_TITLE")
 
+    @field_validator("openrouter_enabled", mode="after")
+    @classmethod
+    def _auto_enable_openrouter(cls, v: bool, info):
+        # Product behavior: if an API key is provided, OpenRouter should be enabled by default.
+        # This avoids misconfiguration where OPENROUTER_API_KEY is set but OPENROUTER_ENABLED is forgotten.
+        try:
+            if bool(v):
+                return True
+            key = str((info.data or {}).get("openrouter_api_key") or "").strip()
+            return bool(key)
+        except Exception:
+            return v
+
     openrouter_timeout_connect: float = Field(default=3.0, validation_alias="OPENROUTER_TIMEOUT_CONNECT")
     openrouter_timeout_read: float = Field(default=15.0, validation_alias="OPENROUTER_TIMEOUT_READ")
     openrouter_timeout_write: float = Field(default=15.0, validation_alias="OPENROUTER_TIMEOUT_WRITE")
