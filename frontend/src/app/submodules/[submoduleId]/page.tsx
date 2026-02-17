@@ -62,6 +62,18 @@ type SubmoduleAsset = {
   order: number;
 };
 
+type ModuleAsset = {
+  asset_id: string;
+  object_key: string;
+  original_filename: string;
+  mime_type: string | null;
+};
+
+type AssetLike = {
+  asset_id: string;
+  mime_type: string | null;
+};
+
 export default function SubmodulePage() {
   const params = useParams<{ submoduleId: string }>();
   const search = useSearchParams();
@@ -93,7 +105,7 @@ export default function SubmodulePage() {
   const [quizResult, setQuizResult] = useState<QuizSubmit | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [assets, setAssets] = useState<SubmoduleAsset[]>([]);
+  const [moduleAssets, setModuleAssets] = useState<ModuleAsset[]>([]);
   const [inlineUrl, setInlineUrl] = useState<string | null>(null);
   const [inlineMime, setInlineMime] = useState<string | null>(null);
 
@@ -121,18 +133,23 @@ export default function SubmodulePage() {
       const meta = await apiFetch<SubmoduleMeta>(`/submodules/${submoduleId}`);
       setSubmodule(meta);
 
-      const a = await apiFetch<{ submodule_id: string; assets: SubmoduleAsset[] }>(
-        `/modules/submodules/${submoduleId}/assets`
-      );
-      setAssets(a.assets || []);
+      const effectiveModuleId = String(moduleId || meta?.module_id || "").trim();
+      if (effectiveModuleId) {
+        const ma = await apiFetch<{ module_id: string; assets: ModuleAsset[] }>(
+          `/modules/${effectiveModuleId}/assets`
+        );
+        setModuleAssets(ma.assets || []);
+      } else {
+        setModuleAssets([]);
+      }
       
       const rs = await apiFetch<{ read: boolean }>(`/submodules/${submoduleId}/read-status`);
       setReadConfirmed(Boolean(rs.read));
 
-      if (moduleId) {
-        const mm = await apiFetch<ModuleMeta>(`/modules/${moduleId}`);
+      if (effectiveModuleId) {
+        const mm = await apiFetch<ModuleMeta>(`/modules/${effectiveModuleId}`);
         setModuleMeta(mm);
-        const prog = await apiFetch<any>(`/progress/modules/${moduleId}`);
+        const prog = await apiFetch<any>(`/progress/modules/${effectiveModuleId}`);
         setModuleProgress(prog);
       }
     } catch (e) {
@@ -150,7 +167,7 @@ export default function SubmodulePage() {
     return data.download_url;
   }
 
-  async function onOpenInline(a: SubmoduleAsset) {
+  async function onOpenInline(a: AssetLike) {
     try {
       const url = await presign(a.asset_id);
       setInlineUrl(url);
@@ -170,7 +187,7 @@ export default function SubmodulePage() {
     }
   }
 
-  async function onDownload(a: SubmoduleAsset) {
+  async function onDownload(a: AssetLike) {
     try {
       const url = await presign(a.asset_id);
       window.open(url, "_blank", "noopener,noreferrer");
@@ -584,18 +601,15 @@ export default function SubmodulePage() {
 
             <div className="relative overflow-hidden border border-zinc-200 bg-white/70 backdrop-blur-md rounded-[28px] shadow-2xl shadow-zinc-950/10 p-8">
               <div className="absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-[#fe9900]/40 to-transparent" />
-              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-8">Материалы урока</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-8">Материалы модуля</div>
 
-              {!assets.length ? (
+              {!moduleAssets.length ? (
                 <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600 py-10 text-center border border-dashed border-zinc-200 rounded-2xl">
                   Нет файлов
                 </div>
               ) : (
                 <div className="grid gap-3">
-                  {assets
-                    .slice()
-                    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
-                    .map((a) => (
+                  {moduleAssets.map((a) => (
                       <div
                         key={a.asset_id}
                         className="group relative overflow-hidden rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white"

@@ -134,6 +134,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
             )
 
             ai_failed = False
+            used_heuristic = False
 
             if not qs:
                 reason = str(ollama_debug.get("provider_error") or ollama_debug.get("error") or "unknown")
@@ -142,7 +143,8 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
                     report["ollama_failures"] = int(report.get("ollama_failures") or 0) + 1
                 if "hf_router:" in perr or perr.startswith("hf_router") or perr.startswith("hf"):
                     report["hf_router_failures"] = int(report.get("hf_router_failures") or 0) + 1
-                _set_job_stage(stage="fallback", detail=f"{si}/{len(subs)}: {reason}")
+                provider_used = str(ollama_debug.get("provider") or "").strip() or "unknown"
+                _set_job_stage(stage="fallback", detail=f"{si}/{len(subs)}: {provider_used}: {reason}")
                 ai_failed = True
                 report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
 
@@ -153,6 +155,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
                     target=int(tq),
                 )
                 if generated:
+                    used_heuristic = True
                     qs = []
                     for mcq in generated:
                         qs.append(
@@ -200,10 +203,11 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
                             variant_group=None,
                         )
                     )
-
-                report["questions_ai"] = int(report.get("questions_ai") or 0) + int(len(qs))
-
                 report["questions_total"] = int(report.get("questions_total") or 0) + int(len(qs))
+                if used_heuristic:
+                    report["questions_heur"] = int(report.get("questions_heur") or 0) + int(len(qs))
+                elif not ai_failed:
+                    report["questions_ai"] = int(report.get("questions_ai") or 0) + int(len(qs))
             else:
                 db.add(
                     Question(
