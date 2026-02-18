@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 import random
 import uuid
+import logging
 
 from rq import get_current_job
 from sqlalchemy import delete, select
@@ -13,6 +14,9 @@ from app.models.module import Module, Submodule
 from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.services.llm_handler import choose_llm_provider_order_fast, generate_quiz_questions_ai
 from app.services.quiz_generation import generate_quiz_questions_heuristic
+
+
+log = logging.getLogger(__name__)
 
 
 def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
@@ -130,11 +134,24 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
             mid = uuid.UUID(mid_raw)
         except Exception as e:
             _set_job_stage(stage="failed", detail="invalid module_id")
+            _set_job_error(
+                error=e,
+                error_code="INVALID_MODULE_ID",
+                error_hint="Неверный module_id (UUID). Проверьте, что задача регена создана для существующего модуля.",
+            )
             raise ValueError("invalid module_id") from e
 
         m = db.scalar(select(Module).where(Module.id == mid))
         if m is None:
             _set_job_stage(stage="failed", detail="module not found")
+            _set_job_error(
+                error=ValueError("module not found"),
+                error_code="MODULE_NOT_FOUND",
+                error_hint=(
+                    "Модуль не найден в базе. Возможные причины: модуль удалён, импорт не завершился, "
+                    "или реген запущен для старого/неактуального module_id (например после повторного импорта/дубликата)."
+                ),
+            )
             raise ValueError("module not found")
 
         subs = db.scalars(select(Submodule).where(Submodule.module_id == m.id).order_by(Submodule.order)).all()
