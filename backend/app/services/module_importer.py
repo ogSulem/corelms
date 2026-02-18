@@ -166,6 +166,16 @@ def _upload_markdown_text(*, s3, object_key: str, text_value: str) -> None:
     _track_uploaded_key(object_key)
 
 
+def _lesson_markdown_fallback(*, module_title: str, lesson_title: str, files: list[pathlib.Path]) -> str:
+    assets = [p for p in files if p.is_file() and not _is_theory_file(p)]
+    if not assets:
+        return f"# {lesson_title}\n\nМатериалы модуля «{module_title}».".strip()
+    lines: list[str] = [f"# {lesson_title}", "", f"Материалы модуля «{module_title}»:", ""]
+    for p in sorted(assets, key=lambda x: x.name.lower()):
+        lines.append(f"- {p.name}")
+    return "\n".join(lines).strip()
+
+
 def import_module_from_dir(
     *,
     db: Session,
@@ -296,6 +306,9 @@ def import_module_from_dir(
     for i, (order, title, files) in enumerate(lesson_specs, start=1):
         _set_job_detail(f"lesson {i}/{total_lessons}: {title}")
         theory = _theory_from_files(files)
+
+        if not (theory or "").strip():
+            theory = _lesson_markdown_fallback(module_title=module_title, lesson_title=title, files=files)
 
         content_key = f"modules/{m.id}/{order:02d}/theory.md"
         _upload_markdown_text(s3=s3, object_key=content_key, text_value=theory)

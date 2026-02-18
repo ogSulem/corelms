@@ -224,6 +224,7 @@ export function ModulesTab(props: ModulesTabProps) {
                       const ok = q ? !!q.ok : false;
                       const needs = q ? Number(q.needs_regen || 0) : 0;
                       const total = q ? Number(q.total || 0) : 0;
+                      const moduleRegenRunning = !!activeRegenByModuleId[String(selectedAdminModuleId || "")];
                       return (
                         <div
                           key={s.id}
@@ -271,10 +272,10 @@ export function ModulesTab(props: ModulesTabProps) {
                             <Button
                               variant="outline"
                               className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                              disabled={!s.id}
+                              disabled={!s.id || moduleRegenRunning}
                               onClick={() => void regenerateSubmoduleQuiz(String(s.id))}
                             >
-                              REGEN
+                              REGEN УРОКА
                             </Button>
                           </div>
                         </div>

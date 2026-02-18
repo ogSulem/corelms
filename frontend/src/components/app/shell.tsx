@@ -15,6 +15,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
+  const keepAliveInFlightRef = React.useRef(false);
+  const lastKeepAliveAtRef = React.useRef(0);
+  const keepAliveTimerRef = React.useRef<any>(null);
+
   React.useEffect(() => {
     function onRefresh() {
       void refresh();
@@ -22,6 +26,69 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     window.addEventListener("corelms:refresh-me", onRefresh);
     return () => window.removeEventListener("corelms:refresh-me", onRefresh);
   }, [refresh]);
+
+  React.useEffect(() => {
+    if (loading) return;
+    if (!authenticated) return;
+
+    const minIntervalMs = 60_000;
+
+    const tick = async (reason: string) => {
+      const now = Date.now();
+      if (keepAliveInFlightRef.current) return;
+      if (now - lastKeepAliveAtRef.current < minIntervalMs) return;
+      keepAliveInFlightRef.current = true;
+      try {
+        const res = await fetch("/api/auth/refresh", {
+          method: "POST",
+          cache: "no-store",
+          credentials: "include",
+          headers: { "x-corelms-reason": reason },
+        });
+        if (res.ok) {
+          lastKeepAliveAtRef.current = now;
+          window.dispatchEvent(new Event("corelms:refresh-me"));
+        }
+      } catch {
+        // ignore
+      } finally {
+        keepAliveInFlightRef.current = false;
+      }
+    };
+
+    const schedule = () => {
+      if (keepAliveTimerRef.current) window.clearInterval(keepAliveTimerRef.current);
+      keepAliveTimerRef.current = window.setInterval(() => void tick("interval"), 5 * 60_000);
+    };
+
+    const onActivity = () => void tick("activity");
+    const onFocus = () => void tick("focus");
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void tick("visible");
+    };
+    const onUpload = () => void tick("upload");
+
+    window.addEventListener("mousemove", onActivity, { passive: true });
+    window.addEventListener("keydown", onActivity);
+    window.addEventListener("scroll", onActivity, { passive: true });
+    window.addEventListener("touchstart", onActivity, { passive: true });
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("corelms:keepalive", onUpload as EventListener);
+
+    void tick("mount");
+    schedule();
+    return () => {
+      if (keepAliveTimerRef.current) window.clearInterval(keepAliveTimerRef.current);
+      window.removeEventListener("mousemove", onActivity as any);
+      window.removeEventListener("keydown", onActivity as any);
+      window.removeEventListener("scroll", onActivity as any);
+      window.removeEventListener("touchstart", onActivity as any);
+      window.removeEventListener("focus", onFocus as any);
+      document.removeEventListener("visibilitychange", onVisibility as any);
+      window.removeEventListener("corelms:keepalive", onUpload as EventListener);
+    };
+  }, [loading, authenticated, refresh]);
 
   React.useEffect(() => {
     if (loading) return;

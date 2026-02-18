@@ -89,6 +89,14 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
           const detail = (data && ((data as any).detail ?? (data as any).message)) as unknown;
           if (typeof detail === "string") msg = detail;
           else if (Array.isArray(detail)) msg = detail.map(String).join("\n");
+          else if (detail && typeof detail === "object") {
+            const d: any = detail as any;
+            const code = String(d?.error_code || "");
+            const hint = String(d?.error_hint || "");
+            const emsg = String(d?.error_message || d?.message || "");
+            if (!errorCode && code) errorCode = code;
+            msg = [emsg, hint].filter(Boolean).join("\n");
+          }
           else if (typeof data === "string") msg = data;
         }
       } else {

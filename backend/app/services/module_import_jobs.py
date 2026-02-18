@@ -299,14 +299,51 @@ def import_module_zip_job(
 
         _cancel_checkpoint(s3_object_key=s3_object_key, stage="extract")
 
-        dirs = [p for p in base.iterdir() if p.is_dir() and p.name not in {"__MACOSX"}]
-        module_dir = dirs[0] if len(dirs) == 1 else base
-        print(f"import_module_zip_job: module_dir={str(module_dir)}", flush=True)
-        log.info("import_module_zip_job: module_dir=%s", str(module_dir))
-
         inferred_title: str | None = None
         if source_filename:
             inferred_title = re.sub(r"\.zip$", "", str(source_filename).strip(), flags=re.IGNORECASE).strip() or None
+
+        # Determine module root folder.
+        # Real-world ZIPs may contain:
+        # - a single wrapping folder (ideal)
+        # - a flat root (files directly in root)
+        # - multiple top-level entries including __MACOSX
+        # Prefer a folder that matches the inferred title (from filename) when present.
+        top_dirs = [p for p in base.iterdir() if p.is_dir() and p.name not in {"__MACOSX"}]
+        top_files = [p for p in base.iterdir() if p.is_file() and p.name not in {"__MACOSX"}]
+        module_dir = None
+        if len(top_dirs) == 1 and not top_files:
+            module_dir = top_dirs[0]
+        elif inferred_title:
+            tnorm = str(inferred_title).strip().casefold()
+            for d in top_dirs:
+                if str(d.name or "").strip().casefold() == tnorm:
+                    module_dir = d
+                    break
+        if module_dir is None:
+            module_dir = base
+
+        # Fail early if ZIP extracted to nothing useful.
+        try:
+            any_entries = any(True for _ in module_dir.iterdir())
+        except Exception:
+            any_entries = False
+        if not any_entries:
+            err = ValueError("zip extracted to empty directory")
+            _set_job_stage(stage="failed", detail=str(err))
+            _set_job_error(
+                error=err,
+                error_code="ZIP_EMPTY",
+                error_hint="ZIP пустой или содержит только служебные папки. Проверьте содержимое архива.",
+            )
+            raise err
+
+        try:
+            _set_job_stage(stage="extract", detail=f"module_dir: {str(module_dir)}")
+        except Exception:
+            pass
+        print(f"import_module_zip_job: module_dir={str(module_dir)}", flush=True)
+        log.info("import_module_zip_job: module_dir=%s", str(module_dir))
 
         db = SessionLocal()
         try:

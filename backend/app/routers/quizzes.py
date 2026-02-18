@@ -122,98 +122,37 @@ def _rebuild_final_quiz_from_lessons(*, db: Session, module: Module, final_quiz:
     - Final quiz is reassembled on each /start (fresh mix).
     """
 
-    subs = db.scalars(
-        select(Submodule).where(Submodule.module_id == module.id).order_by(Submodule.order)
-    ).all()
+    raise RuntimeError(
+        "Final quiz questions must NOT be rebuilt or persisted in DB. "
+        "Use _select_final_question_ids_from_lessons() and store the selected IDs in Redis quiz session on /start."
+    )
 
-    # Clear previous final questions.
-    db.execute(delete(Question).where(Question.quiz_id == final_quiz.id))
 
+def _select_final_question_ids_from_lessons(*, db: Session, module: Module) -> list[str]:
+    subs = db.scalars(select(Submodule).where(Submodule.module_id == module.id).order_by(Submodule.order)).all()
     rng = random.Random(f"final_open:{module.id}:{uuid.uuid4()}")
-    added = 0
-    for si, sub in enumerate(subs, start=1):
+    selected: list[uuid.UUID] = []
+    for sub in subs:
         if not sub.quiz_id:
             continue
-
-        items = list(db.scalars(select(Question).where(Question.quiz_id == sub.quiz_id).order_by(Question.id)))
-        pool = [q for q in (items or []) if (q.prompt or "").strip()]
+        items = list(db.scalars(select(Question.id).where(Question.quiz_id == sub.quiz_id).order_by(Question.id)))
+        pool = [qid for qid in (items or []) if qid is not None]
         if not pool:
             continue
-
         rng.shuffle(pool)
         take = pool[:2]
-        for qi, src in enumerate(take, start=1):
-            db.add(
-                Question(
-                    quiz_id=final_quiz.id,
-                    type=src.type,
-                    difficulty=int(getattr(src, "difficulty", 1) or 1),
-                    prompt=str(getattr(src, "prompt", "") or ""),
-                    correct_answer=str(getattr(src, "correct_answer", "") or ""),
-                    explanation=(
-                        str(getattr(src, "explanation", ""))
-                        if getattr(src, "explanation", None)
-                        else None
-                    ),
-                    concept_tag=f"final:from_lesson:{module.id}:{si}:{qi}",
-                    variant_group=None,
-                )
-            )
-            added += 1
-
-    if added <= 0:
-        # Hard fallback so /start never breaks.
-        db.add(
-            Question(
-                quiz_id=final_quiz.id,
-                type=QuestionType.single,
-                difficulty=1,
-                prompt=(
-                    f"По модулю «{module.title}» выберите верный вариант.\n"
-                    "A) Подтвердить прочтение и пройти финальный тест\n"
-                    "B) Пропустить проверку\n"
-                    "C) Завершить без теста\n"
-                    "D) Ничего не делать"
-                ),
-                correct_answer="A",
-                explanation=None,
-                concept_tag=f"needs_regen:final:fallback:{module.id}:1",
-                variant_group=None,
-            )
-        )
-
-    try:
-        db.flush()
-    except Exception:
-        pass
+        for qid in take:
+            if qid is not None:
+                selected.append(qid)
+    rng.shuffle(selected)
+    return [str(qid) for qid in selected]
 
 
 def _ensure_final_quiz_has_questions(*, db: Session, module: Module, final_quiz: Quiz) -> None:
-    questions = list(db.scalars(select(Question).where(Question.quiz_id == final_quiz.id)))
-    if questions:
-        return
-    db.add(
-        Question(
-            quiz_id=final_quiz.id,
-            type=QuestionType.single,
-            difficulty=1,
-            prompt=(
-                f"По модулю «{module.title}» выберите верный вариант.\n"
-                "A) Подтвердить прочтение и пройти финальный тест\n"
-                "B) Пропустить проверку\n"
-                "C) Завершить без теста\n"
-                "D) Ничего не делать"
-            ),
-            correct_answer="A",
-            explanation=None,
-            concept_tag=f"needs_regen:final:fallback:{module.id}:ensure",
-            variant_group=None,
-        )
+    raise RuntimeError(
+        "Final quiz questions must NOT be ensured/persisted in DB. "
+        "Final quiz is assembled dynamically on /start from lesson quizzes."
     )
-    try:
-        db.flush()
-    except Exception:
-        return
 
 
 @router.post("/{quiz_id}/start", response_model=QuizStartResponse)
@@ -238,7 +177,6 @@ def start_quiz(
     sub = db.scalar(select(Submodule).where(Submodule.quiz_id == quiz.id))
     if sub is not None:
         # Check if this is the final submodule of the module
-        from app.models.module import Module
         is_final = db.scalar(
             select(Submodule.id)
             .where(Submodule.module_id == sub.module_id)
@@ -270,9 +208,15 @@ def start_quiz(
     # Idempotency: if a quiz session already exists, reuse it.
     # This prevents re-rolling questions, restarting timers, and duplicating quiz_started events.
     # IMPORTANT: final quizzes must be rebuilt on each open (fresh mix), so we bypass reuse for final.
-    r = get_redis()
+    r = None
     key = _session_key(str(user.id), str(quiz.id))
-    existing_raw = None if is_final_quiz else r.get(key)
+    existing_raw = None
+    try:
+        r = get_redis()
+        existing_raw = None if is_final_quiz else r.get(key)
+    except Exception:
+        r = None
+        existing_raw = None
     if existing_raw is not None:
         try:
             session = json.loads(existing_raw)
@@ -300,29 +244,35 @@ def start_quiz(
             # If session is corrupted, fall through and create a fresh one.
             pass
 
-    # Final quizzes are rebuilt on each /start from lesson quiz questions.
+    selected_final_qids: list[str] | None = None
     if is_final_quiz:
         m = db.scalar(select(Module).where(Module.final_quiz_id == quiz.id))
-        if m is not None:
-            try:
-                _rebuild_final_quiz_from_lessons(db=db, module=m, final_quiz=quiz)
-                _ensure_final_quiz_has_questions(db=db, module=m, final_quiz=quiz)
-            except HTTPException:
-                raise
-            except Exception:
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-                try:
-                    _rebuild_final_quiz_from_lessons(db=db, module=m, final_quiz=quiz)
-                    _ensure_final_quiz_has_questions(db=db, module=m, final_quiz=quiz)
-                except Exception:
-                    _ensure_final_quiz_has_questions(db=db, module=m, final_quiz=quiz)
+        if m is None:
+            raise HTTPException(status_code=404, detail="module not found")
+        selected_final_qids = _select_final_question_ids_from_lessons(db=db, module=m)
+        if not selected_final_qids:
+            raise HTTPException(status_code=409, detail="final quiz has no source questions")
 
-    questions = list(db.scalars(select(Question).where(Question.quiz_id == quiz.id)))
-    if not questions:
-        raise HTTPException(status_code=400, detail="quiz has no questions")
+    questions: list[Question]
+    if selected_final_qids is not None:
+        parsed: list[uuid.UUID] = []
+        for qid in selected_final_qids:
+            try:
+                parsed.append(uuid.UUID(qid))
+            except ValueError:
+                continue
+        if not parsed:
+            raise HTTPException(status_code=409, detail="final quiz has no source questions")
+        rows = list(db.scalars(select(Question).where(Question.id.in_(parsed))))
+        qmap = {str(q.id): q for q in rows}
+        questions = [qmap.get(qid) for qid in selected_final_qids]
+        questions = [q for q in questions if q is not None]
+        if not questions:
+            raise HTTPException(status_code=409, detail="final quiz has no source questions")
+    else:
+        questions = list(db.scalars(select(Question).where(Question.quiz_id == quiz.id)))
+        if not questions:
+            raise HTTPException(status_code=400, detail="quiz has no questions")
 
     grouped: dict[str, list[Question]] = {}
     singles: list[Question] = []
@@ -343,7 +293,12 @@ def start_quiz(
         "question_ids": [str(q.id) for q in selected],
         "started_at": int(time.time()),
     }
-    r.set(key, json.dumps(payload), ex=quiz.time_limit if quiz.time_limit else 60 * 60)
+    try:
+        if r is not None:
+            r.set(key, json.dumps(payload), ex=quiz.time_limit if quiz.time_limit else 60 * 60)
+    except Exception:
+        # Redis is best-effort. If it's unavailable, we still allow the quiz to start.
+        pass
 
     # Count starting a quiz as activity for streak, but do not award XP.
     # Important: update streak BEFORE inserting the learning event to avoid autoflush affecting streak init.
@@ -430,14 +385,26 @@ def submit_quiz(
         except ValueError:
             continue
 
-    questions = list(
-        db.scalars(
-            select(Question).where(
-                Question.id.in_(parsed_question_ids),
-                Question.quiz_id == quiz.id,
+    if is_final_quiz:
+        m = db.scalar(select(Module).where(Module.final_quiz_id == quiz.id))
+        if m is None:
+            raise HTTPException(status_code=404, detail="module not found")
+        allowed_quiz_ids = list(
+            db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == m.id).where(Submodule.quiz_id.is_not(None))).all()
+        )
+        allowed_quiz_ids = [qid for qid in allowed_quiz_ids if qid is not None]
+        if not allowed_quiz_ids:
+            raise HTTPException(status_code=409, detail="final quiz has no source quizzes")
+        questions = list(db.scalars(select(Question).where(Question.id.in_(parsed_question_ids), Question.quiz_id.in_(allowed_quiz_ids))))
+    else:
+        questions = list(
+            db.scalars(
+                select(Question).where(
+                    Question.id.in_(parsed_question_ids),
+                    Question.quiz_id == quiz.id,
+                )
             )
         )
-    )
     qmap = {str(q.id): q for q in questions}
 
     if len(qmap) != len({str(x) for x in parsed_question_ids}):

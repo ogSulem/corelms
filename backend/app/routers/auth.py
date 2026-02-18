@@ -247,6 +247,32 @@ def me(user: User = Depends(get_current_user)):
     }
 
 
+@router.post("/refresh", response_model=TokenResponse)
+def refresh_token(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    _: object = rate_limit(key_prefix="auth_refresh", limit=120, window_seconds=60),
+):
+    expires_in = None
+    try:
+        expires_in = int(settings.jwt_access_token_minutes) * 60
+    except Exception:
+        expires_in = None
+
+    token = _create_access_token(user_id=str(user.id), role=_public_role(user.role))
+    audit_log(
+        db=db,
+        request=request,
+        event_type="auth_refresh",
+        actor_user_id=user.id,
+        target_user_id=user.id,
+        meta={"ip": _client_ip_from_request(request), "user_agent": str(request.headers.get("user-agent") or "")[:400]},
+    )
+    db.commit()
+    return TokenResponse(access_token=token, expires_in=expires_in)
+
+
 @router.post("/change-password")
 def change_password(
     request: Request,

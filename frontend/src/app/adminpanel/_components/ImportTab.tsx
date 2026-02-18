@@ -238,6 +238,12 @@ export function ImportTab(props: ImportTabProps) {
     return (st || "—").toUpperCase();
   };
 
+  const canCancelImport = (it: { status?: string } | null | undefined) => {
+    const st = String((it as any)?.status || "").trim().toLowerCase();
+    if (!st) return false;
+    return st === "queued" || st === "deferred" || st === "scheduled";
+  };
+
   return (
     <div className="mt-8 space-y-6">
       <div className="grid gap-6 lg:grid-cols-12 items-start">
@@ -324,13 +330,8 @@ export function ImportTab(props: ImportTabProps) {
               </div>
             </div>
 
-            <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[10px] font-bold text-zinc-700">
-              Импорт загружает ZIP в хранилище и быстро добавляет модуль. Затем автоматически запускается реген тестов (нейросеть).
-              Выполнение идёт в worker (RQ), статус обновляется здесь по задачам.
-            </div>
-
             <div className="mt-3 grid gap-2">
-              {(pipelineActive || []).slice(0, 6).map((it) => {
+              {(pipelineActive || []).map((it) => {
                 const stage = String(it.stage || "").toLowerCase();
                 const st = String(it.status || "").toLowerCase();
                 const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
@@ -338,7 +339,15 @@ export function ImportTab(props: ImportTabProps) {
                 const detail = String(it.detail || "").trim();
                 const badge = badgeFor(it);
                 return (
-                  <div key={`${it.kind}:${it.job_id}`} className="flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                  <button
+                    key={`${it.kind}:${it.job_id}`}
+                    type="button"
+                    className="w-full text-left flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50"
+                    onClick={() => {
+                      setSelectedJobId(String(it.job_id));
+                      setJobPanelOpen(true);
+                    }}
+                  >
                     <div className="min-w-0">
                       <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{it.title}</div>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
@@ -360,28 +369,22 @@ export function ImportTab(props: ImportTabProps) {
                     </div>
 
                     <div className="shrink-0 flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => {
-                          setSelectedJobId(String(it.job_id));
-                          setJobPanelOpen(true);
-                        }}
-                      >
-                        ОТКРЫТЬ
-                      </button>
-                      {it.kind === "regen" ? (
+                      {it.kind === "import" ? (
                         <button
                           type="button"
                           className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
-                          disabled={terminal}
-                          onClick={() => void cancelImportJob(String(it.job_id))}
+                          disabled={terminal || !canCancelImport(it)}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            void cancelImportJob(String(it.job_id));
+                          }}
                         >
                           ОТМЕНА
                         </button>
                       ) : null}
                     </div>
-                  </div>
+                  </button>
                 );
               })}
               {!importQueueLoading && !regenHistoryLoading && !(pipelineActive || []).length ? (
@@ -444,7 +447,16 @@ export function ImportTab(props: ImportTabProps) {
                   const label = String(it.title || "");
                   const badge = badgeFor(it);
                   return (
-                    <div key={`${it.kind}:${it.job_id}`} className="rounded-xl border border-zinc-200 bg-white p-3">
+                    <button
+                      key={`${it.kind}:${it.job_id}`}
+                      type="button"
+                      className="w-full text-left rounded-xl border border-zinc-200 bg-white p-3 hover:bg-zinc-50"
+                      onClick={() => {
+                        setSelectedJobId(String(it.job_id));
+                        setJobPanelOpen(true);
+                        setImportQueueModalOpen(false);
+                      }}
+                    >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{label}</div>
@@ -474,22 +486,15 @@ export function ImportTab(props: ImportTabProps) {
                         </div>
 
                         <div className="shrink-0 flex items-center gap-2">
-                          <Button
-                            variant="outline"
-                            className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                            onClick={() => {
-                              setSelectedJobId(String(it.job_id));
-                              setJobPanelOpen(true);
-                              setImportQueueModalOpen(false);
-                            }}
-                          >
-                            ОТКРЫТЬ
-                          </Button>
                           {it.kind === "import" && st === "finished" && String(it?.module_id || "").trim() ? (
                             <Button
                               variant="primary"
                               className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                              onClick={() => openModuleFromImport(it as any)}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                openModuleFromImport(it as any);
+                              }}
                             >
                               МОДУЛЬ
                             </Button>
@@ -498,17 +503,25 @@ export function ImportTab(props: ImportTabProps) {
                             <Button
                               variant="outline"
                               className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                              onClick={() => void retryImportJob(String(it.job_id))}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                void retryImportJob(String(it.job_id));
+                              }}
                             >
                               ПОВТОРИТЬ
                             </Button>
                           ) : null}
-                          {it.kind === "regen" ? (
+                          {it.kind === "import" ? (
                             <Button
                               variant="destructive"
                               className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                              disabled={terminal}
-                              onClick={() => void cancelImportJob(String(it.job_id))}
+                              disabled={terminal || !canCancelImport(it)}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                void cancelImportJob(String(it.job_id));
+                              }}
                             >
                               ОТМЕНА
                             </Button>
@@ -523,7 +536,7 @@ export function ImportTab(props: ImportTabProps) {
                           {it.error}
                         </div>
                       ) : null}
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -532,200 +545,179 @@ export function ImportTab(props: ImportTabProps) {
         </div>
 
         <div className="lg:col-span-5">
-          {jobPanelOpen ? (
-            <div className="relative overflow-hidden rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">
-              <div className="rounded-2xl border border-zinc-200 bg-white p-3">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ЗАДАЧА</div>
-                    <div className="mt-1 truncate text-[11px] font-black text-zinc-950">{selectedJobId || "—"}</div>
-                    {jobKind || jobModuleTitle ? (
-                      <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words">
-                        {jobKind ? `ТИП: ${String(jobKind || "").toUpperCase()}` : ""}
-                        {jobModuleTitle ? `${jobKind ? " · " : ""}${jobModuleTitle}` : ""}
-                      </div>
-                    ) : null}
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                        {(jobStatus || "—").toUpperCase()}
-                      </div>
-                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                        {(importJobStageLabel || jobStage || "—").toString()}
-                      </div>
+          <div className="relative overflow-hidden rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-3">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ЗАДАЧА</div>
+                  <div className="mt-1 truncate text-[11px] font-black text-zinc-950">{selectedJobId || "—"}</div>
+                  {jobKind || jobModuleTitle ? (
+                    <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words">
+                      {jobKind ? `ТИП: ${String(jobKind || "").toUpperCase()}` : ""}
+                      {jobModuleTitle ? `${jobKind ? " · " : ""}${jobModuleTitle}` : ""}
                     </div>
-                  </div>
-
-                  <div className="shrink-0 flex items-center gap-2">
-                    <button
-                      type="button"
-                      className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                      disabled={!selectedJobId}
-                      onClick={() => void copy(selectedJobId)}
-                    >
-                      КОПИРОВАТЬ
-                    </button>
-                    {String(jobKind || "").toLowerCase() === "regen" ? (
-                      <button
-                        type="button"
-                        className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
-                        disabled={
-                          !selectedJobId ||
-                          cancelBusy ||
-                          ["finished", "failed"].includes(String(jobStatus || "")) ||
-                          String(jobStage || "") === "canceled"
-                        }
-                        onClick={() => void cancelCurrentJob()}
-                      >
-                        {cancelBusy ? "..." : "ОТМЕНА"}
-                      </button>
-                    ) : null}
+                  ) : null}
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                      {(jobStatus || "—").toUpperCase()}
+                    </div>
+                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                      {(importJobStageLabel || jobStage || "—").toString()}
+                    </div>
                   </div>
                 </div>
 
-                <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ДЕТАЛЬ</div>
-                    <div className="mt-2 text-[11px] font-bold text-zinc-950 break-words max-h-[84px] overflow-auto pr-1">
-                      {jobDetail || "—"}
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ОШИБКА</div>
-                    {jobError ? (
-                      <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-[10px] font-bold text-rose-800 break-words max-h-[84px] overflow-auto pr-1">
-                        {jobErrorHint ? `${jobErrorHint}\n` : ""}
-                        {jobErrorCode ? `CODE: ${jobErrorCode}\n` : ""}
-                        {jobError}
-                      </div>
-                    ) : (
-                      <div className="mt-2 text-[11px] font-bold text-zinc-500">—</div>
-                    )}
-                  </div>
+                <div className="shrink-0 flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                    disabled={!selectedJobId}
+                    onClick={() => void copy(selectedJobId)}
+                  >
+                    КОПИРОВАТЬ
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
+                    disabled={
+                      !selectedJobId ||
+                      cancelBusy ||
+                      ["finished", "failed"].includes(String(jobStatus || "")) ||
+                      String(jobStage || "") === "canceled" ||
+                      (String(jobKind || "").toLowerCase() === "import" && !canCancelImport({ status: jobStatus }))
+                    }
+                    onClick={() => void cancelCurrentJob()}
+                  >
+                    {cancelBusy ? "..." : "ОТМЕНА"}
+                  </button>
                 </div>
               </div>
 
-              <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
-                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">РЕЗУЛЬТАТ</div>
-                {jobStatus === "finished" && jobResult && typeof jobResult === "object" ? (
-                  <div className="mt-3 space-y-3">
-                    {String(jobKind || "").toLowerCase() === "import" ? (
-                      <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИТОГ ИМПОРТА</div>
-                        <div className="mt-2 grid gap-2">
-                          <div className="text-[11px] font-bold text-zinc-950 break-words">
-                            МОДУЛЬ: {String((jobResult as any)?.report?.module_title || (jobResult as any)?.module_id || "—")}
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {String((jobResult as any)?.module_id || "").trim() ? (
-                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                module_id: {String((jobResult as any)?.module_id).slice(0, 10)}
-                              </div>
-                            ) : null}
-                            {String((jobResult as any)?.regen_job_id || "").trim() ? (
-                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                regen_job: {String((jobResult as any)?.regen_job_id).slice(0, 10)}
-                              </div>
-                            ) : null}
-                            {typeof (jobResult as any)?.report?.lessons === "number" ? (
-                              <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                уроков: {String((jobResult as any)?.report?.lessons)}
-                              </div>
-                            ) : null}
-                          </div>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ДЕТАЛЬ</div>
+                  <div className="mt-2 text-[11px] font-bold text-zinc-950 break-words max-h-[84px] overflow-auto pr-1">
+                    {jobDetail || "—"}
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ОШИБКА</div>
+                  {jobError ? (
+                    <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-[10px] font-bold text-rose-800 break-words max-h-[84px] overflow-auto pr-1">
+                      {jobErrorHint ? `${jobErrorHint}\n` : ""}
+                      {jobErrorCode ? `CODE: ${jobErrorCode}\n` : ""}
+                      {jobError}
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-[11px] font-bold text-zinc-500">—</div>
+                  )}
+                </div>
+              </div>
+            </div>
 
+            <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">РЕЗУЛЬТАТ</div>
+              {jobStatus === "finished" && jobResult && typeof jobResult === "object" ? (
+                <div className="mt-3 space-y-3">
+                  {String(jobKind || "").toLowerCase() === "import" ? (
+                    <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИТОГ ИМПОРТА</div>
+                      <div className="mt-2 grid gap-2">
+                        <div className="text-[11px] font-bold text-zinc-950 break-words">
+                          МОДУЛЬ: {String((jobResult as any)?.report?.module_title || (jobResult as any)?.module_id || "—")}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
                           {String((jobResult as any)?.module_id || "").trim() ? (
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <Button
-                                variant="primary"
-                                className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                                onClick={() => {
-                                  const mid = String((jobResult as any)?.module_id || "").trim();
-                                  if (!mid) return;
-                                  window.location.href = `/modules/${encodeURIComponent(mid)}`;
-                                }}
-                              >
-                                ОТКРЫТЬ МОДУЛЬ
-                              </Button>
-                              {String((jobResult as any)?.regen_job_id || "").trim() ? (
-                                <Button
-                                  variant="outline"
-                                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                                  onClick={() => {
-                                    const rid = String((jobResult as any)?.regen_job_id || "").trim();
-                                    if (!rid) return;
-                                    setSelectedJobId(rid);
-                                    setJobPanelOpen(true);
-                                  }}
-                                >
-                                  ОТКРЫТЬ РЕГЕН
-                                </Button>
-                              ) : null}
+                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                              module_id: {String((jobResult as any)?.module_id).slice(0, 10)}
                             </div>
                           ) : null}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    {String(jobKind || "").toLowerCase() === "regen" ? (
-                      <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИТОГ РЕГЕНА</div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          {typeof (jobResult as any)?.questions_total === "number" ? (
+                          {String((jobResult as any)?.regen_job_id || "").trim() ? (
                             <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              всего: {String((jobResult as any)?.questions_total)}
+                              regen_job: {String((jobResult as any)?.regen_job_id).slice(0, 10)}
                             </div>
                           ) : null}
-                          {typeof (jobResult as any)?.questions_ai === "number" ? (
+                          {typeof (jobResult as any)?.report?.lessons === "number" ? (
                             <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              ai: {String((jobResult as any)?.questions_ai)}
-                            </div>
-                          ) : null}
-                          {typeof (jobResult as any)?.questions_heur === "number" ? (
-                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              heur: {String((jobResult as any)?.questions_heur)}
-                            </div>
-                          ) : null}
-                          {typeof (jobResult as any)?.questions_fallback === "number" ? (
-                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              fallback: {String((jobResult as any)?.questions_fallback)}
-                            </div>
-                          ) : null}
-                          {typeof (jobResult as any)?.needs_regen_db === "number" ? (
-                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              needs_regen: {String((jobResult as any)?.needs_regen_db)}
+                              уроков: {String((jobResult as any)?.report?.lessons)}
                             </div>
                           ) : null}
                         </div>
 
-                        {String((jobResult as any)?.last_ai_error || "").trim() ? (
-                          <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-[10px] font-bold text-zinc-700 break-words">
-                            LAST_AI_ERROR: {String((jobResult as any)?.last_ai_error || "")}
+                        {String((jobResult as any)?.module_id || "").trim() ? (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <Button
+                              variant="primary"
+                              className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                              onClick={() => {
+                                const mid = String((jobResult as any)?.module_id || "").trim();
+                                if (!mid) return;
+                                window.location.href = `/modules/${encodeURIComponent(mid)}`;
+                              }}
+                            >
+                              ОТКРЫТЬ МОДУЛЬ
+                            </Button>
                           </div>
                         ) : null}
                       </div>
-                    ) : null}
+                    </div>
+                  ) : null}
 
-                    <details className="rounded-2xl border border-zinc-200 bg-white p-4">
-                      <summary className="cursor-pointer text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                        RAW JSON
-                      </summary>
-                      <div className="mt-3 overflow-hidden rounded-xl border border-zinc-100 bg-white/50 p-3">
-                        <pre className="text-[9px] font-mono text-zinc-600 whitespace-pre-wrap break-words overflow-x-hidden max-h-[420px] overflow-y-auto">
-                          {JSON.stringify(jobResult, null, 2)}
-                        </pre>
+                  {String(jobKind || "").toLowerCase() === "regen" ? (
+                    <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИТОГ РЕГЕНА</div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        {typeof (jobResult as any)?.questions_total === "number" ? (
+                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                            всего: {String((jobResult as any)?.questions_total)}
+                          </div>
+                        ) : null}
+                        {typeof (jobResult as any)?.questions_ai === "number" ? (
+                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                            ai: {String((jobResult as any)?.questions_ai)}
+                          </div>
+                        ) : null}
+                        {typeof (jobResult as any)?.questions_heur === "number" ? (
+                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                            heur: {String((jobResult as any)?.questions_heur)}
+                          </div>
+                        ) : null}
+                        {typeof (jobResult as any)?.questions_fallback === "number" ? (
+                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                            fallback: {String((jobResult as any)?.questions_fallback)}
+                          </div>
+                        ) : null}
+                        {typeof (jobResult as any)?.needs_regen_db === "number" ? (
+                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                            needs_regen: {String((jobResult as any)?.needs_regen_db)}
+                          </div>
+                        ) : null}
                       </div>
-                    </details>
-                  </div>
-                ) : (
-                  <div className="mt-2 text-[11px] font-bold text-zinc-500">—</div>
-                )}
-              </div>
+
+                      {String((jobResult as any)?.last_ai_error || "").trim() ? (
+                        <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-[10px] font-bold text-zinc-700 break-words">
+                          LAST_AI_ERROR: {String((jobResult as any)?.last_ai_error || "")}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  <details className="rounded-2xl border border-zinc-200 bg-white p-4">
+                    <summary className="cursor-pointer text-[9px] font-black uppercase tracking-widest text-zinc-600">
+                      RAW JSON
+                    </summary>
+                    <div className="mt-3 overflow-hidden rounded-xl border border-zinc-100 bg-white/50 p-3">
+                      <pre className="text-[9px] font-mono text-zinc-600 whitespace-pre-wrap break-words overflow-x-hidden max-h-[420px] overflow-y-auto">
+                        {JSON.stringify(jobResult, null, 2)}
+                      </pre>
+                    </div>
+                  </details>
+                </div>
+              ) : (
+                <div className="mt-2 text-[11px] font-bold text-zinc-500">—</div>
+              )}
             </div>
-          ) : (
-            <div className="rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
-              <div className="text-[11px] font-bold text-zinc-500">Открой задачу из очереди</div>
-            </div>
-          )}
+          </div>
         </div>
       </div>
     </div>

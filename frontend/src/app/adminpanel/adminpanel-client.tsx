@@ -230,16 +230,19 @@ export default function AdminPanelClient() {
 
   const IMPORT_STATE_KEY = "corelms:admin_import_state";
 
-  async function loadImportQueue(limit = 20, includeTerminal: boolean = false) {
+  const importQueueSigRef = useRef<string>("");
+  const importQueueHistorySigRef = useRef<string>("");
+  const regenHistorySigRef = useRef<string>("");
+
+  async function loadImportQueue(limit = 20, includeTerminal: boolean = false, silent: boolean = false) {
     try {
-      setImportQueueLoading(true);
+      if (!silent) setImportQueueLoading(true);
       const res = await apiFetch<{ items: any[]; history?: any[] }>(
         `/admin/import-jobs?limit=${encodeURIComponent(String(limit))}&include_terminal=${includeTerminal ? "true" : "false"}` as any
       );
       const items = Array.isArray(res?.items) ? res.items : [];
       const hist = Array.isArray((res as any)?.history) ? (res as any).history : [];
-      setImportQueue(
-        items.map((x: any) => ({
+      const nextQueue = items.map((x: any) => ({
           job_id: String((x as any)?.job_id || (x as any)?.id || ""),
           object_key: String((x as any)?.object_key || ""),
           title: String((x as any)?.title || ""),
@@ -254,10 +257,8 @@ export default function AdminPanelClient() {
           error_hint: (x as any)?.error_hint ? String((x as any).error_hint) : undefined,
           error_message: (x as any)?.error_message ? String((x as any).error_message) : undefined,
           error: (x as any)?.error ? String((x as any).error) : null,
-        }))
-      );
-      setImportQueueHistory(
-        hist.map((x: any) => ({
+        }));
+      const nextHist = hist.map((x: any) => ({
           job_id: String((x as any)?.job_id || (x as any)?.id || ""),
           object_key: String((x as any)?.object_key || ""),
           title: String((x as any)?.title || ""),
@@ -272,13 +273,23 @@ export default function AdminPanelClient() {
           error_hint: (x as any)?.error_hint ? String((x as any).error_hint) : undefined,
           error_message: (x as any)?.error_message ? String((x as any).error_message) : undefined,
           error: (x as any)?.error ? String((x as any).error) : null,
-        }))
-      );
+        }));
+
+      const sig = JSON.stringify(nextQueue);
+      if (sig !== importQueueSigRef.current) {
+        importQueueSigRef.current = sig;
+        setImportQueue(nextQueue);
+      }
+      const hsig = JSON.stringify(nextHist);
+      if (hsig !== importQueueHistorySigRef.current) {
+        importQueueHistorySigRef.current = hsig;
+        setImportQueueHistory(nextHist);
+      }
     } catch {
       setImportQueue([]);
       setImportQueueHistory([]);
     } finally {
-      setImportQueueLoading(false);
+      if (!silent) setImportQueueLoading(false);
     }
   }
 
@@ -292,7 +303,7 @@ export default function AdminPanelClient() {
           detail: { title: "ПОВТОР ЗАПУЩЕН", description: `JOB: ${id}` },
         })
       );
-      await loadImportQueue(50, true);
+      await loadImportQueue(50, true, false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg || "НЕ УДАЛОСЬ ПОВТОРИТЬ JOB");
@@ -315,7 +326,29 @@ export default function AdminPanelClient() {
   async function cancelImportJob(jobId: string) {
     const id = String(jobId || "").trim();
     if (!id) return;
-    await cancelRegenJob(id);
+    const ok = window.confirm(
+      "Отменить импорт?\n\nОтмена доступна только пока задача в очереди. Если импорт уже в работе — отмена будет запрещена."
+    );
+    if (!ok) return;
+    try {
+      setCancelBusy(true);
+      await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" } as any);
+      if (String(selectedJobId || "").trim() === id) {
+        setJobStage("canceled");
+        setJobStatus("canceled");
+      }
+      window.dispatchEvent(
+        new CustomEvent("corelms:toast", {
+          detail: { title: "ИМПОРТ ОТМЕНЁН", description: `JOB: ${id}` },
+        })
+      );
+      await Promise.all([loadImportQueue(50, true, false), loadAdminModules(), reloadModules()]);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ОТМЕНИТЬ ИМПОРТ");
+    } finally {
+      setCancelBusy(false);
+    }
   }
 
   async function cancelRegenJob(jobId: string) {
@@ -335,7 +368,7 @@ export default function AdminPanelClient() {
           detail: { title: "РЕГЕН ОТМЕНЁН", description: `JOB: ${id}` },
         })
       );
-      await Promise.all([loadRegenHistory(), loadImportQueue(50, true), loadAdminModules(), reloadModules()]);
+      await Promise.all([loadRegenHistory(false), loadImportQueue(50, true, false), loadAdminModules(), reloadModules()]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg || "НЕ УДАЛОСЬ ОТМЕНИТЬ РЕГЕН");
@@ -497,7 +530,9 @@ export default function AdminPanelClient() {
       const st = String((it as any)?.status || "").trim();
       const stage = String((it as any)?.stage || "").trim();
       if (!mid || !jid) continue;
-      const terminal = st === "finished" || st === "failed" || stage === "canceled";
+      const stl = st.toLowerCase();
+      const stagel = stage.toLowerCase();
+      const terminal = stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done";
       if (!terminal) out[mid] = { job_id: jid, status: st, stage };
     }
     return out;
@@ -538,15 +573,20 @@ export default function AdminPanelClient() {
     return { locked: true, reason };
   }, [activeRegenByModuleId, importBusy, jobPanelOpen, selectedJobId, jobStatus, jobStage]);
 
-  async function loadRegenHistory() {
+  async function loadRegenHistory(silent: boolean = false) {
     try {
-      setRegenHistoryLoading(true);
+      if (!silent) setRegenHistoryLoading(true);
       const res = await apiFetch<{ items: any[] }>(`/admin/regen-jobs?limit=20`);
-      setRegenHistory(Array.isArray(res?.items) ? res.items : []);
+      const next = Array.isArray(res?.items) ? res.items : [];
+      const sig = JSON.stringify(next);
+      if (sig !== regenHistorySigRef.current) {
+        regenHistorySigRef.current = sig;
+        setRegenHistory(next);
+      }
     } catch {
       setRegenHistory([]);
     } finally {
-      setRegenHistoryLoading(false);
+      if (!silent) setRegenHistoryLoading(false);
     }
   }
 
@@ -557,7 +597,14 @@ export default function AdminPanelClient() {
       if (!jid) continue;
       const st = String((it as any)?.status || "").trim();
       const stage = String((it as any)?.stage || "").trim();
-      const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
+      const stl = st.toLowerCase();
+      const stagel = stage.toLowerCase();
+      const terminal =
+        stl === "finished" ||
+        stl === "failed" ||
+        stl === "canceled" ||
+        stagel === "canceled" ||
+        stagel === "done";
       if (terminal) continue;
       items.push({
         job_id: jid,
@@ -677,8 +724,25 @@ export default function AdminPanelClient() {
         })
       );
     } catch (e) {
+      const anyErr: any = e as any;
+      const status = Number(anyErr?.status || 0);
+      const code = String(anyErr?.errorCode || "").trim();
       const msg = e instanceof Error ? e.message : String(e);
-      setError(msg || "НЕ УДАЛОСЬ ИЗМЕНИТЬ ВИДИМОСТЬ МОДУЛЯ");
+      const raw = String(msg || "").trim();
+
+      if (status === 409 && code === "MODULE_NOT_READY") {
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: {
+              title: "МОДУЛЬ НЕ ГОТОВ",
+              description: raw || "Запустите РЕГЕН ТЕСТОВ и дождитесь завершения.",
+            },
+          })
+        );
+        return;
+      }
+
+      setError(raw || "НЕ УДАЛОСЬ ИЗМЕНИТЬ ВИДИМОСТЬ МОДУЛЯ");
     }
   }
 
@@ -693,17 +757,10 @@ export default function AdminPanelClient() {
 
   useEffect(() => {
     if (tab !== "modules") return;
-    void loadRegenHistory();
-    void loadImportQueue(20, false);
-  }, [tab]);
-
-  useEffect(() => {
-    if (tab !== "import") return;
-    void loadImportQueue(20, false);
-    void loadRegenHistory();
+    void loadRegenHistory(false);
     const t = window.setInterval(() => {
-      void loadImportQueue(20, false);
-      void loadRegenHistory();
+      void loadImportQueue(20, false, true);
+      void loadRegenHistory(true);
     }, 4000);
     return () => window.clearInterval(t);
   }, [tab]);
@@ -848,14 +905,22 @@ export default function AdminPanelClient() {
     if (!sid) return;
     try {
       setError(null);
+      const forceAi = window.confirm(
+        "ФОРСИРОВАТЬ AI ДЛЯ ЭТОГО УРОКА?\n\nЕсли включить — вопросы будут только от нейронки. Если AI не сработает — задача упадёт с ошибкой."
+      );
       const res = await apiFetch<{ ok: boolean; job_id: string }>(
-        `/admin/submodules/${encodeURIComponent(sid)}/regenerate-quiz?target_questions=5`,
+        `/admin/submodules/${encodeURIComponent(sid)}/regenerate-quiz?target_questions=5&force_ai=${forceAi ? "1" : "0"}`,
         {
           method: "POST",
         }
       );
       void res;
-      await Promise.all([loadRegenHistory(), loadAdminModules(), loadSelectedAdminModule(), loadImportQueue(20, false)]);
+      await Promise.all([
+        loadRegenHistory(true),
+        loadAdminModules(),
+        loadSelectedAdminModule(),
+        loadImportQueue(20, false, true),
+      ]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg || "НЕ УДАЛОСЬ ЗАПУСТИТЬ РЕГЕН УРОКА");
@@ -990,19 +1055,22 @@ export default function AdminPanelClient() {
 
   async function regenerateSelectedModuleQuizzes() {
     if (!selectedAdminModuleId) return;
-    const ok = window.confirm(
-      "Регенерировать тесты этого модуля через AI? Старые вопросы уроков будут заменены."
-    );
+    const ok = window.confirm("Запустить регенерацию тестов для ВСЕГО модуля?\n\nГенерация займёт время.");
     if (!ok) return;
     try {
       setError(null);
+
+      const forceAi = window.confirm(
+        "ФОРСИРОВАТЬ AI?\n\nЕсли включить — вопросы будут только от нейронки. Если AI недоступен или формат ответа неверный — задача упадёт с ошибкой (без heuristic)."
+      );
+
       const res = await apiFetch<{ ok: boolean; job_id: string }>(
-        `/admin/modules/${encodeURIComponent(selectedAdminModuleId)}/regenerate-quizzes?target_questions=5`,
+        `/admin/modules/${encodeURIComponent(selectedAdminModuleId)}/regenerate-quizzes?target_questions=5&force_ai=${forceAi ? "1" : "0"}`,
         {
           method: "POST",
         }
       );
-      const jid = String(res?.job_id || "");
+      const jid = String((res as any)?.job_id || "").trim();
       if (jid) {
         setSelectedJobId(jid);
         setJobStatus("queued");
@@ -1018,6 +1086,7 @@ export default function AdminPanelClient() {
         setJobResult(null);
         setJobPanelOpen(true);
       }
+
       window.dispatchEvent(
         new CustomEvent("corelms:toast", {
           detail: {
@@ -1027,7 +1096,9 @@ export default function AdminPanelClient() {
         })
       );
 
-      void loadRegenHistory();
+      void loadRegenHistory(true);
+      void loadImportQueue(20, false, true);
+      void loadAdminModules();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg || "НЕ УДАЛОСЬ ЗАПУСТИТЬ РЕГЕНЕРАЦИЮ");
@@ -1056,6 +1127,7 @@ export default function AdminPanelClient() {
     const st = String(clientImportStage || "").trim().toLowerCase();
     if (!st) return "—";
     if (st === "upload") return "ЗАГРУЗКА";
+    if (st === "upload_s3") return "STORAGE";
     if (st === "enqueue") return "ОЧЕРЕДЬ";
     if (st === "processing") return "ОБРАБОТКА";
     if (st === "skipped") return "ПРОПУЩЕНО";
@@ -1132,7 +1204,7 @@ export default function AdminPanelClient() {
         setError(null);
         await reloadModules();
         await loadAdminModules();
-        await loadRegenHistory();
+        await loadRegenHistory(false);
       } catch {
         setError("НЕ УДАЛОСЬ ЗАРУЗИТЬ СПИСОК МОДУЛЕЙ");
       }
@@ -1222,7 +1294,7 @@ export default function AdminPanelClient() {
         const terminal = st === "finished" || st === "failed" || String(s?.stage || "") === "canceled";
         if (terminal) {
           saveImportState({ terminal: true });
-          void loadRegenHistory();
+          void loadRegenHistory(true);
           void loadAdminModules();
           void reloadModules();
           if (selectedQuizId) {
@@ -1383,6 +1455,14 @@ export default function AdminPanelClient() {
       setImportBusy(true);
       setError(null);
 
+      const keepAlive = () => {
+        try {
+          window.dispatchEvent(new Event("corelms:keepalive"));
+        } catch {
+          // ignore
+        }
+      };
+
       importBatchJobIdsRef.current = [];
       importCancelRequestedRef.current = false;
       setJobResult(null);
@@ -1414,6 +1494,8 @@ export default function AdminPanelClient() {
         const f = files[idx];
         setClientImportStage("upload");
         setClientImportFileName(String(f?.name || ""));
+
+        keepAlive();
 
         importUploadFilenameRef.current = String(f?.name || "");
         importUploadObjectKeyRef.current = "";
@@ -1456,6 +1538,8 @@ export default function AdminPanelClient() {
             }
           );
 
+          keepAlive();
+
           if (importCancelRequestedRef.current) {
             try {
               await apiFetch<any>(`/admin/modules/abort-import-zip` as any, {
@@ -1484,16 +1568,54 @@ export default function AdminPanelClient() {
             setClientImportStage("upload_s3");
             const ac = new AbortController();
             importUploadAbortRef.current = ac;
-            const up = await fetch(String(presign?.upload_url || ""), {
-              method: "PUT",
-              body: f,
-              signal: ac.signal,
-              // Do not set Content-Type explicitly: it can break some S3-compatible presigned URLs
-              // (SignatureDoesNotMatch) and also triggers stricter CORS.
-            });
+            let up: Response | null = null;
+            try {
+              keepAlive();
+              up = await fetch(String(presign?.upload_url || ""), {
+                method: "PUT",
+                body: f,
+                signal: ac.signal,
+                // Do not set Content-Type explicitly: it can break some S3-compatible presigned URLs
+                // (SignatureDoesNotMatch) and also triggers stricter CORS.
+              });
+              keepAlive();
+            } catch (e) {
+              const objKey = String((presign as any)?.object_key || "").trim();
+              const fn = String(f?.name || "module.zip");
+              const base = e instanceof Error ? e.message : String(e);
+              const hint =
+                "S3/MinIO PUT не прошёл (браузер не получил ответ). Чаще всего это CORS (PUT) или неверный PUBLIC endpoint для S3. " +
+                "Проверь DevTools → Network: запрос PUT (blocked by CORS / failed to fetch).";
+              throw new Error(
+                [
+                  `S3 upload failed: ${base || "failed to fetch"}`,
+                  fn ? `file: ${fn}` : "",
+                  objKey ? `object_key: ${objKey}` : "",
+                  hint,
+                ]
+                  .filter(Boolean)
+                  .join("\n")
+              );
+            }
+
             if (!up.ok) {
+              const objKey = String((presign as any)?.object_key || "").trim();
+              const fn = String(f?.name || "module.zip");
               const t = await up.text().catch(() => "");
-              throw new Error(`S3 upload failed: HTTP ${up.status}${t ? ` ${t.slice(0, 200)}` : ""}`);
+              const snip = (t || "").replace(/\s+/g, " ").slice(0, 320);
+              const hint =
+                "Проверь, что для bucket разрешён CORS PUT, и что presigned URL подписан на правильный host (S3_PUBLIC_ENDPOINT_URL).";
+              throw new Error(
+                [
+                  `S3 upload failed: HTTP ${up.status}`,
+                  fn ? `file: ${fn}` : "",
+                  objKey ? `object_key: ${objKey}` : "",
+                  snip ? `body: ${snip}` : "",
+                  hint,
+                ]
+                  .filter(Boolean)
+                  .join("\n")
+              );
             }
           }
 
@@ -1503,6 +1625,7 @@ export default function AdminPanelClient() {
 
           // 3) enqueue import job
           setClientImportStage("enqueue");
+          keepAlive();
           const enq = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/enqueue-import-zip${qs}` as any, {
             method: "POST",
             body: JSON.stringify({
@@ -1511,7 +1634,17 @@ export default function AdminPanelClient() {
               source_filename: String(f?.name || ""),
             }),
           });
+          keepAlive();
           res = { ok: true, job_id: String((enq as any)?.job_id || "") };
+
+          // Perceived speed: reflect the job immediately.
+          if (res?.job_id) {
+            lastJobId = String(res.job_id);
+            setSelectedJobId(String(res.job_id));
+            setJobPanelOpen(true);
+            // Silent refresh to avoid UI flicker.
+            void loadImportQueue(20, false, true);
+          }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
 
@@ -1602,7 +1735,7 @@ export default function AdminPanelClient() {
       setClientImportStage(importCancelRequestedRef.current ? "canceled" : "processing");
       void loadAdminModules();
       void reloadModules();
-      void loadImportQueue(20);
+      void loadImportQueue(20, false, true);
 
       window.dispatchEvent(
         new CustomEvent("corelms:toast", {

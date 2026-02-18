@@ -137,7 +137,13 @@ def _submodule_is_ok(*, db: Session, sub: Submodule, target_questions: int) -> b
         return False
 
 
-def regenerate_submodule_quiz_job(*, submodule_id: str, target_questions: int = 5, force: bool = True) -> dict:
+def regenerate_submodule_quiz_job(
+    *,
+    submodule_id: str,
+    target_questions: int = 5,
+    force: bool = True,
+    force_ai: bool = False,
+) -> dict:
     _set_job_stage(stage="start", detail=str(submodule_id))
     db = SessionLocal()
     try:
@@ -184,6 +190,7 @@ def regenerate_submodule_quiz_job(*, submodule_id: str, target_questions: int = 
                 meta["submodule_id"] = str(sub.id)
                 meta["submodule_title"] = str(sub.title or "")
                 meta["target_questions"] = int(target_questions)
+                meta["force_ai"] = bool(force_ai)
                 job.meta = meta
                 job.save_meta()
         except Exception:
@@ -197,6 +204,8 @@ def regenerate_submodule_quiz_job(*, submodule_id: str, target_questions: int = 
                 "module_id": str(m.id),
                 "submodule_id": str(sub.id),
             }
+
+        ai_budget_seconds = 45.0
 
         # Reuse module regen logic for a single lesson.
         subs = [sub]
@@ -230,7 +239,9 @@ def regenerate_submodule_quiz_job(*, submodule_id: str, target_questions: int = 
             except Exception:
                 provider_order = None
             qs: list[object] = []
+            ai_elapsed_s = 0.0
             try:
+                t0 = datetime.utcnow()
                 qs = generate_quiz_questions_ai(
                     title=title,
                     text=text,
@@ -241,9 +252,23 @@ def regenerate_submodule_quiz_job(*, submodule_id: str, target_questions: int = 
                     debug_out=ollama_debug,
                     provider_order=provider_order,
                 )
+                ai_elapsed_s = max(0.0, (datetime.utcnow() - t0).total_seconds())
             except Exception as e:
                 qs = []
                 ollama_debug.setdefault("error", f"ai_exception:{type(e).__name__}")
+
+            try:
+                provider_used = str(ollama_debug.get("provider") or "").strip() or "unknown"
+                _job_heartbeat(detail=f"1/1: {title} · {provider_used} · {ai_elapsed_s:.1f}s")
+            except Exception:
+                pass
+
+            try:
+                if ai_elapsed_s > ai_budget_seconds:
+                    ollama_debug.setdefault("error", f"ai_timeout_budget:{ai_elapsed_s:.1f}s")
+                    qs = []
+            except Exception:
+                pass
 
             _cancel_checkpoint(stage="ai")
             ai_failed = False
@@ -252,6 +277,16 @@ def regenerate_submodule_quiz_job(*, submodule_id: str, target_questions: int = 
             if not qs:
                 ai_failed = True
                 report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
+                if bool(force_ai):
+                    err = ValueError("ai_generation_failed")
+                    _set_job_stage(stage="failed", detail=f"AI failed: {title}")
+                    _set_job_error(
+                        error=err,
+                        error_code="AI_FORMAT_INVALID",
+                        error_hint="AI не вернул валидные вопросы в нужном формате за лимит времени/попыток. В режиме FORCE AI fallback запрещён — задача остановлена.",
+                    )
+                    raise err
+
                 generated = generate_quiz_questions_heuristic(
                     seed=f"regen:{m.id}:{sub.id}",
                     title=title,
@@ -378,7 +413,13 @@ def regenerate_submodule_quiz_job(*, submodule_id: str, target_questions: int = 
         db.close()
 
 
-def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5, only_missing: bool = True) -> dict:
+def regenerate_module_quizzes_job(
+    *,
+    module_id: str,
+    target_questions: int = 5,
+    only_missing: bool = True,
+    force_ai: bool = False,
+) -> dict:
     _set_job_stage(stage="start", detail=str(module_id))
 
     db = SessionLocal()
@@ -434,7 +475,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5, 
 
         # Product rule: the queue must never hang.
         # Enforce a per-lesson AI time budget; if exceeded, fall back to heuristic.
-        ai_budget_seconds_per_lesson = 90.0
+        ai_budget_seconds_per_lesson = 55.0
 
         for si, sub in enumerate(subs, start=1):
             _cancel_checkpoint(stage="lesson")
@@ -511,6 +552,16 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5, 
                     pass
                 ai_failed = True
                 report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
+
+                if bool(force_ai):
+                    err = ValueError("ai_generation_failed")
+                    _set_job_stage(stage="failed", detail=f"AI failed: {si}/{len(subs)}: {title}")
+                    _set_job_error(
+                        error=err,
+                        error_code="AI_FORMAT_INVALID",
+                        error_hint="AI не вернул валидные вопросы в нужном формате за лимит времени/попыток. В режиме FORCE AI fallback запрещён.",
+                    )
+                    raise err
 
                 generated = generate_quiz_questions_heuristic(
                     seed=f"regen:{m.id}:{sub.id}",

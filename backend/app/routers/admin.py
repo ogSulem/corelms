@@ -1238,6 +1238,27 @@ def cancel_job(
 
     prev_status = job.get_status(refresh=True)
 
+    # Product rule:
+    # - Import jobs: cancellable only while queued (before worker started).
+    # - Regen jobs: cancellable anytime (best-effort), worker will stop at checkpoints.
+    try:
+        meta_probe = dict(job.meta or {})
+        job_kind = str(meta_probe.get("job_kind") or "").strip().lower()
+        if job_kind == "import" and prev_status not in {"queued", "deferred", "scheduled"}:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "IMPORT_NOT_CANCELLABLE",
+                    "error_message": "import job is already running",
+                    "error_hint": "Импорт уже в работе — отмена запрещена. Дождитесь завершения или ошибки.",
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        # If meta is missing, keep legacy behavior.
+        pass
+
     try:
         meta = dict(job.meta or {})
         meta["cancel_requested"] = True
@@ -1547,42 +1568,31 @@ def set_module_visibility(
 
     target = bool(body.is_active)
 
-    # Update tags:
-    # - publishing: needs_regen:* -> suppressed_needs_regen:*
-    # - unpublishing: suppressed_needs_regen:* -> needs_regen:*
-    from sqlalchemy import update
-
-    needs_prefix = "needs_regen:"
-    suppressed_prefix = "suppressed_needs_regen:"
-
-    lesson_quiz_ids = list(
-        db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == m.id).where(Submodule.quiz_id.is_not(None))).all()
-    )
-    if getattr(m, "final_quiz_id", None):
-        lesson_quiz_ids.append(m.final_quiz_id)
-    lesson_quiz_ids = [qid for qid in lesson_quiz_ids if qid is not None]
-
-    def _apply_replace(prefix_from: str, prefix_to: str) -> None:
-        cond_prefix = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like(prefix_from + "%"))
-        # Prefer quiz scoping; also keep a tag scan safety net.
-        if lesson_quiz_ids:
-            db.execute(
-                update(Question)
-                .where(Question.quiz_id.in_(lesson_quiz_ids))
-                .where(cond_prefix)
-                .values(concept_tag=func.replace(Question.concept_tag, prefix_from, prefix_to))
-            )
-        db.execute(
-            update(Question)
-            .where(cond_prefix)
-            .where(Question.concept_tag.like(f"%{m.id}%"))
-            .values(concept_tag=func.replace(Question.concept_tag, prefix_from, prefix_to))
-        )
-
     if target:
-        _apply_replace(needs_prefix, suppressed_prefix)
-    else:
-        _apply_replace(suppressed_prefix, needs_prefix)
+        needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
+        lesson_quiz_ids = list(
+            db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == m.id).where(Submodule.quiz_id.is_not(None))).all()
+        )
+        if getattr(m, "final_quiz_id", None):
+            lesson_quiz_ids.append(m.final_quiz_id)
+        lesson_quiz_ids = [qid for qid in lesson_quiz_ids if qid is not None]
+
+        needs = 0
+        if lesson_quiz_ids:
+            needs = int(
+                db.scalar(select(func.count()).select_from(Question).where(Question.quiz_id.in_(lesson_quiz_ids)).where(needs_regen_cond))
+                or 0
+            )
+        if needs > 0:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "MODULE_NOT_READY",
+                    "error_message": "module has needs_regen questions",
+                    "error_hint": "Нельзя показать модуль, пока тесты не сгенерированы нейросетью и есть NEEDS REGEN. Запустите РЕГЕН ТЕСТОВ и дождитесь завершения.",
+                    "needs_regen": needs,
+                },
+            )
 
     m.is_active = target
 
@@ -1601,6 +1611,7 @@ def set_module_visibility(
 def regenerate_module_quizzes(
     request: Request,
     module_id: str,
+    force_ai: bool = False,
     db: Session = Depends(get_db),
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_regenerate_module_quizzes", limit=30, window_seconds=60),
@@ -1618,6 +1629,7 @@ def regenerate_module_quizzes(
         regenerate_module_quizzes_job,
         module_id=str(mid),
         target_questions=tq,
+        force_ai=bool(force_ai),
         job_timeout=60 * 60 * 2,
         result_ttl=60 * 60 * 24,
         failure_ttl=60 * 60 * 24,
@@ -1630,6 +1642,7 @@ def regenerate_module_quizzes(
         meta["module_id"] = str(mid)
         meta["module_title"] = str(m.title)
         meta["target_questions"] = int(tq)
+        meta["force_ai"] = bool(force_ai)
         job.meta = meta
         job.save_meta()
     except Exception:
@@ -1667,6 +1680,7 @@ def regenerate_module_quizzes(
 def regenerate_submodule_quiz(
     request: Request,
     submodule_id: str,
+    force_ai: bool = False,
     db: Session = Depends(get_db),
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_regenerate_submodule_quiz", limit=60, window_seconds=60),
@@ -1686,6 +1700,7 @@ def regenerate_submodule_quiz(
         regenerate_submodule_quiz_job,
         submodule_id=str(sid),
         target_questions=tq,
+        force_ai=bool(force_ai),
         job_timeout=60 * 60,
         result_ttl=60 * 60 * 24,
         failure_ttl=60 * 60 * 24,
@@ -1699,6 +1714,7 @@ def regenerate_submodule_quiz(
         meta["submodule_id"] = str(sub.id)
         meta["submodule_title"] = str(sub.title or "")
         meta["target_questions"] = int(tq)
+        meta["force_ai"] = bool(force_ai)
         job.meta = meta
         job.save_meta()
     except Exception:
@@ -2565,7 +2581,7 @@ def admin_user_history(
     sec_events = db.scalars(
         select(SecurityAuditEvent)
         .where(SecurityAuditEvent.target_user_id == uid)
-        .where(SecurityAuditEvent.event_type.in_(["auth_login_new_context"]))
+        .where(SecurityAuditEvent.event_type.in_(["auth_login_new_context", "auth_login_success"]))
         .order_by(SecurityAuditEvent.created_at.desc())
         .limit(take)
     ).all()
@@ -2646,6 +2662,7 @@ def admin_user_history(
         new_device = bool((meta or {}).get("new_device"))
         new_ip = bool((meta or {}).get("new_ip"))
         ip = str(e.ip or (meta or {}).get("ip") or "").strip()
+        ua = str((meta or {}).get("user_agent") or "").strip()
 
         title = "Вход в аккаунт"
         if new_device and new_ip:
@@ -2655,7 +2672,12 @@ def admin_user_history(
         elif new_ip:
             title = "Вход с нового IP"
 
-        subtitle = f"IP: {ip}" if ip else None
+        parts: list[str] = []
+        if ip:
+            parts.append(f"IP: {ip}")
+        if ua:
+            parts.append(f"UA: {ua}")
+        subtitle = " · ".join(parts) if parts else None
         return title, subtitle
 
     def _event_display(e: LearningEvent) -> tuple[str, str, str | None]:
@@ -2775,6 +2797,28 @@ def admin_user_history(
                 "submodule_title": submodule_title,
                 "asset_id": asset_id,
                 "asset_name": asset_name,
+            }
+        )
+
+    for se in sec_events:
+        title, subtitle = _sec_event_display(se)
+        items.append(
+            {
+                "id": str(se.id),
+                "created_at": se.created_at.isoformat(),
+                "kind": "security",
+                "title": title,
+                "subtitle": subtitle,
+                "href": None,
+                "event_type": str(se.event_type),
+                "ref_id": None,
+                "meta": se.meta,
+                "module_id": None,
+                "module_title": None,
+                "submodule_id": None,
+                "submodule_title": None,
+                "asset_id": None,
+                "asset_name": None,
             }
         )
 
