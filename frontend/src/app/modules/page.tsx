@@ -31,8 +31,6 @@ export default function ModulesPage() {
   const [loading, setLoading] = useState(true);
 
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<"all" | "in_progress" | "completed">("all");
-  const [category, setCategory] = useState<string>("all");
 
   async function reload() {
     try {
@@ -87,25 +85,14 @@ export default function ModulesPage() {
     };
   }, []);
 
-  const categories = useMemo(() => {
-    const s = new Set<string>();
-    (items || []).forEach((m) => {
-      if (m.category) s.add(m.category);
-    });
-    return Array.from(s).sort((a, b) => a.localeCompare(b));
-  }, [items]);
-
   const filteredItems = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (items || []).filter((m) => {
-      if (status === "completed" && !m.progress?.completed) return false;
-      if (status === "in_progress" && m.progress?.completed) return false;
-      if (category !== "all" && (m.category || "") !== category) return false;
       if (!q) return true;
       const hay = `${m.title} ${m.description || ""}`.toLowerCase();
       return hay.includes(q);
     });
-  }, [category, items, query, status]);
+  }, [items, query]);
 
   return (
     <AppShell>
@@ -124,7 +111,7 @@ export default function ModulesPage() {
         )}
 
         <div className="mt-8 grid gap-4 rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10 md:grid-cols-12">
-          <div className="md:col-span-6">
+          <div className="md:col-span-8">
             <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600 ml-1">Поиск</div>
             <input
               value={query}
@@ -132,33 +119,6 @@ export default function ModulesPage() {
               placeholder="Название или описание"
               className="mt-2 h-12 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15"
             />
-          </div>
-          <div className="md:col-span-3">
-            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600 ml-1">Статус</div>
-            <select
-              value={status}
-              onChange={(e) => setStatus(e.target.value as any)}
-              className="mt-2 h-12 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 appearance-none cursor-pointer"
-            >
-              <option value="all">Все</option>
-              <option value="in_progress">В процессе</option>
-              <option value="completed">Завершено</option>
-            </select>
-          </div>
-          <div className="md:col-span-3">
-            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600 ml-1">Категория</div>
-            <select
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="mt-2 h-12 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 appearance-none cursor-pointer"
-            >
-              <option value="all">Все</option>
-              {categories.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
           </div>
 
           <div className="md:col-span-12 flex flex-wrap items-center justify-between gap-3 pt-2">
@@ -173,18 +133,6 @@ export default function ModulesPage() {
                 onClick={() => void reload()}
               >
                 {loading ? "..." : "ОБНОВИТЬ"}
-              </Button>
-              <Button
-                variant="ghost"
-                className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                type="button"
-                onClick={() => {
-                  setQuery("");
-                  setStatus("all");
-                  setCategory("all");
-                }}
-              >
-                СБРОСИТЬ
               </Button>
             </div>
           </div>

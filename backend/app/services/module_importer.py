@@ -199,6 +199,8 @@ def import_module_from_dir(
         report.setdefault("ollama_enabled", bool(settings.ollama_enabled))
         report.setdefault("ollama_used", False)
 
+    # Product rule: final exam questions are generated at runtime on /quizzes/{id}/start.
+    # We still keep a stable final_quiz_id so the UI/routes can reference the final exam.
     final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
     db.add(final_quiz)
     db.flush()
@@ -457,32 +459,6 @@ def import_module_from_dir(
 
             if report is not None:
                 report["lesson_assets"] = int(report.get("lesson_assets") or 0) + 1
-
-    # Product rule: final quiz assembly (using questions from all submodules)
-    # This is a runtime materialized view of all lesson questions.
-    all_q_ids = list(
-        db.scalars(
-            select(Question.id)
-            .join(Quiz, Quiz.id == Question.quiz_id)
-            .join(Submodule, Submodule.quiz_id == Quiz.id)
-            .where(Submodule.module_id == m.id)
-        )
-    )
-    for qid in all_q_ids:
-        q_orig = db.get(Question, qid)
-        if q_orig:
-            db.add(
-                Question(
-                    quiz_id=final_quiz.id,
-                    type=q_orig.type,
-                    difficulty=q_orig.difficulty,
-                    prompt=q_orig.prompt,
-                    correct_answer=q_orig.correct_answer,
-                    explanation=q_orig.explanation,
-                    concept_tag=f"final:{q_orig.concept_tag}",
-                    variant_group=str(q_orig.id),  # link to original for variant picking
-                )
-            )
 
     db.commit()
     return m.id

@@ -62,12 +62,13 @@ from app.services.learning import LearningService
 from app.core.queue import fetch_job, get_queue
 from app.services.module_import_jobs import import_module_zip_job
 from app.services.content_migration_jobs import migrate_legacy_submodule_content_job
-from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job
+from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job, regenerate_submodule_quiz_job
 from app.services.llm_handler import generate_quiz_questions_ai
 from app.services.ollama import generate_quiz_questions_ollama
 from app.services.hf_router import generate_quiz_questions_hf_router
 from app.services.storage import ensure_bucket_exists, get_s3_client, presign_put
 from app.services.ollama import ollama_healthcheck
+from app.services.openrouter_health import openrouter_healthcheck
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -174,6 +175,12 @@ def system_status(
     eff_hf_model = _rt_str("hf_router_model") or str(getattr(settings, "hf_router_model", ""))
     eff_hf_token = _rt_str("hf_router_token") or str(getattr(settings, "hf_router_token", "") or "")
 
+    eff_or_enabled = _rt_bool("openrouter_enabled")
+    if eff_or_enabled is None:
+        eff_or_enabled = bool(getattr(settings, "openrouter_enabled", False))
+    eff_or_base_url = _rt_str("openrouter_base_url") or str(getattr(settings, "openrouter_base_url", ""))
+    eff_or_model = _rt_str("openrouter_model") or str(getattr(settings, "openrouter_model", ""))
+
     out: dict[str, object] = {
         "db": {"ok": False},
         "redis": {"ok": False},
@@ -181,6 +188,7 @@ def system_status(
         "ollama": {"enabled": bool(eff_ollama_enabled), "ok": False, "reason": None},
         "s3": {"ok": False},
         "hf_router": {"enabled": bool(eff_hf_enabled), "ok": False, "reason": None},
+        "openrouter": {"enabled": bool(eff_or_enabled), "ok": False, "reason": None},
     }
 
     try:
@@ -243,6 +251,15 @@ def system_status(
         "model": eff_hf_model,
     }
 
+    ok_or, reason_or = openrouter_healthcheck(base_url=str(eff_or_base_url or "").strip() or None)
+    out["openrouter"] = {
+        "enabled": bool(eff_or_enabled),
+        "ok": bool(ok_or),
+        "reason": reason_or,
+        "base_url": eff_or_base_url,
+        "model": eff_or_model,
+    }
+
     return out
 
 
@@ -257,6 +274,13 @@ class RuntimeLlmSettingsRequest(BaseModel):
     hf_router_base_url: str | None = None
     hf_router_model: str | None = None
     hf_router_token: str | None = None
+
+    openrouter_enabled: bool | None = None
+    openrouter_base_url: str | None = None
+    openrouter_model: str | None = None
+    openrouter_api_key: str | None = None
+    openrouter_http_referer: str | None = None
+    openrouter_app_title: str | None = None
 
 
 @router.get("/runtime/llm")
@@ -283,11 +307,19 @@ def get_runtime_llm_settings(
     if token:
         masked = token[:4] + "…" + token[-4:]
 
+    or_token = _get("openrouter_api_key")
+    or_masked = ""
+    if or_token:
+        or_masked = or_token[:4] + "…" + or_token[-4:]
+
     enabled_raw = _get("hf_router_enabled")
     enabled = enabled_raw.lower() in {"1", "true", "yes", "on"}
 
     ollama_enabled_raw = _get("ollama_enabled")
     ollama_enabled = ollama_enabled_raw.lower() in {"1", "true", "yes", "on"}
+
+    or_enabled_raw = _get("openrouter_enabled")
+    or_enabled = or_enabled_raw.lower() in {"1", "true", "yes", "on"}
 
     def _eff_bool(rt_raw: str, env_val: bool) -> bool:
         s = (rt_raw or "").strip().lower()
@@ -302,6 +334,7 @@ def get_runtime_llm_settings(
         return str(env_val or "").strip()
 
     eff_token = _eff_str(_get("hf_router_token"), str(getattr(settings, "hf_router_token", "") or ""))
+    eff_or_token = _eff_str(_get("openrouter_api_key"), str(getattr(settings, "openrouter_api_key", "") or ""))
 
     eff = {
         "llm_provider_order": _eff_str(_get("llm_provider_order"), str(getattr(settings, "llm_provider_order", ""))),
@@ -312,6 +345,12 @@ def get_runtime_llm_settings(
         "hf_router_base_url": _eff_str(_get("hf_router_base_url"), str(getattr(settings, "hf_router_base_url", ""))),
         "hf_router_model": _eff_str(_get("hf_router_model"), str(getattr(settings, "hf_router_model", ""))),
         "hf_router_token_present": bool((eff_token or "").strip()),
+        "openrouter_enabled": _eff_bool(_get("openrouter_enabled"), bool(getattr(settings, "openrouter_enabled", False))),
+        "openrouter_base_url": _eff_str(_get("openrouter_base_url"), str(getattr(settings, "openrouter_base_url", ""))),
+        "openrouter_model": _eff_str(_get("openrouter_model"), str(getattr(settings, "openrouter_model", ""))),
+        "openrouter_api_key_present": bool((eff_or_token or "").strip()),
+        "openrouter_http_referer": _eff_str(_get("openrouter_http_referer"), str(getattr(settings, "openrouter_http_referer", ""))),
+        "openrouter_app_title": _eff_str(_get("openrouter_app_title"), str(getattr(settings, "openrouter_app_title", ""))),
     }
 
     return {
@@ -325,6 +364,13 @@ def get_runtime_llm_settings(
         "hf_router_base_url": _get("hf_router_base_url"),
         "hf_router_model": _get("hf_router_model"),
         "hf_router_token_masked": masked,
+
+        "openrouter_enabled": bool(or_enabled),
+        "openrouter_base_url": _get("openrouter_base_url"),
+        "openrouter_model": _get("openrouter_model"),
+        "openrouter_api_key_masked": or_masked,
+        "openrouter_http_referer": _get("openrouter_http_referer"),
+        "openrouter_app_title": _get("openrouter_app_title"),
 
         "effective": eff,
     }
@@ -363,6 +409,20 @@ def set_runtime_llm_settings(
         # Allow clearing by sending empty string.
         updates["hf_router_token"] = str(body.hf_router_token or "").strip()
 
+    if body.openrouter_enabled is not None:
+        updates["openrouter_enabled"] = "1" if bool(body.openrouter_enabled) else "0"
+    if body.openrouter_base_url is not None:
+        updates["openrouter_base_url"] = str(body.openrouter_base_url or "").strip()
+    if body.openrouter_model is not None:
+        updates["openrouter_model"] = str(body.openrouter_model or "").strip()
+    if body.openrouter_api_key is not None:
+        updates["openrouter_api_key"] = str(body.openrouter_api_key or "").strip()
+    if body.openrouter_http_referer is not None:
+        updates["openrouter_http_referer"] = str(body.openrouter_http_referer or "").strip()
+    if body.openrouter_app_title is not None:
+        updates["openrouter_app_title"] = str(body.openrouter_app_title or "").strip()
+
+
     if updates:
         try:
             r.hset("runtime:llm", mapping=updates)
@@ -378,13 +438,72 @@ def set_runtime_llm_settings(
             actor_user_id=_.id,
             meta={"keys": list(updates.keys())},
         )
-        db.commit()
     except Exception:
         try:
             db.rollback()
         except Exception:
             pass
     return {"ok": True}
+
+
+@router.get("/modules/{module_id}/submodules/quality")
+def module_submodules_quality(
+    module_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    mid = _uuid(module_id, field="module_id")
+    m = db.scalar(select(Module).where(Module.id == mid))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
+    fallback_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("%fallback%"))
+    ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("regen:%"))
+    heur_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:heur:%"))
+
+    rows = (
+        db.execute(
+            select(
+                Submodule.id.label("submodule_id"),
+                Submodule.order.label("order"),
+                Submodule.title.label("title"),
+                Submodule.quiz_id.label("quiz_id"),
+                func.count(Question.id).label("total"),
+                func.sum(case((needs_regen_cond, 1), else_=0)).label("needs_regen"),
+                func.sum(case((fallback_cond, 1), else_=0)).label("fallback"),
+                func.sum(case((ai_cond, 1), else_=0)).label("ai"),
+                func.sum(case((heur_cond, 1), else_=0)).label("heur"),
+            )
+            .select_from(Submodule)
+            .join(Question, Question.quiz_id == Submodule.quiz_id, isouter=True)
+            .where(Submodule.module_id == mid)
+            .group_by(Submodule.id)
+            .order_by(Submodule.order)
+        )
+        .all()
+    )
+
+    items: list[dict[str, object]] = []
+    for r in rows:
+        total = int(getattr(r, "total", 0) or 0)
+        needs = int(getattr(r, "needs_regen", 0) or 0)
+        items.append(
+            {
+                "submodule_id": str(r.submodule_id),
+                "order": int(r.order or 0),
+                "title": str(r.title or ""),
+                "quiz_id": str(r.quiz_id) if getattr(r, "quiz_id", None) else None,
+                "total": total,
+                "needs_regen": needs,
+                "fallback": int(getattr(r, "fallback", 0) or 0),
+                "ai": int(getattr(r, "ai", 0) or 0),
+                "heur": int(getattr(r, "heur", 0) or 0),
+                "ok": bool(needs <= 0 and total >= 5),
+            }
+        )
+
+    return {"ok": True, "module_id": str(m.id), "items": items}
 
 
 class LlmProbeRequest(BaseModel):
@@ -1542,6 +1661,78 @@ def regenerate_module_quizzes(
         pass
 
     return {"ok": True, "job_id": job.id, "module_id": str(mid), "target_questions": tq}
+
+
+@router.post("/submodules/{submodule_id}/regenerate-quiz")
+def regenerate_submodule_quiz(
+    request: Request,
+    submodule_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_regenerate_submodule_quiz", limit=60, window_seconds=60),
+):
+    sid = _uuid(submodule_id, field="submodule_id")
+    sub = db.scalar(select(Submodule).where(Submodule.id == sid))
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submodule not found")
+
+    m = db.scalar(select(Module).where(Module.id == sub.module_id))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    tq = 5
+    q = get_queue("corelms")
+    job = q.enqueue(
+        regenerate_submodule_quiz_job,
+        submodule_id=str(sid),
+        target_questions=tq,
+        job_timeout=60 * 60,
+        result_ttl=60 * 60 * 24,
+        failure_ttl=60 * 60 * 24,
+    )
+
+    try:
+        meta = dict(job.meta or {})
+        meta["job_kind"] = "regen"
+        meta["module_id"] = str(m.id)
+        meta["module_title"] = str(m.title)
+        meta["submodule_id"] = str(sub.id)
+        meta["submodule_title"] = str(sub.title or "")
+        meta["target_questions"] = int(tq)
+        job.meta = meta
+        job.save_meta()
+    except Exception:
+        pass
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_regenerate_submodule_quiz",
+        actor_user_id=current.id,
+        meta={"job_id": job.id, "module_id": str(m.id), "submodule_id": str(sub.id), "target_questions": tq},
+    )
+    db.commit()
+
+    try:
+        r = get_redis()
+        meta = {
+            "job_id": job.id,
+            "module_id": str(m.id),
+            "module_title": str(m.title),
+            "submodule_id": str(sub.id),
+            "submodule_title": str(sub.title or ""),
+            "target_questions": int(tq),
+            "created_at": datetime.utcnow().isoformat(),
+            "actor_user_id": str(current.id),
+            "source": "submodule_button",
+        }
+        r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
+        r.ltrim("admin:regen_jobs", 0, 49)
+        r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
+    except Exception:
+        pass
+
+    return {"ok": True, "job_id": job.id, "module_id": str(m.id), "submodule_id": str(sub.id), "target_questions": tq}
 
 
 @router.get("/regen-jobs")

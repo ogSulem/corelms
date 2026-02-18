@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { AdminModuleItem, AdminSubmoduleItem, RegenJobItem } from "../adminpanel-client";
+import { AdminModuleItem, AdminSubmoduleItem, AdminSubmoduleQualityItem } from "../adminpanel-client";
 
 interface ModulesTabProps {
   adminModules: AdminModuleItem[];
@@ -16,6 +16,9 @@ interface ModulesTabProps {
   deleteSelectedModule: () => Promise<void>;
   selectedAdminModuleSubsLoading: boolean;
   selectedAdminModuleSubs: AdminSubmoduleItem[];
+  selectedAdminModuleSubsQuality: AdminSubmoduleQualityItem[];
+  selectedAdminModuleSubsQualityLoading: boolean;
+  regenerateSubmoduleQuiz: (submoduleId: string) => Promise<void>;
   selectedSubmoduleId: string;
   setSelectedSubmoduleId: (id: string) => void;
   setSelectedQuizId: (id: string) => void;
@@ -48,6 +51,9 @@ export function ModulesTab(props: ModulesTabProps) {
     deleteSelectedModule,
     selectedAdminModuleSubsLoading,
     selectedAdminModuleSubs,
+    selectedAdminModuleSubsQuality,
+    selectedAdminModuleSubsQualityLoading,
+    regenerateSubmoduleQuiz,
     selectedSubmoduleId,
     setSelectedSubmoduleId,
     setSelectedQuizId,
@@ -66,7 +72,15 @@ export function ModulesTab(props: ModulesTabProps) {
     setQuestionDraftsById,
   } = props;
 
-  const FINAL_SUBMODULE_KEY = "__final__";
+  const qualityBySubId = (() => {
+    const out: Record<string, AdminSubmoduleQualityItem> = {};
+    for (const it of selectedAdminModuleSubsQuality || []) {
+      const sid = String((it as any)?.submodule_id || "").trim();
+      if (!sid) continue;
+      out[sid] = it;
+    }
+    return out;
+  })();
 
   return (
     <div className="mt-8 space-y-6">
@@ -91,6 +105,7 @@ export function ModulesTab(props: ModulesTabProps) {
             {(adminModules || []).map((m: AdminModuleItem) => {
               const active = String(m.id) === String(selectedAdminModuleId);
               const q = m.question_quality;
+              const needs = Number(q?.needs_regen_current || 0) > 0;
               return (
                 <button
                   key={m.id}
@@ -109,39 +124,14 @@ export function ModulesTab(props: ModulesTabProps) {
                       <div className="mt-1 text-[9px] font-black uppercase tracking-widest text-zinc-600">
                         {m.is_active ? "АКТИВЕН" : "НЕОБХОДИМ РЕГЕН (СКРЫТ ДО ГОТОВНОСТИ)"}
                       </div>
-                      {q ? (
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <div className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            AI {Number(q.ai_current || 0)}
-                          </div>
-                          <div className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            HEUR {Number(q.heur_current || 0)}
-                          </div>
-                          <div className="rounded-full border border-zinc-200 bg-white px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            TOTAL {Number(q.total_current || 0)}
-                          </div>
-                          <div
-                            className={
-                              "rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest " +
-                              (Number(q.fallback_current || 0) > 0
-                                ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
-                                : "border-zinc-200 bg-white text-zinc-700")
-                            }
-                          >
-                            FALLBACK {Number(q.fallback_current || 0)}
-                          </div>
-                          <div
-                            className={
-                              "rounded-full border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest " +
-                              (Number(q.needs_regen_current || 0) > 0
-                                ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
-                                : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
-                            }
-                          >
-                            NEEDS {Number(q.needs_regen_current || 0)}
-                          </div>
-                        </div>
-                      ) : null}
+                      <div
+                        className={
+                          "mt-2 inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
+                          (needs ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]" : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
+                        }
+                      >
+                        {needs ? "NEEDS REGEN" : "NO REGEN"}
+                      </div>
                     </div>
                     <div
                       className={
@@ -230,52 +220,66 @@ export function ModulesTab(props: ModulesTabProps) {
                   <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
                     {selectedAdminModuleSubs.map((s: AdminSubmoduleItem) => {
                       const active = String(s.id) === String(selectedSubmoduleId);
+                      const q = qualityBySubId[String(s.id)] as any;
+                      const ok = q ? !!q.ok : false;
+                      const needs = q ? Number(q.needs_regen || 0) : 0;
+                      const total = q ? Number(q.total || 0) : 0;
                       return (
-                        <button
+                        <div
                           key={s.id}
-                          type="button"
-                          onClick={() => {
-                            setSelectedSubmoduleId(s.id);
-                            setSelectedQuizId(String(s.quiz_id || ""));
-                          }}
                           className={
-                            "w-full text-left rounded-xl border px-4 py-3 transition " +
+                            "w-full rounded-xl border px-4 py-3 transition " +
                             (active ? "border-[#fe9900]/25 bg-[#fe9900]/10" : "border-zinc-200 bg-white hover:bg-zinc-50")
                           }
                         >
-                          <div className="flex items-center gap-3">
-                            <div className="h-6 w-6 rounded-lg bg-zinc-100 flex items-center justify-center text-[10px] font-black text-zinc-500">
-                              {s.order}
-                            </div>
-                            <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">
-                              {s.title}
-                            </div>
-                          </div>
-                        </button>
-                      );
-                    })}
-                    <div className="mt-2 pt-2 border-t border-zinc-100">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedSubmoduleId(FINAL_SUBMODULE_KEY);
-                          setSelectedQuizId(String(selectedAdminModule?.final_quiz_id || ""));
-                        }}
-                        className={
-                          "w-full text-left rounded-xl border px-4 py-3 transition " +
-                          (selectedSubmoduleId === FINAL_SUBMODULE_KEY ? "border-[#fe9900]/25 bg-[#fe9900]/10" : "border-zinc-200 bg-zinc-50/50 hover:bg-zinc-100")
-                        }
-                      >
-                        <div className="flex items-center gap-3">
-                          <div className="h-6 w-6 rounded-lg bg-zinc-200 flex items-center justify-center text-[10px] font-black text-zinc-600">
-                            F
-                          </div>
-                          <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">
-                            ФИНАЛЬНЫЙ ТЕСТ
+                          <div className="flex items-start justify-between gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedSubmoduleId(s.id);
+                                setSelectedQuizId(String(s.quiz_id || ""));
+                              }}
+                              className="min-w-0 flex-1 text-left"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className="h-6 w-6 rounded-lg bg-zinc-100 flex items-center justify-center text-[10px] font-black text-zinc-500">
+                                  {s.order}
+                                </div>
+                                <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">
+                                  {s.title}
+                                </div>
+                              </div>
+                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                                <div
+                                  className={
+                                    "inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
+                                    (ok
+                                      ? "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]"
+                                      : "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]")
+                                  }
+                                >
+                                  {q ? (ok ? "OK" : "NEEDS") : selectedAdminModuleSubsQualityLoading ? "..." : "—"}
+                                </div>
+                                {q ? (
+                                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">
+                                    {total}/5 · needs {needs}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </button>
+
+                            <Button
+                              variant="outline"
+                              className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                              disabled={!s.id}
+                              onClick={() => void regenerateSubmoduleQuiz(String(s.id))}
+                            >
+                              REGEN
+                            </Button>
                           </div>
                         </div>
-                      </button>
-                    </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

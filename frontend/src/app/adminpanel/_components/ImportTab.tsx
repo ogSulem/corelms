@@ -278,16 +278,6 @@ export function ImportTab(props: ImportTabProps) {
               <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-600">
                 {importStageLabel}
               </div>
-              {importEnqueueProgress ? (
-                <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 tabular-nums">
-                  {importEnqueueProgress.done}/{importEnqueueProgress.total}
-                </div>
-              ) : null}
-              {importBatch ? (
-                <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 tabular-nums">
-                  {importBatch.done}/{importBatch.total}
-                </div>
-              ) : null}
               <Button
                 variant="primary"
                 className="h-8 rounded-xl font-black uppercase tracking-widest text-[9px]"
@@ -353,10 +343,7 @@ export function ImportTab(props: ImportTabProps) {
                       <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{it.title}</div>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
                         <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                          {it.kind === "import" ? "IMPORT" : "REGEN"}
-                        </div>
-                        <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                          {badge}
+                          {it.kind === "import" ? "IMPORT" : "REGEN"} · {badge}
                         </div>
                         <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                           {stage ? stage.toUpperCase() : "—"}
@@ -366,12 +353,10 @@ export function ImportTab(props: ImportTabProps) {
                             {createdAt.replace("T", " ").slice(0, 16)}
                           </div>
                         ) : null}
-                        {detail ? (
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700 truncate max-w-[260px]">
-                            {detail}
-                          </div>
-                        ) : null}
                       </div>
+                      {detail ? (
+                        <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words line-clamp-2">{detail}</div>
+                      ) : null}
                     </div>
 
                     <div className="shrink-0 flex items-center gap-2">
@@ -405,7 +390,12 @@ export function ImportTab(props: ImportTabProps) {
             </div>
           </div>
 
-          <Modal open={importQueueModalOpen} onClose={() => setImportQueueModalOpen(false)} title="ИМПОРТ → РЕГЕН: ОЧЕРЕДЬ И ИСТОРИЯ">
+          <Modal
+            open={importQueueModalOpen}
+            onClose={() => setImportQueueModalOpen(false)}
+            title="ИМПОРТ → РЕГЕН: ОЧЕРЕДЬ И ИСТОРИЯ"
+            className="max-w-[min(96vw,1200px)]"
+          >
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
                 <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
@@ -446,7 +436,7 @@ export function ImportTab(props: ImportTabProps) {
                 </div>
               </div>
 
-              <div className="max-h-[520px] overflow-auto pr-1 grid gap-2">
+              <div className="max-h-[72vh] overflow-auto pr-1 grid gap-2">
                 {(importQueueView === "history" ? pipelineHistory : pipelineActive).map((it) => {
                   const st = String(it.status || "").toLowerCase();
                   const stage = String(it.stage || "").toLowerCase();

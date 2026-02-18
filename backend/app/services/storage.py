@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 
 from app.core.config import settings
 
@@ -38,6 +39,32 @@ def _get_presign_client():
     return get_s3_client(endpoint_url=pub or settings.s3_endpoint_url)
 
 
+def ensure_bucket_cors() -> None:
+    s3 = get_s3_client()
+    origins = [o.strip() for o in str(getattr(settings, "cors_allow_origins", "") or "").split(",") if o.strip()]
+    if not origins:
+        origins = ["*"]
+    try:
+        s3.put_bucket_cors(
+            Bucket=settings.s3_bucket,
+            CORSConfiguration={
+                "CORSRules": [
+                    {
+                        "AllowedOrigins": origins,
+                        "AllowedMethods": ["GET", "PUT", "HEAD"],
+                        "AllowedHeaders": ["*"],
+                        "ExposeHeaders": ["ETag", "x-amz-request-id", "x-amz-id-2"],
+                        "MaxAgeSeconds": 3600,
+                    }
+                ]
+            },
+        )
+    except ClientError:
+        raise
+    except Exception:
+        raise
+
+
 def ensure_bucket_exists() -> None:
     s3 = get_s3_client()
     try:
@@ -61,6 +88,15 @@ def ensure_bucket_exists() -> None:
             )
         else:
             s3.create_bucket(Bucket=settings.s3_bucket)
+
+    env = (getattr(settings, "app_env", "") or "").strip().lower()
+    try:
+        ensure_bucket_cors()
+    except Exception:
+        if env in {"prod", "production"}:
+            pass
+        else:
+            pass
 
 
 def presign_put(*, object_key: str, content_type: str | None, expires_seconds: int = 900) -> str:

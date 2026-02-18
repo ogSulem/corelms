@@ -124,7 +124,261 @@ def _set_job_error(*, error: Exception, error_code: str | None = None, error_hin
         return
 
 
-def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) -> dict:
+def _submodule_is_ok(*, db: Session, sub: Submodule, target_questions: int) -> bool:
+    try:
+        qid = getattr(sub, "quiz_id", None)
+        if not qid:
+            return False
+        needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
+        needs = db.scalar(select(func.count()).select_from(Question).where(Question.quiz_id == qid).where(needs_regen_cond)) or 0
+        total = db.scalar(select(func.count()).select_from(Question).where(Question.quiz_id == qid)) or 0
+        return int(needs) <= 0 and int(total) >= int(target_questions)
+    except Exception:
+        return False
+
+
+def regenerate_submodule_quiz_job(*, submodule_id: str, target_questions: int = 5, force: bool = True) -> dict:
+    _set_job_stage(stage="start", detail=str(submodule_id))
+    db = SessionLocal()
+    try:
+        sid_raw = str(submodule_id).strip()
+        try:
+            sid = uuid.UUID(sid_raw)
+        except Exception as e:
+            _set_job_stage(stage="failed", detail="invalid submodule_id")
+            _set_job_error(
+                error=e,
+                error_code="INVALID_SUBMODULE_ID",
+                error_hint="Неверный submodule_id (UUID).",
+            )
+            raise ValueError("invalid submodule_id") from e
+
+        sub = db.scalar(select(Submodule).where(Submodule.id == sid))
+        if sub is None:
+            _set_job_stage(stage="failed", detail="submodule not found")
+            _set_job_error(
+                error=ValueError("submodule not found"),
+                error_code="SUBMODULE_NOT_FOUND",
+                error_hint="Подмодуль не найден в базе.",
+            )
+            raise ValueError("submodule not found")
+
+        m = db.scalar(select(Module).where(Module.id == sub.module_id))
+        if m is None:
+            _set_job_stage(stage="failed", detail="module not found")
+            _set_job_error(
+                error=ValueError("module not found"),
+                error_code="MODULE_NOT_FOUND",
+                error_hint="Модуль для подмодуля не найден.",
+            )
+            raise ValueError("module not found")
+
+        # Enrich meta for UI.
+        try:
+            job = get_current_job()
+            if job is not None:
+                meta = dict(job.meta or {})
+                meta.setdefault("job_kind", "regen")
+                meta["module_id"] = str(m.id)
+                meta["module_title"] = str(m.title)
+                meta["submodule_id"] = str(sub.id)
+                meta["submodule_title"] = str(sub.title or "")
+                meta["target_questions"] = int(target_questions)
+                job.meta = meta
+                job.save_meta()
+        except Exception:
+            pass
+
+        if (not force) and _submodule_is_ok(db=db, sub=sub, target_questions=int(target_questions)):
+            _set_job_stage(stage="done", detail="already_ok")
+            return {
+                "ok": True,
+                "skipped": True,
+                "module_id": str(m.id),
+                "submodule_id": str(sub.id),
+            }
+
+        # Reuse module regen logic for a single lesson.
+        subs = [sub]
+        tq = max(1, int(target_questions or 5))
+        report: dict[str, object] = {
+            "ok": True,
+            "module_id": str(m.id),
+            "module_title": str(m.title),
+            "submodule_id": str(sub.id),
+            "submodule_title": str(sub.title or ""),
+            "lessons": 1,
+            "questions_total": 0,
+            "questions_ai": 0,
+            "questions_heur": 0,
+            "questions_fallback": 0,
+            "needs_regen": 0,
+            "needs_regen_db": 0,
+        }
+
+        for si, sub in enumerate(subs, start=1):
+            _cancel_checkpoint(stage="lesson")
+            title = str(sub.title or "Урок")
+            text = str(sub.content or "")
+
+            _set_job_stage(stage="ai", detail=f"1/1: {title}")
+            _job_heartbeat(detail=f"AI 1/1: {title}")
+            ollama_debug: dict[str, object] = {}
+            provider_order = None
+            try:
+                provider_order = choose_llm_provider_order_fast(ttl_seconds=300, use_cache=False)
+            except Exception:
+                provider_order = None
+            qs: list[object] = []
+            try:
+                qs = generate_quiz_questions_ai(
+                    title=title,
+                    text=text,
+                    n_questions=int(tq),
+                    min_questions=int(tq),
+                    retries=3,
+                    backoff_seconds=0.9,
+                    debug_out=ollama_debug,
+                    provider_order=provider_order,
+                )
+            except Exception as e:
+                qs = []
+                ollama_debug.setdefault("error", f"ai_exception:{type(e).__name__}")
+
+            _cancel_checkpoint(stage="ai")
+            ai_failed = False
+            used_heuristic = False
+
+            if not qs:
+                ai_failed = True
+                report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
+                generated = generate_quiz_questions_heuristic(
+                    seed=f"regen:{m.id}:{sub.id}",
+                    title=title,
+                    theory_text=text,
+                    target=int(tq),
+                )
+                if generated:
+                    used_heuristic = True
+                    qs = []
+                    for mcq in generated:
+                        qs.append(
+                            type(
+                                "_Q",
+                                (),
+                                {
+                                    "type": mcq.qtype,
+                                    "prompt": mcq.prompt,
+                                    "correct_answer": mcq.correct_answer,
+                                    "explanation": None,
+                                },
+                            )
+                        )
+                else:
+                    qs = []
+
+            _set_job_stage(stage="replace", detail=f"1/1: {title}")
+            _cancel_checkpoint(stage="replace")
+            _job_heartbeat(detail=f"WRITE 1/1: {title}")
+            lesson_quiz = Quiz(type=QuizType.submodule, pass_threshold=70, time_limit=None, attempts_limit=3)
+            db.add(lesson_quiz)
+            db.flush()
+            sub.quiz_id = lesson_quiz.id
+            db.add(sub)
+            qid = lesson_quiz.id
+
+            if qs:
+                for qi, q in enumerate(qs, start=1):
+                    raw_type = str(getattr(q, "type", "") or "").strip().lower()
+                    if raw_type == "multi":
+                        qt = QuestionType.multi
+                    elif raw_type == "case":
+                        qt = QuestionType.case
+                    else:
+                        qt = QuestionType.single
+                    db.add(
+                        Question(
+                            quiz_id=qid,
+                            type=qt,
+                            difficulty=2 if qt == QuestionType.multi else 1,
+                            prompt=str(getattr(q, "prompt", "") or ""),
+                            correct_answer=str(getattr(q, "correct_answer", "") or ""),
+                            explanation=(str(getattr(q, "explanation", "")) if getattr(q, "explanation", None) else None),
+                            concept_tag=(
+                                f"needs_regen:regen:{m.id}:{sub.order}:{qi}" if ai_failed else f"regen:{m.id}:{sub.order}:{qi}"
+                            ),
+                            variant_group=None,
+                        )
+                    )
+                report["questions_total"] = int(report.get("questions_total") or 0) + int(len(qs))
+                if used_heuristic:
+                    report["questions_heur"] = int(report.get("questions_heur") or 0) + int(len(qs))
+                elif not ai_failed:
+                    report["questions_ai"] = int(report.get("questions_ai") or 0) + int(len(qs))
+            else:
+                db.add(
+                    Question(
+                        quiz_id=qid,
+                        type=QuestionType.single,
+                        difficulty=1,
+                        prompt=(
+                            f"По уроку «{title}» выберите верный вариант.\n"
+                            "A) Подтвердить прочтение и пройти квиз\nB) Пропустить урок\nC) Завершить модуль без проверки\nD) Ничего не делать"
+                        ),
+                        correct_answer="A",
+                        explanation=None,
+                        concept_tag=(
+                            f"needs_regen:regen:fallback:{m.id}:{sub.order}:1" if ai_failed else f"regen:fallback:{m.id}:{sub.order}:1"
+                        ),
+                        variant_group=None,
+                    )
+                )
+                report["questions_fallback"] = int(report.get("questions_fallback") or 0) + 1
+                report["questions_total"] = int(report.get("questions_total") or 0) + 1
+
+            try:
+                db.flush()
+            except Exception:
+                pass
+            _job_heartbeat(detail=f"DONE 1/1: {title}")
+
+        # needs_regen_db for this submodule only
+        try:
+            needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
+            if getattr(sub, "quiz_id", None):
+                report["needs_regen_db"] = int(
+                    db.scalar(
+                        select(func.count()).select_from(Question).where(Question.quiz_id == sub.quiz_id).where(needs_regen_cond)
+                    )
+                    or 0
+                )
+        except Exception:
+            pass
+
+        _set_job_stage(stage="commit")
+        _cancel_checkpoint(stage="commit")
+        db.commit()
+        _set_job_stage(stage="done", detail=str(sub.id))
+        return report
+    except RegenCanceledError:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return {"ok": False, "canceled": True, "submodule_id": str(submodule_id)}
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        _set_job_stage(stage="failed", detail=str(e))
+        _set_job_error(error=e)
+        raise
+    finally:
+        db.close()
+
+
+def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5, only_missing: bool = True) -> dict:
     _set_job_stage(stage="start", detail=str(module_id))
 
     db = SessionLocal()
@@ -187,8 +441,13 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
             title = str(sub.title or f"Урок {si}")
             text = str(sub.content or "")
 
+            if bool(only_missing) and _submodule_is_ok(db=db, sub=sub, target_questions=int(tq)):
+                _set_job_stage(stage="skip", detail=f"{si}/{len(subs)}: {title}")
+                _job_heartbeat(detail=f"SKIP {si}/{len(subs)}: {title}")
+                continue
+
             _set_job_stage(stage="ai", detail=f"{si}/{len(subs)}: {title}")
-            _job_heartbeat(detail=f"{si}/{len(subs)}: {title}")
+            _job_heartbeat(detail=f"AI {si}/{len(subs)}: {title}")
             ollama_debug: dict[str, object] = {}
             provider_order = None
             try:
@@ -204,7 +463,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
                     text=text,
                     n_questions=int(tq),
                     min_questions=int(tq),
-                    retries=5,
+                    retries=3,
                     backoff_seconds=0.9,
                     debug_out=ollama_debug,
                     provider_order=provider_order,
@@ -280,6 +539,7 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
 
             _set_job_stage(stage="replace", detail=f"{si}/{len(subs)}: {title}")
             _cancel_checkpoint(stage="replace")
+            _job_heartbeat(detail=f"WRITE {si}/{len(subs)}: {title}")
             # IMPORTANT: never delete old questions during regeneration.
             # QuizAttemptAnswer has FK to Question.id, so deletions can break attempt history.
             # Instead we version quizzes: create a new quiz, attach to the lesson, and write new questions there.
@@ -341,71 +601,11 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
                 report["questions_fallback"] = int(report.get("questions_fallback") or 0) + 1
                 report["questions_total"] = int(report.get("questions_total") or 0) + 1
 
-        # Product rule: rebuild final quiz as 2 random questions from each lesson quiz.
-        final_qid = getattr(m, "final_quiz_id", None)
-        if final_qid:
-            _set_job_stage(stage="replace", detail="final quiz")
-            _cancel_checkpoint(stage="final")
-            # Same rule: do not delete old final questions; create a new final quiz.
-            final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
-            db.add(final_quiz)
-            db.flush()
-            m.final_quiz_id = final_quiz.id
-            db.add(m)
-            final_qid = final_quiz.id
-
-            rng = random.Random(f"regen_final:{m.id}:{uuid.uuid4()}")
-            final_added = 0
-            for lqi, sub in enumerate(subs, start=1):
-                if lqi == 1 or lqi % 2 == 0:
-                    _job_heartbeat(detail=f"final quiz · lesson {lqi}/{len(subs)}")
-                try:
-                    items = (
-                        db.scalars(
-                            select(Question)
-                            .where(Question.quiz_id == sub.quiz_id)
-                            .order_by(Question.id)
-                        )
-                        .all()
-                    )
-                except Exception:
-                    items = []
-                pool = list(items or [])
-                rng.shuffle(pool)
-                for qi, src in enumerate(pool[:2], start=1):
-                    db.add(
-                        Question(
-                            quiz_id=final_qid,
-                            type=src.type,
-                            difficulty=int(getattr(src, "difficulty", 1) or 1),
-                            prompt=str(getattr(src, "prompt", "") or ""),
-                            correct_answer=str(getattr(src, "correct_answer", "") or ""),
-                            explanation=(str(getattr(src, "explanation", "")) if getattr(src, "explanation", None) else None),
-                            concept_tag=f"final:from_lesson:{m.id}:{lqi}:{qi}",
-                            variant_group=None,
-                        )
-                    )
-                    final_added += 1
-                    report["questions_total"] = int(report.get("questions_total") or 0) + 1
-
-            if final_added <= 0:
-                db.add(
-                    Question(
-                        quiz_id=final_qid,
-                        type=QuestionType.single,
-                        difficulty=1,
-                        prompt=(
-                            f"По модулю «{m.title}» выберите верный вариант.\n"
-                            "A) Подтвердить прочтение и пройти финальный тест\nB) Пропустить проверку\nC) Завершить без теста\nD) Ничего не делать"
-                        ),
-                        correct_answer="A",
-                        explanation=None,
-                        concept_tag=f"needs_regen:final:fallback:{m.id}:1",
-                        variant_group=None,
-                    )
-                )
-                report["questions_fallback"] = int(report.get("questions_fallback") or 0) + 1
-                report["questions_total"] = int(report.get("questions_total") or 0) + 1
+            try:
+                db.flush()
+            except Exception:
+                pass
+            _job_heartbeat(detail=f"DONE {si}/{len(subs)}: {title}")
 
         # Auto-publish only if there are no needs_regen:* questions left in DB for this module.
         # This is more reliable than using report counters (which may diverge from persisted data).
@@ -417,8 +617,6 @@ def regenerate_module_quizzes_job(*, module_id: str, target_questions: int = 5) 
 
         needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
         active_quiz_ids: list[uuid.UUID] = [sub.quiz_id for sub in (subs or []) if getattr(sub, "quiz_id", None)]
-        if getattr(m, "final_quiz_id", None):
-            active_quiz_ids.append(m.final_quiz_id)
         active_quiz_ids = [qid for qid in active_quiz_ids if qid is not None]
 
         needs_regen_db = 0

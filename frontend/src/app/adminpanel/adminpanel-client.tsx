@@ -126,6 +126,19 @@ export type AdminSubmoduleItem = {
   quiz_id: string;
 };
 
+export type AdminSubmoduleQualityItem = {
+  submodule_id: string;
+  order: number;
+  title: string;
+  quiz_id: string | null;
+  total: number;
+  needs_regen: number;
+  fallback: number;
+  ai: number;
+  heur: number;
+  ok: boolean;
+};
+
 export type AdminQuestionItem = {
   id: string;
   quiz_id: string;
@@ -302,19 +315,32 @@ export default function AdminPanelClient() {
   async function cancelImportJob(jobId: string) {
     const id = String(jobId || "").trim();
     if (!id) return;
-    const ok = window.confirm(`Отменить задачу ${id}?`);
+    await cancelRegenJob(id);
+  }
+
+  async function cancelRegenJob(jobId: string) {
+    const id = String(jobId || "").trim();
+    if (!id) return;
+    const ok = window.confirm("Остановить генерацию тестов?\n\nЗадача будет немедленно отменена. Модуль останется скрыт до готовности.");
     if (!ok) return;
     try {
+      setCancelBusy(true);
       await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" } as any);
+      if (String(selectedJobId || "").trim() === id) {
+        setJobStage("canceled");
+        setJobStatus("canceled");
+      }
       window.dispatchEvent(
         new CustomEvent("corelms:toast", {
-          detail: { title: "ОТМЕНА ЗАПРОШЕНА", description: `JOB: ${id}` },
+          detail: { title: "РЕГЕН ОТМЕНЁН", description: `JOB: ${id}` },
         })
       );
-      await loadImportQueue(50, true);
+      await Promise.all([loadRegenHistory(), loadImportQueue(50, true), loadAdminModules(), reloadModules()]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setError(msg || "НЕ УДАЛОСЬ ОТМЕНИТЬ JOB");
+      setError(msg || "НЕ УДАЛОСЬ ОТМЕНИТЬ РЕГЕН");
+    } finally {
+      setCancelBusy(false);
     }
   }
 
@@ -413,6 +439,8 @@ export default function AdminPanelClient() {
   const [selectedAdminModuleId, setSelectedAdminModuleId] = useState<string>("");
   const [selectedAdminModuleSubs, setSelectedAdminModuleSubs] = useState<AdminSubmoduleItem[]>([]);
   const [selectedAdminModuleSubsLoading, setSelectedAdminModuleSubsLoading] = useState(false);
+  const [subQualityByModuleId, setSubQualityByModuleId] = useState<Record<string, AdminSubmoduleQualityItem[]>>({});
+  const [subQualityLoadingByModuleId, setSubQualityLoadingByModuleId] = useState<Record<string, boolean>>({});
   const [selectedSubmoduleId, setSelectedSubmoduleId] = useState<string>("");
   const [selectedQuizId, setSelectedQuizId] = useState<string>("");
   const [questionsByQuizId, setQuestionsByQuizId] = useState<Record<string, AdminQuestionItem[]>>({});
@@ -668,7 +696,26 @@ export default function AdminPanelClient() {
     void loadRegenHistory();
     void loadImportQueue(20, false);
   }, [tab]);
+
+  useEffect(() => {
+    if (tab !== "import") return;
+    void loadImportQueue(20, false);
+    void loadRegenHistory();
+    const t = window.setInterval(() => {
+      void loadImportQueue(20, false);
+      void loadRegenHistory();
+    }, 4000);
+    return () => window.clearInterval(t);
+  }, [tab]);
+
   async function cancelCurrentJob() {
+    if (String(jobKind || "").toLowerCase() === "regen") {
+      const id = String(selectedJobId || "").trim();
+      if (!id) return;
+      await cancelRegenJob(id);
+      return;
+    }
+
     if (!selectedJobId && importBatchJobIdsRef.current.length === 0) return;
     try {
       setCancelBusy(true);
@@ -772,8 +819,46 @@ export default function AdminPanelClient() {
         setSelectedSubmoduleId(sorted[0].id);
         setSelectedQuizId(String(sorted[0].quiz_id || ""));
       }
+
+      void loadSelectedAdminModuleSubQuality(String(selectedAdminModuleId));
     } finally {
       setSelectedAdminModuleSubsLoading(false);
+    }
+  }
+
+  async function loadSelectedAdminModuleSubQuality(moduleId: string) {
+    const mid = String(moduleId || "").trim();
+    if (!mid) return;
+    try {
+      setSubQualityLoadingByModuleId((prev) => ({ ...prev, [mid]: true }));
+      const res = await apiFetch<{ ok: boolean; module_id: string; items: AdminSubmoduleQualityItem[] }>(
+        `/admin/modules/${encodeURIComponent(mid)}/submodules/quality`
+      );
+      const items = Array.isArray(res?.items) ? res.items : [];
+      setSubQualityByModuleId((prev) => ({ ...prev, [mid]: items }));
+    } catch {
+      setSubQualityByModuleId((prev) => ({ ...prev, [mid]: [] }));
+    } finally {
+      setSubQualityLoadingByModuleId((prev) => ({ ...prev, [mid]: false }));
+    }
+  }
+
+  async function regenerateSubmoduleQuiz(submoduleId: string) {
+    const sid = String(submoduleId || "").trim();
+    if (!sid) return;
+    try {
+      setError(null);
+      const res = await apiFetch<{ ok: boolean; job_id: string }>(
+        `/admin/submodules/${encodeURIComponent(sid)}/regenerate-quiz?target_questions=5`,
+        {
+          method: "POST",
+        }
+      );
+      void res;
+      await Promise.all([loadRegenHistory(), loadAdminModules(), loadSelectedAdminModule(), loadImportQueue(20, false)]);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ЗАПУСТИТЬ РЕГЕН УРОКА");
     }
   }
 
@@ -1959,6 +2044,11 @@ export default function AdminPanelClient() {
             deleteSelectedModule={deleteSelectedModule}
             selectedAdminModuleSubsLoading={selectedAdminModuleSubsLoading}
             selectedAdminModuleSubs={selectedAdminModuleSubs}
+            selectedAdminModuleSubsQuality={subQualityByModuleId[String(selectedAdminModuleId || "")] || []}
+            selectedAdminModuleSubsQualityLoading={
+              !!subQualityLoadingByModuleId[String(selectedAdminModuleId || "")]
+            }
+            regenerateSubmoduleQuiz={regenerateSubmoduleQuiz}
             selectedSubmoduleId={selectedSubmoduleId}
             setSelectedSubmoduleId={setSelectedSubmoduleId}
             setSelectedQuizId={setSelectedQuizId}
