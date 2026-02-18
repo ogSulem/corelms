@@ -176,6 +176,7 @@ def generate_quiz_questions_openrouter(
     model: str | None = None,
     system_prompt: str | None = None,
     temperature: float | None = None,
+    timeout_read_seconds: float | None = None,
 ) -> list[OpenRouterQuestion]:
     if not settings.openrouter_enabled:
         # Allow runtime enabling via Redis.
@@ -286,9 +287,10 @@ def generate_quiz_questions_openrouter(
         headers["X-Title"] = app_title
 
     try:
+        read_s = float(timeout_read_seconds) if timeout_read_seconds is not None else float(settings.openrouter_timeout_read)
         timeout = httpx.Timeout(
             connect=float(settings.openrouter_timeout_connect),
-            read=float(settings.openrouter_timeout_read),
+            read=read_s,
             write=float(settings.openrouter_timeout_write),
             pool=3.0,
         )

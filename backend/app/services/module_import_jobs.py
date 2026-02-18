@@ -193,6 +193,7 @@ def import_module_zip_job(
     title: str | None = None,
     source_filename: str | None = None,
     actor_user_id: str | None = None,
+    module_id: str | None = None,
     enqueue_regen: bool = True,
 ) -> dict:
     print(f"import_module_zip_job: start s3_object_key={s3_object_key} source_filename={source_filename} title={title}", flush=True)
@@ -359,7 +360,21 @@ def import_module_zip_job(
                 title_override=(title or inferred_title),
                 report_out=report,
                 generate_questions=False,
+                module_id_override=(str(module_id).strip() or None),
             )
+
+            try:
+                job = get_current_job()
+            except Exception:
+                job = None
+            if job is not None:
+                try:
+                    jm = dict(job.meta or {})
+                    jm["module_id"] = str(mid)
+                    job.meta = jm
+                    job.save_meta()
+                except Exception:
+                    pass
             _job_heartbeat(detail="import: done")
 
             _set_job_stage(stage="commit")

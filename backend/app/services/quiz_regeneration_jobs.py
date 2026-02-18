@@ -251,6 +251,7 @@ def regenerate_submodule_quiz_job(
                     backoff_seconds=0.9,
                     debug_out=ollama_debug,
                     provider_order=provider_order,
+                    time_budget_seconds=float(ai_budget_seconds),
                 )
                 ai_elapsed_s = max(0.0, (datetime.utcnow() - t0).total_seconds())
             except Exception as e:
@@ -508,6 +509,7 @@ def regenerate_module_quizzes_job(
                     backoff_seconds=0.9,
                     debug_out=ollama_debug,
                     provider_order=provider_order,
+                    time_budget_seconds=float(ai_budget_seconds_per_lesson),
                 )
                 ai_elapsed_s = max(0.0, (datetime.utcnow() - t0).total_seconds())
             except Exception as e:

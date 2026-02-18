@@ -51,6 +51,7 @@ def generate_quiz_questions_ollama(
     enabled: bool | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    timeout_read_seconds: float | None = None,
 ) -> list[OllamaQuestion]:
     is_enabled = bool(settings.ollama_enabled) if enabled is None else bool(enabled)
     if not is_enabled:
@@ -98,7 +99,8 @@ def generate_quiz_questions_ollama(
 
     try:
         # Ollama can be slow on first tokens / under load. Use more generous timeouts and a few retries.
-        timeout = httpx.Timeout(connect=4.0, read=35.0, write=20.0, pool=3.0)
+        read_s = float(timeout_read_seconds) if timeout_read_seconds is not None else 35.0
+        timeout = httpx.Timeout(connect=4.0, read=read_s, write=20.0, pool=3.0)
         with httpx.Client(timeout=timeout) as client:
             last_exc: Exception | None = None
             for attempt in range(1, 4):

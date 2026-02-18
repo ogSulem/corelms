@@ -17,6 +17,8 @@ interface ImportTabProps {
     etaSeconds: number | null;
     percent: number;
   } | null;
+  importPendingCount?: number;
+  importPendingNames?: string[];
   importEnqueueProgress: { total: number; done: number } | null;
   importBatch: { total: number; done: number } | null;
   importBusy: boolean;
@@ -74,6 +76,8 @@ export function ImportTab(props: ImportTabProps) {
     setImportFiles,
     importStageLabel,
     s3UploadProgress,
+    importPendingCount,
+    importPendingNames,
     importEnqueueProgress,
     importBatch,
     importBusy,
@@ -119,13 +123,32 @@ export function ImportTab(props: ImportTabProps) {
   const s3Label = useMemo(() => {
     const p = s3UploadProgress;
     if (!p) return null;
-    const mb = (n: number) => Math.max(0, n) / (1024 * 1024);
-    const speed = p.speedBps > 1 ? `${mb(p.speedBps).toFixed(1)} MB/s` : "—";
+    const humanBytes = (n: number): string => {
+      const v = Math.max(0, Number(n || 0));
+      const units = ["B", "KB", "MB", "GB"];
+      let x = v;
+      let i = 0;
+      while (x >= 1024 && i < units.length - 1) {
+        x /= 1024;
+        i++;
+      }
+      const digits = i <= 1 ? 0 : 1;
+      return `${x.toFixed(digits)} ${units[i]}`;
+    };
+
+    const humanSpeed = (bps: number): string => {
+      const v = Math.max(0, Number(bps || 0));
+      if (v < 1) return "—";
+      if (v < 1024 * 1024) return `${Math.round(v / 1024)} KB/s`;
+      return `${(v / (1024 * 1024)).toFixed(1)} MB/s`;
+    };
+
+    const speed = humanSpeed(p.speedBps);
     const eta = typeof p.etaSeconds === "number" ? `${p.etaSeconds}s` : "—";
     return {
       percent: p.percent,
-      loadedMb: mb(p.loaded).toFixed(1),
-      totalMb: mb(p.total).toFixed(1),
+      loadedHuman: humanBytes(p.loaded),
+      totalHuman: humanBytes(p.total),
       speed,
       eta,
     };
@@ -326,6 +349,12 @@ export function ImportTab(props: ImportTabProps) {
                   {importQueueLoading || regenHistoryLoading ? "..." : `ЗАДАЧ: ${pipelineActive.length}`}
                 </span>
               </div>
+
+              {typeof importPendingCount === "number" && importPendingCount > 0 ? (
+                <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                  ОЧЕРЕДЬ ИМПОРТА: {importPendingCount}
+                </div>
+              ) : null}
               <div className="flex items-center gap-2">
                 <button
                   type="button"
@@ -359,13 +388,29 @@ export function ImportTab(props: ImportTabProps) {
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-700">STORAGE UPLOAD</div>
                   <div className="text-[10px] font-black tabular-nums text-zinc-900">{s3Label.percent}%</div>
                 </div>
+                {String(clientImportFileName || "").trim() ? (
+                  <div className="mt-1 text-[10px] font-bold text-zinc-700 break-words">{String(clientImportFileName || "").trim()}</div>
+                ) : null}
                 <div className="mt-2 h-2 w-full rounded-full bg-white border border-zinc-200 overflow-hidden">
                   <div className="h-full bg-[#fe9900] transition-all" style={{ width: `${s3Label.percent}%` }} />
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">{s3Label.loadedMb} / {s3Label.totalMb} MB</div>
+                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">{s3Label.loadedHuman} / {s3Label.totalHuman}</div>
                   <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">{s3Label.speed}</div>
-                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">ETA {s3Label.eta}</div>
+                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">ОСТАЛОСЬ ~ {s3Label.eta}</div>
+                </div>
+              </div>
+            ) : null}
+
+            {Array.isArray(importPendingNames) && importPendingNames.length ? (
+              <div className="mt-3 rounded-xl border border-zinc-200 bg-white p-3">
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">В ОЧЕРЕДИ (ЛОКАЛЬНО)</div>
+                <div className="mt-2 grid gap-2">
+                  {importPendingNames.slice(0, 5).map((n, idx) => (
+                    <div key={`${idx}:${n}`} className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-[10px] font-bold text-zinc-800 break-words">
+                      {String(n || "").trim()}
+                    </div>
+                  ))}
                 </div>
               </div>
             ) : null}

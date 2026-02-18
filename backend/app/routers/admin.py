@@ -593,7 +593,7 @@ async def import_module_zip(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     current: User = Depends(require_roles(UserRole.admin)),
-    _: object = rate_limit(key_prefix="admin_import_module_zip", limit=10, window_seconds=60),
+    _: object = rate_limit(key_prefix="admin_import_module_zip", limit=15, window_seconds=60),
 ):
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="only .zip is supported")
@@ -632,6 +632,35 @@ async def import_module_zip(
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to upload zip") from e
 
+    # Product rule: module should appear immediately in list as hidden while import/regen runs.
+    stub_module = None
+    try:
+        stub_title = str(effective_title or "").strip() or str(file.filename or "").strip() or "Модуль"
+        if stub_title.lower().endswith(".zip"):
+            stub_title = stub_title[:-4]
+        stub_title = stub_title.strip() or "Модуль"
+
+        final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
+        db.add(final_quiz)
+        db.flush()
+        stub_module = Module(
+            title=stub_title,
+            description=f"Материалы модуля «{stub_title}».",
+            difficulty=1,
+            category="Обучение",
+            is_active=False,
+            final_quiz_id=final_quiz.id,
+        )
+        db.add(stub_module)
+        db.flush()
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        stub_module = None
+
     try:
         q = get_queue("corelms")
         job = q.enqueue(
@@ -640,6 +669,7 @@ async def import_module_zip(
             title=(effective_title or None),
             source_filename=(file.filename or None),
             actor_user_id=str(current.id),
+            module_id=str(stub_module.id) if stub_module is not None else None,
             job_timeout=60 * 60 * 3,
             result_ttl=60 * 60 * 24,
             failure_ttl=60 * 60 * 24,
@@ -652,6 +682,17 @@ async def import_module_zip(
         raise HTTPException(status_code=500, detail="failed to enqueue import job") from e
 
     try:
+        jm = dict(job.meta or {})
+        jm["job_kind"] = "import"
+        if stub_module is not None:
+            jm["module_id"] = str(stub_module.id)
+            jm["module_title"] = str(stub_module.title)
+        job.meta = jm
+        job.save_meta()
+    except Exception:
+        pass
+
+    try:
         r = get_redis()
         meta = {
             "job_id": job.id,
@@ -661,6 +702,8 @@ async def import_module_zip(
             "actor_user_id": str(current.id),
             "source_filename": str(file.filename or "")[:200],
             "source": "legacy_multipart",
+            "module_id": str(stub_module.id) if stub_module is not None else "",
+            "module_title": str(stub_module.title) if stub_module is not None else "",
         }
         r.lpush("admin:import_jobs", json.dumps(meta, ensure_ascii=False))
         r.ltrim("admin:import_jobs", 0, 49)
@@ -676,9 +719,12 @@ async def import_module_zip(
         meta={"job_id": job.id, "object_key": object_key, "title": effective_title},
     )
 
-    db.commit()
-
-    return {"ok": True, "job_id": job.id, "object_key": object_key}
+    return {
+        "ok": True,
+        "job_id": job.id,
+        "object_key": object_key,
+        "module_id": str(stub_module.id) if stub_module is not None else None,
+    }
 
 
 class AdminAbortUploadRequest(BaseModel):
@@ -933,6 +979,32 @@ def enqueue_import_zip(
         if int(exists) > 0:
             raise HTTPException(status_code=409, detail="module title already exists")
 
+    # Product rule: module should appear immediately in list as hidden while import/regen runs.
+    # Create a stub module now, then let the worker populate it.
+    stub_module = None
+    try:
+        stub_title = title or (str(body.source_filename or "").strip() or "Модуль")
+        # Trim .zip from filename for nicer stub title.
+        if stub_title.lower().endswith(".zip"):
+            stub_title = stub_title[:-4]
+        stub_title = stub_title.strip() or "Модуль"
+
+        final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
+        db.add(final_quiz)
+        db.flush()
+        stub_module = Module(
+            title=stub_title,
+            description=f"Материалы модуля «{stub_title}».",
+            difficulty=1,
+            category="Обучение",
+            is_active=False,
+            final_quiz_id=final_quiz.id,
+        )
+        db.add(stub_module)
+        db.flush()
+    except Exception:
+        stub_module = None
+
     # Dedupe: avoid enqueuing multiple jobs for the same target module title.
     # This prevents queue spam when the UI retries / user clicks repeatedly.
     title_lock_key = None
@@ -964,6 +1036,7 @@ def enqueue_import_zip(
             title=title,
             source_filename=(str(body.source_filename or "").strip() or None),
             actor_user_id=str(current.id),
+            module_id=str(stub_module.id) if stub_module is not None else None,
             job_timeout=60 * 60 * 3,
             result_ttl=60 * 60 * 24,
             failure_ttl=60 * 60 * 24,
@@ -977,10 +1050,20 @@ def enqueue_import_zip(
             jm = dict(job.meta or {})
             jm["import_title_norm"] = norm_title
             jm["import_object_key"] = object_key
+            if stub_module is not None:
+                jm["job_kind"] = "import"
+                jm["module_id"] = str(stub_module.id)
+                jm["module_title"] = str(stub_module.title)
             job.meta = jm
             job.save_meta()
     except Exception:
         pass
+
+    # Commit stub module so it becomes visible immediately to admin list endpoints.
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
 
     try:
         r = get_redis()
@@ -1002,6 +1085,8 @@ def enqueue_import_zip(
             "actor_user_id": str(current.id),
             "source_filename": str(body.source_filename or "")[:200],
             "source": "direct_s3",
+            "module_id": str(stub_module.id) if stub_module is not None else "",
+            "module_title": str(stub_module.title) if stub_module is not None else "",
         }
         r.lpush("admin:import_jobs", json.dumps(meta, ensure_ascii=False))
         r.ltrim("admin:import_jobs", 0, 49)
@@ -1018,7 +1103,12 @@ def enqueue_import_zip(
     )
     db.commit()
 
-    return {"ok": True, "job_id": job.id, "object_key": object_key}
+    return {
+        "ok": True,
+        "job_id": job.id,
+        "object_key": object_key,
+        "module_id": str(stub_module.id) if stub_module is not None else None,
+    }
 
 
 @router.get("/import-jobs")
@@ -1157,18 +1247,60 @@ def retry_import_job(
 
     title = str(meta.get("title") or "").strip() or None
 
+    # Product rule: module should appear immediately in list as hidden while import/regen runs.
+    stub_module = None
+    try:
+        stub_title = str(title or "").strip() or str(file.filename or "").strip() or "Модуль"
+        if stub_title.lower().endswith(".zip"):
+            stub_title = stub_title[:-4]
+        stub_title = stub_title.strip() or "Модуль"
+
+        final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
+        db.add(final_quiz)
+        db.flush()
+        stub_module = Module(
+            title=stub_title,
+            description=f"Материалы модуля «{stub_title}».",
+            difficulty=1,
+            category="Обучение",
+            is_active=False,
+            final_quiz_id=final_quiz.id,
+        )
+        db.add(stub_module)
+        db.flush()
+        db.commit()
+    except Exception:
+        db.rollback()
+        stub_module = None
+
     q = get_queue("corelms")
     job = q.enqueue(
         import_module_zip_job,
         s3_object_key=object_key,
         title=title,
         source_filename=None,
+        module_id=str(stub_module.id) if stub_module is not None else None,
         job_timeout=60 * 60 * 3,
         result_ttl=60 * 60 * 24,
         failure_ttl=60 * 60 * 24,
     )
 
-    return {"ok": True, "job_id": job.id}
+    try:
+        jm = dict(job.meta or {})
+        jm["job_kind"] = "import"
+        if stub_module is not None:
+            jm["module_id"] = str(stub_module.id)
+            jm["module_title"] = str(stub_module.title)
+        job.meta = jm
+        job.save_meta()
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "job_id": job.id,
+        "module_id": str(stub_module.id) if stub_module is not None else None,
+    }
 
 
 @router.get("/jobs/{job_id}")

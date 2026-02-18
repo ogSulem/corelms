@@ -51,6 +51,7 @@ def generate_quiz_questions_hf_router(
     debug_out: dict[str, Any] | None = None,
     base_url: str | None = None,
     model: str | None = None,
+    timeout_read_seconds: float | None = None,
 ) -> list[HfQuestion]:
     if not settings.hf_router_enabled:
         # Allow runtime enabling via Redis.
@@ -113,9 +114,10 @@ def generate_quiz_questions_hf_router(
     url = base + "/chat/completions"
 
     try:
+        read_s = float(timeout_read_seconds) if timeout_read_seconds is not None else float(settings.hf_router_timeout_read)
         timeout = httpx.Timeout(
             connect=float(settings.hf_router_timeout_connect),
-            read=float(settings.hf_router_timeout_read),
+            read=read_s,
             write=float(settings.hf_router_timeout_write),
             pool=3.0,
         )

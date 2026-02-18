@@ -22,6 +22,7 @@ def generate_quiz_questions_ai(
     backoff_seconds: float = 0.8,
     debug_out: dict[str, Any] | None = None,
     provider_order: list[str] | None = None,
+    time_budget_seconds: float | None = None,
 ) -> list[Any]:
     """Unified LLM handler with fallback.
 
@@ -69,6 +70,27 @@ def generate_quiz_questions_ai(
 
     errors: list[str] = []
 
+    t_start = time.monotonic()
+    budget_s = float(time_budget_seconds) if time_budget_seconds is not None else None
+    if debug_out is not None:
+        debug_out.setdefault("time_budget_seconds", budget_s)
+
+    def _remaining_s() -> float | None:
+        if budget_s is None:
+            return None
+        return max(0.0, budget_s - (time.monotonic() - t_start))
+
+    def _budget_exhausted() -> bool:
+        rem = _remaining_s()
+        return rem is not None and rem <= 0.0
+
+    def _cap_tries_by_budget(*, rem_s: float | None, per_attempt_s: float, max_tries_in: int) -> int:
+        if rem_s is None:
+            return max_tries_in
+        # Reserve small overhead per attempt (json parsing, retries, etc.)
+        cost = max(1.0, float(per_attempt_s) + 1.0)
+        return max(1, min(int(max_tries_in), int(rem_s // cost) + 1))
+
     want = int(n_questions or 0)
     min_q = int(min_questions) if min_questions is not None else want
     min_q = max(1, min(min_q, want if want > 0 else min_q))
@@ -76,6 +98,10 @@ def generate_quiz_questions_ai(
 
     for provider in order:
         try:
+            if _budget_exhausted():
+                errors.append("budget_exhausted")
+                break
+
             if provider in {"openrouter", "or"}:
                 if not (bool(settings.openrouter_enabled) or bool(runtime_or_enabled)):
                     continue
@@ -97,8 +123,23 @@ def generate_quiz_questions_ai(
                     "Никаких лишних ключей. correct_answer строго одна буква A|B|C|D."
                 )
 
-                for attempt in range(1, max_tries + 1):
+                # Each OpenRouter attempt may take up to its read timeout.
+                # Cap attempts so we stay within the overall budget.
+                rem = _remaining_s()
+                per_attempt = float(getattr(settings, "openrouter_timeout_read", 15.0) or 15.0)
+                cap_tries = _cap_tries_by_budget(rem_s=rem, per_attempt_s=per_attempt, max_tries_in=max_tries)
+                for attempt in range(1, cap_tries + 1):
+                    if _budget_exhausted():
+                        last_err = "budget_exhausted"
+                        break
                     local_debug = {}
+                    rem_call = _remaining_s()
+                    dyn_read = None
+                    try:
+                        if rem_call is not None:
+                            dyn_read = max(3.0, min(per_attempt, float(rem_call) - 1.0))
+                    except Exception:
+                        dyn_read = None
                     out = generate_quiz_questions_openrouter(
                         title=title,
                         text=text,
@@ -108,6 +149,7 @@ def generate_quiz_questions_ai(
                         model=runtime_or_model,
                         system_prompt=(strict_prompt if attempt >= 2 else None),
                         temperature=(0.2 if attempt >= 2 else None),
+                        timeout_read_seconds=dyn_read,
                     )
                     if out and len(out) >= min_q:
                         _set_debug("provider", "openrouter")
@@ -132,10 +174,27 @@ def generate_quiz_questions_ai(
                 continue
 
             if provider == "ollama":
+                rem = _remaining_s()
+                # Ollama can block up to its internal timeouts. Skip if we don't have enough budget.
+                per_attempt = 35.0
+                try:
+                    per_attempt = float(getattr(settings, "ollama_timeout_read", 35.0) or 35.0)
+                except Exception:
+                    per_attempt = 35.0
+                if rem is not None and rem < max(6.0, per_attempt * 0.75):
+                    errors.append("ollama:skipped_budget")
+                    continue
                 eff_ollama_enabled = bool(settings.ollama_enabled) if runtime_ollama_enabled is None else bool(runtime_ollama_enabled)
                 if not eff_ollama_enabled:
                     continue
                 local_debug: dict[str, object] = {}
+                rem_call = _remaining_s()
+                dyn_read = None
+                try:
+                    if rem_call is not None:
+                        dyn_read = max(4.0, min(per_attempt, float(rem_call) - 1.0))
+                except Exception:
+                    dyn_read = None
                 out = generate_quiz_questions_ollama(
                     title=title,
                     text=text,
@@ -144,6 +203,7 @@ def generate_quiz_questions_ai(
                     enabled=eff_ollama_enabled,
                     base_url=runtime_ollama_base_url,
                     model=runtime_ollama_model,
+                    timeout_read_seconds=dyn_read,
                 )
                 if out:
                     _set_debug("provider", "ollama")
@@ -153,9 +213,21 @@ def generate_quiz_questions_ai(
                 continue
 
             if provider in {"hf", "hf_router"}:
+                rem = _remaining_s()
+                per_attempt = float(getattr(settings, "hf_router_timeout_read", 12.0) or 12.0)
+                if rem is not None and rem < max(4.0, per_attempt * 0.75):
+                    errors.append("hf_router:skipped_budget")
+                    continue
                 if not (bool(settings.hf_router_enabled) or bool(runtime_hf_enabled)):
                     continue
                 local_debug = {}
+                rem_call = _remaining_s()
+                dyn_read = None
+                try:
+                    if rem_call is not None:
+                        dyn_read = max(3.0, min(per_attempt, float(rem_call) - 1.0))
+                except Exception:
+                    dyn_read = None
                 out = generate_quiz_questions_hf_router(
                     title=title,
                     text=text,
@@ -163,6 +235,7 @@ def generate_quiz_questions_ai(
                     debug_out=local_debug,
                     base_url=runtime_hf_base_url,
                     model=runtime_hf_model,
+                    timeout_read_seconds=dyn_read,
                 )
                 if out:
                     _set_debug("provider", "hf_router")

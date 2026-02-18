@@ -395,6 +395,8 @@ export default function AdminPanelClient() {
         importBatchJobIds: Array.from(new Set(importBatchJobIdsRef.current || [])).filter(Boolean),
         clientImportStage,
         clientImportFileName,
+        importPendingNames,
+        importPendingCount,
         ts: Date.now(),
       };
       window.localStorage.setItem(IMPORT_STATE_KEY, JSON.stringify(next));
@@ -456,6 +458,11 @@ export default function AdminPanelClient() {
 
   const [clientImportStage, setClientImportStage] = useState<string>("");
   const [clientImportFileName, setClientImportFileName] = useState<string>("");
+
+  const importQueuePendingRef = useRef<File[]>([]);
+  const importRunnerActiveRef = useRef<boolean>(false);
+  const [importPendingCount, setImportPendingCount] = useState<number>(0);
+  const [importPendingNames, setImportPendingNames] = useState<string[]>([]);
 
   const [s3UploadProgress, setS3UploadProgress] = useState<
     | {
@@ -933,7 +940,22 @@ export default function AdminPanelClient() {
           method: "POST",
         }
       );
-      void res;
+      const jid = String((res as any)?.job_id || "").trim();
+      if (jid) {
+        setSelectedJobId(jid);
+        setJobStatus("queued");
+        setJobStage("queued");
+        setJobStageAt("");
+        setJobStageStartedAt("");
+        setJobStageDurations(null);
+        setJobStartedAt("");
+        setJobDetail("");
+        setJobError("");
+        setJobErrorCode("");
+        setJobErrorHint("");
+        setJobResult(null);
+        setJobPanelOpen(true);
+      }
       await Promise.all([
         loadRegenHistory(true),
         loadAdminModules(),
@@ -1235,6 +1257,18 @@ export default function AdminPanelClient() {
   }, []);
 
   useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      const stg = String(clientImportStage || "").trim().toLowerCase();
+      const uploading = stg === "upload_s3" || stg === "enqueue" || !!importRunnerActiveRef.current || !!importBusy;
+      if (!uploading) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [clientImportStage, importBusy]);
+
+  useEffect(() => {
     try {
       const raw = window.localStorage.getItem(IMPORT_STATE_KEY);
       if (!raw) return;
@@ -1248,6 +1282,26 @@ export default function AdminPanelClient() {
       if (typeof st?.jobPanelOpen === "boolean") setJobPanelOpen(!!st.jobPanelOpen);
       if (st?.clientImportStage) setClientImportStage(String(st.clientImportStage || ""));
       if (st?.clientImportFileName) setClientImportFileName(String(st.clientImportFileName || ""));
+      if (Array.isArray(st?.importPendingNames)) {
+        const names = st.importPendingNames.map((x: any) => String(x || "").trim()).filter(Boolean);
+        setImportPendingNames(names);
+        setImportPendingCount(typeof st?.importPendingCount === "number" ? Math.max(0, st.importPendingCount) : names.length);
+      }
+
+      // Upload cannot resume after reload. If it was in progress, make it explicit.
+      const stg = String(st?.clientImportStage || "").trim().toLowerCase();
+      if (stg === "upload_s3") {
+        setClientImportStage("failed");
+        setS3UploadProgress(null);
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: {
+              title: "UPLOAD ПРЕРВАН",
+              description: "Страница была перезагружена во время загрузки в STORAGE. Повторите загрузку ZIP.",
+            },
+          })
+        );
+      }
     } catch {
       // ignore
     }
@@ -1296,7 +1350,7 @@ export default function AdminPanelClient() {
     let delayMs = 1000;
     const tick = async () => {
       try {
-        const s = await apiFetch<any>(`/admin/jobs/${encodeURIComponent(selectedJobId)}`);
+        const s = await apiFetch<any>(`/admin/jobs/${encodeURIComponent(selectedJobId)}`, { timeoutMs: 60_000 } as any);
         if (!alive) return;
         setJobStatus(String(s?.status || ""));
         setJobStage(String(s?.stage || ""));
@@ -1328,7 +1382,10 @@ export default function AdminPanelClient() {
           try {
             const maybeRegenJobId = String((s?.result as any)?.regen_job_id || "").trim();
             const hasImportReport = !!(s?.result as any)?.report;
-            if (st === "finished" && hasImportReport && maybeRegenJobId && maybeRegenJobId !== selectedJobId) {
+            const stageNow = String(s?.stage || "").trim().toLowerCase();
+            const cancelRequested = Boolean((s as any)?.cancel_requested);
+            const canceled = st === "canceled" || stageNow === "canceled";
+            if (!canceled && !cancelRequested && st === "finished" && hasImportReport && maybeRegenJobId && maybeRegenJobId !== selectedJobId) {
               setSelectedJobId(maybeRegenJobId);
               setJobStatus("queued");
               setJobStage("queued");
@@ -1343,6 +1400,17 @@ export default function AdminPanelClient() {
               setJobResult(null);
               setJobPanelOpen(true);
               saveImportState({ followup_regen_job_id: maybeRegenJobId });
+            }
+          } catch {
+            // ignore
+          }
+
+          // If current job is terminal and we didn't switch, pick next active job if any.
+          try {
+            const pick = (importQueue || [])[0]?.job_id || (regenQueue || [])[0]?.job_id || "";
+            const nextId = String(pick || "").trim();
+            if (nextId && nextId !== String(selectedJobId || "").trim()) {
+              setSelectedJobId(nextId);
             }
           } catch {
             // ignore
@@ -1365,6 +1433,15 @@ export default function AdminPanelClient() {
       if (timer) window.clearTimeout(timer);
     };
   }, [jobPanelOpen, selectedJobId, selectedQuizId]);
+
+  useEffect(() => {
+    if (!jobPanelOpen) return;
+    if (String(selectedJobId || "").trim()) return;
+    const pick = (importQueue || [])[0]?.job_id || (regenQueue || [])[0]?.job_id || "";
+    const jid = String(pick || "").trim();
+    if (!jid) return;
+    setSelectedJobId(jid);
+  }, [jobPanelOpen, selectedJobId, importQueue, regenQueue]);
 
   useEffect(() => {
     (async () => {
@@ -1440,14 +1517,55 @@ export default function AdminPanelClient() {
     URL.revokeObjectURL(url);
   }
 
-  async function startImport() {
-    if (!importFiles.length) {
+  async function startImport(filesOverride?: File[]) {
+    const picked = Array.isArray(filesOverride) ? filesOverride : importFiles;
+    if (!picked.length) {
       setError("ВЫБЕРИТЕ ZIP-ФАЙЛЫ");
       return;
     }
 
-    const files = [...importFiles];
-    setImportFiles([]);
+    // Queue imports instead of clobbering the current run.
+    // Product rule: max 5 total imports at a time (1 running + up to 4 pending).
+    if (!filesOverride && (importRunnerActiveRef.current || importBusy)) {
+      const maxTotal = 5;
+      const maxPending = Math.max(0, maxTotal - 1);
+      const pending = importQueuePendingRef.current || [];
+      const canAdd = Math.max(0, maxPending - pending.length);
+      const toAdd = picked.slice(0, canAdd);
+      if (toAdd.length) {
+        importQueuePendingRef.current = pending.concat(toAdd);
+        setImportPendingCount(importQueuePendingRef.current.length);
+        setImportPendingNames(importQueuePendingRef.current.map((f) => String((f as any)?.name || "")).filter(Boolean));
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: {
+              title: "ИМПОРТ В ОЧЕРЕДЬ",
+              description: `ДОБАВЛЕНО: ${toAdd.length} · В ОЧЕРЕДИ: ${importQueuePendingRef.current.length}`,
+            },
+          })
+        );
+      }
+      if (toAdd.length < picked.length) {
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: {
+              title: "ЛИМИТ ОЧЕРЕДИ ИМПОРТА",
+              description: "МОЖНО ДО 5 ИМПОРТОВ ОДНОВРЕМЕННО (1 В РАБОТЕ + 4 В ОЧЕРЕДИ)",
+            },
+          })
+        );
+      }
+      setImportFiles([]);
+      try {
+        if (importInputRef.current) importInputRef.current.value = "";
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    const files = [...picked];
+    if (!filesOverride) setImportFiles([]);
 
     try {
       if (importInputRef.current) {
@@ -1475,6 +1593,7 @@ export default function AdminPanelClient() {
     );
 
     try {
+      importRunnerActiveRef.current = true;
       setImportBusy(true);
       setError(null);
 
@@ -1849,7 +1968,19 @@ export default function AdminPanelClient() {
       setError(msg || "НЕ УДАЛОСЬ ЗАПУСТИТЬ ИМПОРТ");
       setClientImportStage("failed");
     } finally {
+      importRunnerActiveRef.current = false;
       setImportBusy(false);
+
+      // Run next queued batch automatically.
+      if (!filesOverride) {
+        const next = (importQueuePendingRef.current || []).slice();
+        importQueuePendingRef.current = [];
+        setImportPendingCount(0);
+        setImportPendingNames([]);
+        if (next.length) {
+          window.setTimeout(() => void startImport(next), 50);
+        }
+      }
     }
   }
 
@@ -2220,6 +2351,8 @@ export default function AdminPanelClient() {
             setImportFiles={setImportFiles}
             importStageLabel={importStageLabel}
             s3UploadProgress={s3UploadProgress}
+            importPendingCount={importPendingCount}
+            importPendingNames={importPendingNames}
             importEnqueueProgress={importEnqueueProgress}
             importBatch={importBatch}
             importBusy={importBusy}

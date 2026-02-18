@@ -183,16 +183,33 @@ def import_module_from_dir(
     title_override: str | None = None,
     report_out: dict | None = None,
     generate_questions: bool = True,
+    module_id_override: str | None = None,
 ) -> uuid.UUID:
     ensure_bucket_exists()
     s3 = get_s3_client()
 
     module_title = (title_override or module_dir.name).strip() or "Модуль"
 
-    # Commercial-grade behavior: do not allow silent duplicates.
-    existing = db.scalar(select(Module).where(func.lower(Module.title) == func.lower(module_title)))
-    if existing is not None:
-        raise ValueError(f"module title already exists: {module_title}")
+    m: Module | None = None
+    if str(module_id_override or "").strip():
+        try:
+            mid = uuid.UUID(str(module_id_override))
+        except Exception as e:
+            raise ValueError(f"invalid module_id_override: {module_id_override}") from e
+        m = db.scalar(select(Module).where(Module.id == mid))
+        if m is None:
+            raise ValueError(f"module_id_override not found: {module_id_override}")
+        # Update stub metadata to match inferred title.
+        m.title = module_title
+        m.description = f"Материалы модуля «{module_title}»."
+        m.is_active = False
+        db.add(m)
+        db.flush()
+    else:
+        # Commercial-grade behavior: do not allow silent duplicates.
+        existing = db.scalar(select(Module).where(func.lower(Module.title) == func.lower(module_title)))
+        if existing is not None:
+            raise ValueError(f"module title already exists: {module_title}")
 
     report: dict[str, object] | None = None
     if report_out is not None:
@@ -209,24 +226,25 @@ def import_module_from_dir(
         report.setdefault("ollama_enabled", bool(settings.ollama_enabled))
         report.setdefault("ollama_used", False)
 
-    # Product rule: final exam questions are generated at runtime on /quizzes/{id}/start.
-    # We still keep a stable final_quiz_id so the UI/routes can reference the final exam.
-    final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
-    db.add(final_quiz)
-    db.flush()
+    if m is None:
+        # Product rule: final exam questions are generated at runtime on /quizzes/{id}/start.
+        # We still keep a stable final_quiz_id so the UI/routes can reference the final exam.
+        final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
+        db.add(final_quiz)
+        db.flush()
 
-    m = Module(
-        title=module_title,
-        description=f"Материалы модуля «{module_title}».",
-        difficulty=1,
-        category="Обучение",
-        # Product rule: imported module is hidden from learners until quizzes are fully generated.
-        # We will auto-activate at the end if import didn't flag needs_regen questions.
-        is_active=False,
-        final_quiz_id=final_quiz.id,
-    )
-    db.add(m)
-    db.flush()
+        m = Module(
+            title=module_title,
+            description=f"Материалы модуля «{module_title}».",
+            difficulty=1,
+            category="Обучение",
+            # Product rule: imported module is hidden from learners until quizzes are fully generated.
+            # We will auto-activate at the end if import didn't flag needs_regen questions.
+            is_active=False,
+            final_quiz_id=final_quiz.id,
+        )
+        db.add(m)
+        db.flush()
 
     log.info("module_importer: created module id=%s title=%s", str(m.id), module_title)
     print(f"module_importer: module created id={m.id} title={module_title}", flush=True)
