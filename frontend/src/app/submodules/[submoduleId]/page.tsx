@@ -759,9 +759,53 @@ export default function SubmodulePage() {
                 
                 <div className="prose max-w-none">
                   {theoryBlocks.length === 0 ? (
-                    <div className="whitespace-pre-wrap leading-relaxed text-zinc-700 text-base font-medium selection:bg-[#fe9900]/25">
-                      {submodule?.content || "Загрузка контента..."}
-                    </div>
+                    moduleAssets.length > 0 ? (
+                      <div className="rounded-[24px] border border-zinc-200 bg-white p-6">
+                        <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Материалы урока</div>
+                        <div className="mt-2 text-sm font-bold text-zinc-700">
+                          У этого модуля нет отдельных уроков с текстовой теорией. Материалы доступны файлами ниже.
+                        </div>
+                        <div className="mt-4 grid gap-3">
+                          {moduleAssets.map((a, idx) => (
+                            <div
+                              key={a.asset_id}
+                              className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-4"
+                            >
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className="shrink-0 text-[10px] font-black uppercase tracking-widest text-zinc-500 tabular-nums">
+                                    {String(idx + 1).padStart(2, "0")}
+                                  </span>
+                                  <div className="min-w-0 truncate text-[11px] font-black text-zinc-950 uppercase tracking-widest">
+                                    {displayAssetTitle((a as any).original_filename || "ФАЙЛ")}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => void onOpenInline(a as any)}
+                                  className="rounded-xl bg-[#fe9900]/10 border border-[#fe9900]/25 px-3 py-2 text-[9px] font-black text-[#284e13] uppercase tracking-widest hover:bg-[#fe9900] hover:text-zinc-950 transition-all active:scale-95"
+                                >
+                                  просмотр
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => void onDownload(a as any)}
+                                  className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50 transition-all active:scale-95"
+                                >
+                                  скачать
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="whitespace-pre-wrap leading-relaxed text-zinc-700 text-base font-medium selection:bg-[#fe9900]/25">
+                        {submodule?.content || "Загрузка контента..."}
+                      </div>
+                    )
                   ) : (
                     <div className="space-y-6">
                       {theoryBlocks.map((b, idx) =>

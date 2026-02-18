@@ -130,9 +130,25 @@ def _rebuild_final_quiz_from_lessons(*, db: Session, module: Module, final_quiz:
 
 def _select_final_question_ids_from_lessons(*, db: Session, module: Module) -> list[str]:
     subs = db.scalars(select(Submodule).where(Submodule.module_id == module.id).order_by(Submodule.order)).all()
+
+    # Product rule: final quiz should take up to 2 questions from EACH lesson submodule.
+    # We explicitly exclude the final submodule (the last one by order) because it represents the final test itself.
+    last_sub_id = None
+    try:
+        last_sub_id = db.scalar(
+            select(Submodule.id)
+            .where(Submodule.module_id == module.id)
+            .order_by(Submodule.order.desc())
+            .limit(1)
+        )
+    except Exception:
+        last_sub_id = None
+
     rng = random.Random(f"final_open:{module.id}:{uuid.uuid4()}")
     selected: list[uuid.UUID] = []
     for sub in subs:
+        if last_sub_id is not None and sub.id == last_sub_id:
+            continue
         if not sub.quiz_id:
             continue
         items = list(db.scalars(select(Question.id).where(Question.quiz_id == sub.quiz_id).order_by(Question.id)))
@@ -141,9 +157,8 @@ def _select_final_question_ids_from_lessons(*, db: Session, module: Module) -> l
             continue
         rng.shuffle(pool)
         take = pool[:2]
-        for qid in take:
-            if qid is not None:
-                selected.append(qid)
+        selected.extend([qid for qid in take if qid is not None])
+
     rng.shuffle(selected)
     return [str(qid) for qid in selected]
 
@@ -283,11 +298,15 @@ def start_quiz(
             singles.append(q)
 
     selected: list[Question] = []
-    for _, group in grouped.items():
-        selected.append(random.choice(group))
-    selected.extend(singles)
-
-    random.shuffle(selected)
+    if is_final_quiz:
+        # For final quizzes we must preserve the full question set (2 per lesson submodule).
+        selected = list(questions)
+        random.shuffle(selected)
+    else:
+        for _, group in grouped.items():
+            selected.append(random.choice(group))
+        selected.extend(singles)
+        random.shuffle(selected)
 
     payload = {
         "question_ids": [str(q.id) for q in selected],
@@ -353,9 +372,17 @@ def submit_quiz(
     if quiz is None:
         raise HTTPException(status_code=404, detail="quiz not found")
 
-    r = get_redis()
+    is_final_quiz = _is_final_quiz(quiz)
+
+    r = None
     key = _session_key(str(user.id), str(quiz.id))
-    raw = r.get(key)
+    raw = None
+    try:
+        r = get_redis()
+        raw = r.get(key)
+    except Exception:
+        r = None
+        raw = None
     question_ids: list[str] = []
     started_at: int | None = None
     time_spent: int | None = None
@@ -389,10 +416,29 @@ def submit_quiz(
         m = db.scalar(select(Module).where(Module.final_quiz_id == quiz.id))
         if m is None:
             raise HTTPException(status_code=404, detail="module not found")
-        allowed_quiz_ids = list(
-            db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == m.id).where(Submodule.quiz_id.is_not(None))).all()
-        )
-        allowed_quiz_ids = [qid for qid in allowed_quiz_ids if qid is not None]
+        # Keep consistent with /start: final quiz is built from LESSON submodules only (exclude last/final submodule).
+        last_sub_id = None
+        try:
+            last_sub_id = db.scalar(
+                select(Submodule.id)
+                .where(Submodule.module_id == m.id)
+                .order_by(Submodule.order.desc())
+                .limit(1)
+            )
+        except Exception:
+            last_sub_id = None
+
+        rows = db.execute(
+            select(Submodule.id, Submodule.quiz_id)
+            .where(Submodule.module_id == m.id)
+            .where(Submodule.quiz_id.is_not(None))
+        ).all()
+        allowed_quiz_ids = []
+        for sid, qid in rows:
+            if last_sub_id is not None and sid == last_sub_id:
+                continue
+            if qid is not None:
+                allowed_quiz_ids.append(qid)
         if not allowed_quiz_ids:
             raise HTTPException(status_code=409, detail="final quiz has no source quizzes")
         questions = list(db.scalars(select(Question).where(Question.id.in_(parsed_question_ids), Question.quiz_id.in_(allowed_quiz_ids))))
@@ -488,7 +534,11 @@ def submit_quiz(
 
     db.commit()
 
-    r.delete(key)
+    try:
+        if r is not None:
+            r.delete(key)
+    except Exception:
+        pass
 
     return QuizSubmitResponse(
         quiz_id=str(quiz.id),

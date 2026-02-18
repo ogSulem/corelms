@@ -457,6 +457,20 @@ export default function AdminPanelClient() {
   const [clientImportStage, setClientImportStage] = useState<string>("");
   const [clientImportFileName, setClientImportFileName] = useState<string>("");
 
+  const [s3UploadProgress, setS3UploadProgress] = useState<
+    | {
+        loaded: number;
+        total: number;
+        startedAtMs: number;
+        lastAtMs: number;
+        lastLoaded: number;
+        speedBps: number;
+        etaSeconds: number | null;
+        percent: number;
+      }
+    | null
+  >(null);
+
   const [regenHistory, setRegenHistory] = useState<any[]>([]);
   const [regenHistoryLoading, setRegenHistoryLoading] = useState(false);
   const [regenQueueModalOpen, setRegenQueueModalOpen] = useState(false);
@@ -905,6 +919,11 @@ export default function AdminPanelClient() {
     if (!sid) return;
     try {
       setError(null);
+
+      // UX: the unified job panel lives in the Import tab.
+      setTab("import");
+      setJobPanelOpen(true);
+
       const forceAi = window.confirm(
         "ФОРСИРОВАТЬ AI ДЛЯ ЭТОГО УРОКА?\n\nЕсли включить — вопросы будут только от нейронки. Если AI не сработает — задача упадёт с ошибкой."
       );
@@ -1059,6 +1078,10 @@ export default function AdminPanelClient() {
     if (!ok) return;
     try {
       setError(null);
+
+      // UX: the unified job panel lives in the Import tab.
+      setTab("import");
+      setJobPanelOpen(true);
 
       const forceAi = window.confirm(
         "ФОРСИРОВАТЬ AI?\n\nЕсли включить — вопросы будут только от нейронки. Если AI недоступен или формат ответа неверный — задача упадёт с ошибкой (без heuristic)."
@@ -1463,6 +1486,106 @@ export default function AdminPanelClient() {
         }
       };
 
+      const uploadS3WithProgress = async (url: string, file: File, ac: AbortController) => {
+        setS3UploadProgress({
+          loaded: 0,
+          total: Math.max(0, Number((file as any)?.size || 0)),
+          startedAtMs: Date.now(),
+          lastAtMs: Date.now(),
+          lastLoaded: 0,
+          speedBps: 0,
+          etaSeconds: null,
+          percent: 0,
+        });
+
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          let done = false;
+
+          const finish = (err?: unknown) => {
+            if (done) return;
+            done = true;
+            try {
+              ac.signal.removeEventListener("abort", onAbort);
+            } catch {
+              // ignore
+            }
+            if (err) reject(err);
+            else resolve();
+          };
+
+          const onAbort = () => {
+            try {
+              xhr.abort();
+            } catch {
+              // ignore
+            }
+            finish(new DOMException("Aborted", "AbortError"));
+          };
+
+          try {
+            ac.signal.addEventListener("abort", onAbort);
+          } catch {
+            // ignore
+          }
+
+          xhr.open("PUT", String(url || ""), true);
+          xhr.upload.onprogress = (evt) => {
+            if (!evt || !evt.lengthComputable) return;
+            const now = Date.now();
+            const loaded = Math.max(0, Number(evt.loaded || 0));
+            const total = Math.max(1, Number(evt.total || 1));
+            setS3UploadProgress((prev) => {
+              const startedAtMs = prev?.startedAtMs ?? now;
+              const lastAtMs = prev?.lastAtMs ?? startedAtMs;
+              const lastLoaded = prev?.lastLoaded ?? 0;
+              const dt = Math.max(1, now - lastAtMs);
+              const dbytes = Math.max(0, loaded - lastLoaded);
+              const instSpeed = (dbytes * 1000) / dt;
+              const speedBps = prev ? 0.7 * prev.speedBps + 0.3 * instSpeed : instSpeed;
+              const remain = Math.max(0, total - loaded);
+              const etaSeconds = speedBps > 1 ? Math.round(remain / speedBps) : null;
+              const percent = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
+              return {
+                loaded,
+                total,
+                startedAtMs,
+                lastAtMs: now,
+                lastLoaded: loaded,
+                speedBps,
+                etaSeconds,
+                percent,
+              };
+            });
+          };
+
+          xhr.onerror = () => {
+            finish(new Error("S3 upload failed: network error"));
+          };
+          xhr.onabort = () => {
+            finish(new DOMException("Aborted", "AbortError"));
+          };
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              setS3UploadProgress((prev) => {
+                if (!prev) return prev;
+                return { ...prev, loaded: prev.total, percent: 100, etaSeconds: 0 };
+              });
+              finish();
+              return;
+            }
+            const body = String(xhr.responseText || "").replace(/\s+/g, " ").slice(0, 320);
+            finish(new Error(`S3 upload failed: HTTP ${xhr.status}${body ? ` body: ${body}` : ""}`));
+          };
+
+          try {
+            xhr.send(file);
+          } catch (e) {
+            finish(e);
+          }
+        });
+      };
+
       importBatchJobIdsRef.current = [];
       importCancelRequestedRef.current = false;
       setJobResult(null);
@@ -1500,6 +1623,7 @@ export default function AdminPanelClient() {
         importUploadFilenameRef.current = String(f?.name || "");
         importUploadObjectKeyRef.current = "";
         importUploadAbortRef.current = null;
+        setS3UploadProgress(null);
 
         const title = deriveTitleFromZipName(String(f?.name || ""));
 
@@ -1568,16 +1692,9 @@ export default function AdminPanelClient() {
             setClientImportStage("upload_s3");
             const ac = new AbortController();
             importUploadAbortRef.current = ac;
-            let up: Response | null = null;
             try {
               keepAlive();
-              up = await fetch(String(presign?.upload_url || ""), {
-                method: "PUT",
-                body: f,
-                signal: ac.signal,
-                // Do not set Content-Type explicitly: it can break some S3-compatible presigned URLs
-                // (SignatureDoesNotMatch) and also triggers stricter CORS.
-              });
+              await uploadS3WithProgress(String(presign?.upload_url || ""), f, ac);
               keepAlive();
             } catch (e) {
               const objKey = String((presign as any)?.object_key || "").trim();
@@ -1598,25 +1715,7 @@ export default function AdminPanelClient() {
               );
             }
 
-            if (!up.ok) {
-              const objKey = String((presign as any)?.object_key || "").trim();
-              const fn = String(f?.name || "module.zip");
-              const t = await up.text().catch(() => "");
-              const snip = (t || "").replace(/\s+/g, " ").slice(0, 320);
-              const hint =
-                "Проверь, что для bucket разрешён CORS PUT, и что presigned URL подписан на правильный host (S3_PUBLIC_ENDPOINT_URL).";
-              throw new Error(
-                [
-                  `S3 upload failed: HTTP ${up.status}`,
-                  fn ? `file: ${fn}` : "",
-                  objKey ? `object_key: ${objKey}` : "",
-                  snip ? `body: ${snip}` : "",
-                  hint,
-                ]
-                  .filter(Boolean)
-                  .join("\n")
-              );
-            }
+            setS3UploadProgress(null);
           }
 
           if (importCancelRequestedRef.current) {
@@ -2120,6 +2219,7 @@ export default function AdminPanelClient() {
             importInputRef={importInputRef}
             setImportFiles={setImportFiles}
             importStageLabel={importStageLabel}
+            s3UploadProgress={s3UploadProgress}
             importEnqueueProgress={importEnqueueProgress}
             importBatch={importBatch}
             importBusy={importBusy}

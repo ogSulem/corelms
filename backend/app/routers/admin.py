@@ -2657,12 +2657,46 @@ def admin_user_history(
         except Exception:
             return None
 
+    def _ua_device_label(ua: str) -> str | None:
+        s = str(ua or "").strip()
+        if not s:
+            return None
+
+        low = s.lower()
+        os = ""
+        if "windows" in low:
+            os = "Windows"
+        elif "mac os x" in low or "macintosh" in low:
+            os = "macOS"
+        elif "android" in low:
+            os = "Android"
+        elif "iphone" in low or "ipad" in low or "ios" in low:
+            os = "iOS"
+        elif "linux" in low:
+            os = "Linux"
+
+        browser = ""
+        if "edg/" in low:
+            browser = "Edge"
+        elif "opr/" in low or "opera" in low:
+            browser = "Opera"
+        elif "chrome/" in low and "chromium" not in low and "edg/" not in low and "opr/" not in low:
+            browser = "Chrome"
+        elif "safari/" in low and "chrome/" not in low:
+            browser = "Safari"
+        elif "firefox/" in low:
+            browser = "Firefox"
+
+        label = " ".join([x for x in [os, browser] if x])
+        return label or None
+
     def _sec_event_display(e: SecurityAuditEvent) -> tuple[str, str | None]:
         meta = _try_parse_meta(e.meta)
         new_device = bool((meta or {}).get("new_device"))
         new_ip = bool((meta or {}).get("new_ip"))
         ip = str(e.ip or (meta or {}).get("ip") or "").strip()
         ua = str((meta or {}).get("user_agent") or "").strip()
+        dev = _ua_device_label(ua)
 
         title = "Вход в аккаунт"
         if new_device and new_ip:
@@ -2675,8 +2709,8 @@ def admin_user_history(
         parts: list[str] = []
         if ip:
             parts.append(f"IP: {ip}")
-        if ua:
-            parts.append(f"UA: {ua}")
+        if dev:
+            parts.append(f"DEVICE: {dev}")
         subtitle = " · ".join(parts) if parts else None
         return title, subtitle
 

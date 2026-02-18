@@ -76,6 +76,21 @@ export default function AccountPage() {
   const [loading, setLoading] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
 
+  const securitySummary = useMemo(() => {
+    const sec = (historyAll || []).filter((x) => x.kind === "security");
+    const latest = sec.length ? sec[0] : null;
+    const latestSubtitle = String(latest?.subtitle || "").trim();
+
+    const newIpCount = sec.filter((x) => String(x.title || "").toLowerCase().includes("нового ip")).length;
+    const newDevCount = sec.filter((x) => String(x.title || "").toLowerCase().includes("нового устройства")).length;
+
+    return {
+      latestSubtitle,
+      newIpCount,
+      newDevCount,
+    };
+  }, [historyAll]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -140,9 +155,28 @@ export default function AccountPage() {
         <div className="mb-16">
           <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Профиль</div>
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-8">
-            <h1 className="text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-none">
-              {profile?.name || "ЗАГРУЗКА..."}
-            </h1>
+            <div className="min-w-0">
+              <h1 className="text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-none truncate">
+                {profile?.name || "ЗАГРУЗКА..."}
+              </h1>
+              {securitySummary.latestSubtitle ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <div className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-700">
+                    {securitySummary.latestSubtitle}
+                  </div>
+                  {securitySummary.newIpCount > 0 ? (
+                    <div className="rounded-full border border-[#fe9900]/25 bg-[#fe9900]/10 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-900">
+                      НОВЫЙ IP · {securitySummary.newIpCount}
+                    </div>
+                  ) : null}
+                  {securitySummary.newDevCount > 0 ? (
+                    <div className="rounded-full border border-[#fe9900]/25 bg-[#fe9900]/10 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-900">
+                      НОВОЕ УСТРОЙСТВО · {securitySummary.newDevCount}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
           <p className="mt-4 text-xl text-zinc-500 font-medium uppercase tracking-tight">
             {profile?.role === "admin" ? "АДМИНИСТРАТОР" : "СОТРУДНИК"} {profile?.position ? `· ${profile.position}` : ""}

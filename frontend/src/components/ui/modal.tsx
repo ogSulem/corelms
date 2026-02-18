@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 
 import { cn } from "@/lib/cn";
 
@@ -30,7 +31,7 @@ export function Modal({
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
       <button
         type="button"
@@ -56,6 +57,7 @@ export function Modal({
         </div>
         {footer ? <div className="shrink-0 px-8 py-6 border-t border-zinc-200">{footer}</div> : null}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

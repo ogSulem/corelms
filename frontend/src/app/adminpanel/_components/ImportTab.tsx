@@ -10,6 +10,13 @@ interface ImportTabProps {
   importInputRef: React.RefObject<HTMLInputElement | null>;
   setImportFiles: (files: File[]) => void;
   importStageLabel: string;
+  s3UploadProgress?: {
+    loaded: number;
+    total: number;
+    speedBps: number;
+    etaSeconds: number | null;
+    percent: number;
+  } | null;
   importEnqueueProgress: { total: number; done: number } | null;
   importBatch: { total: number; done: number } | null;
   importBusy: boolean;
@@ -66,6 +73,7 @@ export function ImportTab(props: ImportTabProps) {
     importInputRef,
     setImportFiles,
     importStageLabel,
+    s3UploadProgress,
     importEnqueueProgress,
     importBatch,
     importBusy,
@@ -107,6 +115,21 @@ export function ImportTab(props: ImportTabProps) {
     selectedAdminModuleQuality,
     jobResult,
   } = props;
+
+  const s3Label = useMemo(() => {
+    const p = s3UploadProgress;
+    if (!p) return null;
+    const mb = (n: number) => Math.max(0, n) / (1024 * 1024);
+    const speed = p.speedBps > 1 ? `${mb(p.speedBps).toFixed(1)} MB/s` : "—";
+    const eta = typeof p.etaSeconds === "number" ? `${p.etaSeconds}s` : "—";
+    return {
+      percent: p.percent,
+      loadedMb: mb(p.loaded).toFixed(1),
+      totalMb: mb(p.total).toFixed(1),
+      speed,
+      eta,
+    };
+  }, [s3UploadProgress]);
 
   type PipelineKind = "import" | "regen";
   type PipelineItem = {
@@ -329,6 +352,23 @@ export function ImportTab(props: ImportTabProps) {
                 </button>
               </div>
             </div>
+
+            {String(clientImportStage || "").trim().toLowerCase() === "upload_s3" && s3Label ? (
+              <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-700">STORAGE UPLOAD</div>
+                  <div className="text-[10px] font-black tabular-nums text-zinc-900">{s3Label.percent}%</div>
+                </div>
+                <div className="mt-2 h-2 w-full rounded-full bg-white border border-zinc-200 overflow-hidden">
+                  <div className="h-full bg-[#fe9900] transition-all" style={{ width: `${s3Label.percent}%` }} />
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">{s3Label.loadedMb} / {s3Label.totalMb} MB</div>
+                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">{s3Label.speed}</div>
+                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">ETA {s3Label.eta}</div>
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-3 grid gap-2">
               {(pipelineActive || []).map((it) => {
