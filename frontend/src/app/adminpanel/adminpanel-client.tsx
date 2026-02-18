@@ -13,12 +13,14 @@ type Module = { id: string; title: string };
 import { DiagnosticsTab } from "./_components/DiagnosticsTab";
 import { UsersTab } from "./_components/UsersTab";
 import { ModulesTab } from "./_components/ModulesTab";
-import { ImportTab } from "./_components/ImportTab";
+import ImportTab from "./_components/ImportTab";
 
 export type RegenJobItem = {
   job_id: string;
   module_id?: string;
   module_title?: string;
+  submodule_id?: string;
+  submodule_title?: string;
   target_questions?: number;
   created_at?: string;
   status?: string;
@@ -326,28 +328,17 @@ export default function AdminPanelClient() {
   async function cancelImportJob(jobId: string) {
     const id = String(jobId || "").trim();
     if (!id) return;
-    const ok = window.confirm(
-      "Отменить импорт?\n\nОтмена доступна только пока задача в очереди. Если импорт уже в работе — отмена будет запрещена."
-    );
-    if (!ok) return;
     try {
-      setCancelBusy(true);
-      await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" } as any);
-      if (String(selectedJobId || "").trim() === id) {
-        setJobStage("canceled");
-        setJobStatus("canceled");
-      }
       window.dispatchEvent(
         new CustomEvent("corelms:toast", {
-          detail: { title: "ИМПОРТ ОТМЕНЁН", description: `JOB: ${id}` },
+          detail: { title: "ИМПОРТ НЕЛЬЗЯ ОТМЕНИТЬ", description: `JOB: ${id}` },
         })
       );
-      await Promise.all([loadImportQueue(50, true, false), loadAdminModules(), reloadModules()]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg || "НЕ УДАЛОСЬ ОТМЕНИТЬ ИМПОРТ");
     } finally {
-      setCancelBusy(false);
+      // no-op
     }
   }
 
@@ -454,6 +445,7 @@ export default function AdminPanelClient() {
   const importUploadAbortRef = useRef<AbortController | null>(null);
   const importUploadObjectKeyRef = useRef<string>("");
   const importUploadFilenameRef = useRef<string>("");
+  const importUploadMultipartRef = useRef<{ object_key: string; upload_id: string } | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [clientImportStage, setClientImportStage] = useState<string>("");
@@ -543,24 +535,78 @@ export default function AdminPanelClient() {
 
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
 
-  const activeRegenByModuleId = useMemo(() => {
+  const optimisticActiveModuleRegenRef = useRef<Record<string, { job_id: string; status: string; stage: string }>>({});
+  const optimisticActiveSubmoduleRegenRef = useRef<
+    Record<string, { job_id: string; status: string; stage: string; module_id: string }>
+  >({});
+
+  const activeModuleRegenByModuleId = useMemo(() => {
     const out: Record<string, { job_id: string; status: string; stage: string }> = {};
     for (const it of regenHistory || []) {
       const mid = String((it as any)?.module_id || "").trim();
       const jid = String((it as any)?.job_id || "").trim();
       const st = String((it as any)?.status || "").trim();
       const stage = String((it as any)?.stage || "").trim();
+      const sid = String((it as any)?.submodule_id || "").trim();
       if (!mid || !jid) continue;
+      if (sid) continue;
       const stl = st.toLowerCase();
       const stagel = stage.toLowerCase();
       const terminal = stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done";
       if (!terminal) out[mid] = { job_id: jid, status: st, stage };
     }
-    return out;
+    return { ...(optimisticActiveModuleRegenRef.current || {}), ...out };
+  }, [regenHistory]);
+
+  const activeSubmoduleRegenBySubmoduleId = useMemo(() => {
+    const out: Record<string, { job_id: string; status: string; stage: string; module_id: string }> = {};
+    for (const it of regenHistory || []) {
+      const mid = String((it as any)?.module_id || "").trim();
+      const sid = String((it as any)?.submodule_id || "").trim();
+      const jid = String((it as any)?.job_id || "").trim();
+      const st = String((it as any)?.status || "").trim();
+      const stage = String((it as any)?.stage || "").trim();
+      if (!sid || !jid) continue;
+      const stl = st.toLowerCase();
+      const stagel = stage.toLowerCase();
+      const terminal = stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done";
+      if (!terminal) out[sid] = { job_id: jid, status: st, stage, module_id: mid };
+    }
+    return { ...(optimisticActiveSubmoduleRegenRef.current || {}), ...out };
+  }, [regenHistory]);
+
+  useEffect(() => {
+    // Clear optimistic markers once we see the job in history as terminal.
+    try {
+      const rh = Array.isArray(regenHistory) ? regenHistory : [];
+
+      for (const [mid, j] of Object.entries(optimisticActiveModuleRegenRef.current || {})) {
+        const row = rh.find((it: any) => String(it?.job_id || it?.id || "").trim() === String(j?.job_id || "").trim());
+        if (!row) continue;
+        const stl = String(row?.status || "").toLowerCase();
+        const stagel = String(row?.stage || "").toLowerCase();
+        const terminal = stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done";
+        if (terminal) {
+          delete optimisticActiveModuleRegenRef.current[mid];
+        }
+      }
+
+      for (const [sid, j] of Object.entries(optimisticActiveSubmoduleRegenRef.current || {})) {
+        const row = rh.find((it: any) => String(it?.job_id || it?.id || "").trim() === String(j?.job_id || "").trim());
+        if (!row) continue;
+        const stl = String(row?.status || "").toLowerCase();
+        const stagel = String(row?.stage || "").toLowerCase();
+        const terminal = stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done";
+        if (terminal) {
+          delete optimisticActiveSubmoduleRegenRef.current[sid];
+        }
+      }
+    } catch {
+      // ignore
+    }
   }, [regenHistory]);
 
   const importLockedInfo = useMemo(() => {
-    const anyRegen = Object.keys(activeRegenByModuleId || {}).length > 0;
     const st = String(jobStatus || "");
     const stage = String(jobStage || "");
     const jobTerminal = st === "finished" || st === "failed" || stage === "canceled";
@@ -582,22 +628,21 @@ export default function AdminPanelClient() {
       return s.toUpperCase();
     })();
 
-    const locked = !!importBusy || importJobRunning || anyRegen;
+    const locked = !!importBusy || importJobRunning;
     let reason = "";
     if (!locked) return { locked: false, reason };
 
     if (importBusy) reason = "ИДЁТ ЗАПУСК ИМПОРТА";
     else if (importJobRunning) reason = `ИДЁТ ИМПОРТ: ${stageHuman}`;
-    else if (anyRegen) reason = "ИДЁТ РЕГЕН ТЕСТОВ";
     else reason = "СИСТЕМА ЗАНЯТА";
 
     return { locked: true, reason };
-  }, [activeRegenByModuleId, importBusy, jobPanelOpen, selectedJobId, jobStatus, jobStage]);
+  }, [importBusy, jobPanelOpen, selectedJobId, jobStatus, jobStage]);
 
   async function loadRegenHistory(silent: boolean = false) {
     try {
       if (!silent) setRegenHistoryLoading(true);
-      const res = await apiFetch<{ items: any[] }>(`/admin/regen-jobs?limit=20`);
+      const res = await apiFetch<{ items: any[] }>(`/admin/regen-jobs?limit=50`);
       const next = Array.isArray(res?.items) ? res.items : [];
       const sig = JSON.stringify(next);
       if (sig !== regenHistorySigRef.current) {
@@ -631,6 +676,8 @@ export default function AdminPanelClient() {
         job_id: jid,
         module_id: String((it as any)?.module_id || "") || undefined,
         module_title: String((it as any)?.module_title || "") || undefined,
+        submodule_id: String((it as any)?.submodule_id || "") || undefined,
+        submodule_title: String((it as any)?.submodule_title || "") || undefined,
         target_questions: typeof (it as any)?.target_questions === "number" ? (it as any).target_questions : undefined,
         created_at: String((it as any)?.created_at || "") || undefined,
         status: st || undefined,
@@ -787,61 +834,21 @@ export default function AdminPanelClient() {
   }, [tab]);
 
   async function cancelCurrentJob() {
-    if (String(jobKind || "").toLowerCase() === "regen") {
+    const kind = String(jobKind || "").toLowerCase();
+    if (kind === "regen") {
       const id = String(selectedJobId || "").trim();
       if (!id) return;
       await cancelRegenJob(id);
       return;
     }
 
-    if (!selectedJobId && importBatchJobIdsRef.current.length === 0) return;
-    try {
-      setCancelBusy(true);
-      importCancelRequestedRef.current = true;
-      setClientImportStage("canceled");
-
-      try {
-        if (importUploadAbortRef.current) {
-          importUploadAbortRef.current.abort();
-        }
-      } catch {
-        // ignore
-      }
-
-      try {
-        const objKey = String(importUploadObjectKeyRef.current || "").trim();
-        const fn = String(importUploadFilenameRef.current || "").trim();
-        if (objKey) {
-          await apiFetch<any>(`/admin/modules/abort-import-zip` as any, {
-            method: "POST",
-            body: JSON.stringify({ object_key: objKey, filename: fn || null }),
-          } as any);
-        }
-      } catch {
-        // ignore
-      }
-
-      const ids = (importBatchJobIdsRef.current.length ? importBatchJobIdsRef.current : [selectedJobId])
-        .map((x) => String(x || "").trim())
-        .filter(Boolean);
-      await Promise.all(
-        ids.map((id) => apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }))
-      );
-      window.dispatchEvent(
-        new CustomEvent("corelms:toast", {
-          detail: {
-            title: "ОТМЕНА ЗАПРОШЕНА",
-            description: ids.length > 1 ? `BATCH: ${ids.length} JOBS` : "ЗАДАЧА БУДЕТ ОСТАНОВЛЕНА, ZIP ОСТАНЕТСЯ В STORAGE",
-          },
-        })
-      );
-      saveImportState({ cancelRequested: true });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg || "НЕ УДАЛОСЬ ОТМЕНИТЬ JOB");
-    } finally {
-      setCancelBusy(false);
-    }
+    const id = String(selectedJobId || "").trim();
+    if (!id) return;
+    window.dispatchEvent(
+      new CustomEvent("corelms:toast", {
+        detail: { title: "ОТМЕНА НЕДОСТУПНА", description: "IMPORT задачи не отменяются" },
+      })
+    );
   }
 
   async function loadAdminModules() {
@@ -942,6 +949,12 @@ export default function AdminPanelClient() {
       );
       const jid = String((res as any)?.job_id || "").trim();
       if (jid) {
+        optimisticActiveSubmoduleRegenRef.current[String(sid)] = {
+          job_id: jid,
+          status: "queued",
+          stage: "queued",
+          module_id: String(selectedAdminModuleId || ""),
+        };
         setSelectedJobId(jid);
         setJobStatus("queued");
         setJobStage("queued");
@@ -1117,6 +1130,11 @@ export default function AdminPanelClient() {
       );
       const jid = String((res as any)?.job_id || "").trim();
       if (jid) {
+        optimisticActiveModuleRegenRef.current[String(selectedAdminModuleId)] = {
+          job_id: jid,
+          status: "queued",
+          stage: "queued",
+        };
         setSelectedJobId(jid);
         setJobStatus("queued");
         setJobStage("queued");
@@ -1288,9 +1306,15 @@ export default function AdminPanelClient() {
         setImportPendingCount(typeof st?.importPendingCount === "number" ? Math.max(0, st.importPendingCount) : names.length);
       }
 
-      // Upload cannot resume after reload. If it was in progress, make it explicit.
       const stg = String(st?.clientImportStage || "").trim().toLowerCase();
-      if (stg === "upload_s3") {
+      const mp = st?.multipartImport && typeof st.multipartImport === "object" ? st.multipartImport : null;
+      if (mp && String(mp?.object_key || "").trim() && String(mp?.upload_id || "").trim()) {
+        importUploadMultipartRef.current = {
+          object_key: String(mp.object_key),
+          upload_id: String(mp.upload_id),
+        };
+      }
+      if (stg === "upload_s3" && !(importUploadMultipartRef.current && importUploadMultipartRef.current.object_key)) {
         setClientImportStage("failed");
         setS3UploadProgress(null);
         window.dispatchEvent(
@@ -1525,9 +1549,9 @@ export default function AdminPanelClient() {
     }
 
     // Queue imports instead of clobbering the current run.
-    // Product rule: max 5 total imports at a time (1 running + up to 4 pending).
+    // Product rule: allow batching many imports so admin can start a batch and walk away.
     if (!filesOverride && (importRunnerActiveRef.current || importBusy)) {
-      const maxTotal = 5;
+      const maxTotal = 12;
       const maxPending = Math.max(0, maxTotal - 1);
       const pending = importQueuePendingRef.current || [];
       const canAdd = Math.max(0, maxPending - pending.length);
@@ -1550,7 +1574,7 @@ export default function AdminPanelClient() {
           new CustomEvent("corelms:toast", {
             detail: {
               title: "ЛИМИТ ОЧЕРЕДИ ИМПОРТА",
-              description: "МОЖНО ДО 5 ИМПОРТОВ ОДНОВРЕМЕННО (1 В РАБОТЕ + 4 В ОЧЕРЕДИ)",
+              description: "МОЖНО ДО 12 ИМПОРТОВ ОДНОВРЕМЕННО (1 В РАБОТЕ + 11 В ОЧЕРЕДИ)",
             },
           })
         );
@@ -1705,6 +1729,196 @@ export default function AdminPanelClient() {
         });
       };
 
+      const uploadS3MultipartWithProgress = async (file: File, ac: AbortController) => {
+        const filename = String((file as any)?.name || "module.zip");
+        const res = await apiFetch<{ ok: boolean; object_key: string; upload_id: string; reused?: boolean }>(
+          `/admin/modules/multipart-import-create` as any,
+          {
+            method: "POST",
+            body: JSON.stringify({ filename, content_type: String((file as any)?.type || "application/zip") }),
+          }
+        );
+
+        const objectKey = String((res as any)?.object_key || "").trim();
+        const uploadId = String((res as any)?.upload_id || "").trim();
+        if (!objectKey || !uploadId) throw new Error("multipart create failed");
+
+        importUploadObjectKeyRef.current = objectKey;
+        importUploadMultipartRef.current = { object_key: objectKey, upload_id: uploadId };
+        saveImportState({ multipartImport: { object_key: objectKey, upload_id: uploadId, filename } });
+
+        const listed = await apiFetch<{ ok: boolean; parts: any[] }>(`/admin/modules/multipart-import-list-parts` as any, {
+          method: "POST",
+          body: JSON.stringify({ object_key: objectKey, upload_id: uploadId }),
+        });
+
+        const existingParts: Record<number, string> = {};
+        const existing = Array.isArray((listed as any)?.parts) ? (listed as any).parts : [];
+        for (const p of existing) {
+          const pn = Number((p as any)?.part_number || 0);
+          const et = String((p as any)?.etag || "").trim();
+          if (pn > 0 && et) existingParts[pn] = et;
+        }
+
+        const totalSize = Math.max(0, Number((file as any)?.size || 0));
+        const partSize = 64 * 1024 * 1024;
+        const totalParts = Math.max(1, Math.ceil(totalSize / partSize));
+        const partsOut: { part_number: number; etag: string }[] = [];
+
+        const alreadyBytes = Object.keys(existingParts).reduce((acc, k) => {
+          const pn = Number(k);
+          if (!pn) return acc;
+          const start = (pn - 1) * partSize;
+          const end = Math.min(totalSize, start + partSize);
+          return acc + Math.max(0, end - start);
+        }, 0);
+
+        setS3UploadProgress({
+          loaded: Math.max(0, alreadyBytes),
+          total: Math.max(0, totalSize),
+          startedAtMs: Date.now(),
+          lastAtMs: Date.now(),
+          lastLoaded: Math.max(0, alreadyBytes),
+          speedBps: 0,
+          etaSeconds: null,
+          percent: totalSize > 0 ? Math.round((alreadyBytes / totalSize) * 100) : 0,
+        } as any);
+
+        const uploadPart = async (partNumber: number, blob: Blob) => {
+          const pres = await apiFetch<{ ok: boolean; upload_url: string }>(`/admin/modules/multipart-import-presign-part` as any, {
+            method: "POST",
+            body: JSON.stringify({ object_key: objectKey, upload_id: uploadId, part_number: partNumber }),
+          });
+          const url = String((pres as any)?.upload_url || "").trim();
+          if (!url) throw new Error("multipart presign failed");
+
+          return await new Promise<string>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            let done = false;
+
+            const finish = (err?: unknown, etag?: string) => {
+              if (done) return;
+              done = true;
+              try {
+                ac.signal.removeEventListener("abort", onAbort);
+              } catch {
+                // ignore
+              }
+              if (err) reject(err);
+              else resolve(String(etag || "").trim());
+            };
+
+            const onAbort = () => {
+              try {
+                xhr.abort();
+              } catch {
+                // ignore
+              }
+              finish(new DOMException("Aborted", "AbortError"));
+            };
+
+            try {
+              ac.signal.addEventListener("abort", onAbort);
+            } catch {
+              // ignore
+            }
+
+            xhr.open("PUT", url, true);
+            xhr.upload.onprogress = (evt) => {
+              if (!evt || !evt.lengthComputable) return;
+              const now = Date.now();
+              const curLoaded = Math.max(0, Number(evt.loaded || 0));
+              const partStart = (partNumber - 1) * partSize;
+              const globalLoaded = Math.max(0, Math.min(totalSize, partStart + curLoaded));
+              setS3UploadProgress((prev: any) => {
+                const startedAtMs = prev?.startedAtMs ?? now;
+                const lastAtMs = prev?.lastAtMs ?? startedAtMs;
+                const lastLoaded = prev?.lastLoaded ?? 0;
+                const dt = Math.max(1, now - lastAtMs);
+                const dbytes = Math.max(0, globalLoaded - lastLoaded);
+                const instSpeed = (dbytes * 1000) / dt;
+                const speedBps = prev ? 0.7 * prev.speedBps + 0.3 * instSpeed : instSpeed;
+                const remain = Math.max(0, totalSize - globalLoaded);
+                const etaSeconds = speedBps > 1 ? Math.round(remain / speedBps) : null;
+                const percent = totalSize > 0 ? Math.max(0, Math.min(100, Math.round((globalLoaded / totalSize) * 100))) : 0;
+                return {
+                  loaded: globalLoaded,
+                  total: totalSize,
+                  startedAtMs,
+                  lastAtMs: now,
+                  lastLoaded: globalLoaded,
+                  speedBps,
+                  etaSeconds,
+                  percent,
+                };
+              });
+            };
+
+            xhr.onerror = () => finish(new Error("multipart upload part failed: network error"));
+            xhr.onabort = () => finish(new DOMException("Aborted", "AbortError"));
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                const etag = String(xhr.getResponseHeader("ETag") || xhr.getResponseHeader("etag") || "").trim();
+                finish(undefined, etag);
+                return;
+              }
+              const body = String(xhr.responseText || "").replace(/\s+/g, " ").slice(0, 320);
+              finish(new Error(`multipart upload part failed: HTTP ${xhr.status}${body ? ` body: ${body}` : ""}`));
+            };
+
+            try {
+              xhr.send(blob);
+            } catch (e) {
+              finish(e);
+            }
+          });
+        };
+
+        for (let pn = 1; pn <= totalParts; pn++) {
+          if (importCancelRequestedRef.current) break;
+          if (existingParts[pn]) {
+            partsOut.push({ part_number: pn, etag: existingParts[pn] });
+            continue;
+          }
+          const start = (pn - 1) * partSize;
+          const end = Math.min(totalSize, start + partSize);
+          const blob = file.slice(start, end);
+
+          let etag = "";
+          let attempt = 0;
+          while (!etag && attempt < 6) {
+            attempt += 1;
+            try {
+              etag = await uploadPart(pn, blob);
+            } catch (e) {
+              if (attempt >= 6) throw e;
+              await new Promise<void>((resolve) => setTimeout(() => resolve(), 800 + attempt * 800));
+            }
+          }
+          if (!etag) throw new Error(`multipart part ${pn} missing etag`);
+          partsOut.push({ part_number: pn, etag });
+          saveImportState({ multipartImport: { object_key: objectKey, upload_id: uploadId, filename } });
+        }
+
+        if (importCancelRequestedRef.current) {
+          try {
+            await apiFetch<any>(`/admin/modules/multipart-import-abort` as any, {
+              method: "POST",
+              body: JSON.stringify({ object_key: objectKey, upload_id: uploadId }),
+            } as any);
+          } catch {
+            // ignore
+          }
+          throw new DOMException("Aborted", "AbortError");
+        }
+
+        await apiFetch<any>(`/admin/modules/multipart-import-complete` as any, {
+          method: "POST",
+          body: JSON.stringify({ object_key: objectKey, upload_id: uploadId, parts: partsOut }),
+        } as any);
+        return { object_key: objectKey };
+      };
+
       importBatchJobIdsRef.current = [];
       importCancelRequestedRef.current = false;
       setJobResult(null);
@@ -1771,70 +1985,88 @@ export default function AdminPanelClient() {
         let res: { ok: boolean; job_id: string } | null = null;
         try {
           const qs = title ? `?title=${encodeURIComponent(title)}` : "";
-          // Ideal: upload large ZIPs directly to S3 to avoid Railway edge/proxy timeouts.
-          // 1) presign
-          const presign = await apiFetch<{ ok: boolean; object_key: string; upload_url: string | null; reused?: boolean }>(
-            `/admin/modules/presign-import-zip` as any,
-            {
-              method: "POST",
-              body: JSON.stringify({ filename: String(f?.name || "module.zip"), content_type: String((f as any)?.type || "application/zip") }),
-            }
-          );
 
-          keepAlive();
+          const sizeBytes = typeof (f as any)?.size === "number" ? Number((f as any).size) : 0;
+          const useMultipart = sizeBytes > 512 * 1024 * 1024;
 
-          if (importCancelRequestedRef.current) {
-            try {
-              await apiFetch<any>(`/admin/modules/abort-import-zip` as any, {
-                method: "POST",
-                body: JSON.stringify({ object_key: String((presign as any)?.object_key || ""), filename: String(f?.name || "") }),
-              } as any);
-            } catch {
-              // ignore
-            }
-            break;
-          }
-
-          importUploadObjectKeyRef.current = String((presign as any)?.object_key || "");
-
-          if ((presign as any)?.reused) {
-            window.dispatchEvent(
-              new CustomEvent("corelms:toast", {
-                detail: {
-                  title: "ZIP УЖЕ ЗАГРУЖЕН",
-                  description: "ПОВТОРНАЯ ЗАГРУЗКА НЕ НУЖНА — ИСПОЛЬЗУЮ STORAGE",
-                },
-              })
-            );
-          } else {
-            // 2) upload to S3 (direct)
+          if (useMultipart) {
             setClientImportStage("upload_s3");
             const ac = new AbortController();
             importUploadAbortRef.current = ac;
             try {
               keepAlive();
-              await uploadS3WithProgress(String(presign?.upload_url || ""), f, ac);
+              const mp = await uploadS3MultipartWithProgress(f, ac);
               keepAlive();
+              importUploadObjectKeyRef.current = String((mp as any)?.object_key || "");
+              setS3UploadProgress(null);
             } catch (e) {
-              const objKey = String((presign as any)?.object_key || "").trim();
               const fn = String(f?.name || "module.zip");
               const base = e instanceof Error ? e.message : String(e);
-              const hint =
-                "S3/MinIO PUT не прошёл (браузер не получил ответ). Чаще всего это CORS (PUT) или неверный PUBLIC endpoint для S3. " +
-                "Проверь DevTools → Network: запрос PUT (blocked by CORS / failed to fetch).";
-              throw new Error(
-                [
-                  `S3 upload failed: ${base || "failed to fetch"}`,
-                  fn ? `file: ${fn}` : "",
-                  objKey ? `object_key: ${objKey}` : "",
-                  hint,
-                ]
-                  .filter(Boolean)
-                  .join("\n")
-              );
+              throw new Error([`S3 multipart upload failed: ${base || "failed"}`, fn ? `file: ${fn}` : ""].filter(Boolean).join("\n"));
+            }
+          } else {
+            const presign = await apiFetch<{ ok: boolean; object_key: string; upload_url: string | null; reused?: boolean }>(
+              `/admin/modules/presign-import-zip` as any,
+              {
+                method: "POST",
+                body: JSON.stringify({ filename: String(f?.name || "module.zip"), content_type: String((f as any)?.type || "application/zip") }),
+              }
+            );
+
+            keepAlive();
+
+            if (importCancelRequestedRef.current) {
+              try {
+                await apiFetch<any>(`/admin/modules/abort-import-zip` as any, {
+                  method: "POST",
+                  body: JSON.stringify({ object_key: String((presign as any)?.object_key || ""), filename: String(f?.name || "") }),
+                } as any);
+              } catch {
+                // ignore
+              }
+              break;
             }
 
-            setS3UploadProgress(null);
+            importUploadObjectKeyRef.current = String((presign as any)?.object_key || "");
+
+            if ((presign as any)?.reused) {
+              window.dispatchEvent(
+                new CustomEvent("corelms:toast", {
+                  detail: {
+                    title: "ZIP УЖЕ ЗАГРУЖЕН",
+                    description: "ПОВТОРНАЯ ЗАГРУЗКА НЕ НУЖНА — ИСПОЛЬЗУЮ STORAGE",
+                  },
+                })
+              );
+            } else {
+              setClientImportStage("upload_s3");
+              const ac = new AbortController();
+              importUploadAbortRef.current = ac;
+              try {
+                keepAlive();
+                await uploadS3WithProgress(String(presign?.upload_url || ""), f, ac);
+                keepAlive();
+              } catch (e) {
+                const objKey = String((presign as any)?.object_key || "").trim();
+                const fn = String(f?.name || "module.zip");
+                const base = e instanceof Error ? e.message : String(e);
+                const hint =
+                  "S3/MinIO PUT не прошёл (браузер не получил ответ). Чаще всего это CORS (PUT) или неверный PUBLIC endpoint для S3. " +
+                  "Проверь DevTools → Network: запрос PUT (blocked by CORS / failed to fetch).";
+                throw new Error(
+                  [
+                    `S3 upload failed: ${base || "failed to fetch"}`,
+                    fn ? `file: ${fn}` : "",
+                    objKey ? `object_key: ${objKey}` : "",
+                    hint,
+                  ]
+                    .filter(Boolean)
+                    .join("\n")
+                );
+              }
+
+              setS3UploadProgress(null);
+            }
           }
 
           if (importCancelRequestedRef.current) {
@@ -1844,10 +2076,12 @@ export default function AdminPanelClient() {
           // 3) enqueue import job
           setClientImportStage("enqueue");
           keepAlive();
+          const objectKey = String(importUploadObjectKeyRef.current || "").trim();
+          if (!objectKey) throw new Error("missing object_key for import")
           const enq = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/enqueue-import-zip${qs}` as any, {
             method: "POST",
             body: JSON.stringify({
-              object_key: String(presign?.object_key || ""),
+              object_key: objectKey,
               title: title || null,
               source_filename: String(f?.name || ""),
             }),
@@ -2368,6 +2602,7 @@ export default function AdminPanelClient() {
             setSelectedJobId={setSelectedJobId}
             setJobPanelOpen={setJobPanelOpen}
             cancelImportJob={cancelImportJob}
+            cancelRegenJob={cancelRegenJob}
             retryImportJob={retryImportJob}
             openModuleFromImport={openModuleFromImport}
             regenQueue={regenQueue}
@@ -2405,15 +2640,14 @@ export default function AdminPanelClient() {
             setSelectedAdminModuleId={setSelectedAdminModuleId}
             selectedAdminModule={selectedAdminModule}
             setSelectedModuleVisibility={setSelectedModuleVisibility}
-            activeRegenByModuleId={activeRegenByModuleId}
+            activeModuleRegenByModuleId={activeModuleRegenByModuleId}
+            activeSubmoduleRegenBySubmoduleId={activeSubmoduleRegenBySubmoduleId}
             regenerateSelectedModuleQuizzes={regenerateSelectedModuleQuizzes}
             deleteSelectedModule={deleteSelectedModule}
             selectedAdminModuleSubsLoading={selectedAdminModuleSubsLoading}
             selectedAdminModuleSubs={selectedAdminModuleSubs}
             selectedAdminModuleSubsQuality={subQualityByModuleId[String(selectedAdminModuleId || "")] || []}
-            selectedAdminModuleSubsQualityLoading={
-              !!subQualityLoadingByModuleId[String(selectedAdminModuleId || "")]
-            }
+            selectedAdminModuleSubsQualityLoading={!!subQualityLoadingByModuleId[String(selectedAdminModuleId || "")]}
             regenerateSubmoduleQuiz={regenerateSubmoduleQuiz}
             selectedSubmoduleId={selectedSubmoduleId}
             setSelectedSubmoduleId={setSelectedSubmoduleId}

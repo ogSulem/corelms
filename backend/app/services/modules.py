@@ -4,6 +4,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
+import json
 
 from app.models.module import Module, Submodule
 from app.models.attempt import QuizAttempt
@@ -65,19 +66,34 @@ class ModuleService:
         return items
 
     def _get_reads_map(self, user_id: uuid.UUID, module_ids: List[uuid.UUID]) -> Dict[str, set[str]]:
+        def _meta_action_is_read(meta: str | None) -> bool:
+            if not meta:
+                return False
+            if str(meta).strip().lower() == "read":
+                return True
+            try:
+                obj = json.loads(str(meta))
+                if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
+                    return True
+            except Exception:
+                return False
+            return False
+
         rows = self.db.execute(
-            select(Submodule.module_id, LearningEvent.ref_id)
+            select(Submodule.module_id, LearningEvent.ref_id, LearningEvent.meta)
             .join(LearningEvent, Submodule.id == LearningEvent.ref_id)
             .where(
                 LearningEvent.user_id == user_id,
                 LearningEvent.type == LearningEventType.submodule_opened,
-                LearningEvent.meta == "read",
+                LearningEvent.meta.is_not(None),
                 Submodule.module_id.in_(module_ids)
             )
         ).all()
         
         res = {}
-        for mid, ref_id in rows:
+        for mid, ref_id, meta in rows:
+            if not _meta_action_is_read(meta):
+                continue
             res.setdefault(str(mid), set()).add(str(ref_id))
         return res
 

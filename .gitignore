@@ -20,6 +20,7 @@ frontend/node_modules/
 
 # Large local content (do not commit)
 Модули обучения/
+Модуль */
 **/*.zip
 
 # Next.js build artifacts

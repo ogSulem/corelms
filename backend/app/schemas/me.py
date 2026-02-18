@@ -98,6 +98,8 @@ class HistoryItem(BaseModel):
     event_type: str | None = None
     ref_id: str | None = None
     meta: str | None = None
+    ip: str | None = None
+    request_id: str | None = None
     # context
     module_id: str | None = None
     module_title: str | None = None

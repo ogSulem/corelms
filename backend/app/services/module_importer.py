@@ -88,8 +88,108 @@ def _is_module_material(path: pathlib.Path) -> bool:
     return path.suffix.lower() in {".xlsx", ".xls", ".pptx", ".ppt", ".zip", ".rar", ".7z"}
 
 
+def _list_files_recursive(root: pathlib.Path) -> list[pathlib.Path]:
+    try:
+        return sorted([p for p in root.rglob("*") if p.is_file() and not p.name.startswith("~$")])
+    except Exception:
+        return []
+
+
+def _has_any_lesson_content(root: pathlib.Path) -> bool:
+    for fp in _list_files_recursive(root):
+        if _is_lesson_asset(fp) or _is_module_material(fp) or _is_theory_file(fp):
+            return True
+    return False
+
+
+def _collect_leaf_lesson_dirs(root: pathlib.Path) -> list[pathlib.Path]:
+    out: list[pathlib.Path] = []
+    try:
+        direct_files = [p for p in root.iterdir() if p.is_file() and not p.name.startswith("~$")]
+        direct_dirs = [p for p in root.iterdir() if p.is_dir() and p.name not in {"_module", "__MACOSX"}]
+    except Exception:
+        return out
+
+    if direct_files:
+        return [root]
+
+    for d in sorted(direct_dirs, key=lambda x: _parse_order(x.name, 999)):
+        if not _has_any_lesson_content(d):
+            continue
+        out.extend(_collect_leaf_lesson_dirs(d))
+    return out
+
+
 def _clean_line(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip()).strip()
+
+
+def _normalize_text_to_markdown(text: str) -> str:
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not raw.strip():
+        return ""
+
+    raw = raw.replace("\u00a0", " ")
+    raw = re.sub(r"[ \t]+", " ", raw)
+
+    src_lines = raw.split("\n")
+    lines: list[str] = []
+    prev_empty = True
+    for ln in src_lines:
+        s = ln.strip()
+        if not s:
+            if not prev_empty:
+                lines.append("")
+            prev_empty = True
+            continue
+
+        if s.startswith("•"):
+            s = "- " + s[1:].strip()
+        s = re.sub(r"^\*\s+", "- ", s)
+
+        lines.append(s)
+        prev_empty = False
+
+    merged: list[str] = []
+    i = 0
+    while i < len(lines):
+        cur = lines[i]
+        if cur == "":
+            if merged and merged[-1] != "":
+                merged.append("")
+            i += 1
+            continue
+
+        def is_list_item(x: str) -> bool:
+            return bool(
+                re.match(r"^(?:-\s+|\d{1,3}[.)]\s+)", x)
+                or x.startswith("•")
+            )
+
+        if merged and merged[-1] != "":
+            prev = merged[-1]
+            if prev.endswith("-") and not prev.endswith(" -"):
+                merged[-1] = prev[:-1] + cur
+                i += 1
+                continue
+
+            prev_is_list = is_list_item(prev)
+            cur_is_list = is_list_item(cur)
+            if (not prev_is_list) and (not cur_is_list):
+                prev_end = prev[-1] if prev else ""
+                cur_start = cur[0] if cur else ""
+                should_wrap = prev_end not in ".?!:;" and cur_start.islower()
+                if should_wrap:
+                    merged[-1] = prev + " " + cur
+                    i += 1
+                    continue
+
+        merged.append(cur)
+        i += 1
+
+    out = "\n".join(merged)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out
 
 
 def _docx_to_text(path: pathlib.Path) -> str:
@@ -99,7 +199,7 @@ def _docx_to_text(path: pathlib.Path) -> str:
         xml = re.sub(r"</w:p>", "\n", xml)
         xml = re.sub(r"<[^>]+>", "", xml)
         xml = re.sub(r"\n{3,}", "\n\n", xml)
-        return xml.strip()
+        return _normalize_text_to_markdown(xml)
     except Exception:
         return ""
 
@@ -112,10 +212,10 @@ def _pdf_to_text(path: pathlib.Path) -> str:
         parts: list[str] = []
         for page in reader.pages[:30]:
             t = page.extract_text() or ""
-            t = _clean_line(t)
+            t = _normalize_text_to_markdown(t)
             if t:
                 parts.append(t)
-        return "\n".join(parts).strip()
+        return "\n\n".join(parts).strip()
     except Exception:
         return ""
 
@@ -124,7 +224,10 @@ def _read_text(path: pathlib.Path) -> str:
     ext = path.suffix.lower()
     if ext in {".txt", ".md"}:
         try:
-            return path.read_text(encoding="utf-8", errors="ignore").strip()
+            txt = path.read_text(encoding="utf-8", errors="ignore")
+            if ext == ".md":
+                return txt.strip()
+            return _normalize_text_to_markdown(txt)
         except Exception:
             return ""
     if ext == ".docx":
@@ -316,12 +419,43 @@ def import_module_from_dir(
     else:
         lesson_specs = []
         extra_assets = []
+        nested_order = 0
         for i, ld in enumerate(lesson_dirs, start=1):
-            lesson_specs.append((_parse_order(ld.name, i), _guess_title(ld.name), sorted([p for p in ld.iterdir() if p.is_file() and not p.name.startswith("~$")])) )
+            direct_files = sorted([p for p in ld.iterdir() if p.is_file() and not p.name.startswith("~$")])
+            if direct_files:
+                lesson_specs.append((_parse_order(ld.name, i), _guess_title(ld.name), direct_files, ld))
+                continue
+
+            leaf_dirs = [d for d in _collect_leaf_lesson_dirs(ld) if d != ld]
+            for leaf in leaf_dirs:
+                nested_order += 1
+                rel = " / ".join([_guess_title(p.name) for p in leaf.relative_to(ld).parts if str(p).strip()])
+                title2 = f"{_guess_title(ld.name)} / {rel}" if rel else _guess_title(ld.name)
+                files2 = _list_files_recursive(leaf)
+                files2 = [p for p in files2 if _is_lesson_asset(p) or _is_module_material(p) or _is_theory_file(p)]
+                if not files2:
+                    continue
+                parent_order = _parse_order(ld.name, i)
+                order2 = parent_order * 1000 + nested_order
+                lesson_specs.append((order2, title2, files2, leaf))
 
     total_lessons = len(lesson_specs)
 
-    for i, (order, title, files) in enumerate(lesson_specs, start=1):
+    normalized_specs: list[tuple[int, str, list[pathlib.Path], pathlib.Path]] = []
+    for spec in lesson_specs:
+        if len(spec) == 3:
+            o, t, f = spec  # type: ignore[misc]
+            normalized_specs.append((int(o), str(t), list(f), module_dir))
+        else:
+            o, t, f, root = spec  # type: ignore[misc]
+            normalized_specs.append((int(o), str(t), list(f), pathlib.Path(root)))
+
+    normalized_specs.sort(key=lambda x: (x[0], x[1].lower()))
+    renum: list[tuple[int, str, list[pathlib.Path], pathlib.Path]] = []
+    for idx, (_, t, f, root) in enumerate(normalized_specs, start=1):
+        renum.append((idx, t, f, root))
+
+    for i, (order, title, files, lesson_root) in enumerate(renum, start=1):
         _set_job_detail(f"lesson {i}/{total_lessons}: {title}")
         theory = _theory_from_files(files)
 
@@ -401,12 +535,11 @@ def import_module_from_dir(
                                 prompt=mcq.prompt,
                                 correct_answer=mcq.correct_answer,
                                 explanation=None,
-                                concept_tag=f"needs_regen:heur:{m.id}:{order}:{qi}",
+                                concept_tag=f"heur:{m.id}:{order}:{qi}",
                                 variant_group=None,
                             )
                         )
                     if report is not None:
-                        report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
                         report["questions_heur"] = int(report.get("questions_heur") or 0) + len(generated)
                         report["questions_total"] = int(report.get("questions_total") or 0) + len(generated)
         else:
@@ -462,7 +595,14 @@ def import_module_from_dir(
                     report["module_assets"] = int(report.get("module_assets") or 0) + 1
                 continue
 
-            object_key = f"modules/{m.id}/{order:02d}/{fp.name}"
+            rel_name = fp.name
+            try:
+                rel = fp.relative_to(lesson_root)
+                rel_name = str(rel.as_posix())
+            except Exception:
+                rel_name = fp.name
+
+            object_key = f"modules/{m.id}/{order:02d}/{rel_name}"
             mime, size = _upload_file(s3=s3, object_key=object_key, file_path=fp)
 
             asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == object_key))

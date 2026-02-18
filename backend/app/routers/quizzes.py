@@ -145,7 +145,9 @@ def _select_final_question_ids_from_lessons(*, db: Session, module: Module) -> l
         last_sub_id = None
 
     rng = random.Random(f"final_open:{module.id}:{uuid.uuid4()}")
-    selected: list[uuid.UUID] = []
+
+    # Build shuffled pools per submodule.
+    pools: list[list[uuid.UUID]] = []
     for sub in subs:
         if last_sub_id is not None and sub.id == last_sub_id:
             continue
@@ -156,8 +158,30 @@ def _select_final_question_ids_from_lessons(*, db: Session, module: Module) -> l
         if not pool:
             continue
         rng.shuffle(pool)
-        take = pool[:2]
-        selected.extend([qid for qid in take if qid is not None])
+        pools.append(pool)
+
+    selected: list[uuid.UUID] = []
+
+    # Phase 1: up to 2 questions per submodule.
+    for pool in pools:
+        if pool:
+            selected.append(pool.pop(0))
+        if pool:
+            selected.append(pool.pop(0))
+
+    # Phase 2: ensure at least 10 questions when possible.
+    # Add 1 per submodule in round-robin passes until reaching 10 or pools are exhausted.
+    target_min = 10
+    while len(selected) < target_min:
+        progressed = False
+        for pool in pools:
+            if len(selected) >= target_min:
+                break
+            if pool:
+                selected.append(pool.pop(0))
+                progressed = True
+        if not progressed:
+            break
 
     rng.shuffle(selected)
     return [str(qid) for qid in selected]

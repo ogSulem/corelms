@@ -129,3 +129,103 @@ def presign_get(*, object_key: str, expires_seconds: int = 900) -> str:
         Params={"Bucket": settings.s3_bucket, "Key": object_key},
         ExpiresIn=expires_seconds,
     )
+
+
+def multipart_create(*, object_key: str, content_type: str | None = None) -> str:
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+    params: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key}
+    if content_type:
+        params["ContentType"] = content_type
+    resp = s3.create_multipart_upload(**params)
+    return str(resp.get("UploadId") or "")
+
+
+def multipart_abort(*, object_key: str, upload_id: str) -> None:
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+    s3.abort_multipart_upload(Bucket=settings.s3_bucket, Key=object_key, UploadId=upload_id)
+
+
+def multipart_list_parts(*, object_key: str, upload_id: str) -> list[dict[str, object]]:
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+    out: list[dict[str, object]] = []
+    marker = 0
+    while True:
+        kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key, "UploadId": upload_id}
+        if marker:
+            kwargs["PartNumberMarker"] = int(marker)
+        resp = s3.list_parts(**kwargs)
+        parts = resp.get("Parts") or []
+        for p in parts:
+            try:
+                out.append(
+                    {
+                        "part_number": int(p.get("PartNumber") or 0),
+                        "etag": str(p.get("ETag") or ""),
+                        "size": int(p.get("Size") or 0),
+                    }
+                )
+            except Exception:
+                continue
+        nxt = resp.get("NextPartNumberMarker")
+        truncated = bool(resp.get("IsTruncated"))
+        if not truncated or not nxt:
+            break
+        try:
+            marker = int(nxt)
+        except Exception:
+            break
+    out.sort(key=lambda x: int(x.get("part_number") or 0))
+    return out
+
+
+def multipart_presign_upload_part(
+    *,
+    object_key: str,
+    upload_id: str,
+    part_number: int,
+    expires_seconds: int = 900,
+) -> str:
+    ensure_bucket_exists()
+    s3 = _get_presign_client()
+    return s3.generate_presigned_url(
+        "upload_part",
+        Params={
+            "Bucket": settings.s3_bucket,
+            "Key": object_key,
+            "UploadId": upload_id,
+            "PartNumber": int(part_number),
+        },
+        ExpiresIn=expires_seconds,
+    )
+
+
+def multipart_complete(
+    *,
+    object_key: str,
+    upload_id: str,
+    parts: list[dict[str, object]],
+) -> None:
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+    normalized: list[dict[str, object]] = []
+    for p in parts or []:
+        try:
+            pn = int(p.get("part_number") or p.get("PartNumber") or 0)
+            et = str(p.get("etag") or p.get("ETag") or "").strip()
+            if not pn or not et:
+                continue
+            normalized.append({"PartNumber": pn, "ETag": et})
+        except Exception:
+            continue
+    normalized.sort(key=lambda x: int(x.get("PartNumber") or 0))
+    if not normalized:
+        raise ValueError("no parts to complete")
+    s3.complete_multipart_upload(
+        Bucket=settings.s3_bucket,
+        Key=object_key,
+        UploadId=upload_id,
+        MultipartUpload={"Parts": normalized},
+    )

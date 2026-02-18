@@ -341,7 +341,9 @@ def regenerate_submodule_quiz_job(
                             correct_answer=str(getattr(q, "correct_answer", "") or ""),
                             explanation=(str(getattr(q, "explanation", "")) if getattr(q, "explanation", None) else None),
                             concept_tag=(
-                                f"needs_regen:regen:{m.id}:{sub.order}:{qi}" if ai_failed else f"regen:{m.id}:{sub.order}:{qi}"
+                                f"heur:{m.id}:{sub.order}:{qi}"
+                                if used_heuristic
+                                else (f"needs_regen:regen:{m.id}:{sub.order}:{qi}" if ai_failed else f"regen:{m.id}:{sub.order}:{qi}")
                             ),
                             variant_group=None,
                         )
@@ -623,7 +625,9 @@ def regenerate_module_quizzes_job(
                             correct_answer=str(getattr(q, "correct_answer", "") or ""),
                             explanation=(str(getattr(q, "explanation", "")) if getattr(q, "explanation", None) else None),
                             concept_tag=(
-                                f"needs_regen:regen:{m.id}:{sub.order}:{qi}" if ai_failed else f"regen:{m.id}:{sub.order}:{qi}"
+                                f"heur:{m.id}:{sub.order}:{qi}"
+                                if used_heuristic
+                                else (f"needs_regen:regen:{m.id}:{sub.order}:{qi}" if ai_failed else f"regen:{m.id}:{sub.order}:{qi}")
                             ),
                             variant_group=None,
                         )

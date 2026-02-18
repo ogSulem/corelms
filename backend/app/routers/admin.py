@@ -66,7 +66,7 @@ from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job, r
 from app.services.llm_handler import generate_quiz_questions_ai
 from app.services.ollama import generate_quiz_questions_ollama
 from app.services.hf_router import generate_quiz_questions_hf_router
-from app.services.storage import ensure_bucket_exists, get_s3_client, presign_put
+from app.services.storage import ensure_bucket_exists, get_s3_client, presign_put, multipart_abort, multipart_complete, multipart_create, multipart_list_parts, multipart_presign_upload_part
 from app.services.ollama import ollama_healthcheck
 from app.services.openrouter_health import openrouter_healthcheck
 
@@ -460,7 +460,7 @@ def module_submodules_quality(
     needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
     fallback_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("%fallback%"))
     ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("regen:%"))
-    heur_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:heur:%"))
+    heur_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("heur:%"))
 
     rows = (
         db.execute(
@@ -871,6 +871,50 @@ class AdminPresignImportZipRequest(BaseModel):
     content_type: str | None = None
 
 
+class AdminMultipartCreateRequest(BaseModel):
+    filename: str
+    content_type: str | None = None
+
+
+class AdminMultipartCreateResponse(BaseModel):
+    ok: bool = True
+    object_key: str
+    upload_id: str
+    reused: bool = False
+
+
+class AdminMultipartPresignPartRequest(BaseModel):
+    object_key: str
+    upload_id: str
+    part_number: int
+
+
+class AdminMultipartPresignPartResponse(BaseModel):
+    ok: bool = True
+    upload_url: str
+
+
+class AdminMultipartListPartsRequest(BaseModel):
+    object_key: str
+    upload_id: str
+
+
+class AdminMultipartListPartsResponse(BaseModel):
+    ok: bool = True
+    parts: list[dict[str, object]]
+
+
+class AdminMultipartCompleteRequest(BaseModel):
+    object_key: str
+    upload_id: str
+    parts: list[dict[str, object]]
+
+
+class AdminMultipartAbortRequest(BaseModel):
+    object_key: str
+    upload_id: str
+
+
 class AdminPresignImportZipResponse(BaseModel):
     ok: bool = True
     object_key: str
@@ -935,6 +979,151 @@ def presign_import_zip(
     db.commit()
 
     return {"ok": True, "object_key": object_key, "upload_url": url, "reused": False}
+
+
+@router.post("/modules/multipart-import-create", response_model=AdminMultipartCreateResponse)
+def multipart_import_create(
+    request: Request,
+    body: AdminMultipartCreateRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+    __: object = rate_limit(key_prefix="admin_multipart_import_create", limit=30, window_seconds=60),
+):
+    fn = str(body.filename or "").strip()
+    if not fn.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="only .zip is supported")
+
+    norm_fn = re.sub(r"\s+", " ", fn).strip().lower()
+    sess_key = f"admin:import_multipart_by_filename:{norm_fn}"
+    try:
+        r = get_redis()
+        raw = str(r.get(sess_key) or "").strip()
+    except Exception:
+        raw = ""
+
+    if raw:
+        try:
+            obj = json.loads(raw)
+            object_key = str((obj or {}).get("object_key") or "").strip()
+            upload_id = str((obj or {}).get("upload_id") or "").strip()
+            if object_key and upload_id:
+                return {"ok": True, "object_key": object_key, "upload_id": upload_id, "reused": True}
+        except Exception:
+            pass
+
+    object_key = f"uploads/admin/{uuid.uuid4()}.zip"
+    upload_id = multipart_create(object_key=object_key, content_type=str(body.content_type or "").strip() or None)
+    if not upload_id:
+        raise HTTPException(status_code=500, detail="failed to create multipart upload")
+
+    try:
+        r = get_redis()
+        r.set(sess_key, json.dumps({"object_key": object_key, "upload_id": upload_id}, ensure_ascii=False))
+        r.expire(sess_key, 60 * 60 * 24 * 30)
+    except Exception:
+        pass
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_multipart_import_create",
+        actor_user_id=None,
+        meta={"object_key": object_key, "filename": fn},
+    )
+    db.commit()
+
+    return {"ok": True, "object_key": object_key, "upload_id": upload_id, "reused": False}
+
+
+@router.post("/modules/multipart-import-presign-part", response_model=AdminMultipartPresignPartResponse)
+def multipart_import_presign_part(
+    request: Request,
+    body: AdminMultipartPresignPartRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_multipart_import_presign_part", limit=240, window_seconds=60),
+):
+    object_key = str(body.object_key or "").strip()
+    upload_id = str(body.upload_id or "").strip()
+    pn = int(body.part_number or 0)
+    if not object_key or not upload_id or pn <= 0:
+        raise HTTPException(status_code=400, detail="invalid multipart params")
+
+    url = multipart_presign_upload_part(object_key=object_key, upload_id=upload_id, part_number=pn)
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_multipart_import_presign_part",
+        actor_user_id=current.id,
+        meta={"object_key": object_key, "part_number": pn},
+    )
+    db.commit()
+    return {"ok": True, "upload_url": url}
+
+
+@router.post("/modules/multipart-import-list-parts", response_model=AdminMultipartListPartsResponse)
+def multipart_import_list_parts(
+    body: AdminMultipartListPartsRequest,
+    _: User = Depends(require_roles(UserRole.admin)),
+    __: object = rate_limit(key_prefix="admin_multipart_import_list_parts", limit=120, window_seconds=60),
+):
+    object_key = str(body.object_key or "").strip()
+    upload_id = str(body.upload_id or "").strip()
+    if not object_key or not upload_id:
+        raise HTTPException(status_code=400, detail="invalid multipart params")
+    parts = multipart_list_parts(object_key=object_key, upload_id=upload_id)
+    return {"ok": True, "parts": parts}
+
+
+@router.post("/modules/multipart-import-complete")
+def multipart_import_complete(
+    request: Request,
+    body: AdminMultipartCompleteRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_multipart_import_complete", limit=30, window_seconds=60),
+):
+    object_key = str(body.object_key or "").strip()
+    upload_id = str(body.upload_id or "").strip()
+    if not object_key or not upload_id:
+        raise HTTPException(status_code=400, detail="invalid multipart params")
+    multipart_complete(object_key=object_key, upload_id=upload_id, parts=list(body.parts or []))
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_multipart_import_complete",
+        actor_user_id=current.id,
+        meta={"object_key": object_key},
+    )
+    db.commit()
+    return {"ok": True, "object_key": object_key}
+
+
+@router.post("/modules/multipart-import-abort")
+def multipart_import_abort(
+    request: Request,
+    body: AdminMultipartAbortRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_multipart_import_abort", limit=30, window_seconds=60),
+):
+    object_key = str(body.object_key or "").strip()
+    upload_id = str(body.upload_id or "").strip()
+    if not object_key or not upload_id:
+        raise HTTPException(status_code=400, detail="invalid multipart params")
+    try:
+        multipart_abort(object_key=object_key, upload_id=upload_id)
+    except Exception:
+        pass
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_multipart_import_abort",
+        actor_user_id=current.id,
+        meta={"object_key": object_key},
+    )
+    db.commit()
+    return {"ok": True}
 
 
 class AdminEnqueueImportZipRequest(BaseModel):
@@ -1368,28 +1557,18 @@ def cancel_job(
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
 
+    try:
+        kind = str((job.meta or {}).get("job_kind") or "").strip().lower()
+    except Exception:
+        kind = ""
+    if kind != "regen":
+        raise HTTPException(status_code=409, detail="job is not cancellable")
+
     prev_status = job.get_status(refresh=True)
 
     # Product rule:
-    # - Import jobs: cancellable only while queued (before worker started).
+    # - Import jobs: cancellable anytime (best-effort), worker will stop at checkpoints.
     # - Regen jobs: cancellable anytime (best-effort), worker will stop at checkpoints.
-    try:
-        meta_probe = dict(job.meta or {})
-        job_kind = str(meta_probe.get("job_kind") or "").strip().lower()
-        if job_kind == "import" and prev_status not in {"queued", "deferred", "scheduled"}:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error_code": "IMPORT_NOT_CANCELLABLE",
-                    "error_message": "import job is already running",
-                    "error_hint": "Импорт уже в работе — отмена запрещена. Дождитесь завершения или ошибки.",
-                },
-            )
-    except HTTPException:
-        raise
-    except Exception:
-        # If meta is missing, keep legacy behavior.
-        pass
 
     try:
         meta = dict(job.meta or {})
@@ -1400,10 +1579,9 @@ def cancel_job(
     except Exception:
         pass
 
-    # If job is queued/deferred we can cancel it immediately.
+    # Best-effort immediate cancel (works for queued; may be ignored for started depending on backend).
     try:
-        if prev_status in {"queued", "deferred", "scheduled"}:
-            job.cancel()
+        job.cancel()
     except Exception:
         pass
 
@@ -1594,7 +1772,7 @@ def list_modules_admin(
     ai_cond = (Question.concept_tag.is_not(None)) & (
         Question.concept_tag.like("ai:%") | Question.concept_tag.like("regen:%")
     )
-    heur_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:heur:%"))
+    heur_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("heur:%"))
 
     lesson_rows = (
         db.execute(

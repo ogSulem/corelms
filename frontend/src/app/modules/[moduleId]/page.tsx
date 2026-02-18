@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 
@@ -62,7 +62,6 @@ type ProgressData = {
 
 export default function ModulePage() {
   const params = useParams<{ moduleId: string }>();
-  const search = useSearchParams();
   const moduleId = params.moduleId;
 
   const [moduleMeta, setModuleMeta] = useState<ModuleMeta | null>(null);

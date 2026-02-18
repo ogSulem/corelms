@@ -369,7 +369,7 @@ def my_history(
     sec_events = db.scalars(
         select(SecurityAuditEvent)
         .where(SecurityAuditEvent.target_user_id == user.id)
-        .where(SecurityAuditEvent.event_type.in_(["auth_login_new_context"]))
+        .where(SecurityAuditEvent.event_type.in_(["auth_login_new_context", "auth_login_success"]))
         .order_by(SecurityAuditEvent.created_at.desc())
         .limit(take)
     ).all()
@@ -570,6 +570,8 @@ def my_history(
                 "event_type": None,
                 "ref_id": str(a.quiz_id) if a.quiz_id else None,
                 "meta": None,
+                "ip": None,
+                "request_id": None,
                 "module_id": ctx.get("module_id"),
                 "module_title": ctx.get("module_title"),
                 "submodule_id": ctx.get("submodule_id"),
@@ -592,6 +594,8 @@ def my_history(
                 "event_type": se.event_type,
                 "ref_id": None,
                 "meta": se.meta,
+                "ip": str(se.ip) if se.ip else None,
+                "request_id": str(se.request_id) if se.request_id else None,
                 "module_id": None,
                 "module_title": None,
                 "submodule_id": None,
@@ -643,6 +647,8 @@ def my_history(
                 "event_type": e.type.value,
                 "ref_id": str(e.ref_id) if e.ref_id else None,
                 "meta": e.meta,
+                "ip": None,
+                "request_id": None,
                 "module_id": module_id,
                 "module_title": module_title,
                 "submodule_id": submodule_id,

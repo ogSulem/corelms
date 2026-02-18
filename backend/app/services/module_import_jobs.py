@@ -383,6 +383,9 @@ def import_module_zip_job(
             print(f"import_module_zip_job: commit done module_id={str(mid)}", flush=True)
             log.info("import_module_zip_job: commit done module_id=%s", str(mid))
 
+            # If cancellation was requested right after commit, stop before any follow-up actions.
+            _cancel_checkpoint(s3_object_key=s3_object_key, stage="post_commit")
+
             _set_job_stage(stage="cleanup", detail=s3_object_key)
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="cleanup")
             cleanup_done = True
@@ -392,6 +395,7 @@ def import_module_zip_job(
             regen_job_id: str | None = None
             if enqueue_regen:
                 try:
+                    _cancel_checkpoint(s3_object_key=s3_object_key, stage="regen_enqueue")
                     _set_job_stage(stage="regen_enqueue", detail=str(mid))
                     q = get_queue("corelms")
                     regen_job = q.enqueue(
@@ -402,6 +406,18 @@ def import_module_zip_job(
                         result_ttl=60 * 60 * 24,
                         failure_ttl=60 * 60 * 24,
                     )
+                    try:
+                        meta = dict(regen_job.meta or {})
+                        meta["job_kind"] = "regen"
+                        meta["module_id"] = str(mid)
+                        meta["module_title"] = str(report.get("module_title") or "")
+                        meta["target_questions"] = 5
+                        meta["actor_user_id"] = str(actor_user_id or "")
+                        meta["source"] = "auto_after_import"
+                        regen_job.meta = meta
+                        regen_job.save_meta()
+                    except Exception:
+                        pass
                     regen_job_id = str(regen_job.id)
                     try:
                         r = get_redis()

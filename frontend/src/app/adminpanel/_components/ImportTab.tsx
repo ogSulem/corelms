@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
+import * as React from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { ImportJobItem, RegenJobItem, AdminModuleItem } from "../adminpanel-client";
@@ -34,6 +35,7 @@ interface ImportTabProps {
   setSelectedJobId: (id: string) => void;
   setJobPanelOpen: (open: boolean) => void;
   cancelImportJob: (id: string) => void;
+  cancelRegenJob: (id: string) => void;
   retryImportJob: (id: string) => void;
   openModuleFromImport: (it: ImportJobItem) => void;
   regenQueue: RegenJobItem[];
@@ -69,7 +71,7 @@ interface ImportTabProps {
   jobResult: any;
 }
 
-export function ImportTab(props: ImportTabProps) {
+export default function ImportTab(props: ImportTabProps) {
   const {
     importFiles,
     importInputRef,
@@ -93,6 +95,7 @@ export function ImportTab(props: ImportTabProps) {
     setSelectedJobId,
     setJobPanelOpen,
     cancelImportJob,
+    cancelRegenJob,
     retryImportJob,
     openModuleFromImport,
     regenQueue,
@@ -169,6 +172,8 @@ export function ImportTab(props: ImportTabProps) {
     error_message?: string;
     module_id?: string;
     module_title?: string;
+    submodule_id?: string;
+    submodule_title?: string;
     object_key?: string;
     source_filename?: string;
   };
@@ -198,7 +203,11 @@ export function ImportTab(props: ImportTabProps) {
       out.push({
         kind: "regen",
         job_id: String(it.job_id),
-        title: String(it.module_title || it.module_id || "МОДУЛЬ"),
+        title: String(
+          it.submodule_title
+            ? `УРОК: ${String(it.submodule_title || "").trim()}`
+            : it.module_title || it.module_id || "МОДУЛЬ"
+        ),
         created_at: it.created_at,
         status: it.status,
         stage: it.stage,
@@ -209,6 +218,8 @@ export function ImportTab(props: ImportTabProps) {
         error_message: it.error_message,
         module_id: it.module_id,
         module_title: it.module_title,
+        submodule_id: (it as any).submodule_id,
+        submodule_title: (it as any).submodule_title,
       });
     }
 
@@ -246,10 +257,11 @@ export function ImportTab(props: ImportTabProps) {
     for (const it of regenHistory || []) {
       const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
       if (!jid) continue;
+      const subTitle = String((it as any)?.submodule_title || "").trim();
       out.push({
         kind: "regen",
         job_id: jid,
-        title: String((it as any)?.module_title || (it as any)?.module_id || "МОДУЛЬ"),
+        title: String(subTitle ? `УРОК: ${subTitle}` : (it as any)?.module_title || (it as any)?.module_id || "МОДУЛЬ"),
         created_at: String((it as any)?.created_at || "") || undefined,
         status: String((it as any)?.status || "") || undefined,
         stage: String((it as any)?.stage || "") || undefined,
@@ -260,6 +272,8 @@ export function ImportTab(props: ImportTabProps) {
         error_message: String((it as any)?.error_message || "") || undefined,
         module_id: String((it as any)?.module_id || "") || undefined,
         module_title: String((it as any)?.module_title || "") || undefined,
+        submodule_id: String((it as any)?.submodule_id || "") || undefined,
+        submodule_title: subTitle || undefined,
       });
     }
 
@@ -284,14 +298,144 @@ export function ImportTab(props: ImportTabProps) {
     return (st || "—").toUpperCase();
   };
 
+  const progressForImport = (it: PipelineItem): number | null => {
+    if (it.kind !== "import") return null;
+    const st = String(it.status || "").trim().toLowerCase();
+    const stage = String(it.stage || "").trim().toLowerCase();
+    if (st === "finished") return 100;
+    if (st === "failed" || st === "canceled" || stage === "canceled") return 100;
+    if (stage === "upload_s3") return Math.max(1, Math.min(99, Number(s3Label?.percent || 1)));
+
+    // backend pipeline stages (module_import_jobs)
+    if (stage === "enqueue") return 12;
+    if (stage === "queued" || stage === "deferred" || st === "queued" || st === "deferred") return 8;
+    if (stage === "start" || stage === "load") return 18;
+    if (stage === "download") return 28;
+    if (stage === "extract") return 38;
+    if (stage === "import") return 55;
+    if (stage === "ai" || stage === "ollama") return 70;
+    if (stage === "fallback") return 74;
+    if (stage === "replace") return 80;
+    if (stage === "commit") return 90;
+    if (stage === "cleanup") return 96;
+    if (stage === "regen_enqueue" || stage === "regen_enqueued" || stage === "finalizing") return 98;
+
+    if (st === "started") return 45;
+    return 30;
+  };
+
   const canCancelImport = (it: { status?: string } | null | undefined) => {
     const st = String((it as any)?.status || "").trim().toLowerCase();
     if (!st) return false;
     return st === "queued" || st === "deferred" || st === "scheduled";
   };
 
+  const [uploadOverlayMinimized, setUploadOverlayMinimized] = useState(false);
+
+  const uploadActive =
+    String(clientImportStage || "").trim().toLowerCase() === "upload_s3" ||
+    String(clientImportStage || "").trim().toLowerCase() === "enqueue";
+
   return (
     <div className="mt-8 space-y-6">
+      <Modal
+        open={uploadActive && !uploadOverlayMinimized}
+        title="ИДЁТ ЗАГРУЗКА"
+        disableClose
+        onClose={() => {
+          // non-closable by design
+        }}
+        className="max-w-[min(96vw,720px)]"
+        footer={
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[10px] font-bold text-zinc-600">Можно свернуть, но не обновляй страницу.</div>
+            <button
+              type="button"
+              className="h-10 rounded-xl px-4 text-[10px] font-black uppercase tracking-widest transition border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+              onClick={() => setUploadOverlayMinimized(true)}
+            >
+              СВЕРНУТЬ
+            </button>
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          <div className="text-[11px] font-bold text-zinc-900">
+            Не обновляй страницу и не закрывай вкладку — иначе файл потеряется.
+          </div>
+          {String(clientImportFileName || "").trim() ? (
+            <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] font-bold text-zinc-700 break-words">
+              {String(clientImportFileName || "").trim()}
+            </div>
+          ) : null}
+
+          {String(clientImportStage || "")
+            .trim()
+            .toLowerCase() === "upload_s3" && s3Label ? (
+            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-700">STORAGE UPLOAD</div>
+                <div className="text-[10px] font-black tabular-nums text-zinc-900">{s3Label.percent}%</div>
+              </div>
+              <div className="mt-2 h-2 w-full rounded-full bg-white border border-zinc-200 overflow-hidden">
+                <div className="h-full bg-[#fe9900] transition-all" style={{ width: `${s3Label.percent}%` }} />
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">
+                  {s3Label.loadedHuman} / {s3Label.totalHuman}
+                </div>
+                <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">{s3Label.speed}</div>
+                <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">ОСТАЛОСЬ ~ {s3Label.eta}</div>
+              </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-700">ОБРАБОТКА</div>
+              <div className="mt-2 text-[11px] font-bold text-zinc-700">
+                {String(importStageLabel || "").trim() || "..."}
+              </div>
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {uploadActive ? (
+        <div className="rounded-2xl border border-zinc-200 bg-white p-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ЗАГРУЗКА В STORAGE</div>
+              {String(clientImportFileName || "").trim() ? (
+                <div className="mt-1 text-[11px] font-bold text-zinc-800 break-words">{String(clientImportFileName || "").trim()}</div>
+              ) : null}
+            </div>
+            {uploadOverlayMinimized ? (
+              <button
+                type="button"
+                className="h-9 rounded-xl px-3 text-[9px] font-black uppercase tracking-widest transition border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+                onClick={() => setUploadOverlayMinimized(false)}
+              >
+                РАЗВЕРНУТЬ
+              </button>
+            ) : null}
+          </div>
+
+          {String(clientImportStage || "").trim().toLowerCase() === "upload_s3" && s3Label ? (
+            <div className="mt-3">
+              <div className="mt-2 h-2 w-full rounded-full bg-white border border-zinc-200 overflow-hidden">
+                <div className="h-full bg-[#fe9900] transition-all" style={{ width: `${s3Label.percent}%` }} />
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{s3Label.loadedHuman} / {s3Label.totalHuman}</div>
+                <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{s3Label.speed}</div>
+                <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">ОСТАЛОСЬ ~ {s3Label.eta}</div>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-2 text-[11px] font-bold text-zinc-700">{String(importStageLabel || "").trim() || "..."}</div>
+          )}
+        </div>
+      ) : null}
+
       <div className="grid gap-6 lg:grid-cols-12 items-start">
         <div className="lg:col-span-7 relative overflow-hidden rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">
           <div className="flex flex-wrap items-center gap-3 justify-between">
@@ -416,62 +560,132 @@ export function ImportTab(props: ImportTabProps) {
             ) : null}
 
             <div className="mt-3 grid gap-2">
-              {(pipelineActive || []).map((it) => {
-                const stage = String(it.stage || "").toLowerCase();
-                const st = String(it.status || "").toLowerCase();
-                const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
-                const createdAt = String(it.created_at || "").trim();
-                const detail = String(it.detail || "").trim();
-                const badge = badgeFor(it);
+              {(() => {
+                const imports = (pipelineActive || []).filter((x: PipelineItem) => x.kind === "import");
+                const regens = (pipelineActive || []).filter((x: PipelineItem) => x.kind === "regen");
                 return (
-                  <button
-                    key={`${it.kind}:${it.job_id}`}
-                    type="button"
-                    className="w-full text-left flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50"
-                    onClick={() => {
-                      setSelectedJobId(String(it.job_id));
-                      setJobPanelOpen(true);
-                    }}
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{it.title}</div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2">
-                        <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                          {it.kind === "import" ? "IMPORT" : "REGEN"} · {badge}
-                        </div>
-                        <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                          {stage ? stage.toUpperCase() : "—"}
-                        </div>
-                        {createdAt ? (
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            {createdAt.replace("T", " ").slice(0, 16)}
-                          </div>
-                        ) : null}
+                  <>
+                    {imports.slice(0, 3).length ? (
+                      <div className="grid gap-2">
+                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИМПОРТЫ (АКТИВНЫЕ)</div>
+                        {imports.map((it: PipelineItem) => {
+                          const stage = String(it.stage || "").toLowerCase();
+                          const st = String(it.status || "").toLowerCase();
+                          const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
+                          const createdAt = String(it.created_at || "").trim();
+                          const detail = String(it.detail || "").trim();
+                          const badge = badgeFor(it);
+                          const pct = progressForImport(it);
+                          return (
+                            <button
+                              key={`${it.kind}:${it.job_id}`}
+                              type="button"
+                              className="w-full text-left rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50"
+                              onClick={() => {
+                                setSelectedJobId(String(it.job_id));
+                                setJobPanelOpen(true);
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{it.title}</div>
+                                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                      IMPORT · {badge}
+                                    </div>
+                                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                      {stage ? stage.toUpperCase() : "—"}
+                                    </div>
+                                    {createdAt ? (
+                                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                        {createdAt.replace("T", " ").slice(0, 16)}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                  {typeof pct === "number" ? (
+                                    <div className="mt-2 h-2 w-full rounded-full bg-white border border-zinc-200 overflow-hidden">
+                                      <div className="h-full bg-[#fe9900] transition-all" style={{ width: `${Math.max(1, Math.min(100, pct))}%` }} />
+                                    </div>
+                                  ) : null}
+                                  {detail ? (
+                                    <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words line-clamp-2">{detail}</div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
-                      {detail ? (
-                        <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words line-clamp-2">{detail}</div>
-                      ) : null}
-                    </div>
+                    ) : null}
 
-                    <div className="shrink-0 flex items-center gap-2">
-                      {it.kind === "import" ? (
-                        <button
-                          type="button"
-                          className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
-                          disabled={terminal || !canCancelImport(it)}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            void cancelImportJob(String(it.job_id));
-                          }}
-                        >
-                          ОТМЕНА
-                        </button>
-                      ) : null}
-                    </div>
-                  </button>
+                    {regens.length ? (
+                      <div className="grid gap-2">
+                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">РЕГЕН (АКТИВНЫЕ)</div>
+                        {regens.map((it: PipelineItem) => {
+                          const stage = String(it.stage || "").toLowerCase();
+                          const st = String(it.status || "").toLowerCase();
+                          const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
+                          const createdAt = String(it.created_at || "").trim();
+                          const detail = String(it.detail || "").trim();
+                          const badge = badgeFor(it);
+                          return (
+                            <button
+                              key={`${it.kind}:${it.job_id}`}
+                              type="button"
+                              className="w-full text-left flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50"
+                              onClick={() => {
+                                setSelectedJobId(String(it.job_id));
+                                setJobPanelOpen(true);
+                              }}
+                            >
+                              <div className="min-w-0">
+                                <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{it.title}</div>
+                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                    {it.kind === "import" ? "IMPORT" : "REGEN"} · {badge}
+                                  </div>
+                                  {String(it.submodule_title || "").trim() ? (
+                                    <div className="rounded-full border border-[#fe9900]/25 bg-[#fe9900]/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-[#fe9900]">
+                                      УРОК
+                                    </div>
+                                  ) : null}
+                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                    {stage ? stage.toUpperCase() : "—"}
+                                  </div>
+                                  {createdAt ? (
+                                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                      {createdAt.replace("T", " ").slice(0, 16)}
+                                    </div>
+                                  ) : null}
+                                </div>
+                                {detail ? (
+                                  <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words line-clamp-2">{detail}</div>
+                                ) : null}
+                              </div>
+
+                              <div className="shrink-0 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
+                                  disabled={terminal}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    void cancelRegenJob(String(it.job_id));
+                                  }}
+                                >
+                                  ОТМЕНА
+                                </button>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </>
                 );
-              })}
+              })()}
+
               {!importQueueLoading && !regenHistoryLoading && !(pipelineActive || []).length ? (
                 <div className="text-[10px] font-bold text-zinc-500">—</div>
               ) : null}
@@ -525,7 +739,7 @@ export function ImportTab(props: ImportTabProps) {
               </div>
 
               <div className="max-h-[72vh] overflow-auto pr-1 grid gap-2">
-                {(importQueueView === "history" ? pipelineHistory : pipelineActive).map((it) => {
+                {(importQueueView === "history" ? pipelineHistory : pipelineActive).map((it: PipelineItem) => {
                   const st = String(it.status || "").toLowerCase();
                   const stage = String(it.stage || "").toLowerCase();
                   const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
@@ -584,28 +798,15 @@ export function ImportTab(props: ImportTabProps) {
                               МОДУЛЬ
                             </Button>
                           ) : null}
-                          {it.kind === "import" && st === "failed" ? (
-                            <Button
-                              variant="outline"
-                              className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                void retryImportJob(String(it.job_id));
-                              }}
-                            >
-                              ПОВТОРИТЬ
-                            </Button>
-                          ) : null}
-                          {it.kind === "import" ? (
+                          {it.kind === "regen" ? (
                             <Button
                               variant="destructive"
                               className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                              disabled={terminal || !canCancelImport(it)}
+                              disabled={terminal}
                               onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                void cancelImportJob(String(it.job_id));
+                                void cancelRegenJob(String(it.job_id));
                               }}
                             >
                               ОТМЕНА
@@ -663,13 +864,13 @@ export function ImportTab(props: ImportTabProps) {
                   </button>
                   <button
                     type="button"
-                    className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
+                    className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100 disabled:opacity-60"
                     disabled={
-                      !selectedJobId ||
+                      String(jobKind || "").trim().toLowerCase() !== "regen" ||
                       cancelBusy ||
-                      ["finished", "failed"].includes(String(jobStatus || "")) ||
-                      String(jobStage || "") === "canceled" ||
-                      (String(jobKind || "").toLowerCase() === "import" && !canCancelImport({ status: jobStatus }))
+                      String(jobStatus || "").trim().toLowerCase() === "finished" ||
+                      String(jobStatus || "").trim().toLowerCase() === "failed" ||
+                      String(jobStage || "").trim().toLowerCase() === "canceled"
                     }
                     onClick={() => void cancelCurrentJob()}
                   >

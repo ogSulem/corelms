@@ -11,7 +11,8 @@ interface ModulesTabProps {
   setSelectedAdminModuleId: (id: string) => void;
   selectedAdminModule: AdminModuleItem | null;
   setSelectedModuleVisibility: (active: boolean) => Promise<void>;
-  activeRegenByModuleId: Record<string, { job_id: string; status: string; stage: string }>;
+  activeModuleRegenByModuleId: Record<string, { job_id: string; status: string; stage: string }>;
+  activeSubmoduleRegenBySubmoduleId: Record<string, { job_id: string; status: string; stage: string; module_id: string }>;
   regenerateSelectedModuleQuizzes: () => Promise<void>;
   deleteSelectedModule: () => Promise<void>;
   selectedAdminModuleSubsLoading: boolean;
@@ -46,7 +47,8 @@ export function ModulesTab(props: ModulesTabProps) {
     setSelectedAdminModuleId,
     selectedAdminModule,
     setSelectedModuleVisibility,
-    activeRegenByModuleId,
+    activeModuleRegenByModuleId,
+    activeSubmoduleRegenBySubmoduleId,
     regenerateSelectedModuleQuizzes,
     deleteSelectedModule,
     selectedAdminModuleSubsLoading,
@@ -106,6 +108,7 @@ export function ModulesTab(props: ModulesTabProps) {
               const active = String(m.id) === String(selectedAdminModuleId);
               const q = m.question_quality;
               const needs = Number(q?.needs_regen_current || 0) > 0;
+              const heur = Number(q?.heur_current || 0) > 0;
               return (
                 <button
                   key={m.id}
@@ -122,7 +125,7 @@ export function ModulesTab(props: ModulesTabProps) {
                         {m.title}
                       </div>
                       <div className="mt-1 text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                        {m.is_active ? "АКТИВЕН" : "НЕОБХОДИМ РЕГЕН (СКРЫТ ДО ГОТОВНОСТИ)"}
+                        {m.is_active ? "АКТИВЕН" : needs ? "НЕОБХОДИМ РЕГЕН (СКРЫТ ДО ГОТОВНОСТИ)" : heur ? "ЭВРИСТИКА (МОЖНО ПОКАЗАТЬ)" : "СКРЫТ"}
                       </div>
                       <div
                         className={
@@ -130,7 +133,7 @@ export function ModulesTab(props: ModulesTabProps) {
                           (needs ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]" : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
                         }
                       >
-                        {needs ? "NEEDS REGEN" : "NO REGEN"}
+                        {needs ? "NEEDS REGEN" : heur ? "HEUR" : "OK"}
                       </div>
                     </div>
                     <div
@@ -174,16 +177,20 @@ export function ModulesTab(props: ModulesTabProps) {
             </div>
 
             <div className="shrink-0 flex flex-col gap-2">
-              <Button
-                variant="primary"
-                className="h-11 rounded-xl shadow-xl shadow-[#fe9900]/20"
-                disabled={!selectedAdminModuleId || !!activeRegenByModuleId[String(selectedAdminModuleId || "")]}
-                onClick={() => void regenerateSelectedModuleQuizzes()}
-              >
-                {activeRegenByModuleId[String(selectedAdminModuleId || "")]
-                  ? "РЕГЕН ЗАПУЩЕН"
-                  : "РЕГЕН ТЕСТОВ"}
-              </Button>
+              {selectedAdminModuleId && activeModuleRegenByModuleId[String(selectedAdminModuleId || "")] ? (
+                <div className="h-11 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-4 flex items-center justify-center text-[10px] font-black uppercase tracking-widest text-[#fe9900]">
+                  РЕГЕН ЗАПУЩЕН
+                </div>
+              ) : (
+                <Button
+                  variant="primary"
+                  className="h-11 rounded-xl shadow-xl shadow-[#fe9900]/20"
+                  disabled={!selectedAdminModuleId}
+                  onClick={() => void regenerateSelectedModuleQuizzes()}
+                >
+                  РЕГЕН ТЕСТОВ
+                </Button>
+              )}
               <Button
                 variant="destructive"
                 className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
@@ -208,6 +215,13 @@ export function ModulesTab(props: ModulesTabProps) {
               </div>
 
               <div className="mt-5">
+                {selectedAdminModuleId && activeModuleRegenByModuleId[String(selectedAdminModuleId || "")] ? (
+                  <div className="mb-3 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/10 p-4">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-[#fe9900]">РЕГЕН МОДУЛЯ В ПРОЦЕССЕ</div>
+                    <div className="mt-1 text-[11px] font-bold text-zinc-800">Все кнопки регена временно заблокированы</div>
+                  </div>
+                ) : null}
+
                 {selectedAdminModuleSubsLoading ? (
                   <div className="py-10 text-center text-[10px] font-black uppercase tracking-widest text-zinc-600">
                     Загрузка...
@@ -217,14 +231,16 @@ export function ModulesTab(props: ModulesTabProps) {
                     {selectedAdminModuleId ? "Нет уроков" : "Выберите модуль"}
                   </div>
                 ) : (
-                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
+                  <div className="grid gap-2">
                     {selectedAdminModuleSubs.map((s: AdminSubmoduleItem) => {
                       const active = String(s.id) === String(selectedSubmoduleId);
                       const q = qualityBySubId[String(s.id)] as any;
                       const ok = q ? !!q.ok : false;
                       const needs = q ? Number(q.needs_regen || 0) : 0;
                       const total = q ? Number(q.total || 0) : 0;
-                      const moduleRegenRunning = !!activeRegenByModuleId[String(selectedAdminModuleId || "")];
+                      const moduleRegenRunning = !!activeModuleRegenByModuleId[String(selectedAdminModuleId || "")];
+                      const subRegenRunning = !!activeSubmoduleRegenBySubmoduleId[String(s.id)];
+                      const subJob = activeSubmoduleRegenBySubmoduleId[String(s.id)];
                       return (
                         <div
                           key={s.id}
@@ -262,21 +278,33 @@ export function ModulesTab(props: ModulesTabProps) {
                                   {q ? (ok ? "OK" : "NEEDS") : selectedAdminModuleSubsQualityLoading ? "..." : "—"}
                                 </div>
                                 {q ? (
-                                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                                    {total}/5 · needs {needs}
-                                  </div>
+                                  <>
+                                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                      {total}/5
+                                    </div>
+                                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                      needs {needs}
+                                    </div>
+                                  </>
                                 ) : null}
                               </div>
                             </button>
 
-                            <Button
-                              variant="outline"
-                              className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                              disabled={!s.id || moduleRegenRunning}
-                              onClick={() => void regenerateSubmoduleQuiz(String(s.id))}
-                            >
-                              REGEN УРОКА
-                            </Button>
+                            {moduleRegenRunning || subRegenRunning ? (
+                              <div className="h-9 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-3 flex items-center justify-center text-[9px] font-black uppercase tracking-widest text-[#fe9900]">
+                                {moduleRegenRunning ? "РЕГЕН МОДУЛЯ" : "РЕГЕН УРОКА"}
+                                {subJob?.job_id ? ` · ${String(subJob.job_id).slice(0, 6)}` : ""}
+                              </div>
+                            ) : (
+                              <Button
+                                variant="outline"
+                                className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                disabled={!s.id}
+                                onClick={() => void regenerateSubmoduleQuiz(String(s.id))}
+                              >
+                                REGEN УРОКА
+                              </Button>
+                            )}
                           </div>
                         </div>
                       );

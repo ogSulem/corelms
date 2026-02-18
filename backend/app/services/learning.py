@@ -4,6 +4,7 @@ import uuid
 from typing import List, Dict, Any, Optional
 from sqlalchemy import select, func, desc
 from sqlalchemy.orm import Session
+import json
 
 from app.models.module import Module, ModuleSkillMap, Submodule
 from app.models.attempt import QuizAttempt
@@ -256,17 +257,31 @@ class LearningService:
             for quiz_id, score, passed in last_attempt_rows
         }
 
-        # Батч-загрузка подтверждений прочтения
-        read_ids = set(
-            self.db.scalars(
-                select(LearningEvent.ref_id).where(
-                    LearningEvent.user_id == user.id,
-                    LearningEvent.type == LearningEventType.submodule_opened,
-                    LearningEvent.meta == "read",
-                    LearningEvent.ref_id.in_([s.id for s in submodules])
-                )
-            ).all()
-        )
+        def _meta_action_is_read(meta: str | None) -> bool:
+            if not meta:
+                return False
+            if str(meta).strip().lower() == "read":
+                return True
+            try:
+                obj = json.loads(str(meta))
+                if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
+                    return True
+            except Exception:
+                return False
+            return False
+
+        # Батч-загрузка подтверждений прочтения.
+        # Important: meta can be legacy 'read' OR JSON like {"action":"read"}.
+        sub_ids = [s.id for s in submodules]
+        read_rows = self.db.execute(
+            select(LearningEvent.ref_id, LearningEvent.meta).where(
+                LearningEvent.user_id == user.id,
+                LearningEvent.type == LearningEventType.submodule_opened,
+                LearningEvent.meta.is_not(None),
+                LearningEvent.ref_id.in_(sub_ids),
+            )
+        ).all()
+        read_ids = {ref_id for (ref_id, meta) in (read_rows or []) if _meta_action_is_read(meta)}
 
         items = []
         passed_count = 0

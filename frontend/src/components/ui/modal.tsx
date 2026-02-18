@@ -12,6 +12,7 @@ export function Modal({
   children,
   footer,
   className,
+  disableClose,
 }: {
   open: boolean;
   title?: string;
@@ -19,26 +20,31 @@ export function Modal({
   children: React.ReactNode;
   footer?: React.ReactNode;
   className?: string;
+  disableClose?: boolean;
 }) {
   React.useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !disableClose) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, disableClose]);
 
   if (!open) return null;
 
   return createPortal(
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
-      <button
-        type="button"
-        aria-label="Close modal"
-        className="absolute inset-0 bg-black/25 backdrop-blur-sm"
-        onClick={onClose}
-      />
+      {disableClose ? (
+        <div className="absolute inset-0 bg-black/25 backdrop-blur-sm" />
+      ) : (
+        <button
+          type="button"
+          aria-label="Close modal"
+          className="absolute inset-0 bg-black/25 backdrop-blur-sm"
+          onClick={onClose}
+        />
+      )}
       <div
         role="dialog"
         aria-modal="true"
