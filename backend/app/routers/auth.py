@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.core.security_audit_log import audit_log
 from app.core.security import get_current_user
+from app.core.redis_client import get_redis
 from app.db.session import get_db
 from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User, UserRole
@@ -26,8 +27,10 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 class TokenResponse(BaseModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
     expires_in: int | None = None
+    refresh_expires_in: int | None = None
 
 
 class MeResponse(BaseModel):
@@ -75,6 +78,102 @@ def _create_access_token(*, user_id: str, role: str) -> str:
         "jti": str(uuid.uuid4()),
     }
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def _now() -> datetime:
+    return datetime.utcnow()
+
+
+def _refresh_token_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _session_limits() -> tuple[int, int, int]:
+    # Returns: refresh_ttl_seconds, idle_ttl_seconds, absolute_ttl_seconds
+    refresh_days = int(getattr(settings, "session_refresh_token_days", 30) or 30)
+    idle_hours = int(getattr(settings, "session_idle_timeout_hours", 12) or 12)
+    abs_days = int(getattr(settings, "session_absolute_timeout_days", 30) or 30)
+    refresh_ttl = max(60 * 60, refresh_days * 24 * 60 * 60)
+    idle_ttl = max(5 * 60, idle_hours * 60 * 60)
+    abs_ttl = max(60 * 60, abs_days * 24 * 60 * 60)
+    return refresh_ttl, idle_ttl, abs_ttl
+
+
+def _issue_refresh_session(*, user: User, request: Request) -> tuple[str, int]:
+    token = "rt_" + str(uuid.uuid4()) + "_" + str(uuid.uuid4())
+    h = _refresh_token_hash(token)
+    refresh_ttl, idle_ttl, abs_ttl = _session_limits()
+    now = _now()
+    ip = _client_ip_from_request(request)
+    ua = str(request.headers.get("user-agent") or "")[:400]
+    payload = {
+        "user_id": str(user.id),
+        "created_at": now.isoformat(),
+        "last_used_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=abs_ttl)).isoformat(),
+        "idle_ttl_seconds": int(idle_ttl),
+        "ip": ip,
+        "user_agent": ua,
+    }
+    r = get_redis()
+    r.setex(f"auth:refresh:{h}", int(refresh_ttl), json.dumps(payload, ensure_ascii=False))
+    return token, refresh_ttl
+
+
+def _rotate_refresh_session(*, refresh_token: str, request: Request) -> tuple[str, str, int, dict] | None:
+    tok = str(refresh_token or "").strip()
+    if not tok:
+        return None
+    h = _refresh_token_hash(tok)
+    r = get_redis()
+    raw = r.get(f"auth:refresh:{h}")
+    if not raw:
+        return None
+    try:
+        sess = json.loads(str(raw))
+        if not isinstance(sess, dict):
+            return None
+    except Exception:
+        return None
+
+    now = _now()
+    try:
+        created_at = datetime.fromisoformat(str(sess.get("created_at") or ""))
+    except Exception:
+        created_at = now
+    try:
+        last_used = datetime.fromisoformat(str(sess.get("last_used_at") or ""))
+    except Exception:
+        last_used = created_at
+    try:
+        expires_at = datetime.fromisoformat(str(sess.get("expires_at") or ""))
+    except Exception:
+        expires_at = now
+
+    idle_ttl = int(sess.get("idle_ttl_seconds") or 0)
+    if idle_ttl <= 0:
+        _, idle_ttl, _ = _session_limits()
+
+    # Enforce absolute + idle expiration.
+    if now >= expires_at:
+        r.delete(f"auth:refresh:{h}")
+        return None
+    if (now - last_used).total_seconds() > float(idle_ttl):
+        r.delete(f"auth:refresh:{h}")
+        return None
+
+    # Rotate token.
+    new_token = "rt_" + str(uuid.uuid4()) + "_" + str(uuid.uuid4())
+    new_h = _refresh_token_hash(new_token)
+    refresh_ttl, _, _ = _session_limits()
+    ip = _client_ip_from_request(request)
+    ua = str(request.headers.get("user-agent") or "")[:400]
+    sess["last_used_at"] = now.isoformat()
+    sess["ip"] = ip
+    sess["user_agent"] = ua
+    r.setex(f"auth:refresh:{new_h}", int(refresh_ttl), json.dumps(sess, ensure_ascii=False))
+    r.delete(f"auth:refresh:{h}")
+    return new_token, str(sess.get("user_id") or ""), refresh_ttl, sess
 
 
 def _public_role(role: UserRole) -> str:
@@ -230,7 +329,20 @@ def token(
 
     db.commit()
 
-    return TokenResponse(access_token=_create_access_token(user_id=str(user.id), role=_public_role(user.role)))
+    refresh_token, refresh_ttl = _issue_refresh_session(user=user, request=request)
+
+    expires_in = None
+    try:
+        expires_in = int(settings.jwt_access_token_minutes) * 60
+    except Exception:
+        expires_in = None
+
+    return TokenResponse(
+        access_token=_create_access_token(user_id=str(user.id), role=_public_role(user.role)),
+        refresh_token=refresh_token,
+        expires_in=expires_in,
+        refresh_expires_in=int(refresh_ttl),
+    )
 
 
 @router.get("/me", response_model=MeResponse)
@@ -250,17 +362,35 @@ def me(user: User = Depends(get_current_user)):
 @router.post("/refresh", response_model=TokenResponse)
 def refresh_token(
     request: Request,
-    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     _: object = rate_limit(key_prefix="auth_refresh", limit=120, window_seconds=60),
 ):
+    auth = str(request.headers.get("authorization") or "")
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="not authenticated")
+
+    rotated = _rotate_refresh_session(refresh_token=token, request=request)
+    if rotated is None:
+        raise HTTPException(status_code=401, detail="invalid token")
+    new_refresh, user_id, refresh_ttl, _sess = rotated
+    try:
+        uid = uuid.UUID(str(user_id))
+    except Exception:
+        raise HTTPException(status_code=401, detail="invalid token")
+    user = db.scalar(select(User).where(User.id == uid))
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid token")
+
     expires_in = None
     try:
         expires_in = int(settings.jwt_access_token_minutes) * 60
     except Exception:
         expires_in = None
 
-    token = _create_access_token(user_id=str(user.id), role=_public_role(user.role))
+    token_out = _create_access_token(user_id=str(user.id), role=_public_role(user.role))
     audit_log(
         db=db,
         request=request,
@@ -270,7 +400,43 @@ def refresh_token(
         meta={"ip": _client_ip_from_request(request), "user_agent": str(request.headers.get("user-agent") or "")[:400]},
     )
     db.commit()
-    return TokenResponse(access_token=token, expires_in=expires_in)
+    return TokenResponse(
+        access_token=token_out,
+        refresh_token=new_refresh,
+        expires_in=expires_in,
+        refresh_expires_in=int(refresh_ttl),
+    )
+
+
+@router.post("/logout")
+def logout(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: object = rate_limit(key_prefix="auth_logout", limit=120, window_seconds=60),
+):
+    auth = str(request.headers.get("authorization") or "")
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    if token:
+        try:
+            h = _refresh_token_hash(token)
+            r = get_redis()
+            raw = r.get(f"auth:refresh:{h}")
+            r.delete(f"auth:refresh:{h}")
+            uid = None
+            try:
+                sess = json.loads(str(raw)) if raw else None
+                if isinstance(sess, dict):
+                    uid = sess.get("user_id")
+            except Exception:
+                uid = None
+            if uid:
+                audit_log(db=db, request=request, event_type="auth_logout", actor_user_id=uuid.UUID(str(uid)), target_user_id=uuid.UUID(str(uid)))
+                db.commit()
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 @router.post("/change-password")

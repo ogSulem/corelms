@@ -332,9 +332,12 @@ export default function ImportTab(props: ImportTabProps) {
 
   const [uploadOverlayMinimized, setUploadOverlayMinimized] = useState(false);
 
-  const uploadActive =
-    String(clientImportStage || "").trim().toLowerCase() === "upload_s3" ||
-    String(clientImportStage || "").trim().toLowerCase() === "enqueue";
+  const uploadActive = (() => {
+    if (!importBusy) return false;
+    const st = String(clientImportStage || "").trim().toLowerCase();
+    if (!st) return false;
+    return st !== "processing" && st !== "done" && st !== "failed" && st !== "canceled";
+  })();
 
   return (
     <div className="mt-8 space-y-6">

@@ -81,16 +81,32 @@ def _parse_order(name: str, fallback: int) -> int:
 
 
 def _is_lesson_asset(path: pathlib.Path) -> bool:
-    return path.suffix.lower() in {".docx", ".txt", ".md", ".pdf", ".mp4", ".webm", ".png", ".jpg", ".jpeg"}
+    # Legacy compatibility: kept for filtering theory vs. assets.
+    # The importer is designed to accept arbitrary file types as assets.
+    return True
 
 
 def _is_module_material(path: pathlib.Path) -> bool:
     return path.suffix.lower() in {".xlsx", ".xls", ".pptx", ".ppt", ".zip", ".rar", ".7z"}
 
 
+def _should_ignore_file(path: pathlib.Path) -> bool:
+    try:
+        if path.name.startswith("~$"):
+            return True
+        if path.name.startswith("._"):
+            return True
+        parts = {p for p in path.parts}
+        if "__MACOSX" in parts:
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def _list_files_recursive(root: pathlib.Path) -> list[pathlib.Path]:
     try:
-        return sorted([p for p in root.rglob("*") if p.is_file() and not p.name.startswith("~$")])
+        return sorted([p for p in root.rglob("*") if p.is_file() and not _should_ignore_file(p)])
     except Exception:
         return []
 
@@ -105,7 +121,7 @@ def _has_any_lesson_content(root: pathlib.Path) -> bool:
 def _collect_leaf_lesson_dirs(root: pathlib.Path) -> list[pathlib.Path]:
     out: list[pathlib.Path] = []
     try:
-        direct_files = [p for p in root.iterdir() if p.is_file() and not p.name.startswith("~$")]
+        direct_files = [p for p in root.iterdir() if p.is_file() and not _should_ignore_file(p)]
         direct_dirs = [p for p in root.iterdir() if p.is_dir() and p.name not in {"_module", "__MACOSX"}]
     except Exception:
         return out
@@ -365,15 +381,21 @@ def import_module_from_dir(
 
     module_material_dir = module_dir / "_module"
     if module_material_dir.exists() and module_material_dir.is_dir():
-        for fp in sorted([p for p in module_material_dir.iterdir() if p.is_file() and not p.name.startswith("~$")]):
-            _set_job_detail(f"material: {fp.name}")
-            object_key = f"modules/{m.id}/_module/{fp.name}"
+        for fp in _list_files_recursive(module_material_dir):
+            try:
+                rel = fp.relative_to(module_material_dir)
+                rel_name = str(rel.as_posix())
+            except Exception:
+                rel_name = fp.name
+
+            _set_job_detail(f"material: {rel_name}")
+            object_key = f"modules/{m.id}/_module/{rel_name}"
             mime, size = _upload_file(s3=s3, object_key=object_key, file_path=fp)
 
             asset = ContentAsset(
                 bucket=settings.s3_bucket,
                 object_key=object_key,
-                original_filename=fp.name,
+                original_filename=rel_name,
                 mime_type=mime,
                 size_bytes=size,
                 checksum_sha256=None,
@@ -404,7 +426,7 @@ def import_module_from_dir(
         lesson_dirs = [module_dir]
 
     if root_as_lesson:
-        root_files = sorted([p for p in module_dir.iterdir() if p.is_file() and not p.name.startswith("~$")])
+        root_files = sorted([p for p in module_dir.iterdir() if p.is_file() and not _should_ignore_file(p)])
         theory_files = [p for p in root_files if _is_theory_file(p)]
         if len(theory_files) > 1:
             theory_files = sorted(theory_files, key=lambda x: _parse_order(x.name, 999))
@@ -421,7 +443,7 @@ def import_module_from_dir(
         extra_assets = []
         nested_order = 0
         for i, ld in enumerate(lesson_dirs, start=1):
-            direct_files = sorted([p for p in ld.iterdir() if p.is_file() and not p.name.startswith("~$")])
+            direct_files = sorted([p for p in ld.iterdir() if p.is_file() and not _should_ignore_file(p)])
             if direct_files:
                 lesson_specs.append((_parse_order(ld.name, i), _guess_title(ld.name), direct_files, ld))
                 continue
@@ -432,7 +454,7 @@ def import_module_from_dir(
                 rel = " / ".join([_guess_title(p.name) for p in leaf.relative_to(ld).parts if str(p).strip()])
                 title2 = f"{_guess_title(ld.name)} / {rel}" if rel else _guess_title(ld.name)
                 files2 = _list_files_recursive(leaf)
-                files2 = [p for p in files2 if _is_lesson_asset(p) or _is_module_material(p) or _is_theory_file(p)]
+                files2 = [p for p in files2 if not _should_ignore_file(p)]
                 if not files2:
                     continue
                 parent_order = _parse_order(ld.name, i)
@@ -565,36 +587,22 @@ def import_module_from_dir(
 
         per_asset_order = 1
         # If this module is flat (no lesson folders), attach non-theory assets to the first lesson.
+        files_for_assets = files
         if root_as_lesson and i == 1 and extra_assets:
-            files = list(files) + list(extra_assets)
-        for fp in files:
-            if not _is_lesson_asset(fp) and not _is_module_material(fp):
+            files_for_assets = list(files) + list(extra_assets)
+
+        seen_asset_paths: set[pathlib.Path] = set()
+        for fp in files_for_assets:
+            try:
+                if not fp.exists() or not fp.is_file():
+                    continue
+            except Exception:
                 continue
-
-            _set_job_detail(f"asset: {fp.name}")
-
-            if _is_module_material(fp) and not _is_lesson_asset(fp):
-                object_key = f"modules/{m.id}/_module/{fp.name}"
-                mime, size = _upload_file(s3=s3, object_key=object_key, file_path=fp)
-
-                asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == object_key))
-                if asset is None:
-                    asset = ContentAsset(
-                        bucket=settings.s3_bucket,
-                        object_key=object_key,
-                        original_filename=fp.name,
-                        mime_type=mime,
-                        size_bytes=size,
-                        checksum_sha256=None,
-                        created_by=None,
-                    )
-                    db.add(asset)
-                    db.flush()
-
-                if report is not None:
-                    report["module_assets"] = int(report.get("module_assets") or 0) + 1
+            if _should_ignore_file(fp):
                 continue
+            seen_asset_paths.add(fp)
 
+        for fp in sorted(seen_asset_paths, key=lambda x: _asset_sort_key(fp=x, lesson_root=lesson_root)):
             rel_name = fp.name
             try:
                 rel = fp.relative_to(lesson_root)
@@ -602,6 +610,7 @@ def import_module_from_dir(
             except Exception:
                 rel_name = fp.name
 
+            _set_job_detail(f"asset: {rel_name}")
             object_key = f"modules/{m.id}/{order:02d}/{rel_name}"
             mime, size = _upload_file(s3=s3, object_key=object_key, file_path=fp)
 
@@ -610,7 +619,7 @@ def import_module_from_dir(
                 asset = ContentAsset(
                     bucket=settings.s3_bucket,
                     object_key=object_key,
-                    original_filename=fp.name,
+                    original_filename=rel_name,
                     mime_type=mime,
                     size_bytes=size,
                     checksum_sha256=None,

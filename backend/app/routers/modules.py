@@ -15,6 +15,7 @@ from app.models.user import User
 from app.schemas.modules_overview import ModulesOverviewResponse
 from app.schemas.module import ModulePublic, SubmoduleAssetsResponse, SubmodulePublic
 from app.services.modules import ModuleService
+from app.services.storage import s3_prefix_has_objects
 
 router = APIRouter(prefix="/modules", tags=["modules"])
 
@@ -29,6 +30,7 @@ def modules_overview(db: Session = Depends(get_db), user: User = Depends(get_cur
 @router.get("", response_model=list[ModulePublic])
 def list_modules(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     modules = db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()  # noqa: E712
+    modules = [m for m in modules if s3_prefix_has_objects(prefix=f"modules/{m.id}/")]
     return [
         {
             "id": str(m.id),
@@ -46,6 +48,9 @@ def list_modules(db: Session = Depends(get_db), _: User = Depends(get_current_us
 def get_module(module_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     m = db.scalar(select(Module).where(Module.id == module_id))
     if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    if not s3_prefix_has_objects(prefix=f"modules/{m.id}/"):
         raise HTTPException(status_code=404, detail="module not found")
 
     return {

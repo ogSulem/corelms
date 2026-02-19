@@ -12,6 +12,7 @@ from app.models.audit import LearningEvent, LearningEventType
 from app.models.user import User
 
 from app.services.learning import LearningService
+from app.services.storage import s3_prefix_has_objects
 
 class ModuleService:
     def __init__(self, db: Session):
@@ -23,9 +24,11 @@ class ModuleService:
         Возвращает обзор модулей с рассчитанным прогрессом для пользователя.
         Оптимизировано для исключения N+1 запросов.
         """
-        modules = self.db.scalars(
-            select(Module).where(Module.is_active == True).order_by(Module.title)
-        ).all()
+        modules = self.db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()
+
+        # Storage consistency: if a module has no objects in S3 under modules/<id>/,
+        # it must not appear in the app.
+        modules = [m for m in modules if s3_prefix_has_objects(prefix=f"modules/{m.id}/")]
         
         if not modules:
             return []

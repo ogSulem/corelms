@@ -39,11 +39,9 @@ def create_app() -> FastAPI:
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 origin = (request.headers.get("origin") or "").strip()
                 if origin and origin not in allow_origins:
-                    path = getattr(getattr(request, "url", None), "path", "")
-                    if path.startswith("/admin") or path.startswith("/auth"):
-                        from fastapi import HTTPException
+                    from fastapi import HTTPException
 
-                        raise HTTPException(status_code=403, detail="invalid origin")
+                    raise HTTPException(status_code=403, detail="invalid origin")
             response = await call_next(request)
             status_code = int(getattr(response, "status_code", 0) or 0)
         except Exception:

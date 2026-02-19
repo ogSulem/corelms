@@ -28,6 +28,12 @@ interface DiagnosticsTabProps {
   clearRuntimeHfToken: () => Promise<void>;
   saveRuntimeLlmSettings: () => Promise<void>;
   loadRuntimeLlmSettings: () => Promise<void>;
+
+  brokenModulesBusy: boolean;
+  brokenModules: { id: string; title: string }[];
+  brokenModulesCount: number;
+  scanBrokenModules: () => Promise<void>;
+  purgeBrokenModules: () => Promise<void>;
 }
 
 export function DiagnosticsTab(props: DiagnosticsTabProps) {
@@ -56,6 +62,11 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
     diagSaving,
     clearRuntimeHfToken,
     saveRuntimeLlmSettings,
+    brokenModulesBusy,
+    brokenModules,
+    brokenModulesCount,
+    scanBrokenModules,
+    purgeBrokenModules,
   } = props;
 
   return (
@@ -255,6 +266,49 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
               {diagSaving ? "..." : "СОХРАНИТЬ"}
             </Button>
           </div>
+        </div>
+
+        <div className="lg:col-span-12 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-xl">
+          <div className="flex items-end justify-between gap-6">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">MAINTENANCE</div>
+              <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">Согласованность S3/DB</div>
+              <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">
+                Битые модули (нет объектов в S3): {Number(brokenModulesCount || 0)}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                disabled={brokenModulesBusy}
+                onClick={() => void scanBrokenModules()}
+              >
+                {brokenModulesBusy ? "..." : "СКАН"}
+              </Button>
+              <Button
+                variant="destructive"
+                className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                disabled={brokenModulesBusy || Number(brokenModulesCount || 0) <= 0}
+                onClick={() => void purgeBrokenModules()}
+              >
+                УДАЛИТЬ ИЗ DB
+              </Button>
+            </div>
+          </div>
+
+          {Array.isArray(brokenModules) && brokenModules.length ? (
+            <div className="mt-6 grid gap-2">
+              {brokenModules.slice(0, 12).map((m) => (
+                <div key={m.id} className="rounded-2xl border border-zinc-200 bg-white px-4 py-3">
+                  <div className="text-[11px] font-black uppercase tracking-tight text-zinc-950 truncate">{m.title}</div>
+                  <div className="mt-1 text-[10px] font-bold text-zinc-500 truncate">{m.id}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="mt-6 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Нет данных (нажми СКАН)</div>
+          )}
         </div>
       </div>
     </div>

@@ -52,8 +52,11 @@ from app.schemas.admin import (
     SubmoduleCreateResponse,
     UserCreateRequest,
     UserCreateResponse,
+    UserForcePasswordChangeResponse,
     UserResetPasswordRequest,
     UserResetPasswordResponse,
+    UserUpdateRequest,
+    UserUpdateResponse,
 )
 
 from app.schemas.me import HistoryResponse
@@ -67,6 +70,7 @@ from app.services.llm_handler import generate_quiz_questions_ai
 from app.services.ollama import generate_quiz_questions_ollama
 from app.services.hf_router import generate_quiz_questions_hf_router
 from app.services.storage import ensure_bucket_exists, get_s3_client, presign_put, multipart_abort, multipart_complete, multipart_create, multipart_list_parts, multipart_presign_upload_part
+from app.services.storage import s3_prefix_has_objects
 from app.services.ollama import ollama_healthcheck
 from app.services.openrouter_health import openrouter_healthcheck
 
@@ -443,6 +447,205 @@ def set_runtime_llm_settings(
             db.rollback()
         except Exception:
             pass
+    return {"ok": True}
+
+
+@router.post("/maintenance/modules/purge-missing-storage")
+def purge_modules_missing_storage(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    dry_run: bool = Query(default=True),
+    limit: int = Query(default=200),
+    _: object = rate_limit(key_prefix="admin_purge_missing_storage", limit=10, window_seconds=60),
+):
+    take = max(1, min(int(limit or 200), 1000))
+
+    mods = db.scalars(select(Module).order_by(Module.title).limit(take)).all()
+    missing: list[Module] = []
+    for m in mods:
+        try:
+            ok = s3_prefix_has_objects(prefix=f"modules/{m.id}/", bypass_cache=True)
+        except Exception:
+            ok = False
+        if not ok:
+            missing.append(m)
+
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "scanned": len(mods),
+            "missing_count": len(missing),
+            "items": [{"id": str(m.id), "title": str(m.title or "")} for m in missing[:50]],
+        }
+
+    deleted = 0
+    for m in missing:
+        mid = m.id
+        try:
+            sub_ids = list(db.scalars(select(Submodule.id).where(Submodule.module_id == mid)).all())
+            quiz_ids = list(db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == mid)).all())
+            if m.final_quiz_id:
+                quiz_ids.append(m.final_quiz_id)
+            quiz_ids = [qid for qid in quiz_ids if qid is not None]
+            quiz_ids = list({qid for qid in quiz_ids})
+
+            asset_ids: set[uuid.UUID] = set()
+            if sub_ids:
+                rows = db.scalars(select(SubmoduleAssetMap.asset_id).where(SubmoduleAssetMap.submodule_id.in_(sub_ids))).all()
+                for aid in rows:
+                    if aid:
+                        asset_ids.add(aid)
+
+            prefix = f"modules/{str(mid)}/_module/"
+            module_level_assets = db.scalars(select(ContentAsset.id).where(ContentAsset.object_key.like(prefix + "%"))).all()
+            for aid in module_level_assets:
+                if aid:
+                    asset_ids.add(aid)
+
+            # Break FK module.final_quiz_id -> quizzes
+            m.final_quiz_id = None
+            db.flush()
+
+            if asset_ids:
+                db.execute(delete(LearningEvent).where(LearningEvent.ref_id.in_(list(asset_ids))))
+
+            if sub_ids:
+                db.execute(delete(LearningEvent).where(LearningEvent.ref_id.in_(sub_ids)))
+                db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.submodule_id.in_(sub_ids)))
+                db.execute(text("DELETE FROM submodules WHERE module_id = :mid"), {"mid": str(mid)})
+
+            if quiz_ids:
+                attempt_ids = list(db.scalars(select(QuizAttempt.id).where(QuizAttempt.quiz_id.in_(quiz_ids))).all())
+                if attempt_ids:
+                    db.execute(
+                        text("DELETE FROM quiz_attempt_answers WHERE attempt_id IN :ids").bindparams(
+                            bindparam("ids", expanding=True, value=attempt_ids)
+                        )
+                    )
+                db.execute(delete(QuizAttempt).where(QuizAttempt.quiz_id.in_(quiz_ids)))
+                db.execute(delete(Question).where(Question.quiz_id.in_(quiz_ids)))
+                db.execute(delete(Quiz).where(Quiz.id.in_(quiz_ids)))
+
+            if asset_ids:
+                db.execute(delete(ContentAsset).where(ContentAsset.id.in_(list(asset_ids))))
+
+            db.execute(text("DELETE FROM module_skill_map WHERE module_id = :mid"), {"mid": str(mid)})
+            db.execute(text("DELETE FROM modules WHERE id = :mid"), {"mid": str(mid)})
+
+            audit_log(
+                db=db,
+                request=request,
+                event_type="admin_purge_module_missing_storage",
+                actor_user_id=current.id,
+                meta={"module_id": str(mid), "module_title": m.title},
+            )
+
+            deleted += 1
+        except Exception:
+            db.rollback()
+            continue
+
+    db.commit()
+    return {
+        "ok": True,
+        "dry_run": False,
+        "scanned": len(mods),
+        "missing_count": len(missing),
+        "deleted": deleted,
+    }
+
+
+@router.patch("/users/{user_id}", response_model=UserUpdateResponse)
+def admin_update_user(
+    request: Request,
+    user_id: str,
+    body: UserUpdateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_update_user", limit=60, window_seconds=60),
+):
+    uid = _uuid(user_id, field="user_id")
+    u = db.scalar(select(User).where(User.id == uid))
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    name = body.name
+    if name is not None:
+        name = str(name).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="invalid name")
+        existing = db.scalar(select(User).where(User.name == name, User.id != uid))
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="user already exists")
+        u.name = name
+
+    if body.position is not None:
+        pos = str(body.position).strip()
+        u.position = pos or None
+
+    role_raw = body.role
+    if role_raw is not None:
+        next_role = UserRole(str(role_raw))
+        prev_role = getattr(u, "role", None)
+        if prev_role == UserRole.admin and next_role != UserRole.admin:
+            admins = int(db.scalar(select(func.count()).select_from(User).where(User.role == UserRole.admin)) or 0)
+            if admins <= 1:
+                raise HTTPException(status_code=400, detail="cannot demote last admin")
+        u.role = next_role
+
+    if body.must_change_password is not None:
+        u.must_change_password = bool(body.must_change_password)
+        if u.must_change_password:
+            u.password_changed_at = None
+
+    db.add(u)
+    db.commit()
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_update_user",
+        actor_user_id=current.id,
+        target_user_id=u.id,
+        meta={
+            "name": body.name,
+            "position": body.position,
+            "role": body.role,
+            "must_change_password": body.must_change_password,
+        },
+    )
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/force-password-change", response_model=UserForcePasswordChangeResponse)
+def admin_force_password_change(
+    request: Request,
+    user_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_force_password_change", limit=60, window_seconds=60),
+):
+    uid = _uuid(user_id, field="user_id")
+    u = db.scalar(select(User).where(User.id == uid))
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    u.must_change_password = True
+    u.password_changed_at = None
+    db.add(u)
+    db.commit()
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_force_password_change",
+        actor_user_id=current.id,
+        target_user_id=u.id,
+    )
+    db.commit()
     return {"ok": True}
 
 
@@ -870,11 +1073,15 @@ def set_bucket_cors(
 class AdminPresignImportZipRequest(BaseModel):
     filename: str
     content_type: str | None = None
+    size_bytes: int | None = None
+    last_modified_ms: int | None = None
 
 
 class AdminMultipartCreateRequest(BaseModel):
     filename: str
     content_type: str | None = None
+    size_bytes: int | None = None
+    last_modified_ms: int | None = None
 
 
 class AdminMultipartCreateResponse(BaseModel):
@@ -935,12 +1142,27 @@ def presign_import_zip(
     if not fn.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="only .zip is supported")
 
-    # Dedupe: if a ZIP with the same filename was already uploaded, reuse it.
+    # Dedupe: if a ZIP with the same fingerprint was already uploaded, reuse it.
     # This allows resume without re-upload (upload to storage first, then enqueue processing).
     norm_fn = re.sub(r"\s+", " ", fn).strip().lower()
+    sz = None
+    lm = None
+    try:
+        if body.size_bytes is not None:
+            sz = int(body.size_bytes)
+    except Exception:
+        sz = None
+    try:
+        if body.last_modified_ms is not None:
+            lm = int(body.last_modified_ms)
+    except Exception:
+        lm = None
+
+    # If client does not provide size/mtime, fallback to legacy behavior (filename-only).
+    fp = f"{norm_fn}:{sz}:{lm}" if (sz is not None and lm is not None) else norm_fn
     try:
         r = get_redis()
-        existing_key = str(r.get(f"admin:import_zip_by_filename:{norm_fn}") or "").strip()
+        existing_key = str(r.get(f"admin:import_zip_by_fingerprint:{fp}") or "").strip()
     except Exception:
         existing_key = ""
 
@@ -955,7 +1177,9 @@ def presign_import_zip(
             pass
 
     # Keep the uploaded zip in the same prefix used by legacy flow.
-    object_key = f"uploads/admin/{uuid.uuid4()}.zip"
+    safe = re.sub(r"[^a-zA-Z0-9\-_.]+", "-", norm_fn).strip("-._")
+    safe = re.sub(r"-+", "-", safe)[:80] or "module"
+    object_key = f"uploads/admin/{safe}__{uuid.uuid4()}.zip"
     try:
         # Do not bind the presigned URL to Content-Type.
         # Browsers may send a slightly different content-type (or none), which would cause SignatureDoesNotMatch.
@@ -965,8 +1189,8 @@ def presign_import_zip(
 
     try:
         r = get_redis()
-        r.set(f"admin:import_zip_by_filename:{norm_fn}", object_key)
-        r.expire(f"admin:import_zip_by_filename:{norm_fn}", 60 * 60 * 24 * 30)
+        r.set(f"admin:import_zip_by_fingerprint:{fp}", object_key)
+        r.expire(f"admin:import_zip_by_fingerprint:{fp}", 60 * 60 * 24 * 30)
     except Exception:
         pass
 
@@ -995,7 +1219,21 @@ def multipart_import_create(
         raise HTTPException(status_code=400, detail="only .zip is supported")
 
     norm_fn = re.sub(r"\s+", " ", fn).strip().lower()
-    sess_key = f"admin:import_multipart_by_filename:{norm_fn}"
+    sz = None
+    lm = None
+    try:
+        if body.size_bytes is not None:
+            sz = int(body.size_bytes)
+    except Exception:
+        sz = None
+    try:
+        if body.last_modified_ms is not None:
+            lm = int(body.last_modified_ms)
+    except Exception:
+        lm = None
+
+    fp = f"{norm_fn}:{sz}:{lm}" if (sz is not None and lm is not None) else norm_fn
+    sess_key = f"admin:import_multipart_by_fingerprint:{fp}"
     try:
         r = get_redis()
         raw = str(r.get(sess_key) or "").strip()
@@ -1012,7 +1250,9 @@ def multipart_import_create(
         except Exception:
             pass
 
-    object_key = f"uploads/admin/{uuid.uuid4()}.zip"
+    safe = re.sub(r"[^a-zA-Z0-9\-_.]+", "-", norm_fn).strip("-._")
+    safe = re.sub(r"-+", "-", safe)[:80] or "module"
+    object_key = f"uploads/admin/{safe}__{uuid.uuid4()}.zip"
     upload_id = multipart_create(object_key=object_key, content_type=str(body.content_type or "").strip() or None)
     if not upload_id:
         raise HTTPException(status_code=500, detail="failed to create multipart upload")

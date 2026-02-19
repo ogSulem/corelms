@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft } from "lucide-react";
+import { ChevronLeft, File, FileImage, FileSpreadsheet, FileText, FileVideo } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
@@ -122,6 +122,10 @@ type AssetLike = {
   mime_type: string | null;
 };
 
+type InlineKind = "iframe" | "image" | "video" | "text";
+
+type InlineTextBlock = { kind: "h" | "p" | "ul" | "pre"; text?: string; items?: string[] };
+
 export default function SubmodulePage() {
   const params = useParams<{ submoduleId: string }>();
   const search = useSearchParams();
@@ -153,11 +157,16 @@ export default function SubmodulePage() {
   const [quizResult, setQuizResult] = useState<QuizSubmit | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const [submoduleAssets, setSubmoduleAssets] = useState<SubmoduleAsset[]>([]);
   const [moduleAssets, setModuleAssets] = useState<ModuleAsset[]>([]);
   const [inlineUrl, setInlineUrl] = useState<string | null>(null);
   const [inlineMime, setInlineMime] = useState<string | null>(null);
+  const [inlineName, setInlineName] = useState<string | null>(null);
+  const [inlineText, setInlineText] = useState<string | null>(null);
+  const [inlineKind, setInlineKind] = useState<InlineKind>("iframe");
 
   const resultRef = useRef<HTMLDivElement | null>(null);
+  const inlineRef = useRef<HTMLDivElement | null>(null);
 
   const canInlinePreview = useMemo(() => {
     const mime = String(inlineMime || "").toLowerCase();
@@ -165,6 +174,7 @@ export default function SubmodulePage() {
     if (!mime) return true;
     if (mime.includes("pdf")) return true;
     if (mime.startsWith("image/")) return true;
+    if (mime.startsWith("video/")) return true;
     if (mime.startsWith("text/")) return true;
     return false;
   }, [inlineMime, inlineUrl]);
@@ -172,7 +182,73 @@ export default function SubmodulePage() {
   function closeInline() {
     setInlineUrl(null);
     setInlineMime(null);
+    setInlineName(null);
+    setInlineText(null);
+    setInlineKind("iframe");
   }
+
+  function getExtFromName(name: string): string {
+    const raw = String(name || "").trim();
+    const m = /\.([a-z0-9]{1,8})$/i.exec(raw);
+    return m ? String(m[1] || "").toLowerCase() : "";
+  }
+
+  const inlineTextBlocks = useMemo<InlineTextBlock[]>(() => {
+    const raw = String(inlineText || "").replace(/\r\n/g, "\n").trim();
+    if (!raw) return [];
+
+    const isMd = getExtFromName(String(inlineName || "")) === "md";
+    if (!isMd) {
+      const shortened = raw.length > 15000 ? raw.slice(0, 15000) + "\n\n…" : raw;
+      return [{ kind: "pre", text: shortened }];
+    }
+
+    const lines = raw.split("\n");
+    const blocks: InlineTextBlock[] = [];
+    let paragraph: string[] = [];
+    let list: string[] = [];
+    const flushParagraph = () => {
+      const t = paragraph.join(" ").replace(/\s+/g, " ").trim();
+      paragraph = [];
+      if (t) blocks.push({ kind: "p", text: t });
+    };
+    const flushList = () => {
+      const items = list.map((x) => x.trim()).filter(Boolean);
+      list = [];
+      if (items.length) blocks.push({ kind: "ul", items });
+    };
+
+    for (const lnRaw of lines) {
+      const ln = String(lnRaw || "").trim();
+      if (!ln) {
+        flushList();
+        flushParagraph();
+        continue;
+      }
+
+      const h = /^(#{1,6})\s+(.+)$/.exec(ln);
+      if (h) {
+        flushList();
+        flushParagraph();
+        blocks.push({ kind: "h", text: String(h[2] || "").trim() });
+        continue;
+      }
+
+      const isList = /^(-|•|\*)\s+/.test(ln) || /^\d{1,3}[.)]\s+/.test(ln);
+      if (isList) {
+        flushParagraph();
+        list.push(ln.replace(/^(-|•|\*)\s+/, "").replace(/^\d{1,3}[.)]\s+/, "").trim());
+        continue;
+      }
+
+      flushList();
+      paragraph.push(ln);
+    }
+
+    flushList();
+    flushParagraph();
+    return blocks;
+  }, [inlineName, inlineText]);
 
   function displayAssetTitle(name: string): string {
     const raw = decodeLegacyPercentUnicode(String(name || "").trim());
@@ -188,6 +264,11 @@ export default function SubmodulePage() {
       await apiFetch(`/submodules/${submoduleId}/open`, { method: "POST" });
       const meta = await apiFetch<SubmoduleMeta>(`/submodules/${submoduleId}`);
       setSubmodule(meta);
+
+      const sa = await apiFetch<{ submodule_id: string; assets: SubmoduleAsset[] }>(
+        `/modules/submodules/${submoduleId}/assets`
+      );
+      setSubmoduleAssets(Array.isArray((sa as any)?.assets) ? ((sa as any).assets as any) : []);
 
       const effectiveModuleId = String(moduleId || meta?.module_id || "").trim();
       if (effectiveModuleId) {
@@ -228,6 +309,46 @@ export default function SubmodulePage() {
       const url = await presign(a.asset_id, "view");
       setInlineUrl(url);
       setInlineMime(a.mime_type || null);
+      const anyA = a as any;
+      const nm = String(anyA?.original_filename || anyA?.name || "").trim();
+      setInlineName(nm || null);
+
+      const mime = String(a.mime_type || "").toLowerCase();
+      const ext = getExtFromName(nm);
+
+      const kind: InlineKind =
+        mime.startsWith("video/") || ["mp4", "webm"].includes(ext)
+          ? "video"
+          : mime.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "gif"].includes(ext)
+            ? "image"
+            : mime.startsWith("text/") || ["txt", "md"].includes(ext)
+              ? "text"
+              : "iframe";
+      setInlineKind(kind);
+
+      if (kind === "text") {
+        try {
+          const resp = await fetch(url, { method: "GET" });
+          const txt = await resp.text();
+          setInlineText(txt || "");
+        } catch {
+          setInlineText(null);
+        }
+      } else {
+        setInlineText(null);
+      }
+
+      try {
+        window.setTimeout(() => {
+          try {
+            inlineRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          } catch {
+            // ignore
+          }
+        }, 50);
+      } catch {
+        // ignore
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (typeof window !== "undefined") {
@@ -276,6 +397,28 @@ export default function SubmodulePage() {
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [isQuizActive]);
+
+  const lessonMaterials = useMemo(() => {
+    const items = (submoduleAssets || []).slice();
+    items.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+    return items;
+  }, [submoduleAssets]);
+
+  function getAssetIcon(a: { original_filename: string; mime_type: string | null }) {
+    const name = String(a?.original_filename || "").toLowerCase();
+    const mime = String(a?.mime_type || "").toLowerCase();
+    const ext = (() => {
+      const m = /\.([a-z0-9]{1,8})$/i.exec(name);
+      return m ? String(m[1] || "").toLowerCase() : "";
+    })();
+
+    if (mime.startsWith("video/") || ext === "mp4" || ext === "webm") return FileVideo;
+    if (mime.includes("pdf") || ext === "pdf") return FileText;
+    if (mime.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "gif"].includes(ext)) return FileImage;
+    if (["xlsx", "xls", "csv"].includes(ext) || mime.includes("spreadsheet")) return FileSpreadsheet;
+    if (["docx", "doc", "pptx", "ppt", "txt", "md"].includes(ext) || mime.startsWith("text/")) return FileText;
+    return File;
+  }
 
   const thisQuizPassed = useMemo(() => {
     const subs = moduleProgress?.submodules || [];
@@ -722,10 +865,10 @@ export default function SubmodulePage() {
                 </div>
 
                 {inlineUrl ? (
-                  <div className="mb-10 rounded-[24px] border border-zinc-200 bg-white p-6 shadow-sm">
+                  <div ref={inlineRef} className="mb-10 rounded-[24px] border border-zinc-200 bg-white p-6 shadow-sm">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">
-                        Просмотр файла
+                        Просмотр файла{inlineName ? `: ${displayAssetTitle(inlineName)}` : ""}
                       </div>
                       <button
                         type="button"
@@ -738,8 +881,40 @@ export default function SubmodulePage() {
 
                     {canInlinePreview ? (
                       <div className="mt-4 overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-                        {String(inlineMime || "").toLowerCase().startsWith("image/") ? (
+                        {inlineKind === "video" ? (
+                          <video src={inlineUrl} controls className="w-full h-auto bg-black" preload="metadata" />
+                        ) : inlineKind === "image" ? (
                           <img src={inlineUrl} alt="" className="w-full h-auto" />
+                        ) : inlineKind === "text" ? (
+                          <div className="p-4">
+                            {!inlineTextBlocks.length ? (
+                              <div className="text-xs text-zinc-600 font-medium">Не удалось загрузить текст для предпросмотра.</div>
+                            ) : (
+                              <div className="space-y-4">
+                                {inlineTextBlocks.map((b, idx) =>
+                                  b.kind === "h" ? (
+                                    <div key={idx} className="text-sm font-black uppercase tracking-widest text-zinc-900">
+                                      {b.text}
+                                    </div>
+                                  ) : b.kind === "ul" ? (
+                                    <ul key={idx} className="list-disc pl-5 text-sm text-zinc-800 font-medium space-y-1">
+                                      {(b.items || []).map((it, j) => (
+                                        <li key={j}>{it}</li>
+                                      ))}
+                                    </ul>
+                                  ) : b.kind === "pre" ? (
+                                    <pre key={idx} className="whitespace-pre-wrap text-xs text-zinc-800 font-mono">
+                                      {b.text}
+                                    </pre>
+                                  ) : (
+                                    <div key={idx} className="text-sm text-zinc-800 font-medium leading-relaxed">
+                                      {b.text}
+                                    </div>
+                                  )
+                                )}
+                              </div>
+                            )}
+                          </div>
                         ) : (
                           <iframe
                             src={inlineUrl}
@@ -757,6 +932,52 @@ export default function SubmodulePage() {
                   </div>
                 ) : null}
                 
+                {lessonMaterials.length ? (
+                  <div className="mb-10 rounded-[24px] border border-zinc-200 bg-white p-6">
+                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Материалы урока</div>
+                    <div className="mt-4 grid gap-3">
+                      {lessonMaterials.map((a) => {
+                        const Icon = getAssetIcon(a);
+                        return (
+                          <div
+                            key={a.asset_id}
+                            className="group/material flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-zinc-50 p-4"
+                          >
+                            <div className="min-w-0 flex items-center gap-3">
+                              <Icon className="h-4 w-4 text-zinc-500 shrink-0" />
+                              <div className="min-w-0">
+                                <div className="text-sm font-bold text-zinc-900 truncate">
+                                  {displayAssetTitle(a.original_filename || "ФАЙЛ")}
+                                </div>
+                                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 truncate">
+                                  {decodeLegacyPercentUnicode(a.original_filename || "")}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void onOpenInline(a)}
+                                className="rounded-xl bg-[#fe9900]/10 border border-[#fe9900]/25 px-3 py-2 text-[9px] font-black text-[#284e13] uppercase tracking-widest hover:bg-[#fe9900] hover:text-zinc-950 transition-all active:scale-95"
+                              >
+                                просмотр
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void onDownload(a)}
+                                className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50 transition-all active:scale-95"
+                              >
+                                скачать
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="prose max-w-none">
                   {theoryBlocks.length === 0 ? (
                     moduleAssets.length > 0 ? (

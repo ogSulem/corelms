@@ -2,8 +2,10 @@
 
 import { Button } from "@/components/ui/button";
 import { UserItem, UserDetail, UserHistoryDetailedItem } from "../adminpanel-client";
+import { useEffect, useMemo, useState } from "react";
 
 interface UsersTabProps {
+  currentUserId: string;
   newUserBusy: boolean;
   createUser: () => Promise<void>;
   newUserName: string;
@@ -23,6 +25,13 @@ interface UsersTabProps {
   setSelectedUserId: (id: string) => void;
   userDetail: UserDetail | null;
   userDetailLoading: boolean;
+  updateSelectedUser: (patch: {
+    name?: string | null;
+    position?: string | null;
+    role?: "employee" | "admin" | null;
+    must_change_password?: boolean | null;
+  }) => Promise<void>;
+  forceSelectedUserPasswordChange: () => Promise<void>;
   resetBusy: boolean;
   resetPassword: () => Promise<void>;
   deleteUserBusy: boolean;
@@ -35,6 +44,7 @@ interface UsersTabProps {
 
 export function UsersTab(props: UsersTabProps) {
   const {
+    currentUserId,
     newUserBusy,
     createUser,
     newUserName,
@@ -54,6 +64,8 @@ export function UsersTab(props: UsersTabProps) {
     setSelectedUserId,
     userDetail,
     userDetailLoading,
+    updateSelectedUser,
+    forceSelectedUserPasswordChange,
     resetBusy,
     resetPassword,
     deleteUserBusy,
@@ -63,6 +75,33 @@ export function UsersTab(props: UsersTabProps) {
     setHistoryModalOpen,
     resetTempPassword,
   } = props;
+
+  const isSelf = Boolean(selectedUserId) && String(selectedUserId) === String(currentUserId || "");
+
+  const [draftName, setDraftName] = useState<string>("");
+  const [draftPosition, setDraftPosition] = useState<string>("");
+  const [draftRole, setDraftRole] = useState<"employee" | "admin">("employee");
+
+  const hasDraft = useMemo(() => {
+    if (!userDetail) return false;
+    return (
+      String(draftName || "") !== String(userDetail.name || "") ||
+      String(draftPosition || "") !== String(userDetail.position || "") ||
+      String(draftRole || "") !== String(userDetail.role || "")
+    );
+  }, [draftName, draftPosition, draftRole, userDetail]);
+
+  useEffect(() => {
+    if (!userDetail) {
+      setDraftName("");
+      setDraftPosition("");
+      setDraftRole("employee");
+      return;
+    }
+    setDraftName(String(userDetail.name || ""));
+    setDraftPosition(String(userDetail.position || ""));
+    setDraftRole((String(userDetail.role || "employee") as any) === "admin" ? "admin" : "employee");
+  }, [userDetail?.id]);
 
   return (
     <div className="mt-8 space-y-6">
@@ -230,15 +269,38 @@ export function UsersTab(props: UsersTabProps) {
                 <Button
                   variant="ghost"
                   className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                  disabled={!selectedUserId || userDetailLoading || !userDetail || !hasDraft}
+                  onClick={() =>
+                    void updateSelectedUser({
+                      name: String(draftName || "").trim() || null,
+                      position: String(draftPosition || "").trim() || null,
+                      role: (draftRole as any) ?? null,
+                      must_change_password: userDetail?.must_change_password ?? null,
+                    })
+                  }
+                >
+                  СОХРАНИТЬ
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
                   disabled={!selectedUserId || resetBusy}
                   onClick={resetPassword}
                 >
                   {resetBusy ? "СБРОС..." : "СБРОСИТЬ ПАРОЛЬ"}
                 </Button>
                 <Button
+                  variant="ghost"
+                  className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                  disabled={!selectedUserId || userDetailLoading}
+                  onClick={forceSelectedUserPasswordChange}
+                >
+                  СМЕНА ПАРОЛЯ
+                </Button>
+                <Button
                   variant="destructive"
                   className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={!selectedUserId || deleteUserBusy}
+                  disabled={!selectedUserId || deleteUserBusy || isSelf}
                   onClick={deleteSelectedUser}
                 >
                   {deleteUserBusy ? "УДАЛЕНИЕ..." : "УДАЛИТЬ"}
@@ -252,6 +314,36 @@ export function UsersTab(props: UsersTabProps) {
               </div>
             ) : userDetail ? (
               <div className="mt-8 grid gap-4">
+                <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Имя</div>
+                    <input
+                      className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
+                      value={draftName}
+                      onChange={(e) => setDraftName(String(e.target.value || ""))}
+                    />
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Должность</div>
+                    <input
+                      className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
+                      value={draftPosition}
+                      onChange={(e) => setDraftPosition(String(e.target.value || ""))}
+                    />
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Роль</div>
+                    <select
+                      className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
+                      value={draftRole}
+                      onChange={(e) => setDraftRole((e.target.value as any) === "admin" ? "admin" : "employee")}
+                      disabled={isSelf}
+                    >
+                      <option value="employee">СОТРУДНИК</option>
+                      <option value="admin">АДМИН</option>
+                    </select>
+                  </div>
+                </div>
                 <div className="grid gap-3 sm:grid-cols-3">
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">XP</div>

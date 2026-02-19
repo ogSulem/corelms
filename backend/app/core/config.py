@@ -37,8 +37,12 @@ class Settings(BaseSettings):
 
     jwt_secret_key: str = Field(default="change-me", validation_alias="JWT_SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", validation_alias="JWT_ALGORITHM")
-    jwt_access_token_minutes: int = Field(default=60, validation_alias="JWT_ACCESS_TOKEN_MINUTES")
+    jwt_access_token_minutes: int = Field(default=15, validation_alias="JWT_ACCESS_TOKEN_MINUTES")
     jwt_issuer: str = Field(default="corelms", validation_alias="JWT_ISSUER")
+
+    session_refresh_token_days: int = Field(default=30, validation_alias="SESSION_REFRESH_TOKEN_DAYS")
+    session_idle_timeout_hours: int = Field(default=12, validation_alias="SESSION_IDLE_TIMEOUT_HOURS")
+    session_absolute_timeout_days: int = Field(default=30, validation_alias="SESSION_ABSOLUTE_TIMEOUT_DAYS")
 
     cors_allow_origins: str = Field(default="http://localhost:3000", validation_alias="CORS_ALLOW_ORIGINS")
 
@@ -50,6 +54,8 @@ class Settings(BaseSettings):
     s3_region_name: str = Field(default="us-east-1", validation_alias="S3_REGION_NAME")
 
     s3_presign_download_expires_seconds: int = Field(default=900, validation_alias="S3_PRESIGN_DOWNLOAD_EXPIRES_SECONDS")
+    s3_presign_upload_expires_seconds: int = Field(default=3600, validation_alias="S3_PRESIGN_UPLOAD_EXPIRES_SECONDS")
+    s3_presign_multipart_part_expires_seconds: int = Field(default=3600, validation_alias="S3_PRESIGN_MULTIPART_PART_EXPIRES_SECONDS")
 
     s3_connect_timeout_seconds: float = Field(default=3.0, validation_alias="S3_CONNECT_TIMEOUT_SECONDS")
     s3_read_timeout_seconds: float = Field(default=60.0, validation_alias="S3_READ_TIMEOUT_SECONDS")

@@ -45,7 +45,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const data = (await res.json()) as { access_token: string; expires_in?: number | null };
+  const data = (await res.json()) as { access_token: string; refresh_token?: string | null; expires_in?: number | null; refresh_expires_in?: number | null };
 
   const response = NextResponse.json({ ok: true });
   const isProd = process.env.NODE_ENV === "production";
@@ -64,6 +64,23 @@ export async function POST(req: Request) {
     expires,
     priority: "high",
   });
+
+  const refresh = String(data.refresh_token || "").trim();
+  if (refresh) {
+    const refreshMaxAge = Number.isFinite(Number(data.refresh_expires_in)) ? Number(data.refresh_expires_in) : 30 * 24 * 60 * 60;
+    const refreshExpires = new Date(Date.now() + refreshMaxAge * 1000);
+    response.cookies.set({
+      name: "core_refresh",
+      value: refresh,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProd,
+      path: "/",
+      maxAge: refreshMaxAge,
+      expires: refreshExpires,
+      priority: "high",
+    });
+  }
 
   return response;
 }

@@ -130,3 +130,18 @@ class UserResetPasswordRequest(BaseModel):
 class UserResetPasswordResponse(BaseModel):
     ok: bool = True
     temp_password: str | None = None
+
+
+class UserUpdateRequest(BaseModel):
+    name: str | None = None
+    position: str | None = None
+    role: Literal["employee", "admin"] | None = None
+    must_change_password: bool | None = None
+
+
+class UserUpdateResponse(BaseModel):
+    ok: bool = True
+
+
+class UserForcePasswordChangeResponse(BaseModel):
+    ok: bool = True

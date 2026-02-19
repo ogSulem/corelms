@@ -5,6 +5,7 @@ from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from app.core.config import settings
+from app.core.redis_client import get_redis
 
 
 def get_s3_client(*, endpoint_url: str | None = None):
@@ -99,12 +100,56 @@ def ensure_bucket_exists() -> None:
             pass
 
 
-def presign_put(*, object_key: str, content_type: str | None, expires_seconds: int = 900) -> str:
+def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 60, bypass_cache: bool = False) -> bool:
+    pfx = str(prefix or "").strip().lstrip("/")
+    if not pfx:
+        return False
+
+    cache_key = f"s3:prefix_has_objects:{settings.s3_bucket}:{pfx}"
+    if not bypass_cache:
+        try:
+            r = get_redis()
+            cached = r.get(cache_key)
+            if cached is not None:
+                return str(cached).strip() == "1"
+        except Exception:
+            pass
+
+    ok = False
+    try:
+        ensure_bucket_exists()
+        s3 = get_s3_client()
+        resp = s3.list_objects_v2(Bucket=settings.s3_bucket, Prefix=pfx, MaxKeys=1)
+        contents = resp.get("Contents") or []
+        ok = bool(contents)
+    except Exception:
+        ok = False
+
+    if not bypass_cache:
+        try:
+            r = get_redis()
+            r.setex(cache_key, int(max(5, min(int(cache_seconds or 60), 3600))), "1" if ok else "0")
+        except Exception:
+            pass
+
+    return ok
+
+
+def presign_put(*, object_key: str, content_type: str | None, expires_seconds: int | None = None) -> str:
     ensure_bucket_exists()
     s3 = _get_presign_client()
     params: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key}
     if content_type:
         params["ContentType"] = content_type
+
+    if expires_seconds is None:
+        try:
+            cfg = int(getattr(settings, "s3_presign_upload_expires_seconds", 0) or 0)
+            if cfg > 0:
+                expires_seconds = cfg
+        except Exception:
+            expires_seconds = 3600
+    expires_seconds = int(expires_seconds or 3600)
 
     return s3.generate_presigned_url(
         "put_object",
@@ -186,10 +231,18 @@ def multipart_presign_upload_part(
     object_key: str,
     upload_id: str,
     part_number: int,
-    expires_seconds: int = 900,
+    expires_seconds: int | None = None,
 ) -> str:
     ensure_bucket_exists()
     s3 = _get_presign_client()
+    if expires_seconds is None:
+        try:
+            cfg = int(getattr(settings, "s3_presign_multipart_part_expires_seconds", 0) or 0)
+            if cfg > 0:
+                expires_seconds = cfg
+        except Exception:
+            expires_seconds = 3600
+    expires_seconds = int(expires_seconds or 3600)
     return s3.generate_presigned_url(
         "upload_part",
         Params={

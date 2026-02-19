@@ -236,6 +236,13 @@ export default function AdminPanelClient() {
   const importQueueHistorySigRef = useRef<string>("");
   const regenHistorySigRef = useRef<string>("");
 
+  const jobPanelLastStableRef = useRef<{
+    status: string;
+    stage: string;
+    stageAtUpdatedMs: number;
+    detailUpdatedMs: number;
+  }>({ status: "", stage: "", stageAtUpdatedMs: 0, detailUpdatedMs: 0 });
+
   async function loadImportQueue(limit = 20, includeTerminal: boolean = false, silent: boolean = false) {
     try {
       if (!silent) setImportQueueLoading(true);
@@ -542,6 +549,61 @@ export default function AdminPanelClient() {
   const [hfTokenMasked, setHfTokenMasked] = useState<string>("");
   const [llmEffective, setLlmEffective] = useState<any>(null);
   const [diagSaving, setDiagSaving] = useState(false);
+
+  const [brokenModulesBusy, setBrokenModulesBusy] = useState(false);
+  const [brokenModules, setBrokenModules] = useState<{ id: string; title: string }[]>([]);
+  const [brokenModulesCount, setBrokenModulesCount] = useState<number>(0);
+
+  async function scanBrokenModules() {
+    try {
+      setBrokenModulesBusy(true);
+      setError(null);
+      const res = await apiFetch<any>(`/admin/maintenance/modules/purge-missing-storage?dry_run=true&limit=1000`, {
+        method: "POST",
+      } as any);
+      const items = Array.isArray((res as any)?.items) ? (res as any).items : [];
+      setBrokenModules(items.map((x: any) => ({ id: String(x?.id || ""), title: String(x?.title || "") })));
+      setBrokenModulesCount(Number((res as any)?.missing_count || 0));
+      window.dispatchEvent(
+        new CustomEvent("corelms:toast", {
+          detail: { title: "СКАН ЗАВЕРШЁН", description: `БИТЫХ: ${Number((res as any)?.missing_count || 0)}` },
+        })
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ПРОСКАНИРОВАТЬ");
+    } finally {
+      setBrokenModulesBusy(false);
+    }
+  }
+
+  async function purgeBrokenModules() {
+    const n = Number(brokenModulesCount || 0);
+    if (n <= 0) return;
+    const ok = window.confirm(`Удалить из базы битые модули?\n\nКоличество: ${n}\n\nДействие необратимо.`);
+    if (!ok) return;
+    try {
+      setBrokenModulesBusy(true);
+      setError(null);
+      const res = await apiFetch<any>(`/admin/maintenance/modules/purge-missing-storage?dry_run=false&limit=1000`, {
+        method: "POST",
+      } as any);
+      window.dispatchEvent(
+        new CustomEvent("corelms:toast", {
+          detail: {
+            title: "ОЧИСТКА ЗАВЕРШЕНА",
+            description: `УДАЛЕНО: ${Number((res as any)?.deleted || 0)}`,
+          },
+        })
+      );
+      await Promise.all([scanBrokenModules(), loadAdminModules(), reloadModules()]);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ОЧИСТИТЬ");
+    } finally {
+      setBrokenModulesBusy(false);
+    }
+  }
 
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
 
@@ -1247,8 +1309,7 @@ export default function AdminPanelClient() {
     if (st === "download") return "СКАЧИВАНИЕ";
     if (st === "extract") return "РАСПАКОВКА";
     if (st === "import") return "ИМПОРТ";
-    if (st === "ai" || st === "ollama") return "НЕЙРОСЕТЬ";
-    if (st === "replace") return "ГЕНЕРАЦИЯ";
+    if (st === "regen_enqueue" || st === "regen_enqueued") return "ОЧЕРЕДЬ РЕГЕН";
     if (st === "commit") return "СОХРАНЕНИЕ";
     if (st === "cleanup") return "ОЧИСТКА";
     if (st === "done") return "ГОТОВО";
@@ -1411,28 +1472,49 @@ export default function AdminPanelClient() {
     if (!jobPanelOpen) return;
     let alive = true;
     let timer: any = null;
-    let delayMs = 1000;
+    let delayMs = 2000;
     const tick = async () => {
       try {
         const s = await apiFetch<any>(`/admin/jobs/${encodeURIComponent(selectedJobId)}`, { timeoutMs: 60_000 } as any);
         if (!alive) return;
         const st = String(s?.status || "");
         const stage = String(s?.stage || "");
+        const nowMs = Date.now();
+        const stl = st.trim().toLowerCase();
+        const stagel = stage.trim().toLowerCase();
+        const sameCore =
+          stl === String(jobPanelLastStableRef.current.status || "").trim().toLowerCase() &&
+          stagel === String(jobPanelLastStableRef.current.stage || "").trim().toLowerCase();
+
         setJobStatus(st);
         setJobStage(stage);
-        setJobStageAt(String(s?.stage_at || ""));
+
+        const nextStageAt = String(s?.stage_at || "");
+        const canUpdateStageAt = !sameCore || nowMs - (jobPanelLastStableRef.current.stageAtUpdatedMs || 0) > 5000;
+        if (canUpdateStageAt) {
+          setJobStageAt(nextStageAt);
+          jobPanelLastStableRef.current.stageAtUpdatedMs = nowMs;
+        }
+
         setJobStageStartedAt(String(s?.stage_started_at || ""));
         setJobStageDurations((s?.stage_durations_s as any) ?? null);
         setJobStartedAt(String(s?.job_started_at || s?.started_at || ""));
-        setJobDetail(String(s?.detail || ""));
+        const nextDetail = String(s?.detail || "");
+        const canUpdateDetail = !sameCore || nowMs - (jobPanelLastStableRef.current.detailUpdatedMs || 0) > 3000;
+        if (canUpdateDetail) {
+          setJobDetail(nextDetail);
+          jobPanelLastStableRef.current.detailUpdatedMs = nowMs;
+        }
         const errText = String(s?.error || "");
         setJobError(errText);
         setJobErrorCode(String(s?.error_code || ""));
         setJobErrorHint(String(s?.error_hint || ""));
-        setJobDetail(String(s?.detail || ""));
         setJobKind(String(s?.job_kind || ""));
         setJobModuleTitle(String(s?.module_title || ""));
         setJobModuleId(String(s?.module_id || ""));
+
+        jobPanelLastStableRef.current.status = st;
+        jobPanelLastStableRef.current.stage = stage;
 
         if (st === "missing" || st === "finished" || st === "failed" || stage === "canceled") {
           delayMs = 4000;
@@ -1778,11 +1860,18 @@ export default function AdminPanelClient() {
 
       const uploadS3MultipartWithProgress = async (file: File, ac: AbortController) => {
         const filename = String((file as any)?.name || "module.zip");
+        const sizeBytes = typeof (file as any)?.size === "number" ? Number((file as any).size) : null;
+        const lastModifiedMs = typeof (file as any)?.lastModified === "number" ? Number((file as any).lastModified) : null;
         const res = await apiFetch<{ ok: boolean; object_key: string; upload_id: string; reused?: boolean }>(
           `/admin/modules/multipart-import-create` as any,
           {
             method: "POST",
-            body: JSON.stringify({ filename, content_type: String((file as any)?.type || "application/zip") }),
+            body: JSON.stringify({
+              filename,
+              content_type: String((file as any)?.type || "application/zip"),
+              size_bytes: sizeBytes,
+              last_modified_ms: lastModifiedMs,
+            }),
           }
         );
 
@@ -1831,6 +1920,38 @@ export default function AdminPanelClient() {
           percent: totalSize > 0 ? Math.round((alreadyBytes / totalSize) * 100) : 0,
         } as any);
 
+        const perPartLoaded: Record<number, number> = {};
+        const updateProgress = () => {
+          try {
+            const now = Date.now();
+            const loaded = Math.max(0, Object.values(perPartLoaded).reduce((a, b) => a + Math.max(0, Number(b || 0)), 0));
+            setS3UploadProgress((prev: any) => {
+              const startedAtMs = prev?.startedAtMs ?? now;
+              const lastAtMs = prev?.lastAtMs ?? startedAtMs;
+              const lastLoaded = prev?.lastLoaded ?? 0;
+              const dt = Math.max(1, now - lastAtMs);
+              const dbytes = Math.max(0, loaded - lastLoaded);
+              const instSpeed = (dbytes * 1000) / dt;
+              const speedBps = prev ? 0.7 * prev.speedBps + 0.3 * instSpeed : instSpeed;
+              const remain = Math.max(0, totalSize - loaded);
+              const etaSeconds = speedBps > 1 ? Math.round(remain / speedBps) : null;
+              const percent = totalSize > 0 ? Math.max(0, Math.min(100, Math.round((loaded / totalSize) * 100))) : 0;
+              return {
+                loaded,
+                total: totalSize,
+                startedAtMs,
+                lastAtMs: now,
+                lastLoaded: loaded,
+                speedBps,
+                etaSeconds,
+                percent,
+              };
+            });
+          } catch {
+            // ignore
+          }
+        };
+
         const uploadPart = async (partNumber: number, blob: Blob) => {
           const pres = await apiFetch<{ ok: boolean; upload_url: string }>(`/admin/modules/multipart-import-presign-part` as any, {
             method: "POST",
@@ -1873,32 +1994,9 @@ export default function AdminPanelClient() {
             xhr.open("PUT", url, true);
             xhr.upload.onprogress = (evt) => {
               if (!evt || !evt.lengthComputable) return;
-              const now = Date.now();
               const curLoaded = Math.max(0, Number(evt.loaded || 0));
-              const partStart = (partNumber - 1) * partSize;
-              const globalLoaded = Math.max(0, Math.min(totalSize, partStart + curLoaded));
-              setS3UploadProgress((prev: any) => {
-                const startedAtMs = prev?.startedAtMs ?? now;
-                const lastAtMs = prev?.lastAtMs ?? startedAtMs;
-                const lastLoaded = prev?.lastLoaded ?? 0;
-                const dt = Math.max(1, now - lastAtMs);
-                const dbytes = Math.max(0, globalLoaded - lastLoaded);
-                const instSpeed = (dbytes * 1000) / dt;
-                const speedBps = prev ? 0.7 * prev.speedBps + 0.3 * instSpeed : instSpeed;
-                const remain = Math.max(0, totalSize - globalLoaded);
-                const etaSeconds = speedBps > 1 ? Math.round(remain / speedBps) : null;
-                const percent = totalSize > 0 ? Math.max(0, Math.min(100, Math.round((globalLoaded / totalSize) * 100))) : 0;
-                return {
-                  loaded: globalLoaded,
-                  total: totalSize,
-                  startedAtMs,
-                  lastAtMs: now,
-                  lastLoaded: globalLoaded,
-                  speedBps,
-                  etaSeconds,
-                  percent,
-                };
-              });
+              perPartLoaded[partNumber] = curLoaded;
+              updateProgress();
             };
 
             xhr.onerror = () => finish(new Error("multipart upload part failed: network error"));
@@ -1922,29 +2020,57 @@ export default function AdminPanelClient() {
         };
 
         for (let pn = 1; pn <= totalParts; pn++) {
-          if (importCancelRequestedRef.current) break;
           if (existingParts[pn]) {
             partsOut.push({ part_number: pn, etag: existingParts[pn] });
-            continue;
+            const start = (pn - 1) * partSize;
+            const end = Math.min(totalSize, start + partSize);
+            perPartLoaded[pn] = Math.max(0, end - start);
           }
-          const start = (pn - 1) * partSize;
-          const end = Math.min(totalSize, start + partSize);
-          const blob = file.slice(start, end);
+        }
+        updateProgress();
 
-          let etag = "";
-          let attempt = 0;
-          while (!etag && attempt < 6) {
-            attempt += 1;
-            try {
-              etag = await uploadPart(pn, blob);
-            } catch (e) {
-              if (attempt >= 6) throw e;
-              await new Promise<void>((resolve) => setTimeout(() => resolve(), 800 + attempt * 800));
+        const pendingParts: number[] = [];
+        for (let pn = 1; pn <= totalParts; pn++) {
+          if (existingParts[pn]) continue;
+          pendingParts.push(pn);
+        }
+
+        const concurrency = 4;
+        let fatalErr: unknown = null;
+        const worker = async () => {
+          while (!fatalErr) {
+            if (importCancelRequestedRef.current) return;
+            const pn = pendingParts.shift();
+            if (!pn) return;
+            const start = (pn - 1) * partSize;
+            const end = Math.min(totalSize, start + partSize);
+            const blob = file.slice(start, end);
+
+            let etag = "";
+            let attempt = 0;
+            while (!etag && attempt < 6) {
+              attempt += 1;
+              try {
+                etag = await uploadPart(pn, blob);
+              } catch (e) {
+                if (attempt >= 6) throw e;
+                await new Promise<void>((resolve) => setTimeout(() => resolve(), 800 + attempt * 800));
+              }
             }
+            if (!etag) throw new Error(`multipart part ${pn} missing etag`);
+            partsOut.push({ part_number: pn, etag });
+            perPartLoaded[pn] = Math.max(0, end - start);
+            updateProgress();
+            saveImportState({ multipartImport: { object_key: objectKey, upload_id: uploadId, filename } });
           }
-          if (!etag) throw new Error(`multipart part ${pn} missing etag`);
-          partsOut.push({ part_number: pn, etag });
-          saveImportState({ multipartImport: { object_key: objectKey, upload_id: uploadId, filename } });
+        };
+
+        try {
+          const workers = Array.from({ length: Math.min(concurrency, pendingParts.length || 1) }, () => worker());
+          await Promise.all(workers);
+        } catch (e) {
+          fatalErr = e;
+          throw e;
         }
 
         if (importCancelRequestedRef.current) {
@@ -1959,6 +2085,7 @@ export default function AdminPanelClient() {
           throw new DOMException("Aborted", "AbortError");
         }
 
+        partsOut.sort((a, b) => Number(a.part_number) - Number(b.part_number));
         await apiFetch<any>(`/admin/modules/multipart-import-complete` as any, {
           method: "POST",
           body: JSON.stringify({ object_key: objectKey, upload_id: uploadId, parts: partsOut }),
@@ -2056,7 +2183,12 @@ export default function AdminPanelClient() {
               `/admin/modules/presign-import-zip` as any,
               {
                 method: "POST",
-                body: JSON.stringify({ filename: String(f?.name || "module.zip"), content_type: String((f as any)?.type || "application/zip") }),
+                body: JSON.stringify({
+                  filename: String(f?.name || "module.zip"),
+                  content_type: String((f as any)?.type || "application/zip"),
+                  size_bytes: typeof (f as any)?.size === "number" ? Number((f as any).size) : null,
+                  last_modified_ms: typeof (f as any)?.lastModified === "number" ? Number((f as any).lastModified) : null,
+                }),
               }
             );
 
@@ -2509,6 +2641,52 @@ export default function AdminPanelClient() {
     }
   }
 
+  async function updateSelectedUser(patch: {
+    name?: string | null;
+    position?: string | null;
+    role?: "employee" | "admin" | null;
+    must_change_password?: boolean | null;
+  }) {
+    if (!selectedUserId) return;
+    try {
+      setError(null);
+      await apiFetch<any>(`/admin/users/${encodeURIComponent(selectedUserId)}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch || {}),
+      } as any);
+      await Promise.all([loadUsers(), loadUserDetail(selectedUserId)]);
+      window.dispatchEvent(
+        new CustomEvent("corelms:toast", {
+          detail: { title: "ПОЛЬЗОВАТЕЛЬ ОБНОВЛЁН", description: "" },
+        })
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ОБНОВИТЬ ПОЛЬЗОВАТЕЛЯ");
+    }
+  }
+
+  async function forceSelectedUserPasswordChange() {
+    if (!selectedUserId) return;
+    const ok = window.confirm("ЗАСТАВИТЬ ПОЛЬЗОВАТЕЛЯ СМЕНИТЬ ПАРОЛЬ ПРИ СЛЕДУЮЩЕМ ВХОДЕ?");
+    if (!ok) return;
+    try {
+      setError(null);
+      await apiFetch<any>(`/admin/users/${encodeURIComponent(selectedUserId)}/force-password-change`, {
+        method: "POST",
+      } as any);
+      await loadUserDetail(selectedUserId);
+      window.dispatchEvent(
+        new CustomEvent("corelms:toast", {
+          detail: { title: "ТРЕБУЕТСЯ СМЕНА ПАРОЛЯ", description: "" },
+        })
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ВКЛЮЧИТЬ СМЕНУ ПАРОЛЯ");
+    }
+  }
+
   useEffect(() => {
     if (tab !== "users") return;
     void loadUsers();
@@ -2624,6 +2802,11 @@ export default function AdminPanelClient() {
             clearRuntimeHfToken={clearRuntimeHfToken}
             saveRuntimeLlmSettings={saveRuntimeLlmSettings}
             loadRuntimeLlmSettings={loadRuntimeLlmSettings}
+            brokenModulesBusy={brokenModulesBusy}
+            brokenModules={brokenModules}
+            brokenModulesCount={brokenModulesCount}
+            scanBrokenModules={scanBrokenModules}
+            purgeBrokenModules={purgeBrokenModules}
           />
         ) : tab === "import" ? (
           <ImportTab
@@ -2715,6 +2898,7 @@ export default function AdminPanelClient() {
           />
         ) : tab === "users" ? (
           <UsersTab
+            currentUserId={String((user as any)?.id || "")}
             newUserBusy={newUserBusy}
             createUser={createUser}
             newUserName={newUserName}
@@ -2734,6 +2918,8 @@ export default function AdminPanelClient() {
             setSelectedUserId={setSelectedUserId}
             userDetail={userDetail}
             userDetailLoading={userDetailLoading}
+            updateSelectedUser={updateSelectedUser}
+            forceSelectedUserPasswordChange={forceSelectedUserPasswordChange}
             resetBusy={resetBusy}
             resetPassword={resetPassword}
             deleteUserBusy={deleteUserBusy}

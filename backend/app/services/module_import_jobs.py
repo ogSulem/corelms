@@ -71,15 +71,26 @@ def _job_heartbeat(*, detail: str | None = None) -> None:
     try:
         job = get_current_job()
     except Exception:
-        job = None
-    if job is None:
         return
+
     try:
-        now = datetime.utcnow().isoformat()
+        now_dt = datetime.utcnow()
+        now = now_dt.isoformat()
         meta = dict(job.meta or {})
+
+        try:
+            last = str(meta.get("_heartbeat_at") or "").strip()
+            if last:
+                last_dt = datetime.fromisoformat(last)
+                if (now_dt - last_dt).total_seconds() < 3:
+                    return
+        except Exception:
+            pass
+
         meta["stage_at"] = now
         if detail is not None:
             meta["detail"] = str(detail)
+        meta["_heartbeat_at"] = now
         job.meta = meta
         job.save_meta()
     except Exception:
@@ -196,7 +207,6 @@ def import_module_zip_job(
     module_id: str | None = None,
     enqueue_regen: bool = True,
 ) -> dict:
-    print(f"import_module_zip_job: start s3_object_key={s3_object_key} source_filename={source_filename} title={title}", flush=True)
     log.info("import_module_zip_job: start s3_object_key=%s source_filename=%s title=%s", s3_object_key, source_filename, title)
     _set_job_stage(stage="start", detail=s3_object_key)
     ensure_bucket_exists()
@@ -233,7 +243,6 @@ def import_module_zip_job(
 
         _set_job_stage(stage="download", detail=s3_object_key)
         _cancel_checkpoint(s3_object_key=s3_object_key, stage="download")
-        print(f"import_module_zip_job: downloading from minio key={s3_object_key} -> {str(zip_path)}", flush=True)
         log.info("import_module_zip_job: downloading from minio key=%s -> %s", s3_object_key, str(zip_path))
 
         try:
@@ -284,18 +293,15 @@ def import_module_zip_job(
         except Exception:
             size = None
 
-        print(f"import_module_zip_job: download done bytes={size if size is not None else 'unknown'}", flush=True)
         log.info("import_module_zip_job: download done bytes=%s", size)
 
         _set_job_stage(stage="extract")
         _cancel_checkpoint(s3_object_key=s3_object_key, stage="extract")
         with zipfile.ZipFile(str(zip_path), "r") as zf:
-            print(f"import_module_zip_job: extracting zip to {str(base)}", flush=True)
             log.info("import_module_zip_job: extracting zip to %s", str(base))
             _job_heartbeat(detail="extract: start")
             _safe_extract_zip(zf=zf, dest=base)
             _job_heartbeat(detail="extract: done")
-        print("import_module_zip_job: extract done", flush=True)
         log.info("import_module_zip_job: extract done")
 
         _cancel_checkpoint(s3_object_key=s3_object_key, stage="extract")
@@ -343,7 +349,6 @@ def import_module_zip_job(
             _set_job_stage(stage="extract", detail=f"module_dir: {str(module_dir)}")
         except Exception:
             pass
-        print(f"import_module_zip_job: module_dir={str(module_dir)}", flush=True)
         log.info("import_module_zip_job: module_dir=%s", str(module_dir))
 
         db = SessionLocal()
@@ -351,7 +356,6 @@ def import_module_zip_job(
             report: dict[str, object] = {}
             _set_job_stage(stage="import")
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="import")
-            print("import_module_zip_job: importing to DB", flush=True)
             log.info("import_module_zip_job: importing to DB")
             _job_heartbeat(detail="import: start")
             mid = import_module_from_dir(
@@ -380,7 +384,6 @@ def import_module_zip_job(
             _set_job_stage(stage="commit")
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="commit")
             db.commit()
-            print(f"import_module_zip_job: commit done module_id={str(mid)}", flush=True)
             log.info("import_module_zip_job: commit done module_id=%s", str(mid))
 
             # If cancellation was requested right after commit, stop before any follow-up actions.
@@ -454,7 +457,6 @@ def import_module_zip_job(
         except Exception as e:
             _set_job_stage(stage="failed", detail=str(e))
             _set_job_error(error=e)
-            print(f"import_module_zip_job: failed err={e}", flush=True)
             log.exception("import_module_zip_job: failed")
             db.rollback()
             _release_enqueue_locks()
