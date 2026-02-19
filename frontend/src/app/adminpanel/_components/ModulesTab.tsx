@@ -202,8 +202,8 @@ export function ModulesTab(props: ModulesTabProps) {
             </div>
           </div>
 
-          <div className="mt-10 grid gap-10 lg:grid-cols-12">
-            <div className="lg:col-span-4">
+          <div className="mt-10 space-y-10">
+            <div>
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Уроки</div>
@@ -231,7 +231,7 @@ export function ModulesTab(props: ModulesTabProps) {
                     {selectedAdminModuleId ? "Нет уроков" : "Выберите модуль"}
                   </div>
                 ) : (
-                  <div className="grid gap-2">
+                  <div className="grid gap-2 lg:grid-cols-2">
                     {selectedAdminModuleSubs.map((s: AdminSubmoduleItem) => {
                       const active = String(s.id) === String(selectedSubmoduleId);
                       const q = qualityBySubId[String(s.id)] as any;
@@ -314,7 +314,7 @@ export function ModulesTab(props: ModulesTabProps) {
               </div>
             </div>
 
-            <div className="lg:col-span-8">
+            <div>
               <div className="flex items-center justify-between gap-4">
                 <div>
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Опросы</div>
