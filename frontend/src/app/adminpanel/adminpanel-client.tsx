@@ -1376,33 +1376,26 @@ export default function AdminPanelClient() {
       try {
         const s = await apiFetch<any>(`/admin/jobs/${encodeURIComponent(selectedJobId)}`, { timeoutMs: 60_000 } as any);
         if (!alive) return;
-        setJobStatus(String(s?.status || ""));
-        setJobStage(String(s?.stage || ""));
+        const st = String(s?.status || "");
+        const stage = String(s?.stage || "");
+        setJobStatus(st);
+        setJobStage(stage);
         setJobStageAt(String(s?.stage_at || ""));
         setJobStageStartedAt(String(s?.stage_started_at || ""));
         setJobStageDurations((s?.stage_durations_s as any) ?? null);
         setJobStartedAt(String(s?.job_started_at || s?.started_at || ""));
         setJobDetail(String(s?.detail || ""));
-        setJobError(String(s?.error || s?.error_message || ""));
+        const errText = String(s?.error || "");
+        setJobError(errText);
         setJobErrorCode(String(s?.error_code || ""));
         setJobErrorHint(String(s?.error_hint || ""));
-        setJobResult(s?.result ?? null);
+        setJobDetail(String(s?.detail || ""));
         setJobKind(String(s?.job_kind || ""));
         setJobModuleTitle(String(s?.module_title || ""));
         setJobModuleId(String(s?.module_id || ""));
 
-        const st = String(s?.status || "");
-        const terminal = st === "finished" || st === "failed" || String(s?.stage || "") === "canceled";
-        if (terminal) {
-          saveImportState({ terminal: true });
-          void loadRegenHistory(true);
-          void loadAdminModules();
-          void reloadModules();
-          if (selectedQuizId) {
-            void loadQuestionsForQuiz(selectedQuizId);
-          }
-
-          // Two-phase import: if import finished and has a follow-up regen job id, switch panel to regen progress.
+        if (st === "missing" || st === "finished" || st === "failed" || stage === "canceled") {
+          delayMs = 4000;
           try {
             const maybeRegenJobId = String((s?.result as any)?.regen_job_id || "").trim();
             const hasImportReport = !!(s?.result as any)?.report;

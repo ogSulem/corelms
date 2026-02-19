@@ -458,6 +458,7 @@ def module_submodules_quality(
         raise HTTPException(status_code=404, detail="module not found")
 
     needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
+    needs_ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_ai:%"))
     fallback_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("%fallback%"))
     ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("regen:%"))
     heur_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("heur:%"))
@@ -470,7 +471,7 @@ def module_submodules_quality(
                 Submodule.title.label("title"),
                 Submodule.quiz_id.label("quiz_id"),
                 func.count(Question.id).label("total"),
-                func.sum(case((needs_regen_cond, 1), else_=0)).label("needs_regen"),
+                func.sum(case((needs_regen_cond | needs_ai_cond, 1), else_=0)).label("needs_regen"),
                 func.sum(case((fallback_cond, 1), else_=0)).label("fallback"),
                 func.sum(case((ai_cond, 1), else_=0)).label("ai"),
                 func.sum(case((heur_cond, 1), else_=0)).label("heur"),
@@ -1499,7 +1500,31 @@ def job_status(
 ):
     job = fetch_job(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
+        return {
+            "id": str(job_id),
+            "status": "missing",
+            "enqueued_at": None,
+            "started_at": None,
+            "ended_at": None,
+            "job_kind": None,
+            "module_id": None,
+            "module_title": None,
+            "target_questions": None,
+            "stage": "missing",
+            "stage_at": None,
+            "stage_started_at": None,
+            "stage_durations_s": None,
+            "job_started_at": None,
+            "detail": None,
+            "error_code": "JOB_NOT_FOUND",
+            "error_class": None,
+            "error_hint": "Задача уже удалена из очереди (TTL) или была очищена. Обновите историю.",
+            "error_message": "job not found",
+            "cancel_requested": False,
+            "cancel_requested_at": None,
+            "result": None,
+            "error": "job not found",
+        }
 
     status = job.get_status(refresh=True)
     meta = dict(job.meta or {})
@@ -1555,7 +1580,7 @@ def cancel_job(
 ):
     job = fetch_job(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="job not found")
+        return {"ok": True, "missing": True}
 
     try:
         kind = str((job.meta or {}).get("job_kind") or "").strip().lower()
@@ -1768,6 +1793,7 @@ def list_modules_admin(
 
     stats_by_module: dict[str, dict[str, int]] = {}
     needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
+    needs_ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_ai:%"))
     fallback_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("%fallback%"))
     ai_cond = (Question.concept_tag.is_not(None)) & (
         Question.concept_tag.like("ai:%") | Question.concept_tag.like("regen:%")
@@ -1779,7 +1805,7 @@ def list_modules_admin(
             select(
                 Submodule.module_id.label("module_id"),
                 func.count(Question.id).label("total_current"),
-                func.sum(case((needs_regen_cond, 1), else_=0)).label("needs_regen_current"),
+                func.sum(case(((needs_regen_cond | needs_ai_cond), 1), else_=0)).label("needs_regen_current"),
                 func.sum(case((fallback_cond, 1), else_=0)).label("fallback_current"),
                 func.sum(case((ai_cond, 1), else_=0)).label("ai_current"),
                 func.sum(case((heur_cond, 1), else_=0)).label("heur_current"),
@@ -1797,7 +1823,7 @@ def list_modules_admin(
             select(
                 Module.id.label("module_id"),
                 func.count(Question.id).label("total_current"),
-                func.sum(case((needs_regen_cond, 1), else_=0)).label("needs_regen_current"),
+                func.sum(case(((needs_regen_cond | needs_ai_cond), 1), else_=0)).label("needs_regen_current"),
                 func.sum(case((fallback_cond, 1), else_=0)).label("fallback_current"),
                 func.sum(case((ai_cond, 1), else_=0)).label("ai_current"),
                 func.sum(case((heur_cond, 1), else_=0)).label("heur_current"),
@@ -2591,7 +2617,7 @@ def get_module_answers(
 
 
 @router.get("/users")
-def list_users(
+def list_admin_modules(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):

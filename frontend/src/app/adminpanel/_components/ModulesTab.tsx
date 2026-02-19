@@ -86,8 +86,8 @@ export function ModulesTab(props: ModulesTabProps) {
 
   return (
     <div className="mt-8 space-y-6">
-      <div className="grid gap-6 lg:grid-cols-12 items-start">
-        <div className="lg:col-span-4 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
+      <div className="grid gap-6 lg:grid-cols-12 items-start min-w-0">
+        <div className="lg:col-span-4 relative overflow-y-auto overflow-x-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10 min-w-0">
           <div className="flex items-end justify-between gap-6">
             <div>
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">МОДУЛИ</div>
@@ -103,7 +103,7 @@ export function ModulesTab(props: ModulesTabProps) {
             </Button>
           </div>
 
-          <div className="mt-5 grid gap-2 max-h-[520px] overflow-auto pr-1">
+          <div className="mt-5 grid gap-2 max-h-[520px] overflow-y-auto overflow-x-hidden pr-1 min-w-0">
             {(adminModules || []).map((m: AdminModuleItem) => {
               const active = String(m.id) === String(selectedAdminModuleId);
               const q = m.question_quality;
