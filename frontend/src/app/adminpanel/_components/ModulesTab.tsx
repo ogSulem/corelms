@@ -115,7 +115,7 @@ export function ModulesTab(props: ModulesTabProps) {
                   type="button"
                   onClick={() => setSelectedAdminModuleId(String(m.id))}
                   className={
-                    "w-full text-left rounded-2xl border px-4 py-3 transition " +
+                    "w-full text-left rounded-2xl border px-3 py-2.5 transition " +
                     (active ? "border-[#fe9900]/25 bg-[#fe9900]/10" : "border-zinc-200 bg-white hover:bg-zinc-50")
                   }
                 >
@@ -124,12 +124,12 @@ export function ModulesTab(props: ModulesTabProps) {
                       <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">
                         {m.title}
                       </div>
-                      <div className="mt-1 text-[9px] font-black uppercase tracking-widest text-zinc-600">
+                      <div className="mt-1 truncate text-[9px] font-black uppercase tracking-widest text-zinc-600">
                         {m.is_active ? "АКТИВЕН" : needs ? "НЕОБХОДИМ РЕГЕН (СКРЫТ ДО ГОТОВНОСТИ)" : heur ? "ЭВРИСТИКА (МОЖНО ПОКАЗАТЬ)" : "СКРЫТ"}
                       </div>
                       <div
                         className={
-                          "mt-2 inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
+                          "mt-2 inline-flex items-center rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-widest " +
                           (needs ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]" : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
                         }
                       >

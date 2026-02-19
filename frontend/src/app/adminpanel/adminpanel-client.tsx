@@ -349,16 +349,26 @@ export default function AdminPanelClient() {
     if (!ok) return;
     try {
       setCancelBusy(true);
-      await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" } as any);
-      if (String(selectedJobId || "").trim() === id) {
-        setJobStage("canceled");
-        setJobStatus("canceled");
+      const res = await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" } as any);
+      const missing = Boolean((res as any)?.missing);
+
+      if (missing) {
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: { title: "ЗАДАЧА УЖЕ НЕДОСТУПНА", description: `JOB: ${id}` },
+          })
+        );
+      } else {
+        if (String(selectedJobId || "").trim() === id) {
+          setJobStage("canceled");
+          setJobStatus("canceled");
+        }
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: { title: "РЕГЕН ОТМЕНЁН", description: `JOB: ${id}` },
+          })
+        );
       }
-      window.dispatchEvent(
-        new CustomEvent("corelms:toast", {
-          detail: { title: "РЕГЕН ОТМЕНЁН", description: `JOB: ${id}` },
-        })
-      );
       await Promise.all([loadRegenHistory(false), loadImportQueue(50, true, false), loadAdminModules(), reloadModules()]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -552,7 +562,14 @@ export default function AdminPanelClient() {
       if (sid) continue;
       const stl = st.toLowerCase();
       const stagel = stage.toLowerCase();
-      const terminal = stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done";
+      const terminal =
+        stl === "missing" ||
+        stl === "finished" ||
+        stl === "failed" ||
+        stl === "canceled" ||
+        stagel === "canceled" ||
+        stagel === "done" ||
+        stagel === "missing";
       if (!terminal) out[mid] = { job_id: jid, status: st, stage };
     }
     return { ...(optimisticActiveModuleRegenRef.current || {}), ...out };
@@ -569,7 +586,14 @@ export default function AdminPanelClient() {
       if (!sid || !jid) continue;
       const stl = st.toLowerCase();
       const stagel = stage.toLowerCase();
-      const terminal = stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done";
+      const terminal =
+        stl === "missing" ||
+        stl === "finished" ||
+        stl === "failed" ||
+        stl === "canceled" ||
+        stagel === "canceled" ||
+        stagel === "done" ||
+        stagel === "missing";
       if (!terminal) out[sid] = { job_id: jid, status: st, stage, module_id: mid };
     }
     return { ...(optimisticActiveSubmoduleRegenRef.current || {}), ...out };
@@ -585,7 +609,14 @@ export default function AdminPanelClient() {
         if (!row) continue;
         const stl = String(row?.status || "").toLowerCase();
         const stagel = String(row?.stage || "").toLowerCase();
-        const terminal = stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done";
+        const terminal =
+          stl === "missing" ||
+          stl === "finished" ||
+          stl === "failed" ||
+          stl === "canceled" ||
+          stagel === "canceled" ||
+          stagel === "done" ||
+          stagel === "missing";
         if (terminal) {
           delete optimisticActiveModuleRegenRef.current[mid];
         }
@@ -596,7 +627,14 @@ export default function AdminPanelClient() {
         if (!row) continue;
         const stl = String(row?.status || "").toLowerCase();
         const stagel = String(row?.stage || "").toLowerCase();
-        const terminal = stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done";
+        const terminal =
+          stl === "missing" ||
+          stl === "finished" ||
+          stl === "failed" ||
+          stl === "canceled" ||
+          stagel === "canceled" ||
+          stagel === "done" ||
+          stagel === "missing";
         if (terminal) {
           delete optimisticActiveSubmoduleRegenRef.current[sid];
         }
@@ -666,9 +704,11 @@ export default function AdminPanelClient() {
       const stl = st.toLowerCase();
       const stagel = stage.toLowerCase();
       const terminal =
+        stl === "missing" ||
         stl === "finished" ||
         stl === "failed" ||
         stl === "canceled" ||
+        stagel === "missing" ||
         stagel === "canceled" ||
         stagel === "done";
       if (terminal) continue;
@@ -1396,6 +1436,20 @@ export default function AdminPanelClient() {
 
         if (st === "missing" || st === "finished" || st === "failed" || stage === "canceled") {
           delayMs = 4000;
+          if (st === "missing") {
+            try {
+              window.dispatchEvent(
+                new CustomEvent("corelms:toast", {
+                  detail: {
+                    title: "ЗАДАЧА ИСЧЕЗЛА ИЗ ОЧЕРЕДИ",
+                    description: "TTL/очистка очереди. Переключаюсь на следующую.",
+                  },
+                })
+              );
+            } catch {
+              // ignore
+            }
+          }
           try {
             const maybeRegenJobId = String((s?.result as any)?.regen_job_id || "").trim();
             const hasImportReport = !!(s?.result as any)?.report;

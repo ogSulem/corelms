@@ -1321,7 +1321,14 @@ def list_import_jobs(
         job_id = str(obj.get("job_id") or "").strip()
         job = fetch_job(job_id) if job_id else None
         if job is None:
-            return obj, False
+            obj["status"] = "missing"
+            obj["stage"] = "missing"
+            obj["error_code"] = obj.get("error_code") or "JOB_NOT_FOUND"
+            obj["error_hint"] = obj.get("error_hint") or "Задача уже удалена из очереди (TTL) или была очищена. Обновите историю."
+            obj["error_message"] = obj.get("error_message") or "job not found"
+            obj["cancel_requested"] = bool(obj.get("cancel_requested"))
+            obj["error"] = obj.get("error") or "job not found"
+            return obj, True
 
         st = str(job.get_status(refresh=True) or "").strip().lower()
         meta = dict(job.meta or {})
@@ -1586,7 +1593,7 @@ def cancel_job(
         kind = str((job.meta or {}).get("job_kind") or "").strip().lower()
     except Exception:
         kind = ""
-    if kind != "regen":
+    if kind and kind != "regen":
         raise HTTPException(status_code=409, detail="job is not cancellable")
 
     prev_status = job.get_status(refresh=True)
@@ -2095,38 +2102,67 @@ def list_regen_jobs(
     take = max(1, min(int(limit or 20), 50))
     try:
         r = get_redis()
-        raw = r.lrange("admin:regen_jobs", 0, take - 1)
+        raw = r.lrange("admin:regen_jobs", 0, 200)
     except Exception:
         raw = []
 
-    items: list[dict] = []
+    active_items: list[dict] = []
+    terminal_items: list[dict] = []
     for s in raw or []:
         try:
             obj = json.loads(s)
-            if isinstance(obj, dict):
-                job_id = str(obj.get("job_id") or "").strip()
-                job = fetch_job(job_id) if job_id else None
-                if job is not None:
-                    st = job.get_status(refresh=True)
-                    meta = dict(job.meta or {})
-                    obj["status"] = st
-                    obj["stage"] = meta.get("stage")
-                    obj["stage_at"] = meta.get("stage_at")
-                    obj["detail"] = meta.get("detail")
-                    obj["error_code"] = meta.get("error_code")
-                    obj["error_hint"] = meta.get("error_hint")
-                    obj["error_message"] = meta.get("error_message")
-                    try:
-                        if st == "failed":
-                            err = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
-                            obj["error"] = err.splitlines()[0][:500] if err else None
-                    except Exception:
-                        obj["error"] = None
-                items.append(obj)
+            if not isinstance(obj, dict):
+                continue
+
+            job_id = str(obj.get("job_id") or "").strip()
+            job = fetch_job(job_id) if job_id else None
+            if job is None:
+                obj["status"] = "missing"
+                obj["stage"] = "missing"
+                obj["error_code"] = obj.get("error_code") or "JOB_NOT_FOUND"
+                obj["error_hint"] = obj.get("error_hint") or "Задача уже удалена из очереди (TTL) или была очищена. Обновите историю."
+                obj["error_message"] = obj.get("error_message") or "job not found"
+                obj["error"] = obj.get("error") or "job not found"
+                terminal_items.append(obj)
+                continue
+
+            st = str(job.get_status(refresh=True) or "").strip().lower()
+            meta = dict(job.meta or {})
+            stage = str(meta.get("stage") or "").strip().lower()
+            obj["status"] = st
+            obj["stage"] = meta.get("stage")
+            obj["stage_at"] = meta.get("stage_at")
+            obj["detail"] = meta.get("detail")
+            obj["error_code"] = meta.get("error_code")
+            obj["error_hint"] = meta.get("error_hint")
+            obj["error_message"] = meta.get("error_message")
+            obj["cancel_requested"] = bool(meta.get("cancel_requested"))
+            try:
+                if st == "failed":
+                    err = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
+                    obj["error"] = err.splitlines()[0][:500] if err else None
+            except Exception:
+                obj["error"] = None
+
+            terminal = st in {"finished", "failed", "canceled"} or stage == "canceled" or stage == "done"
+            if terminal:
+                terminal_items.append(obj)
+            else:
+                active_items.append(obj)
         except Exception:
             continue
 
-    return {"items": items}
+    try:
+        r = get_redis()
+        r.delete("admin:regen_jobs")
+        for it in (active_items + terminal_items)[:200]:
+            r.rpush("admin:regen_jobs", json.dumps(it, ensure_ascii=False))
+        r.ltrim("admin:regen_jobs", 0, 199)
+        r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
+    except Exception:
+        pass
+
+    return {"items": (active_items + terminal_items)[:take]}
 
 
 @router.get("/modules/needs-regen")

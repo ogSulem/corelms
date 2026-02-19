@@ -868,6 +868,7 @@ export default function ImportTab(props: ImportTabProps) {
                     disabled={
                       String(jobKind || "").trim().toLowerCase() !== "regen" ||
                       cancelBusy ||
+                      String(jobStatus || "").trim().toLowerCase() === "missing" ||
                       String(jobStatus || "").trim().toLowerCase() === "finished" ||
                       String(jobStatus || "").trim().toLowerCase() === "failed" ||
                       String(jobStage || "").trim().toLowerCase() === "canceled"
@@ -888,7 +889,13 @@ export default function ImportTab(props: ImportTabProps) {
                 </div>
                 <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ОШИБКА</div>
-                  {jobError ? (
+                  {String(jobStatus || "").trim().toLowerCase() === "missing" ? (
+                    <div className="mt-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-[10px] font-bold text-zinc-700 break-words max-h-[84px] overflow-auto pr-1">
+                      {jobErrorHint ? `${jobErrorHint}\n` : ""}
+                      {jobErrorCode ? `CODE: ${jobErrorCode}\n` : ""}
+                      {jobError || "job not found"}
+                    </div>
+                  ) : jobError ? (
                     <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-[10px] font-bold text-rose-800 break-words max-h-[84px] overflow-auto pr-1">
                       {jobErrorHint ? `${jobErrorHint}\n` : ""}
                       {jobErrorCode ? `CODE: ${jobErrorCode}\n` : ""}
