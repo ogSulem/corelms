@@ -4,10 +4,10 @@ from sqlalchemy import text
 
 from app.core.queue import get_queue
 from app.core.redis_client import get_redis
-from app.db.session import SessionLocal
-from app.services.storage_cleanup_jobs import cleanup_admin_uploads_job
-from app.services.storage import get_s3_client
+from app.core.security import require_cron_secret
 from app.core.config import settings
+from app.services.admin_uploads_cleanup import cleanup_admin_uploads_job
+from app.services.storage import get_s3_client
 
 router = APIRouter(tags=["health"])
 
@@ -71,7 +71,7 @@ def cron_admin_uploads_cleanup(request: Request):
     if not acquired:
         return {"ok": True, "enqueued": False, "reason": "locked"}
 
-    q = get_queue("corelms")
+    q = get_queue(str(settings.rq_queue_default or "corelms"))
     job = q.enqueue(
         cleanup_admin_uploads_job,
         ttl_hours=int(getattr(settings, "uploads_admin_ttl_hours", 6)),
@@ -99,7 +99,7 @@ def cron_run_all(request: Request):
         if not acquired:
             results["tasks"]["admin_uploads_cleanup"] = {"ok": True, "enqueued": False, "reason": "locked"}
         else:
-            q = get_queue("corelms")
+            q = get_queue(str(settings.rq_queue_default or "corelms"))
             job = q.enqueue(
                 cleanup_admin_uploads_job,
                 ttl_hours=int(getattr(settings, "uploads_admin_ttl_hours", 6)),

@@ -11,6 +11,13 @@ interface ImportTabProps {
   importInputRef: React.RefObject<HTMLInputElement | null>;
   setImportFiles: (files: File[]) => void;
   importStageLabel: string;
+  uploadHistory?: {
+    id: string;
+    filename: string;
+    created_at: string;
+    status: "finished" | "failed" | "canceled";
+    detail?: string;
+  }[];
   s3UploadProgress?: {
     loaded: number;
     total: number;
@@ -78,6 +85,7 @@ export default function ImportTab(props: ImportTabProps) {
     importInputRef,
     setImportFiles,
     importStageLabel,
+    uploadHistory,
     s3UploadProgress,
     importPendingCount,
     importPendingNames,
@@ -159,7 +167,7 @@ export default function ImportTab(props: ImportTabProps) {
     };
   }, [s3UploadProgress]);
 
-  type PipelineKind = "import" | "regen";
+  type PipelineKind = "import" | "regen" | "upload";
   type PipelineItem = {
     kind: PipelineKind;
     job_id: string;
@@ -183,10 +191,46 @@ export default function ImportTab(props: ImportTabProps) {
 
   const pipelineActive = useMemo(() => {
     const out: PipelineItem[] = [];
+
+    const stClient = String(clientImportStage || "").trim().toLowerCase();
+    const uploadRunning = stClient === "upload_s3" || stClient === "upload";
+    if (uploadRunning) {
+      out.push({
+        kind: "upload",
+        job_id: `upload:active:${String(clientImportFileName || "").trim() || "zip"}`,
+        title: String(clientImportFileName || "").trim() || "ZIP",
+        created_at: undefined,
+        status: "started",
+        stage: stClient,
+        detail:
+          stClient === "upload_s3" && s3Label
+            ? `${s3Label.percent}% · ${s3Label.loadedHuman} / ${s3Label.totalHuman}`
+            : "UPLOAD",
+      });
+    }
+
+    const pendingUploads = Array.isArray(importPendingNames)
+      ? importPendingNames.map((x) => String(x || "").trim()).filter(Boolean)
+      : [];
+    for (let i = 0; i < pendingUploads.length; i++) {
+      const name = pendingUploads[i];
+      out.push({
+        kind: "upload",
+        job_id: `upload:queued:${i}:${name}`,
+        title: name,
+        created_at: undefined,
+        status: "queued",
+        stage: "queued",
+        detail: "В ОЧЕРЕДИ",
+      });
+    }
+
     for (const it of importQueue || []) {
+      const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
+      if (!jid) continue;
       out.push({
         kind: "import",
-        job_id: String(it.job_id),
+        job_id: jid,
         title: String(it.module_title || it.title || it.source_filename || "ZIP"),
         created_at: it.created_at,
         status: it.status,
@@ -203,15 +247,15 @@ export default function ImportTab(props: ImportTabProps) {
         source_filename: it.source_filename,
       });
     }
+
     for (const it of regenQueue || []) {
+      const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
+      if (!jid) continue;
+      const subTitle = String((it as any)?.submodule_title || "").trim();
       out.push({
         kind: "regen",
-        job_id: String(it.job_id),
-        title: String(
-          it.submodule_title
-            ? `УРОК: ${String(it.submodule_title || "").trim()}`
-            : it.module_title || it.module_id || "МОДУЛЬ"
-        ),
+        job_id: jid,
+        title: String(subTitle ? `УРОК: ${subTitle}` : (it as any)?.module_title || (it as any)?.module_id || "МОДУЛЬ"),
         created_at: it.created_at,
         status: it.status,
         stage: it.stage,
@@ -224,7 +268,7 @@ export default function ImportTab(props: ImportTabProps) {
         module_id: it.module_id,
         module_title: it.module_title,
         submodule_id: (it as any).submodule_id,
-        submodule_title: (it as any).submodule_title,
+        submodule_title: subTitle || undefined,
       });
     }
 
@@ -236,10 +280,25 @@ export default function ImportTab(props: ImportTabProps) {
     };
     out.sort((a, b) => score(b.created_at) - score(a.created_at));
     return out;
-  }, [importQueue, regenQueue]);
+  }, [clientImportStage, clientImportFileName, s3Label, importPendingNames, importQueue, regenQueue]);
 
   const pipelineHistory = useMemo(() => {
     const out: PipelineItem[] = [];
+
+    for (const it of uploadHistory || []) {
+      const hid = String((it as any)?.id || "").trim();
+      const fn = String((it as any)?.filename || "").trim() || "ZIP";
+      out.push({
+        kind: "upload",
+        job_id: hid || `upload:hist:${fn}:${Math.random().toString(16).slice(2)}`,
+        title: fn,
+        created_at: String((it as any)?.created_at || "") || undefined,
+        status: String((it as any)?.status || "finished") || undefined,
+        stage: String((it as any)?.detail || "") || undefined,
+        detail: String((it as any)?.detail || "") || undefined,
+      });
+    }
+
     for (const it of importQueueHistory || []) {
       out.push({
         kind: "import",
@@ -260,6 +319,7 @@ export default function ImportTab(props: ImportTabProps) {
         source_filename: it.source_filename,
       });
     }
+
     for (const it of regenHistory || []) {
       const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
       if (!jid) continue;
@@ -292,7 +352,7 @@ export default function ImportTab(props: ImportTabProps) {
     };
     out.sort((a, b) => score(b.created_at) - score(a.created_at));
     return out;
-  }, [importQueueHistory, regenHistory]);
+  }, [uploadHistory, importQueueHistory, regenHistory]);
 
   const badgeFor = (it: PipelineItem) => {
     const st = String(it.status || "").toLowerCase();
@@ -727,6 +787,7 @@ export default function ImportTab(props: ImportTabProps) {
                       type="button"
                       className="w-full text-left rounded-xl border border-zinc-200 bg-white p-3 hover:bg-zinc-50"
                       onClick={() => {
+                        if (it.kind === "upload") return;
                         setSelectedJobId(String(it.job_id));
                         setJobPanelOpen(true);
                         setImportQueueModalOpen(false);
@@ -737,7 +798,7 @@ export default function ImportTab(props: ImportTabProps) {
                           <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{label}</div>
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              {it.kind === "import" ? "IMPORT" : "REGEN"}
+                              {it.kind === "import" ? "IMPORT" : it.kind === "regen" ? "REGEN" : "UPLOAD"}
                             </div>
                             <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                               {badge}
@@ -747,7 +808,7 @@ export default function ImportTab(props: ImportTabProps) {
                                 {String(it.created_at || "").replace("T", " ").slice(0, 16)}
                               </div>
                             ) : null}
-                            {String(it.stage || "").trim() ? (
+                            {it.kind !== "upload" && String(it.stage || "").trim() ? (
                               <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                                 {String(it.stage || "").toUpperCase()}
                               </div>

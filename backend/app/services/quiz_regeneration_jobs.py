@@ -209,7 +209,7 @@ def regenerate_submodule_quiz_job(
                 "submodule_id": str(sub.id),
             }
 
-        ai_budget_seconds = 45.0
+        ai_budget_seconds = 25.0
 
         # Reuse module regen logic for a single lesson.
         subs = [sub]
@@ -233,13 +233,15 @@ def regenerate_submodule_quiz_job(
             _cancel_checkpoint(stage="lesson")
             title = str(sub.title or "Урок")
             text = str(sub.content or "")
+            # Keep prompts small for speed and to reduce LLM latency.
+            text = text[:8000]
 
             _set_job_stage(stage="ai", detail=f"1/1: {title}")
             _job_heartbeat(detail=f"AI 1/1: {title}")
             ollama_debug: dict[str, object] = {}
             provider_order = None
             try:
-                provider_order = choose_llm_provider_order_fast(ttl_seconds=300, use_cache=False)
+                provider_order = choose_llm_provider_order_fast(ttl_seconds=300, use_cache=True)
             except Exception:
                 provider_order = None
             qs: list[object] = []
@@ -251,8 +253,8 @@ def regenerate_submodule_quiz_job(
                     text=text,
                     n_questions=int(tq),
                     min_questions=int(tq),
-                    retries=3,
-                    backoff_seconds=0.9,
+                    retries=1,
+                    backoff_seconds=0.25,
                     debug_out=ollama_debug,
                     provider_order=provider_order,
                     time_budget_seconds=float(ai_budget_seconds),
@@ -479,12 +481,14 @@ def regenerate_module_quizzes_job(
 
         # Product rule: the queue must never hang.
         # Enforce a per-lesson AI time budget; if exceeded, fall back to heuristic.
-        ai_budget_seconds_per_lesson = 55.0
+        ai_budget_seconds_per_lesson = 30.0
 
         for si, sub in enumerate(subs, start=1):
             _cancel_checkpoint(stage="lesson")
             title = str(sub.title or f"Урок {si}")
             text = str(sub.content or "")
+            # Keep prompts small for speed and to reduce LLM latency.
+            text = text[:8000]
 
             if bool(only_missing) and _submodule_is_ok(db=db, sub=sub, target_questions=int(tq)):
                 _set_job_stage(stage="skip", detail=f"{si}/{len(subs)}: {title}")
@@ -496,7 +500,7 @@ def regenerate_module_quizzes_job(
             ollama_debug: dict[str, object] = {}
             provider_order = None
             try:
-                provider_order = choose_llm_provider_order_fast(ttl_seconds=300, use_cache=False)
+                provider_order = choose_llm_provider_order_fast(ttl_seconds=300, use_cache=True)
             except Exception:
                 provider_order = None
             qs: list[object] = []
@@ -508,8 +512,8 @@ def regenerate_module_quizzes_job(
                     text=text,
                     n_questions=int(tq),
                     min_questions=int(tq),
-                    retries=3,
-                    backoff_seconds=0.9,
+                    retries=1,
+                    backoff_seconds=0.25,
                     debug_out=ollama_debug,
                     provider_order=provider_order,
                     time_budget_seconds=float(ai_budget_seconds_per_lesson),

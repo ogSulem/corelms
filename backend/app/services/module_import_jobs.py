@@ -14,11 +14,12 @@ from rq import get_current_job
 from botocore.exceptions import ClientError
 
 from app.core.config import settings
+from app.core.redis_client import get_redis
+from app.core.queue import fetch_job, get_queue
 from app.db.session import SessionLocal
 from app.services.module_importer import import_module_from_dir
 from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job
 from app.services.storage import ensure_bucket_exists, get_s3_client
-from app.core.queue import get_queue
 from app.core.redis_client import get_redis
 
 
@@ -467,7 +468,7 @@ def import_module_zip_job(
                         _cancel_checkpoint(s3_object_key=s3_object_key, stage="regen_enqueue")
                         _set_job_stage(stage="regen_enqueue", detail=f"{mid} (attempt {attempt}/3)")
 
-                        q = get_queue("corelms")
+                        q = get_queue(str(settings.rq_queue_regen or "corelms_regen"))
                         regen_job = q.enqueue(
                             regenerate_module_quizzes_job,
                             module_id=str(mid),

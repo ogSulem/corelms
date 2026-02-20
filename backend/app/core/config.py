@@ -19,6 +19,10 @@ class Settings(BaseSettings):
         validation_alias="REDIS_URL",
     )
 
+    rq_queue_import: str = Field(default="corelms_import", validation_alias="RQ_QUEUE_IMPORT")
+    rq_queue_regen: str = Field(default="corelms_regen", validation_alias="RQ_QUEUE_REGEN")
+    rq_queue_default: str = Field(default="corelms", validation_alias="RQ_QUEUE_DEFAULT")
+
     @field_validator("database_url", mode="before")
     @classmethod
     def _normalize_database_url(cls, v: object) -> object:

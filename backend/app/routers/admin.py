@@ -874,7 +874,7 @@ async def import_module_zip(
         stub_module = None
 
     try:
-        q = get_queue("corelms")
+        q = get_queue(str(settings.rq_queue_import or "corelms_import"))
         job = q.enqueue(
             import_module_zip_job,
             s3_object_key=object_key,
@@ -1536,7 +1536,7 @@ def enqueue_import_zip(
         raise HTTPException(status_code=404, detail="source zip not found in s3")
 
     try:
-        q = get_queue("corelms")
+        q = get_queue(str(settings.rq_queue_import or "corelms_import"))
         job = q.enqueue(
             import_module_zip_job,
             s3_object_key=object_key,
@@ -1815,7 +1815,7 @@ def retry_import_job(
         db.rollback()
         stub_module = None
 
-    q = get_queue("corelms")
+    q = get_queue(str(settings.rq_queue_import or "corelms_import"))
     job = q.enqueue(
         import_module_zip_job,
         s3_object_key=object_key,
@@ -2025,7 +2025,7 @@ def migrate_legacy_content(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_migrate_legacy_content", limit=10, window_seconds=60),
 ):
-    q = get_queue("corelms")
+    q = get_queue(str(settings.rq_queue_default or "corelms"))
     job = q.enqueue(migrate_legacy_submodule_content_job, limit=int(limit or 200))
 
     audit_log(
@@ -2340,7 +2340,7 @@ def regenerate_module_quizzes(
     # Product rule: each lesson quiz always has exactly 5 questions.
     tq = 5
 
-    q = get_queue("corelms")
+    q = get_queue(str(settings.rq_queue_regen or "corelms_regen"))
     job = q.enqueue(
         regenerate_module_quizzes_job,
         module_id=str(mid),
@@ -2409,7 +2409,7 @@ def regenerate_submodule_quiz(
         raise HTTPException(status_code=404, detail="module not found")
 
     tq = 5
-    q = get_queue("corelms")
+    q = get_queue(str(settings.rq_queue_regen or "corelms_regen"))
     job = q.enqueue(
         regenerate_submodule_quiz_job,
         submodule_id=str(sid),

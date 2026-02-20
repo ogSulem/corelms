@@ -232,7 +232,8 @@ export type UserDetail = {
 export default function AdminPanelClient() {
   const { user, loading: authLoading } = useAuth();
 
-  const IMPORT_STATE_KEY = "corelms:admin_import_state";
+  const IMPORT_STATE_KEY = "corelms:admin_import_state:v4";
+  const UPLOAD_HISTORY_KEY = "corelms:admin_upload_history:v1";
 
   const importQueueSigRef = useRef<string>("");
   const importQueueHistorySigRef = useRef<string>("");
@@ -304,6 +305,35 @@ export default function AdminPanelClient() {
     } finally {
       if (!silent) setImportQueueLoading(false);
     }
+  }
+
+  function clearCurrentJobPanelState() {
+    setSelectedJobId("");
+    setJobStatus("");
+    setJobStage("");
+    setJobStageAt("");
+    setJobStageStartedAt("");
+    setJobStageDurations(null);
+    setJobStartedAt("");
+    setJobDetail("");
+    setJobError("");
+    setJobErrorCode("");
+    setJobErrorHint("");
+    setJobKind("");
+    setJobModuleTitle("");
+    setJobModuleId("");
+    setJobResult(null);
+  }
+
+  function hasActiveCurrentJob(): boolean {
+    const jid = String(selectedJobId || "").trim();
+    if (!jid) return false;
+    const st = String(jobStatus || "").trim().toLowerCase();
+    const stage = String(jobStage || "").trim().toLowerCase();
+    if (!st) return true;
+    if (st === "finished" || st === "failed" || st === "missing" || st === "canceled") return false;
+    if (stage === "canceled" || stage === "done" || stage === "missing") return false;
+    return true;
   }
 
   async function clearAdminJobHistory() {
@@ -389,6 +419,7 @@ export default function AdminPanelClient() {
         if (String(selectedJobId || "").trim() === id) {
           setJobStage("canceled");
           setJobStatus("canceled");
+          clearCurrentJobPanelState();
         }
         window.dispatchEvent(
           new CustomEvent("corelms:toast", {
@@ -440,6 +471,54 @@ export default function AdminPanelClient() {
       // ignore
     }
   }
+
+  type UploadHistoryItem = {
+    id: string;
+    filename: string;
+    created_at: string;
+    status: "finished" | "failed" | "canceled";
+    detail?: string;
+  };
+
+  const [uploadHistory, setUploadHistory] = useState<UploadHistoryItem[]>([]);
+
+  function saveUploadHistory(next: UploadHistoryItem[]) {
+    try {
+      window.localStorage.setItem(UPLOAD_HISTORY_KEY, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }
+
+  function pushUploadHistory(it: UploadHistoryItem) {
+    setUploadHistory((prev) => {
+      const next = [it, ...(prev || [])].slice(0, 200);
+      saveUploadHistory(next);
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(UPLOAD_HISTORY_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (Array.isArray(parsed)) {
+        setUploadHistory(
+          parsed
+            .filter((x: any) => x && typeof x === "object")
+            .map((x: any) => ({
+              id: String(x.id || "").trim() || String(Math.random()),
+              filename: String(x.filename || "").trim(),
+              created_at: String(x.created_at || ""),
+              status: String(x.status || "failed") as any,
+              detail: String(x.detail || "") || undefined,
+            }))
+        );
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const [modules, setModules] = useState<Module[]>([]);
   const [moduleId, setModuleId] = useState<string>("");
@@ -1143,19 +1222,31 @@ export default function AdminPanelClient() {
           stage: "queued",
           module_id: String(selectedAdminModuleId || ""),
         };
-        setSelectedJobId(jid);
-        setJobStatus("queued");
-        setJobStage("queued");
-        setJobStageAt("");
-        setJobStageStartedAt("");
-        setJobStageDurations(null);
-        setJobStartedAt("");
-        setJobDetail("");
-        setJobError("");
-        setJobErrorCode("");
-        setJobErrorHint("");
-        setJobResult(null);
-        setJobPanelOpen(true);
+        if (!hasActiveCurrentJob()) {
+          setSelectedJobId(jid);
+          setJobStatus("queued");
+          setJobStage("queued");
+          setJobStageAt("");
+          setJobStageStartedAt("");
+          setJobStageDurations(null);
+          setJobStartedAt("");
+          setJobDetail("");
+          setJobError("");
+          setJobErrorCode("");
+          setJobErrorHint("");
+          setJobResult(null);
+          setJobPanelOpen(true);
+        } else {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("corelms:toast", {
+                detail: { title: "РЕГЕН В ОЧЕРЕДИ", description: `JOB: ${jid}` },
+              })
+            );
+          } catch {
+            // ignore
+          }
+        }
       }
       await Promise.all([
         loadRegenHistory(true),
@@ -1318,19 +1409,31 @@ export default function AdminPanelClient() {
           status: "queued",
           stage: "queued",
         };
-        setSelectedJobId(jid);
-        setJobStatus("queued");
-        setJobStage("queued");
-        setJobStageAt("");
-        setJobStageStartedAt("");
-        setJobStageDurations(null);
-        setJobStartedAt("");
-        setJobDetail("");
-        setJobError("");
-        setJobErrorCode("");
-        setJobErrorHint("");
-        setJobResult(null);
-        setJobPanelOpen(true);
+        if (!hasActiveCurrentJob()) {
+          setSelectedJobId(jid);
+          setJobStatus("queued");
+          setJobStage("queued");
+          setJobStageAt("");
+          setJobStageStartedAt("");
+          setJobStageDurations(null);
+          setJobStartedAt("");
+          setJobDetail("");
+          setJobError("");
+          setJobErrorCode("");
+          setJobErrorHint("");
+          setJobResult(null);
+          setJobPanelOpen(true);
+        } else {
+          try {
+            window.dispatchEvent(
+              new CustomEvent("corelms:toast", {
+                detail: { title: "РЕГЕН В ОЧЕРЕДИ", description: `JOB: ${jid}` },
+              })
+            );
+          } catch {
+            // ignore
+          }
+        }
       }
 
       window.dispatchEvent(
@@ -1658,41 +1761,7 @@ export default function AdminPanelClient() {
   }, [jobPanelOpen, selectedJobId, selectedQuizId]);
 
   useEffect(() => {
-    if (!jobPanelOpen) return;
-    const jid = String(selectedJobId || "").trim();
-    if (!jid) return;
-    const st = String(jobStatus || "").trim().toLowerCase();
-    const stage = String(jobStage || "").trim().toLowerCase();
-    if (!st || st === "finished" || st === "failed" || st === "canceled" || st === "missing") return;
-    if (stage === "canceled" || stage === "done" || stage === "missing") return;
-
-    const sAt = String(jobStageAt || "").trim();
-    if (!sAt) return;
-    const ts = Date.parse(sAt);
-    if (!Number.isFinite(ts)) return;
-
-    const nowMs = Date.now();
-    const ageMs = nowMs - ts;
-    const maxAgeMs = stage === "ai" || stage === "ollama" ? 25 * 60 * 1000 : 35 * 60 * 1000;
-    if (ageMs < maxAgeMs) return;
-
-    const prev = longJobToastRef.current;
-    const same = prev.jobId === jid && prev.stageAt === sAt;
-    if (same && nowMs - (prev.lastShownAtMs || 0) < 10 * 60 * 1000) return;
-
-    longJobToastRef.current = { jobId: jid, stageAt: sAt, lastShownAtMs: nowMs };
-    try {
-      window.dispatchEvent(
-        new CustomEvent("corelms:toast", {
-          detail: {
-            title: "ДОЛГО ВЫПОЛНЯЕТСЯ",
-            description: "Задача выполняется дольше обычного. Можно дождаться завершения или нажать ОТМЕНА.",
-          },
-        })
-      );
-    } catch {
-      // ignore
-    }
+    return;
   }, [jobPanelOpen, selectedJobId, jobStatus, jobStage, jobStageAt]);
 
   useEffect(() => {
@@ -1871,6 +1940,22 @@ export default function AdminPanelClient() {
       importRunnerActiveRef.current = true;
       setImportBusy(true);
       setError(null);
+
+      // Client-side upload queue: show remaining ZIPs immediately as queued.
+      try {
+        const rest = files.slice(1);
+        if (rest.length) {
+          importQueuePendingRef.current = rest;
+          setImportPendingCount(rest.length);
+          setImportPendingNames(rest.map((f) => String((f as any)?.name || "")).filter(Boolean));
+        } else {
+          importQueuePendingRef.current = [];
+          setImportPendingCount(0);
+          setImportPendingNames([]);
+        }
+      } catch {
+        // ignore
+      }
 
       const keepAlive = () => {
         try {
@@ -2244,8 +2329,24 @@ export default function AdminPanelClient() {
       for (let idx = 0; idx < files.length; idx++) {
         if (importCancelRequestedRef.current) break;
         const f = files[idx];
+        const uploadEventBase = {
+          id: `upload:${Date.now()}:${idx}:${Math.random().toString(16).slice(2)}`,
+          filename: String((f as any)?.name || "module.zip"),
+          created_at: new Date().toISOString(),
+        };
         setClientImportStage("upload");
         setClientImportFileName(String(f?.name || ""));
+
+        // Update client-side queue display as soon as we start this file.
+        try {
+          const remaining = files.slice(idx + 1);
+          const merged = remaining.concat(importQueuePendingRef.current || []);
+          importQueuePendingRef.current = merged;
+          setImportPendingCount(merged.length);
+          setImportPendingNames(merged.map((x) => String((x as any)?.name || "")).filter(Boolean));
+        } catch {
+          // ignore
+        }
 
         keepAlive();
 
@@ -2295,10 +2396,25 @@ export default function AdminPanelClient() {
               keepAlive();
               importUploadObjectKeyRef.current = String((mp as any)?.object_key || "");
               setS3UploadProgress(null);
+              pushUploadHistory({ ...uploadEventBase, status: "finished", detail: "uploaded" });
             } catch (e) {
               const fn = String(f?.name || "module.zip");
               const base = e instanceof Error ? e.message : String(e);
-              throw new Error([`S3 multipart upload failed: ${base || "failed"}`, fn ? `file: ${fn}` : ""].filter(Boolean).join("\n"));
+              if (importCancelRequestedRef.current || (e instanceof DOMException && e.name === "AbortError")) {
+                pushUploadHistory({ ...uploadEventBase, status: "canceled", detail: "canceled" });
+              } else {
+                pushUploadHistory({ ...uploadEventBase, status: "failed", detail: base || "failed" });
+              }
+              throw new Error(
+                [
+                  `S3 multipart upload failed: ${base || "failed"}`,
+                  fn ? `file: ${fn}` : "",
+                  importUploadObjectKeyRef.current ? `object_key: ${importUploadObjectKeyRef.current}` : "",
+                  "Проверьте DevTools → Network: запрос PUT (blocked by CORS / failed to fetch).",
+                ]
+                  .filter(Boolean)
+                  .join("\n")
+              );
             }
           } else {
             const presign = await apiFetch<{ ok: boolean; object_key: string; upload_url: string | null; reused?: boolean }>(
@@ -2339,6 +2455,7 @@ export default function AdminPanelClient() {
                   },
                 })
               );
+              pushUploadHistory({ ...uploadEventBase, status: "finished", detail: "reused" });
             } else {
               setClientImportStage("upload_s3");
               const ac = new AbortController();
@@ -2347,13 +2464,19 @@ export default function AdminPanelClient() {
                 keepAlive();
                 await uploadS3WithProgress(String(presign?.upload_url || ""), f, ac);
                 keepAlive();
+                pushUploadHistory({ ...uploadEventBase, status: "finished", detail: "uploaded" });
               } catch (e) {
                 const objKey = String((presign as any)?.object_key || "").trim();
                 const fn = String(f?.name || "module.zip");
                 const base = e instanceof Error ? e.message : String(e);
+                if (importCancelRequestedRef.current || (e instanceof DOMException && e.name === "AbortError")) {
+                  pushUploadHistory({ ...uploadEventBase, status: "canceled", detail: "canceled" });
+                } else {
+                  pushUploadHistory({ ...uploadEventBase, status: "failed", detail: base || "failed" });
+                }
                 const hint =
                   "S3/MinIO PUT не прошёл (браузер не получил ответ). Чаще всего это CORS (PUT) или неверный PUBLIC endpoint для S3. " +
-                  "Проверь DevTools → Network: запрос PUT (blocked by CORS / failed to fetch).";
+                  "Проверьте DevTools → Network: запрос PUT (blocked by CORS / failed to fetch).";
                 throw new Error(
                   [
                     `S3 upload failed: ${base || "failed to fetch"}`,
@@ -2400,6 +2523,45 @@ export default function AdminPanelClient() {
           }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
+
+          const lower = String(msg || "").toLowerCase();
+          const looksAlreadyEnqueued = lower.includes("already enqueued") || lower.includes("already queued") || lower.includes("уже в очереди");
+          if (looksAlreadyEnqueued) {
+            const m = String(msg || "").match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+            const existingJobId = String(m?.[1] || "").trim();
+            try {
+              window.dispatchEvent(
+                new CustomEvent("corelms:toast", {
+                  detail: {
+                    title: "УЖЕ В ОЧЕРЕДИ",
+                    description: existingJobId ? `JOB: ${existingJobId}` : "ЭТА ЗАДАЧА УЖЕ БЫЛА ДОБАВЛЕНА В ОЧЕРЕДЬ",
+                  },
+                })
+              );
+            } catch {
+              // ignore
+            }
+
+            if (existingJobId) {
+              lastJobId = existingJobId;
+              res = { ok: true, job_id: existingJobId };
+              setSelectedJobId(existingJobId);
+              setJobPanelOpen(true);
+              void loadImportQueue(20, false, true);
+            }
+
+            setClientImportStage("processing");
+            setImportBatch((prev) => {
+              if (!prev) return prev;
+              return { ...prev, done: Math.min(prev.total, prev.done + 1) };
+            });
+            setImportEnqueueProgress((prev) => {
+              if (!prev) return prev;
+              return { ...prev, done: Math.min(prev.total, prev.done + 1) };
+            });
+            await new Promise<void>((resolve) => setTimeout(() => resolve(), 150));
+            continue;
+          }
 
           // For large archives, do NOT fallback to legacy import (it will likely hit Railway 499/502).
           const isLargeZip = typeof (f as any)?.size === "number" && Number((f as any).size) > 50 * 1024 * 1024;
@@ -2939,10 +3101,11 @@ export default function AdminPanelClient() {
             s3UploadProgress={s3UploadProgress}
             importPendingCount={importPendingCount}
             importPendingNames={importPendingNames}
+            uploadHistory={uploadHistory}
             importEnqueueProgress={importEnqueueProgress}
             importBatch={importBatch}
             importBusy={importBusy}
-            startImport={startImport}
+            startImport={() => void startImport()}
             importQueue={importQueue}
             importQueueLoading={importQueueLoading}
             loadImportQueue={loadImportQueue}
