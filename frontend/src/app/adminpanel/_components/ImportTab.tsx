@@ -818,14 +818,9 @@ export default function ImportTab(props: ImportTabProps) {
             <div className="rounded-2xl border border-zinc-200 bg-white p-3">
               <div className="flex items-start justify-between gap-4">
                 <div className="min-w-0">
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ЗАДАЧА</div>
-                  <div className="mt-1 truncate text-[11px] font-black text-zinc-950">{selectedJobId || "—"}</div>
-                  {jobKind || jobModuleTitle ? (
-                    <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words">
-                      {jobKind ? `ТИП: ${String(jobKind || "").toUpperCase()}` : ""}
-                      {jobModuleTitle ? `${jobKind ? " · " : ""}${jobModuleTitle}` : ""}
-                    </div>
-                  ) : null}
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ТЕКУЩАЯ ЗАДАЧА</div>
+                  <div className="mt-1 truncate text-[11px] font-black text-zinc-950">{jobModuleTitle || "—"}</div>
+                  <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words">ТИП: ${String(jobKind || "").toUpperCase()}</div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                       {(() => {
