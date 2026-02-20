@@ -442,7 +442,7 @@ export default function ImportTab(props: ImportTabProps) {
           <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                ИМПОРТ → РЕГЕН (ЕДИНАЯ ОЧЕРЕДЬ)
+                ИМПОРТ (ХРАНИЛИЩЕ/БД) · РЕГЕН (НЕЙРОСЕТЬ) — ОТДЕЛЬНЫЕ ЗАДАЧИ
                 <span className="ml-3 text-[9px] font-black uppercase tracking-widest text-zinc-400">
                   {importQueueLoading || regenHistoryLoading ? "..." : `ЗАДАЧ: ${pipelineActive.length}`}
                 </span>

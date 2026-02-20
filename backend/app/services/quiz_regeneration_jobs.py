@@ -147,6 +147,12 @@ def regenerate_submodule_quiz_job(
     _set_job_stage(stage="start", detail=str(submodule_id))
     db = SessionLocal()
     try:
+        try:
+            _job = get_current_job()
+        except Exception:
+            _job = None
+        job_seed = str(getattr(_job, "id", "") or "").strip() or datetime.utcnow().isoformat()
+
         sid_raw = str(submodule_id).strip()
         try:
             sid = uuid.UUID(sid_raw)
@@ -289,13 +295,18 @@ def regenerate_submodule_quiz_job(
                     raise err
 
                 generated = generate_quiz_questions_heuristic(
-                    seed=f"regen:{m.id}:{sub.id}",
+                    seed=f"regen:{job_seed}:{m.id}:{sub.id}",
                     title=title,
                     theory_text=text,
                     target=int(tq),
                 )
                 if generated:
                     used_heuristic = True
+                    try:
+                        # Hint for UI: heuristic was used because AI failed.
+                        _set_job_stage(stage="ai", detail=f"1/1: {title} · heuristic")
+                    except Exception:
+                        pass
                     qs = []
                     for mcq in generated:
                         qs.append(

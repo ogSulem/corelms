@@ -84,6 +84,15 @@ export function ModulesTab(props: ModulesTabProps) {
     return out;
   })();
 
+  const anySubmoduleRegenForSelectedModule = (() => {
+    const mid = String(selectedAdminModuleId || "").trim();
+    if (!mid) return false;
+    for (const v of Object.values(activeSubmoduleRegenBySubmoduleId || {})) {
+      if (String((v as any)?.module_id || "").trim() === mid) return true;
+    }
+    return false;
+  })();
+
   return (
     <div className="mt-8 space-y-6">
       <div className="grid gap-6 lg:grid-cols-12 items-start min-w-0">
@@ -173,7 +182,7 @@ export function ModulesTab(props: ModulesTabProps) {
             </div>
 
             <div className="shrink-0 flex flex-col gap-2">
-              {selectedAdminModuleId && activeModuleRegenByModuleId[String(selectedAdminModuleId || "")] ? (
+              {selectedAdminModuleId && (activeModuleRegenByModuleId[String(selectedAdminModuleId || "")] || anySubmoduleRegenForSelectedModule) ? (
                 <div className="h-11 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-4 flex items-center justify-center text-[10px] font-black uppercase tracking-widest text-[#fe9900]">
                   РЕГЕН ЗАПУЩЕН
                 </div>
@@ -295,7 +304,7 @@ export function ModulesTab(props: ModulesTabProps) {
                               <Button
                                 variant="outline"
                                 className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                                disabled={!s.id}
+                                disabled={!s.id || moduleRegenRunning || subRegenRunning}
                                 onClick={() => void regenerateSubmoduleQuiz(String(s.id))}
                               >
                                 REGEN УРОКА

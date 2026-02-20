@@ -926,14 +926,37 @@ export default function AdminPanelClient() {
   }
 
   useEffect(() => {
-    if (tab !== "modules") return;
+    if (tab !== "modules" && tab !== "import") return;
     void loadRegenHistory(false);
     const t = window.setInterval(() => {
-      void loadImportQueue(20, false, true);
+      // Include terminal jobs so history stays fresh.
+      void loadImportQueue(20, true, true);
       void loadRegenHistory(true);
     }, 4000);
     return () => window.clearInterval(t);
   }, [tab]);
+
+  // After regen status changes, refresh module list and submodule quality so UI reflects real state.
+  const regenRefreshSigRef = useRef<string>("");
+  useEffect(() => {
+    try {
+      const rh = Array.isArray(regenHistory) ? regenHistory : [];
+      const sig = rh
+        .map((it: any) => `${String(it?.job_id || it?.id || "").trim()}:${String(it?.status || "").trim()}:${String(it?.stage || "").trim()}`)
+        .sort()
+        .join("|");
+      if (!sig || sig === regenRefreshSigRef.current) return;
+      regenRefreshSigRef.current = sig;
+
+      // Best-effort: refresh currently selected module quality.
+      if (selectedAdminModuleId) {
+        void loadSelectedAdminModuleSubQuality(String(selectedAdminModuleId));
+      }
+      void loadAdminModules();
+    } catch {
+      // ignore
+    }
+  }, [regenHistory, selectedAdminModuleId]);
 
   async function cancelCurrentJob() {
     const kind = String(jobKind || "").toLowerCase();
