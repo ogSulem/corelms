@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import boto3
+import logging
 from botocore.client import Config
 from botocore.exceptions import ClientError
 
 from app.core.config import settings
 from app.core.redis_client import get_redis
+
+
+log = logging.getLogger(__name__)
 
 
 def get_s3_client(*, endpoint_url: str | None = None):
@@ -213,7 +217,36 @@ def multipart_list_parts(*, object_key: str, upload_id: str) -> list[dict[str, o
         kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key, "UploadId": upload_id}
         if marker:
             kwargs["PartNumberMarker"] = int(marker)
-        resp = s3.list_parts(**kwargs)
+        try:
+            resp = s3.list_parts(**kwargs)
+        except ClientError as e:
+            # Some S3-compatible providers may return errors for list_parts
+            # (e.g. NoSuchUpload, NotImplemented, InternalError). For the admin UI,
+            # it's better to degrade gracefully and allow restarting the upload.
+            try:
+                code = str((e.response or {}).get("Error", {}).get("Code") or "")
+                msg = str((e.response or {}).get("Error", {}).get("Message") or "")
+            except Exception:
+                code = ""
+                msg = ""
+            log.warning(
+                "multipart_list_parts failed: code=%s message=%s bucket=%s key=%s upload_id=%s",
+                code,
+                msg,
+                settings.s3_bucket,
+                object_key,
+                upload_id,
+            )
+            return []
+        except Exception as e:
+            log.warning(
+                "multipart_list_parts failed: err=%s bucket=%s key=%s upload_id=%s",
+                type(e).__name__,
+                settings.s3_bucket,
+                object_key,
+                upload_id,
+            )
+            return []
         parts = resp.get("Parts") or []
         for p in parts:
             try:
