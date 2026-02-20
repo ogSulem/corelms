@@ -641,7 +641,7 @@ def import_module_from_dir(
                                 prompt=str(getattr(q, "prompt", "") or ""),
                                 correct_answer=str(getattr(q, "correct_answer", "") or ""),
                                 explanation=(getattr(q, "explanation", None) if getattr(q, "explanation", None) else None),
-                                concept_tag=f"ai:{m.id}:{order}:{qi}",
+                                concept_tag=f"ok:import:{m.id}:{order}:{qi}",
                                 variant_group=None,
                             )
                         )
@@ -667,7 +667,7 @@ def import_module_from_dir(
                                 prompt=mcq.prompt,
                                 correct_answer=mcq.correct_answer,
                                 explanation=None,
-                                concept_tag=f"heur:{m.id}:{order}:{qi}",
+                                concept_tag=f"needs_regen:import:{m.id}:{order}:{qi}",
                                 variant_group=None,
                             )
                         )

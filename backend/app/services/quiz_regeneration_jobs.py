@@ -431,6 +431,15 @@ def regenerate_submodule_quiz_job(
                         qt = QuestionType.case
                     else:
                         qt = QuestionType.single
+
+                    # Unify question quality tags:
+                    # - ok:* means the question is considered usable
+                    # - needs_regen:* means it should be regenerated/improved later
+                    tag = (
+                        f"needs_regen:regen:{m.id}:{sub.order}:{qi}"
+                        if (ai_failed or used_heuristic)
+                        else f"ok:regen:{m.id}:{sub.order}:{qi}"
+                    )
                     db.add(
                         Question(
                             quiz_id=qid,
@@ -439,13 +448,7 @@ def regenerate_submodule_quiz_job(
                             prompt=str(getattr(q, "prompt", "") or ""),
                             correct_answer=str(getattr(q, "correct_answer", "") or ""),
                             explanation=(str(getattr(q, "explanation", "")) if getattr(q, "explanation", None) else None),
-                            concept_tag=(
-                                (
-                                    f"needs_ai:heur:{m.id}:{sub.order}:{qi}"
-                                    if (used_heuristic and ai_failed)
-                                    else (f"heur:{m.id}:{sub.order}:{qi}" if used_heuristic else (f"needs_regen:regen:{m.id}:{sub.order}:{qi}" if ai_failed else f"regen:{m.id}:{sub.order}:{qi}"))
-                                )
-                            ),
+                            concept_tag=tag,
                             variant_group=None,
                         )
                     )
@@ -466,9 +469,7 @@ def regenerate_submodule_quiz_job(
                         ),
                         correct_answer="A",
                         explanation=None,
-                        concept_tag=(
-                            f"needs_regen:regen:fallback:{m.id}:{sub.order}:1" if ai_failed else f"regen:fallback:{m.id}:{sub.order}:1"
-                        ),
+                        concept_tag=f"needs_regen:regen:fallback:{m.id}:{sub.order}:1",
                         variant_group=None,
                     )
                 )
@@ -751,9 +752,9 @@ def regenerate_module_quizzes_job(
                             correct_answer=str(getattr(q, "correct_answer", "") or ""),
                             explanation=(str(getattr(q, "explanation", "")) if getattr(q, "explanation", None) else None),
                             concept_tag=(
-                                f"heur:{m.id}:{sub.order}:{qi}"
-                                if used_heuristic
-                                else (f"needs_regen:regen:{m.id}:{sub.order}:{qi}" if ai_failed else f"regen:{m.id}:{sub.order}:{qi}")
+                                f"needs_regen:regen:{m.id}:{sub.order}:{qi}"
+                                if (ai_failed or used_heuristic)
+                                else f"ok:regen:{m.id}:{sub.order}:{qi}"
                             ),
                             variant_group=None,
                         )
@@ -775,9 +776,7 @@ def regenerate_module_quizzes_job(
                         ),
                         correct_answer="A",
                         explanation=None,
-                        concept_tag=(
-                            f"needs_regen:regen:fallback:{m.id}:{sub.order}:1" if ai_failed else f"regen:fallback:{m.id}:{sub.order}:1"
-                        ),
+                        concept_tag=f"needs_regen:regen:fallback:{m.id}:{sub.order}:1",
                         variant_group=None,
                     )
                 )
@@ -806,7 +805,6 @@ def regenerate_module_quizzes_job(
             pass
 
         needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
-        needs_ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_ai:%"))
         active_quiz_ids: list[uuid.UUID] = [sub.quiz_id for sub in (subs or []) if getattr(sub, "quiz_id", None)]
         active_quiz_ids = [qid for qid in active_quiz_ids if qid is not None]
 
@@ -817,7 +815,7 @@ def regenerate_module_quizzes_job(
                     select(func.count())
                     .select_from(Question)
                     .where(Question.quiz_id.in_(active_quiz_ids))
-                    .where(needs_regen_cond | needs_ai_cond)
+                    .where(needs_regen_cond)
                 )
                 or 0
             )

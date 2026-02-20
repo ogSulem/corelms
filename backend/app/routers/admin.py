@@ -681,12 +681,8 @@ def module_submodules_quality(
         raise HTTPException(status_code=404, detail="module not found")
 
     needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
-    needs_ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_ai:%"))
+    ok_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("ok:%"))
     fallback_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("%fallback%"))
-    ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("regen:%"))
-    heur_cond = (Question.concept_tag.is_not(None)) & (
-        Question.concept_tag.like("heur:%") | Question.concept_tag.like("needs_ai:heur:%")
-    )
 
     rows = (
         db.execute(
@@ -696,10 +692,10 @@ def module_submodules_quality(
                 Submodule.title.label("title"),
                 Submodule.quiz_id.label("quiz_id"),
                 func.count(Question.id).label("total"),
-                func.sum(case((needs_regen_cond | needs_ai_cond, 1), else_=0)).label("needs_regen"),
+                func.sum(case((needs_regen_cond, 1), else_=0)).label("needs_regen"),
                 func.sum(case((fallback_cond, 1), else_=0)).label("fallback"),
-                func.sum(case((ai_cond, 1), else_=0)).label("ai"),
-                func.sum(case((heur_cond, 1), else_=0)).label("heur"),
+                func.sum(case((ok_cond, 1), else_=0)).label("ai"),
+                func.sum(case((0 == 1, 1), else_=0)).label("heur"),
             )
             .select_from(Submodule)
             .join(Question, Question.quiz_id == Submodule.quiz_id, isouter=True)
@@ -2188,24 +2184,18 @@ def list_modules_admin(
 
     stats_by_module: dict[str, dict[str, int]] = {}
     needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
-    needs_ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_ai:%"))
+    ok_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("ok:%"))
     fallback_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("%fallback%"))
-    ai_cond = (Question.concept_tag.is_not(None)) & (
-        Question.concept_tag.like("ai:%") | Question.concept_tag.like("regen:%")
-    )
-    heur_cond = (Question.concept_tag.is_not(None)) & (
-        Question.concept_tag.like("heur:%") | Question.concept_tag.like("needs_ai:heur:%")
-    )
 
     lesson_rows = (
         db.execute(
             select(
                 Submodule.module_id.label("module_id"),
                 func.count(Question.id).label("total_current"),
-                func.sum(case(((needs_regen_cond | needs_ai_cond), 1), else_=0)).label("needs_regen_current"),
+                func.sum(case(((needs_regen_cond), 1), else_=0)).label("needs_regen_current"),
                 func.sum(case((fallback_cond, 1), else_=0)).label("fallback_current"),
-                func.sum(case((ai_cond, 1), else_=0)).label("ai_current"),
-                func.sum(case((heur_cond, 1), else_=0)).label("heur_current"),
+                func.sum(case((ok_cond, 1), else_=0)).label("ai_current"),
+                func.sum(case((0 == 1, 1), else_=0)).label("heur_current"),
             )
             .select_from(Submodule)
             .join(Question, Question.quiz_id == Submodule.quiz_id, isouter=True)
@@ -2220,10 +2210,10 @@ def list_modules_admin(
             select(
                 Module.id.label("module_id"),
                 func.count(Question.id).label("total_current"),
-                func.sum(case(((needs_regen_cond | needs_ai_cond), 1), else_=0)).label("needs_regen_current"),
+                func.sum(case(((needs_regen_cond), 1), else_=0)).label("needs_regen_current"),
                 func.sum(case((fallback_cond, 1), else_=0)).label("fallback_current"),
-                func.sum(case((ai_cond, 1), else_=0)).label("ai_current"),
-                func.sum(case((heur_cond, 1), else_=0)).label("heur_current"),
+                func.sum(case((ok_cond, 1), else_=0)).label("ai_current"),
+                func.sum(case((0 == 1, 1), else_=0)).label("heur_current"),
             )
             .select_from(Module)
             .join(Question, Question.quiz_id == Module.final_quiz_id, isouter=True)
