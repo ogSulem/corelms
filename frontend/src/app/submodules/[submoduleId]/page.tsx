@@ -18,6 +18,7 @@ type SubmoduleMeta = {
   content: string;
   order: number;
   quiz_id: string;
+  requires_quiz?: boolean;
 };
 
 function decodeLegacyPercentUnicode(input: string): string {
@@ -179,6 +180,12 @@ export default function SubmodulePage() {
     if (mime.startsWith("text/")) return true;
     return false;
   }, [inlineMime, inlineUrl]);
+
+  const requiresQuiz = useMemo(() => {
+    const v = (submodule as any)?.requires_quiz;
+    if (typeof v === "boolean") return v;
+    return true;
+  }, [submodule]);
 
   function closeInline() {
     setInlineUrl(null);
@@ -478,10 +485,11 @@ export default function SubmodulePage() {
   }, [readConfirmed]);
 
   const quizDotClass = useMemo(() => {
+    if (!requiresQuiz) return "bg-zinc-300";
     if (thisQuizPassed) return "bg-[#284e13] shadow-[0_0_8px_rgba(40,78,19,0.25)]";
     if (hasQuizAttempt) return "bg-rose-400 shadow-[0_0_8px_rgba(251,113,133,0.35)]";
     return "bg-zinc-600";
-  }, [hasQuizAttempt, thisQuizPassed]);
+  }, [hasQuizAttempt, requiresQuiz, thisQuizPassed]);
 
   const quizTotals = useMemo(() => {
     if (!moduleProgress) return { passed: 0, total: 0 };
@@ -581,6 +589,9 @@ export default function SubmodulePage() {
   async function onStartQuiz() {
     if (isStartingQuiz) return;
     try {
+      if (!requiresQuiz) {
+        return;
+      }
       if (!submodule?.quiz_id) {
         setError("Не удалось начать тест: quiz_id не найден");
         return;
@@ -705,10 +716,16 @@ export default function SubmodulePage() {
                   </div>
                   <span
                     className={`text-[10px] font-black uppercase tracking-widest ${
-                      thisQuizPassed ? "text-[#284e13]" : hasQuizAttempt ? "text-rose-700" : "text-zinc-600"
+                      !requiresQuiz
+                        ? "text-zinc-400"
+                        : thisQuizPassed
+                        ? "text-[#284e13]"
+                        : hasQuizAttempt
+                        ? "text-rose-700"
+                        : "text-zinc-600"
                     }`}
                   >
-                    {typeof displayLastQuizScore === "number" ? `${displayLastQuizScore}%` : "—"}
+                    {!requiresQuiz ? "НЕТ" : typeof displayLastQuizScore === "number" ? `${displayLastQuizScore}%` : "—"}
                   </span>
                 </div>
 
@@ -717,6 +734,21 @@ export default function SubmodulePage() {
                     <Button className="w-full h-14 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-sm" onClick={onConfirmRead}>
                       Изучил теорию
                     </Button>
+                  ) : !requiresQuiz ? (
+                    <div className="rounded-2xl border border-zinc-200 bg-white p-4 text-center">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                        Этот урок без теста
+                      </div>
+                      {moduleId && nextSubmoduleId ? (
+                        <div className="mt-4">
+                          <Link href={`/submodules/${encodeURIComponent(nextSubmoduleId)}?module=${encodeURIComponent(moduleId)}`} className="block">
+                            <Button className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-[10px]">
+                              Следующий урок
+                            </Button>
+                          </Link>
+                        </div>
+                      ) : null}
+                    </div>
                   ) : !isQuizActive ? (
                     <Button
                       className="w-full h-14 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-sm"

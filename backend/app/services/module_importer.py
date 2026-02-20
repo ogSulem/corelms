@@ -312,6 +312,47 @@ def _is_theory_file(p: pathlib.Path) -> bool:
     return p.suffix.lower() in {".docx", ".pdf", ".txt", ".md"}
 
 
+def _is_previewable_lesson_asset(p: pathlib.Path) -> bool:
+    ext = str(p.suffix or "").lower()
+    if ext.startswith("."):
+        ext = ext[1:]
+
+    # "Previewable" means: can be meaningfully shown on the lesson page.
+    # - Inline: video/audio/images/pdf/text
+    # - Download-only but still lesson-worthy: office/docs/spreadsheets/presentations
+    return ext in {
+        # text
+        "txt",
+        "md",
+        # pdf
+        "pdf",
+        # images
+        "png",
+        "jpg",
+        "jpeg",
+        "webp",
+        "gif",
+        # video
+        "mp4",
+        "webm",
+        "mov",
+        "mkv",
+        # audio
+        "mp3",
+        "wav",
+        "ogg",
+        "m4a",
+        # office
+        "doc",
+        "docx",
+        "ppt",
+        "pptx",
+        "xls",
+        "xlsx",
+        "csv",
+    }
+
+
 def _upload_file(*, s3, object_key: str, file_path: pathlib.Path) -> tuple[str | None, int | None]:
     ct = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
     with file_path.open("rb") as f:
@@ -480,9 +521,32 @@ def import_module_from_dir(
             lesson_specs = [(1, module_title, root_files)]
             extra_assets = []
     else:
+        # Mixed mode: module has lesson folders AND files in module root.
+        # Treat root-level files as their own lesson(s) instead of dropping them.
+        root_files = sorted([p for p in module_dir.iterdir() if p.is_file() and not _should_ignore_file(p)])
+        root_theory_files = [p for p in root_files if _is_theory_file(p)]
+
         lesson_specs = []
         extra_assets = []
         nested_order = 0
+
+        if root_files:
+            if len(root_theory_files) > 1:
+                root_theory_files = sorted(root_theory_files, key=lambda x: _parse_order(x.name, 999))
+                for tf in root_theory_files:
+                    lesson_specs.append((_parse_order(tf.name, 999), _guess_title(tf.stem), [tf], module_dir))
+                root_extra_assets = [p for p in root_files if p not in set(root_theory_files)]
+                if root_extra_assets:
+                    lesson_specs.append((
+                        max([_parse_order(tf.name, 999) for tf in (root_theory_files or [])] + [0]) + 1,
+                        "Общие материалы",
+                        root_extra_assets,
+                        module_dir,
+                    ))
+            else:
+                title0 = _guess_title(module_dir.name) or module_title
+                lesson_specs.append((_parse_order(module_dir.name, 0), title0, root_files, module_dir))
+
         for i, ld in enumerate(lesson_dirs, start=1):
             direct_files = sorted([p for p in ld.iterdir() if p.is_file() and not _should_ignore_file(p)])
             if direct_files:
@@ -522,6 +586,10 @@ def import_module_from_dir(
         _set_job_detail(f"lesson {i}/{total_lessons}: {title}")
         theory = _theory_from_files(files)
 
+        non_theory_files = [p for p in files if p.is_file() and not _is_theory_file(p)]
+        has_previewable_assets = any(_is_previewable_lesson_asset(p) for p in non_theory_files)
+        materials_only = (not (theory or "").strip()) and bool(has_previewable_assets)
+
         if not (theory or "").strip():
             theory = _lesson_markdown_fallback(module_title=module_title, lesson_title=title, files=files)
 
@@ -538,6 +606,7 @@ def import_module_from_dir(
             content=theory,
             order=order,
             quiz_id=qz.id,
+            requires_quiz=(not materials_only),
         )
         db.add(s)
         db.flush()
@@ -607,24 +676,26 @@ def import_module_from_dir(
                         report["questions_total"] = int(report.get("questions_total") or 0) + len(generated)
         else:
             # Quick placeholder creation for two-phase import.
-            db.add(
-                Question(
-                    quiz_id=qz.id,
-                    type=QuestionType.single,
-                    difficulty=1,
-                    prompt=(
-                        f"По уроку «{title}» выберите верный вариант.\n"
-                        "A) Подтвердить прочтение и пройти квиз\nB) Пропустить урок\nC) Завершить модуль без проверки\nD) Ничего не делать"
-                    ),
-                    correct_answer="A",
-                    explanation=None,
-                    concept_tag=f"needs_regen:import:{m.id}:{order}:1",
-                    variant_group=None,
+            # Materials-only lessons should NOT require quiz, so skip placeholders.
+            if not materials_only:
+                db.add(
+                    Question(
+                        quiz_id=qz.id,
+                        type=QuestionType.single,
+                        difficulty=1,
+                        prompt=(
+                            f"По уроку «{title}» выберите верный вариант.\n"
+                            "A) Подтвердить прочтение и пройти квиз\nB) Пропустить урок\nC) Завершить модуль без проверки\nD) Ничего не делать"
+                        ),
+                        correct_answer="A",
+                        explanation=None,
+                        concept_tag=f"needs_regen:import:{m.id}:{order}:1",
+                        variant_group=None,
+                    )
                 )
-            )
-            if report is not None:
-                report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
-                report["questions_total"] = int(report.get("questions_total") or 0) + 1
+                if report is not None:
+                    report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
+                    report["questions_total"] = int(report.get("questions_total") or 0) + 1
 
         per_asset_order = 1
         # If this module is flat (no lesson folders), attach non-theory assets to the first lesson.

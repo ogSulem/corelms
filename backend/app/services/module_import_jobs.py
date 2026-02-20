@@ -468,7 +468,7 @@ def import_module_zip_job(
                         _cancel_checkpoint(s3_object_key=s3_object_key, stage="regen_enqueue")
                         _set_job_stage(stage="regen_enqueue", detail=f"{mid} (attempt {attempt}/3)")
 
-                        q = get_queue(str(settings.rq_queue_regen or "corelms_regen"))
+                        q = get_queue(str(settings.rq_queue_regen))
                         regen_job = q.enqueue(
                             regenerate_module_quizzes_job,
                             module_id=str(mid),

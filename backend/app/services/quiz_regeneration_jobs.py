@@ -490,6 +490,11 @@ def regenerate_module_quizzes_job(
             # Keep prompts small for speed and to reduce LLM latency.
             text = text[:8000]
 
+            if not bool(getattr(sub, "requires_quiz", True)):
+                _set_job_stage(stage="skip", detail=f"{si}/{len(subs)}: {title} · materials_only")
+                _job_heartbeat(detail=f"SKIP {si}/{len(subs)}: {title} · materials_only")
+                continue
+
             if bool(only_missing) and _submodule_is_ok(db=db, sub=sub, target_questions=int(tq)):
                 _set_job_stage(stage="skip", detail=f"{si}/{len(subs)}: {title}")
                 _job_heartbeat(detail=f"SKIP {si}/{len(subs)}: {title}")

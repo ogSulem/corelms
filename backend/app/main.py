@@ -207,7 +207,7 @@ def create_app() -> FastAPI:
                 if not acquired:
                     return
 
-                q = get_queue(str(settings.rq_queue_default or "corelms"))
+                q = get_queue(str(settings.rq_queue_default))
                 q.enqueue(
                     cleanup_admin_uploads_job,
                     ttl_hours=int(settings.uploads_admin_ttl_hours),

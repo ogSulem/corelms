@@ -6,6 +6,7 @@ from pydantic import BaseModel
 class SubmoduleStatus(BaseModel):
     submodule_id: str
     quiz_id: str
+    requires_quiz: bool = True
     read: bool
     passed: bool
     best_score: int | None

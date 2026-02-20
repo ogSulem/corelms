@@ -39,5 +39,6 @@ class Submodule(Base):
     content_object_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     order: Mapped[int] = mapped_column(Integer)
     quiz_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("quizzes.id"), unique=True)
+    requires_quiz: Mapped[bool] = mapped_column(Boolean, default=True)
 
     __table_args__ = (UniqueConstraint("module_id", "order", name="uq_submodule_module_order"),)

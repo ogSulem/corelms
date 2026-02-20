@@ -18,6 +18,7 @@ class SubmodulePublic(BaseModel):
     title: str
     order: int
     quiz_id: str
+    requires_quiz: bool
 
 
 class AssetPublic(BaseModel):

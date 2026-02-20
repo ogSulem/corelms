@@ -73,6 +73,7 @@ def list_submodules(module_id: str, db: Session = Depends(get_db), _: User = Dep
             "title": s.title,
             "order": s.order,
             "quiz_id": str(s.quiz_id),
+            "requires_quiz": bool(getattr(s, "requires_quiz", True)),
         }
         for s in rows
     ]

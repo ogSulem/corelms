@@ -71,7 +71,7 @@ def cron_admin_uploads_cleanup(request: Request):
     if not acquired:
         return {"ok": True, "enqueued": False, "reason": "locked"}
 
-    q = get_queue(str(settings.rq_queue_default or "corelms"))
+    q = get_queue(str(settings.rq_queue_default))
     job = q.enqueue(
         cleanup_admin_uploads_job,
         ttl_hours=int(getattr(settings, "uploads_admin_ttl_hours", 6)),
@@ -99,7 +99,7 @@ def cron_run_all(request: Request):
         if not acquired:
             results["tasks"]["admin_uploads_cleanup"] = {"ok": True, "enqueued": False, "reason": "locked"}
         else:
-            q = get_queue(str(settings.rq_queue_default or "corelms"))
+            q = get_queue(str(settings.rq_queue_default))
             job = q.enqueue(
                 cleanup_admin_uploads_job,
                 ttl_hours=int(getattr(settings, "uploads_admin_ttl_hours", 6)),

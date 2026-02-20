@@ -94,6 +94,7 @@ def get_submodule(submodule_id: str, db: Session = Depends(get_db), user: User =
         "content": content,
         "order": int(sub.order),
         "quiz_id": str(sub.quiz_id),
+        "requires_quiz": bool(getattr(sub, "requires_quiz", True)),
     }
 
 

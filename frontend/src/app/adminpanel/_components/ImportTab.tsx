@@ -965,19 +965,6 @@ export default function ImportTab(props: ImportTabProps) {
                     </div>
                   ) : null}
                 </div>
-
-                {String(clientImportStage || "").trim().toLowerCase() === "upload_s3" && s3Label ? (
-                  <div className="mt-3">
-                    <div className="h-2 w-full rounded-full bg-white border border-zinc-200 overflow-hidden">
-                      <div className="h-full bg-[#fe9900] transition-all" style={{ width: `${s3Label.percent}%` }} />
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{s3Label.loadedHuman} / {s3Label.totalHuman}</div>
-                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{s3Label.speed}</div>
-                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">ОСТАЛОСЬ ~ {s3Label.eta}</div>
-                    </div>
-                  </div>
-                ) : null}
               </div>
             ) : null}
           </div>

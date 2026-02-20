@@ -356,8 +356,10 @@ export default function ModulePage() {
                     <div className="grid gap-4">
                       {submodules.map((s) => {
                         const p = progressMap.get(s.id);
+                        const requiresQuiz = typeof (p as any)?.requires_quiz === "boolean" ? Boolean((p as any)?.requires_quiz) : (typeof (s as any)?.requires_quiz === "boolean" ? Boolean((s as any)?.requires_quiz) : true);
                         const passed = !!p?.passed;
                         const read = !!p?.read;
+                        const done = requiresQuiz ? passed : read;
                         const locked = !!p?.locked;
                         const lockedReason = String(p?.locked_reason || "").trim();
                         const isCurrent = currentSubmoduleId === s.id;
@@ -365,7 +367,7 @@ export default function ModulePage() {
 
                         const dotClass = locked
                           ? "bg-zinc-300"
-                          : passed
+                          : done
                           ? "bg-[#284e13]"
                           : isCurrent
                           ? "bg-[#fe9900]"
@@ -404,35 +406,41 @@ export default function ModulePage() {
                                   >
                                     ТЕОРИЯ
                                   </div>
-                                  <div
-                                    className={`flex items-center gap-2 rounded-lg px-3 py-1 text-[9px] font-black uppercase tracking-widest border transition-all duration-500 ${
-                                      passed
-                                        ? "bg-[#284e13]/10 border-[#284e13]/20 text-[#284e13]"
-                                        : hasAttempt(p)
-                                        ? "bg-rose-50 border-rose-200 text-rose-700"
-                                        : "bg-zinc-100 border-zinc-200 text-zinc-600"
-                                    }`}
-                                  >
-                                    <span>ТЕСТ</span>
-                                    <span
-                                      className={`tabular-nums ${
+                                  {requiresQuiz ? (
+                                    <div
+                                      className={`flex items-center gap-2 rounded-lg px-3 py-1 text-[9px] font-black uppercase tracking-widest border transition-all duration-500 ${
                                         passed
-                                          ? "text-[#284e13]"
-                                          : score !== null
-                                          ? "text-rose-700"
-                                          : "text-zinc-600"
+                                          ? "bg-[#284e13]/10 border-[#284e13]/20 text-[#284e13]"
+                                          : hasAttempt(p)
+                                          ? "bg-rose-50 border-rose-200 text-rose-700"
+                                          : "bg-zinc-100 border-zinc-200 text-zinc-600"
                                       }`}
                                     >
-                                      {typeof score === "number" ? `${score}%` : "—"}
-                                    </span>
-                                  </div>
+                                      <span>ТЕСТ</span>
+                                      <span
+                                        className={`tabular-nums ${
+                                          passed
+                                            ? "text-[#284e13]"
+                                            : score !== null
+                                            ? "text-rose-700"
+                                            : "text-zinc-600"
+                                        }`}
+                                      >
+                                        {typeof score === "number" ? `${score}%` : "—"}
+                                      </span>
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-lg px-3 py-1 text-[9px] font-black uppercase tracking-widest border bg-zinc-100 border-zinc-200 text-zinc-600">
+                                      МАТЕРИАЛЫ
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                             </div>
                             <div className="shrink-0 pt-1">
                               {locked ? (
                                 <LockIcon className="w-4 h-4 text-zinc-400" />
-                              ) : passed ? (
+                              ) : done ? (
                                 <div className="flex items-center justify-center w-8 h-8 rounded-full bg-[#284e13]/10 border border-[#284e13]/20 text-[#284e13] text-sm font-black">✓</div>
                               ) : isCurrent ? (
                                 <div className="h-8 w-8 rounded-full bg-[#fe9900]/10 border border-[#fe9900]/25 flex items-center justify-center">

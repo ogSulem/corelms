@@ -215,7 +215,7 @@ def system_status(
         from rq.registry import DeferredJobRegistry, FailedJobRegistry, ScheduledJobRegistry, StartedJobRegistry
 
         conn = _redis.Redis.from_url(settings.redis_url)
-        q = Queue(name="corelms", connection=conn)
+        q = Queue(name=str(settings.rq_queue_default), connection=conn)
         workers = Worker.all(connection=conn)
         started = StartedJobRegistry(queue=q, connection=conn)
         failed = FailedJobRegistry(queue=q, connection=conn)
@@ -874,7 +874,7 @@ async def import_module_zip(
         stub_module = None
 
     try:
-        q = get_queue(str(settings.rq_queue_import or "corelms_import"))
+        q = get_queue(str(settings.rq_queue_import))
         job = q.enqueue(
             import_module_zip_job,
             s3_object_key=object_key,
@@ -1536,7 +1536,7 @@ def enqueue_import_zip(
         raise HTTPException(status_code=404, detail="source zip not found in s3")
 
     try:
-        q = get_queue(str(settings.rq_queue_import or "corelms_import"))
+        q = get_queue(str(settings.rq_queue_import))
         job = q.enqueue(
             import_module_zip_job,
             s3_object_key=object_key,
@@ -1651,6 +1651,7 @@ def list_import_jobs(
         if job is None:
             obj["status"] = "missing"
             obj["stage"] = "missing"
+            obj["queue"] = obj.get("queue") or None
             obj["error_code"] = obj.get("error_code") or "JOB_NOT_FOUND"
             obj["error_hint"] = obj.get("error_hint") or "Задача уже удалена из очереди (TTL) или была очищена. Обновите историю."
             obj["error_message"] = obj.get("error_message") or "job not found"
@@ -1666,6 +1667,7 @@ def list_import_jobs(
         obj["stage"] = meta.get("stage")
         obj["stage_at"] = meta.get("stage_at")
         obj["detail"] = meta.get("detail")
+        obj["queue"] = str(getattr(job, "origin", "") or "").strip() or None
         obj["error_code"] = meta.get("error_code")
         obj["error_hint"] = meta.get("error_hint")
         obj["error_message"] = meta.get("error_message")
@@ -1815,7 +1817,7 @@ def retry_import_job(
         db.rollback()
         stub_module = None
 
-    q = get_queue(str(settings.rq_queue_import or "corelms_import"))
+    q = get_queue(settings.rq_queue_import)
     job = q.enqueue(
         import_module_zip_job,
         s3_object_key=object_key,
@@ -1914,6 +1916,7 @@ def job_status(
     resp: dict[str, object] = {
         "id": job.id,
         "status": status,
+        "queue": str(getattr(job, "origin", "") or "").strip() or None,
         "enqueued_at": job.enqueued_at.isoformat() if job.enqueued_at else None,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "ended_at": job.ended_at.isoformat() if job.ended_at else None,
@@ -2025,7 +2028,7 @@ def migrate_legacy_content(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_migrate_legacy_content", limit=10, window_seconds=60),
 ):
-    q = get_queue(str(settings.rq_queue_default or "corelms"))
+    q = get_queue(str(settings.rq_queue_default))
     job = q.enqueue(migrate_legacy_submodule_content_job, limit=int(limit or 200))
 
     audit_log(
@@ -2340,7 +2343,7 @@ def regenerate_module_quizzes(
     # Product rule: each lesson quiz always has exactly 5 questions.
     tq = 5
 
-    q = get_queue(str(settings.rq_queue_regen or "corelms_regen"))
+    q = get_queue(str(settings.rq_queue_regen))
     job = q.enqueue(
         regenerate_module_quizzes_job,
         module_id=str(mid),
@@ -2409,7 +2412,7 @@ def regenerate_submodule_quiz(
         raise HTTPException(status_code=404, detail="module not found")
 
     tq = 5
-    q = get_queue(str(settings.rq_queue_regen or "corelms_regen"))
+    q = get_queue(str(settings.rq_queue_regen))
     job = q.enqueue(
         regenerate_submodule_quiz_job,
         submodule_id=str(sid),

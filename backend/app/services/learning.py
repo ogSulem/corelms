@@ -35,7 +35,8 @@ class LearningService:
         all_sub_ids = []
         for s in all_submodules:
             submodules_by_module.setdefault(s.module_id, []).append(s)
-            all_quiz_ids.append(s.quiz_id)
+            if bool(getattr(s, "requires_quiz", True)):
+                all_quiz_ids.append(s.quiz_id)
             all_sub_ids.append(s.id)
         
         for m in modules:
@@ -78,17 +79,24 @@ class LearningService:
             all_regular_passed = True
             
             for s in submodules:
-                best_score = best_attempts.get(s.quiz_id)
-                is_passed = best_score is not None
+                requires_quiz = bool(getattr(s, "requires_quiz", True))
+                best_score = best_attempts.get(s.quiz_id) if requires_quiz else None
+                is_passed = best_score is not None if requires_quiz else False
                 items.append({
                     "submodule_id": str(s.id),
                     "passed": is_passed,
                     "read": s.id in read_ids
                 })
-                if is_passed:
-                    passed_count += 1
+
+                if requires_quiz:
+                    if is_passed:
+                        passed_count += 1
+                    else:
+                        all_regular_passed = False
                 else:
-                    all_regular_passed = False
+                    # materials-only lesson: completion is read confirmation
+                    if s.id not in read_ids:
+                        all_regular_passed = False
 
             final_best_score = best_attempts.get(m.final_quiz_id) if m.final_quiz_id else None
             final_passed = final_best_score is not None
@@ -206,7 +214,7 @@ class LearningService:
                 "submodules": []
             }
 
-        quiz_ids = [s.quiz_id for s in submodules]
+        quiz_ids = [s.quiz_id for s in submodules if bool(getattr(s, "requires_quiz", True))]
         if m.final_quiz_id:
             quiz_ids.append(m.final_quiz_id)
         
@@ -288,8 +296,10 @@ class LearningService:
         all_regular_passed = True
         
         for s in submodules:
-            best_score = best_attempts.get(s.quiz_id)
-            is_passed = best_score is not None
+            requires_quiz = bool(getattr(s, "requires_quiz", True))
+            best_score = best_attempts.get(s.quiz_id) if requires_quiz else None
+            is_passed = best_score is not None if requires_quiz else False
+            is_read = s.id in read_ids
 
             last = last_attempt_map.get(s.quiz_id) or {}
             last_score = last.get("score")
@@ -302,9 +312,10 @@ class LearningService:
             items.append({
                 "submodule_id": str(s.id),
                 "quiz_id": str(s.quiz_id),
+                "requires_quiz": bool(requires_quiz),
                 "title": s.title,
                 "order": s.order,
-                "read": s.id in read_ids,
+                "read": bool(is_read),
                 "passed": is_passed,
                 "best_score": int(best_score) if best_score is not None else None,
                 "last_score": last_score,
@@ -314,10 +325,17 @@ class LearningService:
                 "is_final": False
             })
 
-            if is_passed:
-                passed_count += 1
+            if requires_quiz:
+                if is_passed:
+                    passed_count += 1
+                else:
+                    all_regular_passed = False
             else:
-                all_regular_passed = False
+                # materials-only lesson: completion is read confirmation
+                if is_read:
+                    passed_count += 1
+                else:
+                    all_regular_passed = False
 
         total_steps = len(submodules) + (1 if m.final_quiz_id else 0)
         final_quiz_id_str = str(m.final_quiz_id) if m.final_quiz_id else None
