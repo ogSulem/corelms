@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import uuid
 
 from fastapi import Depends, HTTPException, Request
@@ -14,6 +15,16 @@ from app.models.user import User, UserRole
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
+
+
+def require_cron_secret(request: Request) -> None:
+    secret = str(getattr(settings, "cron_secret", "") or "").strip()
+    if not secret:
+        raise HTTPException(status_code=404, detail="not found")
+
+    provided = str(request.headers.get("x-cron-secret") or "").strip()
+    if not provided or not hmac.compare_digest(provided, secret):
+        raise HTTPException(status_code=403, detail="forbidden")
 
 
 def get_current_user(
