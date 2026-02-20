@@ -706,20 +706,17 @@ def module_submodules_quality(
         items.append(
             {
                 "submodule_id": str(r.submodule_id),
-                "order": int(r.order or 0),
-                "title": str(r.title or ""),
-                "quiz_id": str(r.quiz_id) if getattr(r, "quiz_id", None) else None,
+                "submodule_title": str(r.submodule_title),
                 "total": total,
                 "needs_regen": needs,
                 "fallback": int(getattr(r, "fallback", 0) or 0),
                 "ai": int(getattr(r, "ai", 0) or 0),
                 "heur": int(getattr(r, "heur", 0) or 0),
-                "ok": bool(needs <= 0 and total >= 5),
+                "ok": bool(needs <= 0 and int(getattr(r, "fallback", 0) or 0) <= 0 and int(getattr(r, "heur", 0) or 0) <= 0 and total >= 5),
             }
         )
 
     return {"ok": True, "module_id": str(m.id), "items": items}
-
 
 class LlmProbeRequest(BaseModel):
     title: str = "Проба"
@@ -2331,7 +2328,6 @@ def set_module_visibility(
 def regenerate_module_quizzes(
     request: Request,
     module_id: str,
-    force_ai: bool = False,
     db: Session = Depends(get_db),
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_regenerate_module_quizzes", limit=30, window_seconds=60),
@@ -2349,7 +2345,6 @@ def regenerate_module_quizzes(
         regenerate_module_quizzes_job,
         module_id=str(mid),
         target_questions=tq,
-        force_ai=bool(force_ai),
         job_timeout=60 * 60 * 2,
         result_ttl=60 * 60 * 24,
         failure_ttl=60 * 60 * 24,
@@ -2362,7 +2357,6 @@ def regenerate_module_quizzes(
         meta["module_id"] = str(mid)
         meta["module_title"] = str(m.title)
         meta["target_questions"] = int(tq)
-        meta["force_ai"] = bool(force_ai)
         job.meta = meta
         job.save_meta()
     except Exception:
@@ -2400,7 +2394,6 @@ def regenerate_module_quizzes(
 def regenerate_submodule_quiz(
     request: Request,
     submodule_id: str,
-    force_ai: bool = False,
     db: Session = Depends(get_db),
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_regenerate_submodule_quiz", limit=60, window_seconds=60),
@@ -2420,7 +2413,6 @@ def regenerate_submodule_quiz(
         regenerate_submodule_quiz_job,
         submodule_id=str(sid),
         target_questions=tq,
-        force_ai=bool(force_ai),
         job_timeout=60 * 60,
         result_ttl=60 * 60 * 24,
         failure_ttl=60 * 60 * 24,
@@ -2434,7 +2426,6 @@ def regenerate_submodule_quiz(
         meta["submodule_id"] = str(sub.id)
         meta["submodule_title"] = str(sub.title or "")
         meta["target_questions"] = int(tq)
-        meta["force_ai"] = bool(force_ai)
         job.meta = meta
         job.save_meta()
     except Exception:

@@ -69,7 +69,6 @@ interface ImportTabProps {
     needs_regen_current: number;
   };
   jobResult: any;
-  resyncJob: (id: string) => Promise<void>;
 }
 
 export default function ImportTab(props: ImportTabProps) {
@@ -122,7 +121,6 @@ export default function ImportTab(props: ImportTabProps) {
     selectedAdminModule,
     selectedAdminModuleQuality,
     jobResult,
-    resyncJob,
   } = props;
 
   const s3Label = useMemo(() => {
@@ -299,7 +297,7 @@ export default function ImportTab(props: ImportTabProps) {
     const stage = String(it.stage || "").toLowerCase();
 
     const isStuck = (() => {
-      if (st === "finished" || st === "failed" || st === "canceled") return false;
+      if (st === "finished" || st === "failed" || stage === "canceled" || st === "canceled") return false;
       if (stage === "canceled" || stage === "done" || stage === "missing") return false;
       const sAt = String(it.stage_at || "").trim();
       if (!sAt) return false;
@@ -541,7 +539,7 @@ export default function ImportTab(props: ImportTabProps) {
                 const regens = (pipelineActive || []).filter((x: PipelineItem) => x.kind === "regen");
                 return (
                   <>
-                    {imports.slice(0, 3).length ? (
+                    {imports.length ? (
                       <div className="grid gap-2">
                         <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИМПОРТЫ (АКТИВНЫЕ)</div>
                         {imports.map((it: PipelineItem) => {
@@ -552,7 +550,6 @@ export default function ImportTab(props: ImportTabProps) {
                           const detail = String(it.detail || "").trim();
                           const badge = badgeFor(it);
                           const pct = progressForImport(it);
-                          const stuck = badge === "ЗАВИСЛО";
                           return (
                             <button
                               key={`${it.kind}:${it.job_id}`}
@@ -565,17 +562,21 @@ export default function ImportTab(props: ImportTabProps) {
                             >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
-                                  <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{it.title}</div>
-                                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                                  <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">
+                                    {String(it.title || "ZIP")}
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap items-center gap-2">
                                     <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                      IMPORT · {badge}
-                                    </div>
-                                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                      {stage ? stage.toUpperCase() : "—"}
+                                      {badge}
                                     </div>
                                     {createdAt ? (
                                       <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                                         {createdAt.replace("T", " ").slice(0, 16)}
+                                      </div>
+                                    ) : null}
+                                    {String(it.stage || "").trim() ? (
+                                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                        {String(it.stage || "").toUpperCase()}
                                       </div>
                                     ) : null}
                                   </div>
@@ -588,21 +589,34 @@ export default function ImportTab(props: ImportTabProps) {
                                     <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words line-clamp-2">{detail}</div>
                                   ) : null}
                                 </div>
-                                {stuck ? (
-                                  <div className="shrink-0 flex items-center gap-2">
+
+                                <div className="shrink-0 flex items-center gap-2">
+                                  {terminal && st === "failed" ? (
                                     <button
                                       type="button"
-                                      className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                                      className="h-9 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
                                       onClick={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
-                                        void resyncJob(String(it.job_id));
+                                        void retryImportJob(String(it.job_id));
                                       }}
                                     >
-                                      RESYNC
+                                      RETRY
                                     </button>
-                                  </div>
-                                ) : null}
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    className="h-9 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
+                                    disabled={terminal}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      void cancelImportJob(String(it.job_id));
+                                    }}
+                                  >
+                                    ОТМЕНА
+                                  </button>
+                                </div>
                               </div>
                             </button>
                           );
@@ -620,7 +634,6 @@ export default function ImportTab(props: ImportTabProps) {
                           const createdAt = String(it.created_at || "").trim();
                           const detail = String(it.detail || "").trim();
                           const badge = badgeFor(it);
-                          const stuck = badge === "ЗАВИСЛО";
                           return (
                             <button
                               key={`${it.kind}:${it.job_id}`}
@@ -632,22 +645,21 @@ export default function ImportTab(props: ImportTabProps) {
                               }}
                             >
                               <div className="min-w-0">
-                                <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{it.title}</div>
-                                <div className="mt-1 flex flex-wrap items-center gap-2">
+                                <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">
+                                  {String(it.title || "МОДУЛЬ")}
+                                </div>
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
                                   <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                    {it.kind === "import" ? "IMPORT" : "REGEN"} · {badge}
-                                  </div>
-                                  {String(it.submodule_title || "").trim() ? (
-                                    <div className="rounded-full border border-[#fe9900]/25 bg-[#fe9900]/10 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-[#fe9900]">
-                                      УРОК
-                                    </div>
-                                  ) : null}
-                                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                                    {stage ? stage.toUpperCase() : "—"}
+                                    {badge}
                                   </div>
                                   {createdAt ? (
                                     <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                                       {createdAt.replace("T", " ").slice(0, 16)}
+                                    </div>
+                                  ) : null}
+                                  {String(it.stage || "").trim() ? (
+                                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                                      {String(it.stage || "").toUpperCase()}
                                     </div>
                                   ) : null}
                                 </div>
@@ -657,22 +669,9 @@ export default function ImportTab(props: ImportTabProps) {
                               </div>
 
                               <div className="shrink-0 flex items-center gap-2">
-                                {stuck ? (
-                                  <button
-                                    type="button"
-                                    className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      void resyncJob(String(it.job_id));
-                                    }}
-                                  >
-                                    RESYNC
-                                  </button>
-                                ) : null}
                                 <button
                                   type="button"
-                                  className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"
+                                  className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100 disabled:opacity-60"
                                   disabled={terminal}
                                   onClick={(e) => {
                                     e.preventDefault();

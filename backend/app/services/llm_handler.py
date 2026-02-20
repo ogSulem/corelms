@@ -206,8 +206,9 @@ def generate_quiz_questions_ai(
 
                 strict_prompt = (
                     "Верни ТОЛЬКО валидный JSON без Markdown и без текста вокруг. "
+                    "Все поля (prompt/explanation) должны быть на русском языке. "
                     "Структура: {\"questions\":[{" 
-                    "\"type\":\"single\",\"prompt\":\"...\\nA) ...\\nB) ...\\nC) ...\\nD) ...\","
+                    "\"type\":\"single\",\"prompt\":\"...\\nA) ...\\nB) ...\\nC) ...\\nD) ...\"," 
                     "\"correct_answer\":\"A\",\"explanation\":\"...\"}]}. "
                     "Никаких лишних ключей. correct_answer строго одна буква A|B|C|D."
                 )
@@ -236,8 +237,8 @@ def generate_quiz_questions_ai(
                         debug_out=local_debug,
                         base_url=runtime_or_base_url,
                         model=runtime_or_model,
-                        system_prompt=(strict_prompt if attempt >= 2 else None),
-                        temperature=(0.2 if attempt >= 2 else None),
+                        system_prompt=strict_prompt,
+                        temperature=0.2,
                         timeout_read_seconds=dyn_read,
                     )
                     valid = _filter_questions(list(out or []), want=want)

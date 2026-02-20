@@ -1068,12 +1068,8 @@ export default function AdminPanelClient() {
       // UX: the unified job panel lives in the Import tab.
       setTab("import");
       setJobPanelOpen(true);
-
-      const forceAi = window.confirm(
-        "ФОРСИРОВАТЬ AI ДЛЯ ЭТОГО УРОКА?\n\nЕсли включить — вопросы будут только от нейронки. Если AI не сработает — задача упадёт с ошибкой."
-      );
       const res = await apiFetch<{ ok: boolean; job_id: string }>(
-        `/admin/submodules/${encodeURIComponent(sid)}/regenerate-quiz?target_questions=5&force_ai=${forceAi ? "1" : "0"}`,
+        `/admin/submodules/${encodeURIComponent(sid)}/regenerate-quiz?target_questions=5`,
         {
           method: "POST",
         }
@@ -1248,13 +1244,8 @@ export default function AdminPanelClient() {
       // UX: the unified job panel lives in the Import tab.
       setTab("import");
       setJobPanelOpen(true);
-
-      const forceAi = window.confirm(
-        "ФОРСИРОВАТЬ AI?\n\nЕсли включить — вопросы будут только от нейронки. Если AI недоступен или формат ответа неверный — задача упадёт с ошибкой (без heuristic)."
-      );
-
       const res = await apiFetch<{ ok: boolean; job_id: string }>(
-        `/admin/modules/${encodeURIComponent(selectedAdminModuleId)}/regenerate-quizzes?target_questions=5&force_ai=${forceAi ? "1" : "0"}`,
+        `/admin/modules/${encodeURIComponent(selectedAdminModuleId)}/regenerate-quizzes?target_questions=5`,
         {
           method: "POST",
         }
@@ -1355,27 +1346,6 @@ export default function AdminPanelClient() {
       setSys(null);
     } finally {
       setSysLoading(false);
-    }
-  }
-
-  async function resyncJob(jobId: string) {
-    const id = String(jobId || "").trim();
-    if (!id) return;
-    try {
-      // Best-effort: fetch current job status (for logs/visibility) then refresh lists.
-      await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}` as any);
-    } catch {
-      // ignore
-    }
-    try {
-      await Promise.all([
-        loadImportQueue(50, true, true),
-        loadRegenHistory(true),
-        loadAdminModules(),
-        selectedAdminModuleId ? loadSelectedAdminModuleSubQuality(String(selectedAdminModuleId)) : Promise.resolve(),
-      ]);
-    } catch {
-      // ignore
     }
   }
 
@@ -2924,7 +2894,6 @@ export default function AdminPanelClient() {
             selectedAdminModule={selectedAdminModule}
             selectedAdminModuleQuality={selectedAdminModuleQuality}
             jobResult={jobResult}
-            resyncJob={resyncJob}
           />
         ) : tab === "modules" ? (
           <ModulesTab

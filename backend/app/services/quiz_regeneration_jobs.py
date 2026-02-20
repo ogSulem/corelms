@@ -142,7 +142,6 @@ def regenerate_submodule_quiz_job(
     submodule_id: str,
     target_questions: int = 5,
     force: bool = True,
-    force_ai: bool = False,
 ) -> dict:
     _set_job_stage(stage="start", detail=str(submodule_id))
     db = SessionLocal()
@@ -196,7 +195,6 @@ def regenerate_submodule_quiz_job(
                 meta["submodule_id"] = str(sub.id)
                 meta["submodule_title"] = str(sub.title or "")
                 meta["target_questions"] = int(target_questions)
-                meta["force_ai"] = bool(force_ai)
                 job.meta = meta
                 job.save_meta()
         except Exception:
@@ -284,15 +282,6 @@ def regenerate_submodule_quiz_job(
             if not qs:
                 ai_failed = True
                 report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
-                if bool(force_ai):
-                    err = ValueError("ai_generation_failed")
-                    _set_job_stage(stage="failed", detail=f"AI failed: {title}")
-                    _set_job_error(
-                        error=err,
-                        error_code="AI_FORMAT_INVALID",
-                        error_hint="AI не вернул валидные вопросы в нужном формате за лимит времени/попыток. В режиме FORCE AI fallback запрещён — задача остановлена.",
-                    )
-                    raise err
 
                 generated = generate_quiz_questions_heuristic(
                     seed=f"regen:{job_seed}:{m.id}:{sub.id}",
@@ -434,7 +423,6 @@ def regenerate_module_quizzes_job(
     module_id: str,
     target_questions: int = 5,
     only_missing: bool = True,
-    force_ai: bool = False,
 ) -> dict:
     _set_job_stage(stage="start", detail=str(module_id))
 
@@ -569,16 +557,6 @@ def regenerate_module_quizzes_job(
                     pass
                 ai_failed = True
                 report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
-
-                if bool(force_ai):
-                    err = ValueError("ai_generation_failed")
-                    _set_job_stage(stage="failed", detail=f"AI failed: {si}/{len(subs)}: {title}")
-                    _set_job_error(
-                        error=err,
-                        error_code="AI_FORMAT_INVALID",
-                        error_hint="AI не вернул валидные вопросы в нужном формате за лимит времени/попыток. В режиме FORCE AI fallback запрещён.",
-                    )
-                    raise err
 
                 generated = generate_quiz_questions_heuristic(
                     seed=f"regen:{m.id}:{sub.id}",
