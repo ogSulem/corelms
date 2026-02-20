@@ -212,17 +212,26 @@ def system_status(
         import redis as _redis
         from rq import Queue
         from rq.worker import Worker
+        from rq.registry import DeferredJobRegistry, FailedJobRegistry, ScheduledJobRegistry, StartedJobRegistry
 
         conn = _redis.Redis.from_url(settings.redis_url)
         q = Queue(name="corelms", connection=conn)
         workers = Worker.all(connection=conn)
+        started = StartedJobRegistry(queue=q, connection=conn)
+        failed = FailedJobRegistry(queue=q, connection=conn)
+        deferred = DeferredJobRegistry(queue=q, connection=conn)
+        scheduled = ScheduledJobRegistry(queue=q, connection=conn)
         out["rq"] = {
             "ok": True,
             "workers": int(len(workers)),
             "queued": int(q.count),
+            "started": int(getattr(started, "count", 0) or 0),
+            "failed": int(getattr(failed, "count", 0) or 0),
+            "deferred": int(getattr(deferred, "count", 0) or 0),
+            "scheduled": int(getattr(scheduled, "count", 0) or 0),
         }
     except Exception:
-        out["rq"] = {"ok": False, "workers": 0, "queued": 0}
+        out["rq"] = {"ok": False, "workers": 0, "queued": 0, "started": 0, "failed": 0, "deferred": 0, "scheduled": 0}
 
     ok, reason = ollama_healthcheck(
         enabled=bool(eff_ollama_enabled),
@@ -664,7 +673,9 @@ def module_submodules_quality(
     needs_ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_ai:%"))
     fallback_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("%fallback%"))
     ai_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("regen:%"))
-    heur_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("heur:%"))
+    heur_cond = (Question.concept_tag.is_not(None)) & (
+        Question.concept_tag.like("heur:%") | Question.concept_tag.like("needs_ai:heur:%")
+    )
 
     rows = (
         db.execute(
@@ -891,10 +902,40 @@ async def import_module_zip(
         if stub_module is not None:
             jm["module_id"] = str(stub_module.id)
             jm["module_title"] = str(stub_module.title)
+        fingerprint = ""
+        try:
+            ensure_bucket_exists()
+            s3 = get_s3_client()
+            head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+            etag = str(head.get("ETag") or "").strip().strip('"')
+            size = str(head.get("ContentLength") or "").strip()
+            if etag and size:
+                fingerprint = f"{etag}:{size}"
+        except Exception:
+            fingerprint = ""
+        if fingerprint:
+            jm["import_fingerprint"] = fingerprint
+        try:
+            if meta.get("object_key"):
+                jm["import_object_key"] = str(meta.get("object_key") or "")
+        except Exception:
+            pass
         job.meta = jm
         job.save_meta()
     except Exception:
         pass
+
+    # Best-effort: establish dedupe keys for the retried job.
+    if fingerprint:
+        try:
+            r = get_redis()
+            r.set(f"admin:import_enqueued_by_fingerprint:{fingerprint}", str(job.id))
+            r.expire(f"admin:import_enqueued_by_fingerprint:{fingerprint}", 60 * 60 * 6)
+            if stub_module is not None:
+                r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint)
+                r.expire(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
+        except Exception:
+            pass
 
     try:
         r = get_redis()
@@ -948,6 +989,18 @@ def abort_import_zip(
     if not object_key:
         raise HTTPException(status_code=400, detail="missing object_key")
 
+    fingerprint = ""
+    try:
+        ensure_bucket_exists()
+        s3 = get_s3_client()
+        head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+        etag = str(head.get("ETag") or "").strip().strip('"')
+        size = str(head.get("ContentLength") or "").strip()
+        if etag and size:
+            fingerprint = f"{etag}:{size}"
+    except Exception:
+        fingerprint = ""
+
     # Best-effort delete the uploaded (or partially uploaded) object.
     try:
         ensure_bucket_exists()
@@ -966,6 +1019,14 @@ def abort_import_zip(
             existing = str(r.get(k) or "").strip()
             if existing == object_key:
                 r.delete(k)
+        except Exception:
+            pass
+
+    # Best-effort release fingerprint dedupe key (if any).
+    if fingerprint:
+        try:
+            r = get_redis()
+            r.delete(f"admin:import_enqueued_by_fingerprint:{fingerprint}")
         except Exception:
             pass
 
@@ -1385,6 +1446,18 @@ def enqueue_import_zip(
     if not object_key:
         raise HTTPException(status_code=400, detail="missing object_key")
 
+    fingerprint = ""
+    try:
+        ensure_bucket_exists()
+        s3 = get_s3_client()
+        head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+        etag = str(head.get("ETag") or "").strip().strip('"')
+        size = str(head.get("ContentLength") or "").strip()
+        if etag and size:
+            fingerprint = f"{etag}:{size}"
+    except Exception:
+        fingerprint = ""
+
     # Dedupe: avoid enqueuing the same uploaded ZIP multiple times.
     # Allows UI to safely retry enqueue after refresh without duplicating work.
     try:
@@ -1393,6 +1466,18 @@ def enqueue_import_zip(
         existing_job_id = str(r.get(lock_key) or "").strip()
         if existing_job_id:
             raise HTTPException(status_code=409, detail=f"zip already enqueued: {existing_job_id}")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    try:
+        if fingerprint:
+            r = get_redis()
+            fp_key = f"admin:import_enqueued_by_fingerprint:{fingerprint}"
+            existing_fp_job_id = str(r.get(fp_key) or "").strip()
+            if existing_fp_job_id:
+                raise HTTPException(status_code=409, detail=f"zip already enqueued (fingerprint): {existing_fp_job_id}")
     except HTTPException:
         raise
     except Exception:
@@ -1450,12 +1535,7 @@ def enqueue_import_zip(
     except Exception:
         title_lock_key = None
 
-    # Optional guard: ensure object exists before enqueue.
-    try:
-        ensure_bucket_exists()
-        s3 = get_s3_client()
-        s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
-    except Exception:
+    if not fingerprint:
         raise HTTPException(status_code=404, detail="source zip not found in s3")
 
     try:
@@ -1476,10 +1556,13 @@ def enqueue_import_zip(
 
     # Store normalized title in job.meta so the worker can release title locks on end.
     try:
-        if norm_title:
+        if norm_title or fingerprint:
             jm = dict(job.meta or {})
-            jm["import_title_norm"] = norm_title
+            if norm_title:
+                jm["import_title_norm"] = norm_title
             jm["import_object_key"] = object_key
+            if fingerprint:
+                jm["import_fingerprint"] = fingerprint
             if stub_module is not None:
                 jm["job_kind"] = "import"
                 jm["module_id"] = str(stub_module.id)
@@ -1502,6 +1585,14 @@ def enqueue_import_zip(
         if title_lock_key:
             r.set(title_lock_key, str(job.id))
             r.expire(title_lock_key, 60 * 60 * 24 * 30)
+        if fingerprint:
+            fp_key = f"admin:import_enqueued_by_fingerprint:{fingerprint}"
+            r.set(fp_key, str(job.id))
+            r.expire(fp_key, 60 * 60 * 6)
+            # Reverse mapping: allows immediate unlock when module is deleted.
+            if stub_module is not None:
+                r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint)
+                r.expire(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
     except Exception:
         pass
 
@@ -1656,17 +1747,21 @@ def list_import_jobs(
 @router.post("/import-jobs/{job_id}/retry")
 def retry_import_job(
     job_id: str,
-    _: User = Depends(require_roles(UserRole.admin)),
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
 ):
     # Find import meta in Redis history by job_id.
     try:
         r = get_redis()
         raw = r.lrange("admin:import_jobs", 0, 200)
+        raw_hist = r.lrange("admin:import_jobs_history", 0, 200)
     except Exception:
         raw = []
+        raw_hist = []
 
     meta: dict | None = None
-    for s in raw or []:
+    for s in list(raw or []) + list(raw_hist or []):
         try:
             obj = json.loads(s)
             if isinstance(obj, dict) and str(obj.get("job_id") or "") == str(job_id):
@@ -1682,12 +1777,25 @@ def retry_import_job(
     if not object_key:
         raise HTTPException(status_code=400, detail="import job has no object_key")
 
+    fingerprint = ""
+    try:
+        ensure_bucket_exists()
+        s3 = get_s3_client()
+        head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+        etag = str(head.get("ETag") or "").strip().strip('"')
+        size = str(head.get("ContentLength") or "").strip()
+        if etag and size:
+            fingerprint = f"{etag}:{size}"
+    except Exception:
+        fingerprint = ""
+
     title = str(meta.get("title") or "").strip() or None
 
     # Product rule: module should appear immediately in list as hidden while import/regen runs.
     stub_module = None
     try:
-        stub_title = str(title or "").strip() or str(file.filename or "").strip() or "Модуль"
+        src_fn = str(meta.get("source_filename") or "").strip() or ""
+        stub_title = str(title or "").strip() or src_fn or "Модуль"
         if stub_title.lower().endswith(".zip"):
             stub_title = stub_title[:-4]
         stub_title = stub_title.strip() or "Модуль"
@@ -1715,7 +1823,8 @@ def retry_import_job(
         import_module_zip_job,
         s3_object_key=object_key,
         title=title,
-        source_filename=None,
+        source_filename=(str(meta.get("source_filename") or "").strip() or None),
+        actor_user_id=str(current.id),
         module_id=str(stub_module.id) if stub_module is not None else None,
         job_timeout=60 * 60 * 3,
         result_ttl=60 * 60 * 24,
@@ -1728,10 +1837,23 @@ def retry_import_job(
         if stub_module is not None:
             jm["module_id"] = str(stub_module.id)
             jm["module_title"] = str(stub_module.title)
+        if fingerprint:
+            jm["import_fingerprint"] = fingerprint
         job.meta = jm
         job.save_meta()
     except Exception:
         pass
+
+    if fingerprint:
+        try:
+            r = get_redis()
+            r.set(f"admin:import_enqueued_by_fingerprint:{fingerprint}", str(job.id))
+            r.expire(f"admin:import_enqueued_by_fingerprint:{fingerprint}", 60 * 60 * 6)
+            if stub_module is not None:
+                r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint)
+                r.expire(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
+        except Exception:
+            pass
 
     return {
         "ok": True,
@@ -1867,6 +1989,9 @@ def cancel_job(
         norm_title = str(meta.get("import_title_norm") or "").strip()
         if norm_title:
             r.delete(f"admin:import_enqueued_by_title:{norm_title}")
+        fp = str(meta.get("import_fingerprint") or "").strip()
+        if fp:
+            r.delete(f"admin:import_enqueued_by_fingerprint:{fp}")
     except Exception:
         pass
 
@@ -2026,6 +2151,16 @@ def delete_module(
     )
     db.commit()
 
+    # Best-effort: release fingerprint idempotency key so the same ZIP can be imported again immediately.
+    try:
+        r = get_redis()
+        fp = str(r.get(f"admin:import_fingerprint_by_module_id:{str(mid)}") or "").strip()
+        if fp:
+            r.delete(f"admin:import_enqueued_by_fingerprint:{fp}")
+        r.delete(f"admin:import_fingerprint_by_module_id:{str(mid)}")
+    except Exception:
+        pass
+
     _delete_s3_prefix_best_effort(prefix=f"modules/{module_id}/")
 
     return {"ok": True}
@@ -2045,7 +2180,9 @@ def list_modules_admin(
     ai_cond = (Question.concept_tag.is_not(None)) & (
         Question.concept_tag.like("ai:%") | Question.concept_tag.like("regen:%")
     )
-    heur_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("heur:%"))
+    heur_cond = (Question.concept_tag.is_not(None)) & (
+        Question.concept_tag.like("heur:%") | Question.concept_tag.like("needs_ai:heur:%")
+    )
 
     lesson_rows = (
         db.execute(

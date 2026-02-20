@@ -116,6 +116,10 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                   {x.key === "rq" && (sys as any)?.rq ? (
                     <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">
                       workers: {Number((sys as any)?.rq?.workers || 0)} · queued: {Number((sys as any)?.rq?.queued || 0)}
+                      {typeof (sys as any)?.rq?.started === "number" ? ` · started: ${Number((sys as any)?.rq?.started || 0)}` : ""}
+                      {typeof (sys as any)?.rq?.scheduled === "number" ? ` · scheduled: ${Number((sys as any)?.rq?.scheduled || 0)}` : ""}
+                      {typeof (sys as any)?.rq?.deferred === "number" ? ` · deferred: ${Number((sys as any)?.rq?.deferred || 0)}` : ""}
+                      {typeof (sys as any)?.rq?.failed === "number" ? ` · failed: ${Number((sys as any)?.rq?.failed || 0)}` : ""}
                     </div>
                   ) : null}
                   {x.key === "ollama" && (sys as any)?.ollama ? (

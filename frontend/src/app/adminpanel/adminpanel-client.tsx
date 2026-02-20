@@ -25,6 +25,7 @@ export type RegenJobItem = {
   created_at?: string;
   status?: string;
   stage?: string;
+  stage_at?: string;
   detail?: string;
   error_code?: string;
   error_hint?: string;
@@ -42,6 +43,7 @@ export type ImportJobItem = {
   created_at?: string;
   status?: string;
   stage?: string;
+  stage_at?: string;
   detail?: string;
   error_code?: string;
   error_hint?: string;
@@ -261,6 +263,7 @@ export default function AdminPanelClient() {
           created_at: (x as any)?.created_at ? String((x as any).created_at) : undefined,
           status: (x as any)?.status ? String((x as any).status) : undefined,
           stage: (x as any)?.stage ? String((x as any).stage) : undefined,
+          stage_at: (x as any)?.stage_at ? String((x as any).stage_at) : undefined,
           detail: (x as any)?.detail ? String((x as any).detail) : undefined,
           error_code: (x as any)?.error_code ? String((x as any).error_code) : undefined,
           error_hint: (x as any)?.error_hint ? String((x as any).error_hint) : undefined,
@@ -277,6 +280,7 @@ export default function AdminPanelClient() {
           created_at: (x as any)?.created_at ? String((x as any).created_at) : undefined,
           status: (x as any)?.status ? String((x as any).status) : undefined,
           stage: (x as any)?.stage ? String((x as any).stage) : undefined,
+          stage_at: (x as any)?.stage_at ? String((x as any).stage_at) : undefined,
           detail: (x as any)?.detail ? String((x as any).detail) : undefined,
           error_code: (x as any)?.error_code ? String((x as any).error_code) : undefined,
           error_hint: (x as any)?.error_hint ? String((x as any).error_hint) : undefined,
@@ -784,6 +788,7 @@ export default function AdminPanelClient() {
         created_at: String((it as any)?.created_at || "") || undefined,
         status: st || undefined,
         stage: stage || undefined,
+        stage_at: String((it as any)?.stage_at || "") || undefined,
         detail: String((it as any)?.detail || "") || undefined,
         error_code: String((it as any)?.error_code || "") || undefined,
         error_hint: String((it as any)?.error_hint || "") || undefined,
@@ -950,6 +955,7 @@ export default function AdminPanelClient() {
 
       // Best-effort: refresh currently selected module quality.
       if (selectedAdminModuleId) {
+        void loadSelectedAdminModule();
         void loadSelectedAdminModuleSubQuality(String(selectedAdminModuleId));
       }
       void loadAdminModules();
@@ -1349,6 +1355,27 @@ export default function AdminPanelClient() {
       setSys(null);
     } finally {
       setSysLoading(false);
+    }
+  }
+
+  async function resyncJob(jobId: string) {
+    const id = String(jobId || "").trim();
+    if (!id) return;
+    try {
+      // Best-effort: fetch current job status (for logs/visibility) then refresh lists.
+      await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}` as any);
+    } catch {
+      // ignore
+    }
+    try {
+      await Promise.all([
+        loadImportQueue(50, true, true),
+        loadRegenHistory(true),
+        loadAdminModules(),
+        selectedAdminModuleId ? loadSelectedAdminModuleSubQuality(String(selectedAdminModuleId)) : Promise.resolve(),
+      ]);
+    } catch {
+      // ignore
     }
   }
 
@@ -2897,6 +2924,7 @@ export default function AdminPanelClient() {
             selectedAdminModule={selectedAdminModule}
             selectedAdminModuleQuality={selectedAdminModuleQuality}
             jobResult={jobResult}
+            resyncJob={resyncJob}
           />
         ) : tab === "modules" ? (
           <ModulesTab

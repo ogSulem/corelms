@@ -408,7 +408,6 @@ def import_module_from_dir(
         db.flush()
 
     log.info("module_importer: created module id=%s title=%s", str(m.id), module_title)
-    print(f"module_importer: module created id={m.id} title={module_title}", flush=True)
 
     # Normalize module_dir if the ZIP has an extra nesting level.
     for _ in range(2):

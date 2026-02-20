@@ -287,6 +287,18 @@ def import_module_zip_job(
         except Exception:
             pass
 
+        try:
+            fp = ""
+            try:
+                job = get_current_job()
+                fp = str((job.meta or {}).get("import_fingerprint") or "").strip()
+            except Exception:
+                fp = ""
+            if fp:
+                r.delete(f"admin:import_enqueued_by_fingerprint:{fp}")
+        except Exception:
+            pass
+
     _cancel_checkpoint(s3_object_key=s3_object_key, stage="start")
 
     with tempfile.TemporaryDirectory() as td:
@@ -449,50 +461,91 @@ def import_module_zip_job(
 
             regen_job_id: str | None = None
             if enqueue_regen:
-                try:
-                    _cancel_checkpoint(s3_object_key=s3_object_key, stage="regen_enqueue")
-                    _set_job_stage(stage="regen_enqueue", detail=str(mid))
-                    q = get_queue("corelms")
-                    regen_job = q.enqueue(
-                        regenerate_module_quizzes_job,
-                        module_id=str(mid),
-                        target_questions=5,
-                        job_timeout=60 * 60 * 2,
-                        result_ttl=60 * 60 * 24,
-                        failure_ttl=60 * 60 * 24,
+                last_err: Exception | None = None
+                for attempt in range(1, 4):
+                    try:
+                        _cancel_checkpoint(s3_object_key=s3_object_key, stage="regen_enqueue")
+                        _set_job_stage(stage="regen_enqueue", detail=f"{mid} (attempt {attempt}/3)")
+
+                        q = get_queue("corelms")
+                        regen_job = q.enqueue(
+                            regenerate_module_quizzes_job,
+                            module_id=str(mid),
+                            target_questions=5,
+                            job_timeout=60 * 60 * 2,
+                            result_ttl=60 * 60 * 24,
+                            failure_ttl=60 * 60 * 24,
+                        )
+
+                        try:
+                            meta = dict(regen_job.meta or {})
+                            meta["job_kind"] = "regen"
+                            meta["module_id"] = str(mid)
+                            meta["module_title"] = str(report.get("module_title") or "")
+                            meta["target_questions"] = 5
+                            meta["actor_user_id"] = str(actor_user_id or "")
+                            meta["source"] = "auto_after_import"
+                            regen_job.meta = meta
+                            regen_job.save_meta()
+                        except Exception:
+                            pass
+
+                        regen_job_id = str(regen_job.id)
+
+                        # Store regen_job_id in import job meta for easier UI linking.
+                        try:
+                            job = get_current_job()
+                        except Exception:
+                            job = None
+                        if job is not None:
+                            try:
+                                jm = dict(job.meta or {})
+                                jm["regen_job_id"] = str(regen_job_id)
+                                job.meta = jm
+                                job.save_meta()
+                            except Exception:
+                                pass
+
+                        try:
+                            r = get_redis()
+                            meta = {
+                                "job_id": regen_job_id,
+                                "module_id": str(mid),
+                                "module_title": str(report.get("module_title") or ""),
+                                "target_questions": 5,
+                                "created_at": datetime.utcnow().isoformat(),
+                                "actor_user_id": str(actor_user_id or ""),
+                                "source": "auto_after_import",
+                            }
+                            r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
+                            r.ltrim("admin:regen_jobs", 0, 49)
+                            r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
+                        except Exception:
+                            pass
+
+                        last_err = None
+                        break
+                    except Exception as e:
+                        last_err = e
+                        try:
+                            import time
+
+                            time.sleep(0.25 * attempt)
+                        except Exception:
+                            pass
+
+                if last_err is not None or not regen_job_id:
+                    report["regen_enqueue_error"] = str(last_err)
+                    _set_job_stage(stage="failed", detail="regen enqueue failed")
+                    _set_job_error(
+                        error=last_err,
+                        error_code="REGEN_ENQUEUE_FAILED",
+                        error_hint=(
+                            "Импорт завершился, но не удалось поставить задачу регена в очередь. "
+                            "Это нарушает правило продукта (import->regen). Проверьте Redis/RQ worker/очередь 'corelms'."
+                        ),
                     )
-                    try:
-                        meta = dict(regen_job.meta or {})
-                        meta["job_kind"] = "regen"
-                        meta["module_id"] = str(mid)
-                        meta["module_title"] = str(report.get("module_title") or "")
-                        meta["target_questions"] = 5
-                        meta["actor_user_id"] = str(actor_user_id or "")
-                        meta["source"] = "auto_after_import"
-                        regen_job.meta = meta
-                        regen_job.save_meta()
-                    except Exception:
-                        pass
-                    regen_job_id = str(regen_job.id)
-                    try:
-                        r = get_redis()
-                        meta = {
-                            "job_id": regen_job_id,
-                            "module_id": str(mid),
-                            "module_title": str(report.get("module_title") or ""),
-                            "target_questions": 5,
-                            "created_at": datetime.utcnow().isoformat(),
-                            "actor_user_id": str(actor_user_id or ""),
-                            "source": "auto_after_import",
-                        }
-                        r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
-                        r.ltrim("admin:regen_jobs", 0, 49)
-                        r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    report["regen_enqueue_error"] = str(e)
-                    regen_job_id = None
+                    raise last_err
 
             report["regen_job_id"] = regen_job_id
 

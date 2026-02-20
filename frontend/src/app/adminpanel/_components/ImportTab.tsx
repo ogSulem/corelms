@@ -69,6 +69,7 @@ interface ImportTabProps {
     needs_regen_current: number;
   };
   jobResult: any;
+  resyncJob: (id: string) => Promise<void>;
 }
 
 export default function ImportTab(props: ImportTabProps) {
@@ -121,6 +122,7 @@ export default function ImportTab(props: ImportTabProps) {
     selectedAdminModule,
     selectedAdminModuleQuality,
     jobResult,
+    resyncJob,
   } = props;
 
   const s3Label = useMemo(() => {
@@ -165,6 +167,7 @@ export default function ImportTab(props: ImportTabProps) {
     created_at?: string;
     status?: string;
     stage?: string;
+    stage_at?: string;
     detail?: string;
     error?: string | null;
     error_code?: string;
@@ -188,6 +191,7 @@ export default function ImportTab(props: ImportTabProps) {
         created_at: it.created_at,
         status: it.status,
         stage: it.stage,
+        stage_at: (it as any)?.stage_at,
         detail: it.detail,
         error: it.error,
         error_code: it.error_code,
@@ -211,6 +215,7 @@ export default function ImportTab(props: ImportTabProps) {
         created_at: it.created_at,
         status: it.status,
         stage: it.stage,
+        stage_at: (it as any)?.stage_at,
         detail: it.detail,
         error: it.error,
         error_code: it.error_code,
@@ -243,6 +248,7 @@ export default function ImportTab(props: ImportTabProps) {
         created_at: it.created_at,
         status: it.status,
         stage: it.stage,
+        stage_at: (it as any)?.stage_at,
         detail: it.detail,
         error: it.error,
         error_code: it.error_code,
@@ -265,6 +271,7 @@ export default function ImportTab(props: ImportTabProps) {
         created_at: String((it as any)?.created_at || "") || undefined,
         status: String((it as any)?.status || "") || undefined,
         stage: String((it as any)?.stage || "") || undefined,
+        stage_at: String((it as any)?.stage_at || "") || undefined,
         detail: String((it as any)?.detail || "") || undefined,
         error: (it as any)?.error ?? null,
         error_code: String((it as any)?.error_code || "") || undefined,
@@ -290,6 +297,21 @@ export default function ImportTab(props: ImportTabProps) {
   const badgeFor = (it: PipelineItem) => {
     const st = String(it.status || "").toLowerCase();
     const stage = String(it.stage || "").toLowerCase();
+
+    const isStuck = (() => {
+      if (st === "finished" || st === "failed" || st === "canceled") return false;
+      if (stage === "canceled" || stage === "done" || stage === "missing") return false;
+      const sAt = String(it.stage_at || "").trim();
+      if (!sAt) return false;
+      const ts = Date.parse(sAt);
+      if (!Number.isFinite(ts)) return false;
+
+      // Heuristics: imports are heavy; regen can be slow; only mark stuck after a safe window.
+      const maxAgeMs = it.kind === "import" ? 35 * 60 * 1000 : 25 * 60 * 1000;
+      return Date.now() - ts > maxAgeMs;
+    })();
+
+    if (isStuck) return "ЗАВИСЛО";
     if (st === "finished") return "ГОТОВО";
     if (st === "failed") return "ОШИБКА";
     if (stage === "canceled" || st === "canceled") return "ОТМЕНЕНО";
@@ -530,6 +552,7 @@ export default function ImportTab(props: ImportTabProps) {
                           const detail = String(it.detail || "").trim();
                           const badge = badgeFor(it);
                           const pct = progressForImport(it);
+                          const stuck = badge === "ЗАВИСЛО";
                           return (
                             <button
                               key={`${it.kind}:${it.job_id}`}
@@ -565,6 +588,21 @@ export default function ImportTab(props: ImportTabProps) {
                                     <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words line-clamp-2">{detail}</div>
                                   ) : null}
                                 </div>
+                                {stuck ? (
+                                  <div className="shrink-0 flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        void resyncJob(String(it.job_id));
+                                      }}
+                                    >
+                                      RESYNC
+                                    </button>
+                                  </div>
+                                ) : null}
                               </div>
                             </button>
                           );
@@ -582,6 +620,7 @@ export default function ImportTab(props: ImportTabProps) {
                           const createdAt = String(it.created_at || "").trim();
                           const detail = String(it.detail || "").trim();
                           const badge = badgeFor(it);
+                          const stuck = badge === "ЗАВИСЛО";
                           return (
                             <button
                               key={`${it.kind}:${it.job_id}`}
@@ -618,6 +657,19 @@ export default function ImportTab(props: ImportTabProps) {
                               </div>
 
                               <div className="shrink-0 flex items-center gap-2">
+                                {stuck ? (
+                                  <button
+                                    type="button"
+                                    className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      void resyncJob(String(it.job_id));
+                                    }}
+                                  >
+                                    RESYNC
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100"

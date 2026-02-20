@@ -243,9 +243,34 @@ export function ModulesTab(props: ModulesTabProps) {
                       const ok = q ? !!q.ok : false;
                       const needs = q ? Number(q.needs_regen || 0) : 0;
                       const total = q ? Number(q.total || 0) : 0;
+                      const heur = q ? Number(q.heur || 0) : 0;
+                      const fallback = q ? Number(q.fallback || 0) : 0;
                       const moduleRegenRunning = !!activeModuleRegenByModuleId[String(selectedAdminModuleId || "")];
                       const subRegenRunning = !!activeSubmoduleRegenBySubmoduleId[String(s.id)];
                       const subJob = activeSubmoduleRegenBySubmoduleId[String(s.id)];
+
+                      const badgeText = q
+                        ? needs > 0
+                          ? "NEEDS"
+                          : fallback > 0
+                            ? "FALLBACK"
+                            : heur > 0
+                              ? "HEUR"
+                              : ok
+                                ? "OK"
+                                : "—"
+                        : selectedAdminModuleSubsQualityLoading
+                          ? "..."
+                          : "—";
+
+                      const badgeClass = (() => {
+                        if (!q) return "border-zinc-200 bg-zinc-50 text-zinc-700";
+                        if (needs > 0) return "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]";
+                        if (fallback > 0) return "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]";
+                        if (heur > 0) return "border-zinc-200 bg-zinc-50 text-zinc-700";
+                        if (ok) return "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]";
+                        return "border-zinc-200 bg-zinc-50 text-zinc-700";
+                      })();
                       return (
                         <div
                           key={s.id}
@@ -275,12 +300,10 @@ export function ModulesTab(props: ModulesTabProps) {
                                 <div
                                   className={
                                     "inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
-                                    (ok
-                                      ? "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]"
-                                      : "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]")
+                                    badgeClass
                                   }
                                 >
-                                  {q ? (ok ? "OK" : "NEEDS") : selectedAdminModuleSubsQualityLoading ? "..." : "—"}
+                                  {badgeText}
                                 </div>
                                 {q ? (
                                   <>
