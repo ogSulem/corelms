@@ -803,8 +803,12 @@ export default function AdminPanelClient() {
   async function loadRegenHistory(silent: boolean = false) {
     try {
       if (!silent) setRegenHistoryLoading(true);
-      const res = await apiFetch<{ items: any[] }>(`/admin/regen-jobs?limit=50`);
-      const next = Array.isArray(res?.items) ? res.items : [];
+      const res = await apiFetch<{ items: any[]; history?: any[] }>(
+        `/admin/regen-jobs?limit=50&include_terminal=true` as any
+      );
+      const items = Array.isArray((res as any)?.items) ? (res as any).items : [];
+      const hist = Array.isArray((res as any)?.history) ? (res as any).history : [];
+      const next = items.concat(hist);
       const sig = JSON.stringify(next);
       if (sig !== regenHistorySigRef.current) {
         regenHistorySigRef.current = sig;

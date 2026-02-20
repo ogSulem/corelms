@@ -357,6 +357,13 @@ export default function ImportTab(props: ImportTabProps) {
     return () => window.removeEventListener("beforeunload", handler);
   }, [uploadActive]);
 
+  const importActive = (() => {
+    if (!importBusy) return false;
+    const st = String(clientImportStage || "").trim().toLowerCase();
+    if (!st) return false;
+    return st !== "done" && st !== "failed" && st !== "canceled";
+  })();
+
   return (
     <div className="mt-8 space-y-6">
       {uploadActive ? (
@@ -473,26 +480,6 @@ export default function ImportTab(props: ImportTabProps) {
               </div>
             </div>
 
-            {String(clientImportStage || "").trim().toLowerCase() === "upload_s3" && s3Label ? (
-              <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-700">STORAGE UPLOAD</div>
-                  <div className="text-[10px] font-black tabular-nums text-zinc-900">{s3Label.percent}%</div>
-                </div>
-                {String(clientImportFileName || "").trim() ? (
-                  <div className="mt-1 text-[10px] font-bold text-zinc-700 break-words">{String(clientImportFileName || "").trim()}</div>
-                ) : null}
-                <div className="mt-2 h-2 w-full rounded-full bg-white border border-zinc-200 overflow-hidden">
-                  <div className="h-full bg-[#fe9900] transition-all" style={{ width: `${s3Label.percent}%` }} />
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">{s3Label.loadedHuman} / {s3Label.totalHuman}</div>
-                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">{s3Label.speed}</div>
-                  <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">ОСТАЛОСЬ ~ {s3Label.eta}</div>
-                </div>
-              </div>
-            ) : null}
-
             {Array.isArray(importPendingNames) && importPendingNames.length ? (
               <div className="mt-3 rounded-xl border border-zinc-200 bg-white p-3">
                 <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">В ОЧЕРЕДИ (ЛОКАЛЬНО)</div>
@@ -600,7 +587,13 @@ export default function ImportTab(props: ImportTabProps) {
                     {regens.length ? (
                       <div className="grid gap-2">
                         <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">РЕГЕН (АКТИВНЫЕ)</div>
-                        {regens.map((it: PipelineItem) => {
+                        {regens
+                          .filter((it: PipelineItem) => {
+                            const cur = String(selectedJobId || "").trim();
+                            if (!cur) return true;
+                            return String(it.job_id || "").trim() !== cur;
+                          })
+                          .map((it: PipelineItem) => {
                           const stage = String(it.stage || "").toLowerCase();
                           const st = String(it.status || "").toLowerCase();
                           const terminal = st === "finished" || st === "failed" || stage === "canceled" || st === "canceled";
@@ -820,7 +813,7 @@ export default function ImportTab(props: ImportTabProps) {
                 <div className="min-w-0">
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ТЕКУЩАЯ ЗАДАЧА</div>
                   <div className="mt-1 truncate text-[11px] font-black text-zinc-950">{jobModuleTitle || "—"}</div>
-                  <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words">ТИП: ${String(jobKind || "").toUpperCase()}</div>
+                  <div className="mt-1 text-[10px] font-bold text-zinc-600 break-words">ТИП: {String(jobKind || "").toUpperCase()}</div>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                       {(() => {
@@ -835,9 +828,6 @@ export default function ImportTab(props: ImportTabProps) {
                         if (st === "started") return "В РАБОТЕ";
                         return st.toUpperCase();
                       })()}
-                    </div>
-                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                      {(importJobStageLabel || jobStage || "—").toString()}
                     </div>
                   </div>
                 </div>
@@ -896,6 +886,39 @@ export default function ImportTab(props: ImportTabProps) {
                 </div>
               </div>
             </div>
+
+            {importActive ? (
+              <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИМПОРТ (СЕЙЧАС)</div>
+                {String(clientImportFileName || "").trim() ? (
+                  <div className="mt-1 text-[11px] font-bold text-zinc-950 break-words">{String(clientImportFileName || "").trim()}</div>
+                ) : null}
+
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                    {String(importStageLabel || "—")}
+                  </div>
+                  {importBatch ? (
+                    <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
+                      {`${Number(importBatch.done || 0)}/${Number(importBatch.total || 0)}`}
+                    </div>
+                  ) : null}
+                </div>
+
+                {String(clientImportStage || "").trim().toLowerCase() === "upload_s3" && s3Label ? (
+                  <div className="mt-3">
+                    <div className="h-2 w-full rounded-full bg-white border border-zinc-200 overflow-hidden">
+                      <div className="h-full bg-[#fe9900] transition-all" style={{ width: `${s3Label.percent}%` }} />
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{s3Label.loadedHuman} / {s3Label.totalHuman}</div>
+                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{s3Label.speed}</div>
+                      <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">ОСТАЛОСЬ ~ {s3Label.eta}</div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </div>

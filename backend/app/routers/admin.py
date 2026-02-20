@@ -2345,6 +2345,7 @@ def regenerate_module_quizzes(
         regenerate_module_quizzes_job,
         module_id=str(mid),
         target_questions=tq,
+        only_missing=False,
         job_timeout=60 * 60 * 2,
         result_ttl=60 * 60 * 24,
         failure_ttl=60 * 60 * 24,
@@ -2465,17 +2466,21 @@ def regenerate_submodule_quiz(
 @router.get("/regen-jobs")
 def list_regen_jobs(
     limit: int = 20,
+    include_terminal: bool = False,
     _: User = Depends(require_roles(UserRole.admin)),
 ):
     take = max(1, min(int(limit or 20), 50))
+    include_terminal = bool(include_terminal)
     try:
         r = get_redis()
         raw = r.lrange("admin:regen_jobs", 0, 200)
+        raw_hist = r.lrange("admin:regen_jobs_history", 0, 200) if include_terminal else []
     except Exception:
         raw = []
+        raw_hist = []
 
     active_items: list[dict] = []
-    terminal_items: list[dict] = []
+    terminal_moved: list[dict] = []
     for s in raw or []:
         try:
             obj = json.loads(s)
@@ -2514,7 +2519,7 @@ def list_regen_jobs(
 
             terminal = st in {"finished", "failed", "canceled"} or stage == "canceled" or stage == "done"
             if terminal:
-                terminal_items.append(obj)
+                terminal_moved.append(obj)
             else:
                 active_items.append(obj)
         except Exception:
@@ -2522,15 +2527,33 @@ def list_regen_jobs(
 
     try:
         r = get_redis()
+        if terminal_moved:
+            for it in terminal_moved:
+                r.lpush("admin:regen_jobs_history", json.dumps(it, ensure_ascii=False))
+            r.ltrim("admin:regen_jobs_history", 0, 199)
+            r.expire("admin:regen_jobs_history", 60 * 60 * 24 * 30)
+
         r.delete("admin:regen_jobs")
-        for it in (active_items + terminal_items)[:200]:
+        for it in active_items[:200]:
             r.rpush("admin:regen_jobs", json.dumps(it, ensure_ascii=False))
         r.ltrim("admin:regen_jobs", 0, 199)
         r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
     except Exception:
         pass
 
-    return {"items": (active_items + terminal_items)[:take]}
+    items_out = active_items[:take]
+    out: dict[str, object] = {"items": items_out}
+    if include_terminal:
+        hist_items: list[dict] = []
+        for s in raw_hist or []:
+            try:
+                obj = json.loads(s)
+                if isinstance(obj, dict):
+                    hist_items.append(obj)
+            except Exception:
+                continue
+        out["history"] = hist_items[:take]
+    return out
 
 
 @router.post("/jobs/history/clear")
@@ -2542,6 +2565,7 @@ def clear_admin_job_history(
         r = get_redis()
         r.delete("admin:import_jobs_history")
         r.delete("admin:regen_jobs")
+        r.delete("admin:regen_jobs_history")
     except Exception:
         pass
 
