@@ -208,6 +208,31 @@ def multipart_abort(*, object_key: str, upload_id: str) -> None:
     s3.abort_multipart_upload(Bucket=settings.s3_bucket, Key=object_key, UploadId=upload_id)
 
 
+def multipart_upload_exists(*, object_key: str, upload_id: str) -> bool:
+    """Return True if the multipart upload session exists on S3.
+
+    Some S3-compatible providers return different error codes (NoSuchUpload, NoSuchKey, InternalError).
+    We treat any ClientError with those codes as "does not exist".
+    """
+
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+    try:
+        s3.list_parts(Bucket=settings.s3_bucket, Key=object_key, UploadId=upload_id, MaxParts=1)
+        return True
+    except ClientError as e:
+        try:
+            code = str((e.response or {}).get("Error", {}).get("Code") or "").strip()
+        except Exception:
+            code = ""
+        if code in {"NoSuchUpload", "NoSuchKey"}:
+            return False
+        # For ambiguous provider errors, assume it does not exist to force a clean restart.
+        return False
+    except Exception:
+        return False
+
+
 def multipart_list_parts(*, object_key: str, upload_id: str) -> list[dict[str, object]]:
     ensure_bucket_exists()
     s3 = get_s3_client()

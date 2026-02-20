@@ -69,7 +69,18 @@ from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job, r
 from app.services.llm_handler import generate_quiz_questions_ai
 from app.services.ollama import generate_quiz_questions_ollama
 from app.services.hf_router import generate_quiz_questions_hf_router
-from app.services.storage import ensure_bucket_exists, get_s3_client, presign_put, multipart_abort, multipart_complete, multipart_create, multipart_list_parts, multipart_presign_upload_part
+from app.services.storage import (
+    ensure_bucket_exists,
+    get_s3_client,
+    multipart_abort,
+    multipart_complete,
+    multipart_create,
+    multipart_list_parts,
+    multipart_presign_upload_part,
+    multipart_upload_exists,
+    presign_get,
+    presign_put,
+)
 from app.services.storage import s3_prefix_has_objects
 from app.services.ollama import ollama_healthcheck
 from app.services.openrouter_health import openrouter_healthcheck
@@ -1304,7 +1315,9 @@ def multipart_import_create(
             object_key = str((obj or {}).get("object_key") or "").strip()
             upload_id = str((obj or {}).get("upload_id") or "").strip()
             if object_key and upload_id:
-                return {"ok": True, "object_key": object_key, "upload_id": upload_id, "reused": True}
+                # Validate that the multipart session still exists. If not, create a new one.
+                if multipart_upload_exists(object_key=object_key, upload_id=upload_id):
+                    return {"ok": True, "object_key": object_key, "upload_id": upload_id, "reused": True}
         except Exception:
             pass
 

@@ -2202,7 +2202,8 @@ export default function AdminPanelClient() {
             xhr.upload.onprogress = (evt) => {
               if (!evt || !evt.lengthComputable) return;
               const curLoaded = Math.max(0, Number(evt.loaded || 0));
-              perPartLoaded[partNumber] = curLoaded;
+              const prevLoaded = Math.max(0, Number(perPartLoaded[partNumber] || 0));
+              perPartLoaded[partNumber] = Math.max(prevLoaded, curLoaded);
               updateProgress();
             };
 
