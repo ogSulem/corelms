@@ -1577,17 +1577,6 @@ export default function AdminPanelClient() {
           } catch {
             // ignore
           }
-
-          // If current job is terminal and we didn't switch, pick next active job if any.
-          try {
-            const pick = (importQueue || [])[0]?.job_id || (regenQueue || [])[0]?.job_id || "";
-            const nextId = String(pick || "").trim();
-            if (nextId && nextId !== String(selectedJobId || "").trim()) {
-              setSelectedJobId(nextId);
-            }
-          } catch {
-            // ignore
-          }
           return;
         }
       } catch (e) {

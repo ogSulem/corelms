@@ -706,7 +706,7 @@ def module_submodules_quality(
         items.append(
             {
                 "submodule_id": str(r.submodule_id),
-                "submodule_title": str(r.submodule_title),
+                "submodule_title": str(getattr(r, "title", "") or ""),
                 "total": total,
                 "needs_regen": needs,
                 "fallback": int(getattr(r, "fallback", 0) or 0),

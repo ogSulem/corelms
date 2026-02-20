@@ -313,7 +313,7 @@ export default function ImportTab(props: ImportTabProps) {
     if (st === "finished") return "ГОТОВО";
     if (st === "failed") return "ОШИБКА";
     if (stage === "canceled" || st === "canceled") return "ОТМЕНЕНО";
-    if (st === "queued" || st === "deferred") return "В ОЧЕРЕДИ";
+    if (st === "queued" || st === "deferred" || st === "scheduled") return "В ОЧЕРЕДИ";
     if (st === "started") return "В РАБОТЕ";
     return (st || "—").toUpperCase();
   };
