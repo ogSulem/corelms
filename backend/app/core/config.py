@@ -111,9 +111,9 @@ class Settings(BaseSettings):
     ollama_base_url: str = Field(default="http://localhost:11434", validation_alias="OLLAMA_BASE_URL")
     ollama_model: str = Field(default="gemma3:4b", validation_alias="OLLAMA_MODEL")
 
-    llm_provider_order: str = Field(default="openrouter,hf_router,ollama", validation_alias="LLM_PROVIDER_ORDER")
+    llm_provider_order: str = Field(default="openrouter", validation_alias="LLM_PROVIDER_ORDER")
 
-    hf_router_enabled: bool = Field(default=True, validation_alias="HF_ROUTER_ENABLED")
+    hf_router_enabled: bool = Field(default=False, validation_alias="HF_ROUTER_ENABLED")
     hf_router_base_url: str = Field(default="https://router.huggingface.co/v1", validation_alias="HF_ROUTER_BASE_URL")
     hf_router_model: str = Field(default="deepseek-ai/DeepSeek-R1:novita", validation_alias="HF_ROUTER_MODEL")
     hf_router_token: str | None = Field(default=None, validation_alias="HF_TOKEN")

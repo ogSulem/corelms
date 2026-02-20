@@ -34,8 +34,6 @@ def _snip(v: object, *, limit: int) -> str | None:
 
 
 def _persist_llm_debug(*, entry: dict[str, object]) -> None:
-    if not bool(getattr(settings, "llm_debug_save", False)):
-        return
     try:
         job = get_current_job()
     except Exception:
@@ -52,6 +50,12 @@ def _persist_llm_debug(*, entry: dict[str, object]) -> None:
         job.save_meta()
     except Exception:
         return
+
+    # Always mirror debug into logs (truncated by _snip upstream).
+    try:
+        log.info("LLM_DEBUG %s", entry)
+    except Exception:
+        pass
 
 
 def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
@@ -579,7 +583,7 @@ def regenerate_module_quizzes_job(
 
         # Product rule: the queue must never hang.
         # Enforce a per-lesson AI time budget; if exceeded, fall back to heuristic.
-        ai_budget_seconds_per_lesson = 30.0
+        ai_budget_seconds_per_lesson = 60.0
 
         for si, sub in enumerate(subs, start=1):
             _cancel_checkpoint(stage="lesson")
@@ -644,7 +648,7 @@ def regenerate_module_quizzes_job(
                     text=text,
                     n_questions=int(tq),
                     min_questions=int(tq),
-                    retries=1,
+                    retries=3,
                     backoff_seconds=0.25,
                     debug_out=ollama_debug,
                     provider_order=provider_order,

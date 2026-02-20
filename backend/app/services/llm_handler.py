@@ -41,15 +41,37 @@ def generate_quiz_questions_ai(
         for ln in lines:
             if len(ln) < 3:
                 continue
-            head = ln[:2].upper()
-            if head in {"A)", "B)", "C)", "D)"}:
-                key = head[0]
+            # Accept common option formats: A) / A. / A - / A:
+            head2 = ln[:2].upper()
+            head3 = ln[:3].upper() if len(ln) >= 3 else head2
+            key = ""
+            if head2 in {"A)", "B)", "C)", "D)"}:
+                key = head2[0]
                 val = ln[2:].strip()
-                if val:
+            elif head2 and head2[0] in {"A", "B", "C", "D"} and head2[1] in {".", ":"}:
+                key = head2[0]
+                val = ln[2:].strip()
+            elif head3 and head3[0] in {"A", "B", "C", "D"} and head3[1] == " " and head3[2] in {"-", "—"}:
+                key = head3[0]
+                val = ln[3:].strip()
+            else:
+                continue
+            try:
+                if key and val:
                     opts[key] = val
+            except Exception:
+                continue
         if all(k in opts for k in ("A", "B", "C", "D")):
             return [opts["A"], opts["B"], opts["C"], opts["D"]]
         return None
+
+    def _norm_correct_answer(raw: str) -> str:
+        s = _clean(raw).upper()
+        if not s:
+            return ""
+        # Allow "A" / "A)" / "A." / "A," etc.
+        ch = s[:1]
+        return ch if ch in {"A", "B", "C", "D"} else ""
 
     def _is_valid_question(q: Any, *, seen_prompts: set[str]) -> bool:
         raw_type = _clean(getattr(q, "type", "") or "single").lower()
@@ -57,7 +79,7 @@ def generate_quiz_questions_ai(
             return False
 
         prompt = str(getattr(q, "prompt", "") or "").strip()
-        if len(_clean(prompt)) < 25:
+        if len(_clean(prompt)) < 18:
             return False
 
         norm_p = _clean(prompt).lower()
@@ -83,11 +105,11 @@ def generate_quiz_questions_ai(
             if any(p not in {"A", "B", "C", "D"} for p in parts):
                 return False
         else:
-            if (ca_raw[:1].upper() if ca_raw else "") not in {"A", "B", "C", "D"}:
+            if _norm_correct_answer(ca_raw) not in {"A", "B", "C", "D"}:
                 return False
 
         exp = _clean(getattr(q, "explanation", ""))
-        if len(exp) < 10:
+        if len(exp) < 6:
             return False
 
         seen_prompts.add(norm_p)
@@ -148,13 +170,9 @@ def generate_quiz_questions_ai(
     runtime_or_base_url = (runtime.get("openrouter_base_url") or "").strip() or None
     runtime_or_model = (runtime.get("openrouter_model") or "").strip() or None
 
-    if provider_order is not None:
-        order = [str(s).strip().lower() for s in (provider_order or []) if str(s).strip()]
-    else:
-        order_src = runtime_order if runtime_order else str(settings.llm_provider_order or "")
-        order = [s.strip().lower() for s in str(order_src).split(",") if s.strip()]
-    if not order:
-        order = ["openrouter", "hf_router", "ollama"]
+    # Product configuration: OpenRouter-only.
+    # Ignore other providers even if configured.
+    order = ["openrouter"]
 
     errors: list[str] = []
 
@@ -205,12 +223,15 @@ def generate_quiz_questions_ai(
                 last_err = None
 
                 strict_prompt = (
-                    "Верни ТОЛЬКО валидный JSON без Markdown и без текста вокруг. "
-                    "Все поля (prompt/explanation) должны быть на русском языке. "
-                    "Структура: {\"questions\":[{" 
+                    "Ты методист и экзаменатор. Верни ТОЛЬКО валидный JSON без Markdown и без текста вокруг. "
+                    "Язык: русский. Структура строго: {\"questions\":[{" 
                     "\"type\":\"single\",\"prompt\":\"...\\nA) ...\\nB) ...\\nC) ...\\nD) ...\"," 
                     "\"correct_answer\":\"A\",\"explanation\":\"...\"}]}. "
-                    "Никаких лишних ключей. correct_answer строго одна буква A|B|C|D."
+                    "В prompt обязательно 4 варианта A) B) C) D) (каждый с новой строки). "
+                    "correct_answer: строго одна буква A|B|C|D. "
+                    "НЕ допускай, чтобы correct_answer всегда был один и тот же. Разноси ответы по буквам. "
+                    "Вопросы должны проверять смысл, а не формальность. explanation: 1-2 предложения с опорой на текст. "
+                    "Никаких ссылок на внешние знания: только по данному тексту."
                 )
 
                 # Each OpenRouter attempt may take up to its read timeout.
@@ -433,57 +454,6 @@ def generate_quiz_questions_ai(
 
 
 def choose_llm_provider_order_fast(*, ttl_seconds: int = 300, use_cache: bool = True) -> list[str]:
-    """Fast preflight: pick provider order based on quick healthchecks.
-
-    Cached in Redis to avoid spamming external calls during large imports.
-    """
-
-    key = "runtime:llm_preflight_order"
-    if use_cache:
-        try:
-            r = get_redis()
-            cached = r.get(key)
-            if cached:
-                s = cached.decode("utf-8", errors="ignore") if isinstance(cached, (bytes, bytearray)) else str(cached)
-                order = [x.strip().lower() for x in s.split(",") if x.strip()]
-                if order:
-                    return order
-        except Exception:
-            pass
-
-    order: list[str] = []
-
-    ok_ollama, _ = (False, None)
-    ok_hf, _ = (False, None)
-    ok_or, _ = (False, None)
-    try:
-        # Prefer a real /api/chat preflight so we don't pick Ollama when it is reachable but times out on chat.
-        ok_ollama, _ = ollama_chat_preflight(enabled=bool(settings.ollama_enabled), timeout_s=2.2)
-    except Exception:
-        ok_ollama = False
-    try:
-        ok_or, _ = openrouter_healthcheck()
-    except Exception:
-        ok_or = False
-    try:
-        ok_hf, _ = hf_router_healthcheck()
-    except Exception:
-        ok_hf = False
-
-    if ok_or:
-        order.append("openrouter")
-    if ok_ollama:
-        order.append("ollama")
-    if ok_hf:
-        order.append("hf_router")
-    if not order:
-        order = ["openrouter", "hf_router", "ollama"]
-
-    if use_cache:
-        try:
-            r = get_redis()
-            r.set(key, ",".join(order), ex=int(ttl_seconds))
-        except Exception:
-            pass
-
-    return order
+    # Product configuration: OpenRouter-only.
+    # Keep signature for backward compatibility.
+    return ["openrouter"]
