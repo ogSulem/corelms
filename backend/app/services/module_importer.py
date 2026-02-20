@@ -90,18 +90,60 @@ def _is_module_material(path: pathlib.Path) -> bool:
     return path.suffix.lower() in {".xlsx", ".xls", ".pptx", ".ppt", ".zip", ".rar", ".7z"}
 
 
-def _should_ignore_file(path: pathlib.Path) -> bool:
+def _should_ignore_file(p: pathlib.Path) -> bool:
+    n = str(p.name or "").strip().lower()
+    if not n:
+        return True
+    if p.name.startswith("._"):
+        return True
     try:
-        if path.name.startswith("~$"):
-            return True
-        if path.name.startswith("._"):
-            return True
-        parts = {p for p in path.parts}
+        parts = {x for x in p.parts}
         if "__MACOSX" in parts:
             return True
     except Exception:
-        return False
+        pass
+
     return False
+
+
+def _asset_sort_key(*, fp: pathlib.Path, lesson_root: pathlib.Path) -> tuple[int, int, str]:
+    """Stable ordering for lesson assets.
+
+    Goals:
+    - Show main readable materials first (pdf, images, video), keep ordering deterministic.
+    - Ensure theory files are not treated as attachments (they're handled separately), but if they end up here
+      (e.g. malformed package), keep them first to reduce confusion.
+    """
+
+    try:
+        rel = fp.relative_to(lesson_root)
+        rel_name = str(rel.as_posix())
+    except Exception:
+        rel_name = str(fp.name or "")
+
+    ext = ""
+    try:
+        ext = str(fp.suffix or "").lower().lstrip(".")
+    except Exception:
+        ext = ""
+
+    # priority: smaller number -> earlier
+    if ext in {"md", "txt"}:
+        pri = 0
+    elif ext in {"pdf"}:
+        pri = 1
+    elif ext in {"png", "jpg", "jpeg", "webp", "gif"}:
+        pri = 2
+    elif ext in {"mp4", "webm", "mov", "mkv"}:
+        pri = 3
+    elif ext in {"mp3", "wav", "ogg", "m4a"}:
+        pri = 4
+    else:
+        pri = 9
+
+    # Keep root-level files before deeply nested ones (nice UX).
+    depth = rel_name.count("/")
+    return (pri, depth, rel_name.casefold())
 
 
 def _list_files_recursive(root: pathlib.Path) -> list[pathlib.Path]:

@@ -177,6 +177,7 @@ def generate_quiz_questions_openrouter(
     system_prompt: str | None = None,
     temperature: float | None = None,
     timeout_read_seconds: float | None = None,
+    repair_text: str | None = None,
 ) -> list[OpenRouterQuestion]:
     if not settings.openrouter_enabled:
         # Allow runtime enabling via Redis.
@@ -264,7 +265,21 @@ def generate_quiz_questions_openrouter(
             {
                 "role": "user",
                 "content": (
-                    f"Урок: {title}\n\n" f"Текст урока:\n{text[:12000]}\n\n" f"Сгенерируй {int(n_questions)} вопрос(а/ов)."
+                    (
+                        "Ты получил свой предыдущий ответ, но он не прошёл парсинг JSON. "
+                        "Твоя задача — ВОССТАНОВИТЬ и ВЕРНУТЬ ТОЛЬКО валидный JSON строго по схеме: "
+                        '{"questions":[{"type":"single","prompt":"...\\nA) ...\\nB) ...\\nC) ...\\nD) ...","correct_answer":"A","explanation":"..."}]}. '
+                        "Нельзя добавлять Markdown/текст вокруг. Нельзя добавлять новые ключи. "
+                        "Исправляй только формат/кавычки/запятые/поля, не придумывай новые вопросы. "
+                        "\n\nПРЕДЫДУЩИЙ ОТВЕТ (исправь):\n"
+                        + str(repair_text or "")[:24000]
+                    )
+                    if (repair_text is not None and str(repair_text).strip())
+                    else (
+                        f"Урок: {title}\n\n"
+                        f"Текст урока:\n{text[:12000]}\n\n"
+                        f"Сгенерируй {int(n_questions)} вопрос(а/ов) повышающей сложности."
+                    )
                 ),
             },
         ],
@@ -333,6 +348,9 @@ def generate_quiz_questions_openrouter(
         content = None
 
     raw = content if isinstance(content, str) else ""
+    if debug_out is not None:
+        # Keep a bounded raw snippet to aid diagnostics and repair.
+        debug_out["raw"] = raw[:6000]
     obj = _extract_json(raw)
     if not obj:
         _set_debug("invalid_json")

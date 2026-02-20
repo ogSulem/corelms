@@ -245,6 +245,30 @@ def generate_quiz_questions_ai(
                         valid = []
                         local_debug["error"] = "degenerate_answers"
 
+                    # Repair step: if provider returned near-JSON but failed validation/parsing.
+                    # Use its own raw output and ask for strict JSON only.
+                    if (not valid) and attempt < cap_tries:
+                        raw = str(local_debug.get("raw") or "").strip()
+                        if raw and len(raw) >= 20 and str(local_debug.get("error") or "") in {"invalid_json", "schema_validation_failed", "no_valid_questions"}:
+                            repair_debug: dict[str, object] = {}
+                            repaired = generate_quiz_questions_openrouter(
+                                title=title,
+                                text=text,
+                                n_questions=n_questions,
+                                debug_out=repair_debug,
+                                base_url=runtime_or_base_url,
+                                model=runtime_or_model,
+                                system_prompt=strict_prompt,
+                                temperature=0.0,
+                                timeout_read_seconds=dyn_read,
+                                repair_text=raw,
+                            )
+                            repaired_valid = _filter_questions(list(repaired or []), want=want)
+                            if repaired_valid and not _is_degenerate(repaired_valid):
+                                valid = repaired_valid
+                                local_debug["repair_used"] = True
+                                local_debug["repair_error"] = str(repair_debug.get("error") or "")
+
                     if valid and len(valid) >= min_q:
                         _set_debug("provider", "openrouter")
                         _set_debug("provider_error", None)
