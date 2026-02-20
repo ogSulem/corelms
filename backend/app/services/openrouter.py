@@ -286,6 +286,30 @@ def generate_quiz_questions_openrouter(
         "temperature": use_temp,
     }
 
+    if debug_out is not None:
+        try:
+            user_msg = ""
+            try:
+                msgs = payload.get("messages") or []
+                if isinstance(msgs, list) and len(msgs) >= 2 and isinstance(msgs[1], dict):
+                    user_msg = str(msgs[1].get("content") or "")
+            except Exception:
+                user_msg = ""
+            debug_out.setdefault(
+                "request",
+                {
+                    "provider": "openrouter",
+                    "model": str(use_model),
+                    "temperature": float(use_temp),
+                    "timeout_read_seconds": float(timeout_read_seconds) if timeout_read_seconds is not None else None,
+                    "system_prompt_snip": str(sys_prompt or "")[:1200],
+                    "user_prompt_snip": str(user_msg or "")[:2400],
+                    "repair": bool(repair_text and str(repair_text).strip()),
+                },
+            )
+        except Exception:
+            pass
+
     base = (
         (str(base_url).strip() if base_url is not None else "")
         or (runtime_base or "")

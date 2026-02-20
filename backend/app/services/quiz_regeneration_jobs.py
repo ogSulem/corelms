@@ -14,9 +14,44 @@ from app.models.module import Module, Submodule
 from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.services.llm_handler import choose_llm_provider_order_fast, generate_quiz_questions_ai
 from app.services.quiz_generation import generate_quiz_questions_heuristic
+from app.core.config import settings
 
 
 log = logging.getLogger(__name__)
+
+
+def _snip(v: object, *, limit: int) -> str | None:
+    try:
+        s = str(v or "")
+    except Exception:
+        return None
+    s = s.strip()
+    if not s:
+        return None
+    if limit and len(s) > int(limit):
+        return s[: int(limit)] + "…"
+    return s
+
+
+def _persist_llm_debug(*, entry: dict[str, object]) -> None:
+    if not bool(getattr(settings, "llm_debug_save", False)):
+        return
+    try:
+        job = get_current_job()
+    except Exception:
+        job = None
+    if job is None:
+        return
+    try:
+        meta = dict(job.meta or {})
+        items = list(meta.get("llm_debug") or [])
+        items.append(entry)
+        # Keep only the last N entries to avoid unbounded growth.
+        meta["llm_debug"] = items[-50:]
+        job.meta = meta
+        job.save_meta()
+    except Exception:
+        return
 
 
 def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
@@ -202,6 +237,21 @@ def regenerate_submodule_quiz_job(
 
         if (not force) and _submodule_is_ok(db=db, sub=sub, target_questions=int(target_questions)):
             _set_job_stage(stage="done", detail="already_ok")
+            try:
+                _persist_llm_debug(
+                    entry={
+                        "ts": datetime.utcnow().isoformat(),
+                        "kind": "regen",
+                        "module_id": str(m.id),
+                        "submodule_id": str(sub.id),
+                        "submodule_title": str(sub.title or ""),
+                        "provider": "skip",
+                        "skip_reason": "already_ok",
+                        "target_questions": int(target_questions),
+                    }
+                )
+            except Exception:
+                pass
             return {
                 "ok": True,
                 "skipped": True,
@@ -264,6 +314,37 @@ def regenerate_submodule_quiz_job(
                 qs = []
                 ollama_debug.setdefault("error", f"ai_exception:{type(e).__name__}")
 
+            # Persist debug info (prompt/response snippets) to job meta for /admin/jobs.
+            try:
+                limit = int(getattr(settings, "llm_debug_max_chars", 2000) or 2000)
+            except Exception:
+                limit = 2000
+            try:
+                req = ollama_debug.get("request") if isinstance(ollama_debug, dict) else None
+                req_obj = req if isinstance(req, dict) else {}
+                entry: dict[str, object] = {
+                    "ts": datetime.utcnow().isoformat(),
+                    "kind": "regen",
+                    "module_id": str(m.id),
+                    "submodule_id": str(sub.id),
+                    "submodule_title": str(title),
+                    "provider": str(ollama_debug.get("provider") or ""),
+                    "provider_error": str(ollama_debug.get("provider_error") or ""),
+                    "error": str(ollama_debug.get("error") or ""),
+                    "ai_elapsed_s": float(ai_elapsed_s),
+                    "system_prompt_snip": _snip(req_obj.get("system_prompt_snip"), limit=limit),
+                    "user_prompt_snip": _snip(req_obj.get("user_prompt_snip"), limit=limit),
+                    "raw_snip": _snip(ollama_debug.get("raw"), limit=limit),
+                    "repair_used": bool(ollama_debug.get("repair_used")) if isinstance(ollama_debug, dict) else False,
+                    "used_heuristic": False,
+                    "questions_count": int(len(qs or [])),
+                }
+                _persist_llm_debug(entry=entry)
+                if bool(getattr(settings, "llm_debug_log", False)):
+                    log.info("LLM_DEBUG %s", entry)
+            except Exception:
+                pass
+
             try:
                 provider_used = str(ollama_debug.get("provider") or "").strip() or "unknown"
                 _job_heartbeat(detail=f"1/1: {title} · {provider_used} · {ai_elapsed_s:.1f}s")
@@ -293,6 +374,22 @@ def regenerate_submodule_quiz_job(
                 )
                 if generated:
                     used_heuristic = True
+                    try:
+                        _persist_llm_debug(
+                            entry={
+                                "ts": datetime.utcnow().isoformat(),
+                                "kind": "regen",
+                                "module_id": str(m.id),
+                                "submodule_id": str(sub.id),
+                                "submodule_title": str(title),
+                                "provider": "heuristic",
+                                "error": "ai_failed" if ai_failed else "",
+                                "used_heuristic": True,
+                                "questions_count": int(len(generated or [])),
+                            }
+                        )
+                    except Exception:
+                        pass
                     try:
                         # Hint for UI: heuristic was used because AI failed.
                         _set_job_stage(stage="ai", detail=f"1/1: {title} · heuristic")
@@ -493,11 +590,40 @@ def regenerate_module_quizzes_job(
             if not bool(getattr(sub, "requires_quiz", True)):
                 _set_job_stage(stage="skip", detail=f"{si}/{len(subs)}: {title} · materials_only")
                 _job_heartbeat(detail=f"SKIP {si}/{len(subs)}: {title} · materials_only")
+                try:
+                    _persist_llm_debug(
+                        entry={
+                            "ts": datetime.utcnow().isoformat(),
+                            "kind": "regen",
+                            "module_id": str(m.id),
+                            "submodule_id": str(sub.id),
+                            "submodule_title": str(title),
+                            "provider": "skip",
+                            "skip_reason": "materials_only",
+                        }
+                    )
+                except Exception:
+                    pass
                 continue
 
             if bool(only_missing) and _submodule_is_ok(db=db, sub=sub, target_questions=int(tq)):
                 _set_job_stage(stage="skip", detail=f"{si}/{len(subs)}: {title}")
                 _job_heartbeat(detail=f"SKIP {si}/{len(subs)}: {title}")
+                try:
+                    _persist_llm_debug(
+                        entry={
+                            "ts": datetime.utcnow().isoformat(),
+                            "kind": "regen",
+                            "module_id": str(m.id),
+                            "submodule_id": str(sub.id),
+                            "submodule_title": str(title),
+                            "provider": "skip",
+                            "skip_reason": "already_ok",
+                            "target_questions": int(tq),
+                        }
+                    )
+                except Exception:
+                    pass
                 continue
 
             _set_job_stage(stage="ai", detail=f"{si}/{len(subs)}: {title}")

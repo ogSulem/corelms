@@ -123,6 +123,10 @@ class Settings(BaseSettings):
     hf_router_timeout_write: float = Field(default=12.0, validation_alias="HF_ROUTER_TIMEOUT_WRITE")
     hf_router_temperature: float = Field(default=0.2, validation_alias="HF_ROUTER_TEMPERATURE")
 
+    llm_debug_save: bool = Field(default=False, validation_alias="LLM_DEBUG_SAVE")
+    llm_debug_log: bool = Field(default=False, validation_alias="LLM_DEBUG_LOG")
+    llm_debug_max_chars: int = Field(default=2000, validation_alias="LLM_DEBUG_MAX_CHARS")
+
 
 settings = Settings()
 
