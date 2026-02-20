@@ -4,7 +4,6 @@ from sqlalchemy import text
 
 from app.core.queue import get_queue
 from app.core.redis_client import get_redis
-from app.core.security import require_cron_secret
 from app.core.config import settings
 from app.services.admin_uploads_cleanup import cleanup_admin_uploads_job
 from app.services.storage import get_s3_client
