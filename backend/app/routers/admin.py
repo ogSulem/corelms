@@ -1737,7 +1737,10 @@ def list_import_jobs(
     except Exception:
         pass
 
-    items_out = active_items[:take]
+    # IMPORTANT: UI uses this endpoint to disable regen buttons.
+    # Never hide active jobs behind the limit, otherwise the UI may incorrectly
+    # re-enable regen controls while jobs are still running.
+    items_out = active_items[:200]
     out: dict[str, object] = {"items": items_out}
     if include_terminal:
         hist_items: list[dict] = []
@@ -2547,7 +2550,10 @@ def list_regen_jobs(
     except Exception:
         pass
 
-    items_out = active_items[:take]
+    # IMPORTANT: UI uses this endpoint to disable regen buttons.
+    # Never hide active jobs behind the limit, otherwise the UI may incorrectly
+    # re-enable regen controls while jobs are still running.
+    items_out = active_items[:200]
     out: dict[str, object] = {"items": items_out}
     if include_terminal:
         hist_items: list[dict] = []

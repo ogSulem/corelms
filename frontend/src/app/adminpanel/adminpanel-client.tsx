@@ -883,7 +883,7 @@ export default function AdminPanelClient() {
     try {
       if (!silent) setRegenHistoryLoading(true);
       const res = await apiFetch<{ items: any[]; history?: any[] }>(
-        `/admin/regen-jobs?limit=50&include_terminal=true` as any
+        `/admin/regen-jobs?limit=200&include_terminal=true` as any
       );
       const items = Array.isArray((res as any)?.items) ? (res as any).items : [];
       const hist = Array.isArray((res as any)?.history) ? (res as any).history : [];
