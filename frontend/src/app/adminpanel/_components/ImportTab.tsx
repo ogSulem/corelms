@@ -295,21 +295,6 @@ export default function ImportTab(props: ImportTabProps) {
   const badgeFor = (it: PipelineItem) => {
     const st = String(it.status || "").toLowerCase();
     const stage = String(it.stage || "").toLowerCase();
-
-    const isStuck = (() => {
-      if (st === "finished" || st === "failed" || stage === "canceled" || st === "canceled") return false;
-      if (stage === "canceled" || stage === "done" || stage === "missing") return false;
-      const sAt = String(it.stage_at || "").trim();
-      if (!sAt) return false;
-      const ts = Date.parse(sAt);
-      if (!Number.isFinite(ts)) return false;
-
-      // Heuristics: imports are heavy; regen can be slow; only mark stuck after a safe window.
-      const maxAgeMs = it.kind === "import" ? 35 * 60 * 1000 : 25 * 60 * 1000;
-      return Date.now() - ts > maxAgeMs;
-    })();
-
-    if (isStuck) return "ЗАВИСЛО";
     if (st === "finished") return "ГОТОВО";
     if (st === "failed") return "ОШИБКА";
     if (stage === "canceled" || st === "canceled") return "ОТМЕНЕНО";
@@ -445,9 +430,6 @@ export default function ImportTab(props: ImportTabProps) {
             </div>
 
             <div className="flex items-center gap-2">
-              <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                {importStageLabel}
-              </div>
               <Button
                 variant="primary"
                 className="h-8 rounded-xl font-black uppercase tracking-widest text-[9px]"
@@ -462,7 +444,7 @@ export default function ImportTab(props: ImportTabProps) {
           <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
             <div className="flex items-center justify-between gap-3">
               <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                ИМПОРТ (ХРАНИЛИЩЕ/БД) · РЕГЕН (НЕЙРОСЕТЬ) — ОТДЕЛЬНЫЕ ЗАДАЧИ
+                Очередь
                 <span className="ml-3 text-[9px] font-black uppercase tracking-widest text-zinc-400">
                   {importQueueLoading || regenHistoryLoading ? "..." : `ЗАДАЧ: ${pipelineActive.length}`}
                 </span>
@@ -478,24 +460,13 @@ export default function ImportTab(props: ImportTabProps) {
                   type="button"
                   className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
                   onClick={() => {
-                    void loadImportQueue(20, false);
-                    void loadRegenHistory();
-                  }}
-                  disabled={importQueueLoading || regenHistoryLoading}
-                >
-                  {importQueueLoading || regenHistoryLoading ? "..." : "ОБНОВИТЬ"}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                  onClick={() => {
                     setImportQueueView("active");
                     setImportQueueModalOpen(true);
                     void loadImportQueue(50, true);
                     void loadRegenHistory();
                   }}
                 >
-                  ИСТОРИЯ / ДЕТАЛИ
+                  ИСТОРИЯ
                 </button>
               </div>
             </div>
@@ -700,7 +671,7 @@ export default function ImportTab(props: ImportTabProps) {
           <Modal
             open={importQueueModalOpen}
             onClose={() => setImportQueueModalOpen(false)}
-            title="ИМПОРТ → РЕГЕН: ОЧЕРЕДЬ И ИСТОРИЯ"
+            title="История"
             className="max-w-[min(96vw,1200px)]"
           >
             <div className="space-y-2">
@@ -850,7 +821,18 @@ export default function ImportTab(props: ImportTabProps) {
                   ) : null}
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                      {(jobStatus || "—").toUpperCase()}
+                      {(() => {
+                        const st = String(jobStatus || "").trim().toLowerCase();
+                        const stage = String(jobStage || "").trim().toLowerCase();
+                        if (!st) return "—";
+                        if (st === "finished") return "ГОТОВО";
+                        if (st === "failed") return "ОШИБКА";
+                        if (st === "missing" || stage === "missing") return "НЕТ";
+                        if (st === "canceled" || stage === "canceled") return "ОТМЕНЕНО";
+                        if (st === "queued" || st === "deferred" || st === "scheduled") return "В ОЧЕРЕДИ";
+                        if (st === "started") return "В РАБОТЕ";
+                        return st.toUpperCase();
+                      })()}
                     </div>
                     <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                       {(importJobStageLabel || jobStage || "—").toString()}
@@ -911,109 +893,6 @@ export default function ImportTab(props: ImportTabProps) {
                   )}
                 </div>
               </div>
-            </div>
-
-            <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">РЕЗУЛЬТАТ</div>
-              {jobStatus === "finished" && jobResult && typeof jobResult === "object" ? (
-                <div className="mt-3 space-y-3">
-                  {String(jobKind || "").toLowerCase() === "import" ? (
-                    <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИТОГ ИМПОРТА</div>
-                      <div className="mt-2 grid gap-2">
-                        <div className="text-[11px] font-bold text-zinc-950 break-words">
-                          МОДУЛЬ: {String((jobResult as any)?.report?.module_title || (jobResult as any)?.module_id || "—")}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          {String((jobResult as any)?.module_id || "").trim() ? (
-                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              module_id: {String((jobResult as any)?.module_id).slice(0, 10)}
-                            </div>
-                          ) : null}
-                          {String((jobResult as any)?.regen_job_id || "").trim() ? (
-                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              regen_job: {String((jobResult as any)?.regen_job_id).slice(0, 10)}
-                            </div>
-                          ) : null}
-                          {typeof (jobResult as any)?.report?.lessons === "number" ? (
-                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                              уроков: {String((jobResult as any)?.report?.lessons)}
-                            </div>
-                          ) : null}
-                        </div>
-
-                        {String((jobResult as any)?.module_id || "").trim() ? (
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <Button
-                              variant="primary"
-                              className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                              onClick={() => {
-                                const mid = String((jobResult as any)?.module_id || "").trim();
-                                if (!mid) return;
-                                window.location.href = `/modules/${encodeURIComponent(mid)}`;
-                              }}
-                            >
-                              ОТКРЫТЬ МОДУЛЬ
-                            </Button>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {String(jobKind || "").toLowerCase() === "regen" ? (
-                    <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИТОГ РЕГЕНА</div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        {typeof (jobResult as any)?.questions_total === "number" ? (
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            всего: {String((jobResult as any)?.questions_total)}
-                          </div>
-                        ) : null}
-                        {typeof (jobResult as any)?.questions_ai === "number" ? (
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            ai: {String((jobResult as any)?.questions_ai)}
-                          </div>
-                        ) : null}
-                        {typeof (jobResult as any)?.questions_heur === "number" ? (
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            heur: {String((jobResult as any)?.questions_heur)}
-                          </div>
-                        ) : null}
-                        {typeof (jobResult as any)?.questions_fallback === "number" ? (
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            fallback: {String((jobResult as any)?.questions_fallback)}
-                          </div>
-                        ) : null}
-                        {typeof (jobResult as any)?.needs_regen_db === "number" ? (
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
-                            needs_regen: {String((jobResult as any)?.needs_regen_db)}
-                          </div>
-                        ) : null}
-                      </div>
-
-                      {String((jobResult as any)?.last_ai_error || "").trim() ? (
-                        <div className="mt-3 rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-[10px] font-bold text-zinc-700 break-words">
-                          LAST_AI_ERROR: {String((jobResult as any)?.last_ai_error || "")}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  <details className="rounded-2xl border border-zinc-200 bg-white p-4">
-                    <summary className="cursor-pointer text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                      RAW JSON
-                    </summary>
-                    <div className="mt-3 overflow-hidden rounded-xl border border-zinc-100 bg-white/50 p-3">
-                      <pre className="text-[9px] font-mono text-zinc-600 whitespace-pre-wrap break-words overflow-x-hidden max-h-[420px] overflow-y-auto">
-                        {JSON.stringify(jobResult, null, 2)}
-                      </pre>
-                    </div>
-                  </details>
-                </div>
-              ) : (
-                <div className="mt-2 text-[11px] font-bold text-zinc-500">—</div>
-              )}
             </div>
           </div>
         </div>

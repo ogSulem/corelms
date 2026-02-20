@@ -461,6 +461,12 @@ export default function AdminPanelClient() {
   const [jobPanelOpen, setJobPanelOpen] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
 
+  const longJobToastRef = useRef<{ jobId: string; stageAt: string; lastShownAtMs: number }>({
+    jobId: "",
+    stageAt: "",
+    lastShownAtMs: 0,
+  });
+
   const importBatchJobIdsRef = useRef<string[]>([]);
   const importCancelRequestedRef = useRef(false);
   const importUploadAbortRef = useRef<AbortController | null>(null);
@@ -611,9 +617,14 @@ export default function AdminPanelClient() {
 
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
 
-  const optimisticActiveModuleRegenRef = useRef<Record<string, { job_id: string; status: string; stage: string }>>({});
+  const optimisticActiveModuleRegenRef = useRef<
+    Record<string, { job_id: string; status: string; stage: string; created_at_ms?: number; last_checked_ms?: number }>
+  >({});
   const optimisticActiveSubmoduleRegenRef = useRef<
-    Record<string, { job_id: string; status: string; stage: string; module_id: string }>
+    Record<
+      string,
+      { job_id: string; status: string; stage: string; module_id: string; created_at_ms?: number; last_checked_ms?: number }
+    >
   >({});
 
   const activeModuleRegenByModuleId = useMemo(() => {
@@ -666,44 +677,74 @@ export default function AdminPanelClient() {
   }, [regenHistory]);
 
   useEffect(() => {
-    // Clear optimistic markers once we see the job in history as terminal.
     try {
       const rh = Array.isArray(regenHistory) ? regenHistory : [];
+      const nowMs = Date.now();
 
-      for (const [mid, j] of Object.entries(optimisticActiveModuleRegenRef.current || {})) {
-        const row = rh.find((it: any) => String(it?.job_id || it?.id || "").trim() === String(j?.job_id || "").trim());
-        if (!row) continue;
-        const stl = String(row?.status || "").toLowerCase();
-        const stagel = String(row?.stage || "").toLowerCase();
-        const terminal =
+      const isTerminal = (stRaw: any, stageRaw: any): boolean => {
+        const stl = String(stRaw || "").toLowerCase();
+        const stagel = String(stageRaw || "").toLowerCase();
+        return (
           stl === "missing" ||
           stl === "finished" ||
           stl === "failed" ||
           stl === "canceled" ||
           stagel === "canceled" ||
           stagel === "done" ||
-          stagel === "missing";
-        if (terminal) {
+          stagel === "missing"
+        );
+      };
+
+      for (const [mid, j] of Object.entries(optimisticActiveModuleRegenRef.current || {})) {
+        const jid = String((j as any)?.job_id || "").trim();
+        if (!jid) {
           delete optimisticActiveModuleRegenRef.current[mid];
+          continue;
         }
+        const row = rh.find((it: any) => String(it?.job_id || it?.id || "").trim() === jid);
+        if (row) {
+          if (isTerminal((row as any)?.status, (row as any)?.stage)) delete optimisticActiveModuleRegenRef.current[mid];
+          continue;
+        }
+
+        const lastChecked = Number((j as any)?.last_checked_ms || 0);
+        if (lastChecked && nowMs - lastChecked < 8000) continue;
+        (optimisticActiveModuleRegenRef.current[mid] as any).last_checked_ms = nowMs;
+        void apiFetch<any>(`/admin/jobs/${encodeURIComponent(jid)}`)
+          .then((s) => {
+            if (isTerminal((s as any)?.status, (s as any)?.stage)) {
+              delete optimisticActiveModuleRegenRef.current[mid];
+            }
+          })
+          .catch(() => {
+            // ignore
+          });
       }
 
       for (const [sid, j] of Object.entries(optimisticActiveSubmoduleRegenRef.current || {})) {
-        const row = rh.find((it: any) => String(it?.job_id || it?.id || "").trim() === String(j?.job_id || "").trim());
-        if (!row) continue;
-        const stl = String(row?.status || "").toLowerCase();
-        const stagel = String(row?.stage || "").toLowerCase();
-        const terminal =
-          stl === "missing" ||
-          stl === "finished" ||
-          stl === "failed" ||
-          stl === "canceled" ||
-          stagel === "canceled" ||
-          stagel === "done" ||
-          stagel === "missing";
-        if (terminal) {
+        const jid = String((j as any)?.job_id || "").trim();
+        if (!jid) {
           delete optimisticActiveSubmoduleRegenRef.current[sid];
+          continue;
         }
+        const row = rh.find((it: any) => String(it?.job_id || it?.id || "").trim() === jid);
+        if (row) {
+          if (isTerminal((row as any)?.status, (row as any)?.stage)) delete optimisticActiveSubmoduleRegenRef.current[sid];
+          continue;
+        }
+
+        const lastChecked = Number((j as any)?.last_checked_ms || 0);
+        if (lastChecked && nowMs - lastChecked < 8000) continue;
+        (optimisticActiveSubmoduleRegenRef.current[sid] as any).last_checked_ms = nowMs;
+        void apiFetch<any>(`/admin/jobs/${encodeURIComponent(jid)}`)
+          .then((s) => {
+            if (isTerminal((s as any)?.status, (s as any)?.stage)) {
+              delete optimisticActiveSubmoduleRegenRef.current[sid];
+            }
+          })
+          .catch(() => {
+            // ignore
+          });
       }
     } catch {
       // ignore
@@ -1595,6 +1636,44 @@ export default function AdminPanelClient() {
       if (timer) window.clearTimeout(timer);
     };
   }, [jobPanelOpen, selectedJobId, selectedQuizId]);
+
+  useEffect(() => {
+    if (!jobPanelOpen) return;
+    const jid = String(selectedJobId || "").trim();
+    if (!jid) return;
+    const st = String(jobStatus || "").trim().toLowerCase();
+    const stage = String(jobStage || "").trim().toLowerCase();
+    if (!st || st === "finished" || st === "failed" || st === "canceled" || st === "missing") return;
+    if (stage === "canceled" || stage === "done" || stage === "missing") return;
+
+    const sAt = String(jobStageAt || "").trim();
+    if (!sAt) return;
+    const ts = Date.parse(sAt);
+    if (!Number.isFinite(ts)) return;
+
+    const nowMs = Date.now();
+    const ageMs = nowMs - ts;
+    const maxAgeMs = stage === "ai" || stage === "ollama" ? 25 * 60 * 1000 : 35 * 60 * 1000;
+    if (ageMs < maxAgeMs) return;
+
+    const prev = longJobToastRef.current;
+    const same = prev.jobId === jid && prev.stageAt === sAt;
+    if (same && nowMs - (prev.lastShownAtMs || 0) < 10 * 60 * 1000) return;
+
+    longJobToastRef.current = { jobId: jid, stageAt: sAt, lastShownAtMs: nowMs };
+    try {
+      window.dispatchEvent(
+        new CustomEvent("corelms:toast", {
+          detail: {
+            title: "ДОЛГО ВЫПОЛНЯЕТСЯ",
+            description: "Задача выполняется дольше обычного. Можно дождаться завершения или нажать ОТМЕНА.",
+          },
+        })
+      );
+    } catch {
+      // ignore
+    }
+  }, [jobPanelOpen, selectedJobId, jobStatus, jobStage, jobStageAt]);
 
   useEffect(() => {
     if (!jobPanelOpen) return;
