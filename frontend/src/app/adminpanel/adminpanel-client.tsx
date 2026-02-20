@@ -2596,6 +2596,18 @@ export default function AdminPanelClient() {
           } catch {
             // keep original handling below
           }
+          if (res && String((res as any).job_id || "").trim()) {
+            try {
+              setError(null);
+            } catch {
+              // ignore
+            }
+            try {
+              pushUploadHistory({ ...uploadEventBase, status: "finished", detail: "import_enqueued" });
+            } catch {
+              // ignore
+            }
+          }
           if ((msg || "").toLowerCase().includes("409") || (msg || "").toLowerCase().includes("already exists")) {
             window.dispatchEvent(
               new CustomEvent("corelms:toast", {
