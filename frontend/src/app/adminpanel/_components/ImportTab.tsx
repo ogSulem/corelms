@@ -44,6 +44,7 @@ interface ImportTabProps {
   setRegenQueueModalOpen: (open: boolean) => void;
   regenQueueModalOpen: boolean;
   regenHistory: any[];
+  clearAdminJobHistory: () => Promise<void>;
   jobPanelOpen: boolean;
   selectedJobId: string;
   jobStatus: string;
@@ -102,6 +103,7 @@ export default function ImportTab(props: ImportTabProps) {
     regenHistoryLoading,
     loadRegenHistory,
     regenHistory,
+    clearAdminJobHistory,
     jobPanelOpen,
     selectedJobId,
     jobStatus,
@@ -466,7 +468,7 @@ export default function ImportTab(props: ImportTabProps) {
                     void loadRegenHistory();
                   }}
                 >
-                  ИСТОРИЯ
+                  ДЕТАЛИ
                 </button>
               </div>
             </div>
@@ -701,16 +703,21 @@ export default function ImportTab(props: ImportTabProps) {
                   >
                     ИСТОРИЯ
                   </Button>
-                  <Button
-                    variant="outline"
-                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                    onClick={() => {
-                      void loadImportQueue(50, true);
-                      void loadRegenHistory();
-                    }}
-                  >
-                    ОБНОВИТЬ
-                  </Button>
+                  {importQueueView === "history" ? (
+                    <Button
+                      variant="outline"
+                      className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                      onClick={() => {
+                        const ok = window.confirm(
+                          "Очистить историю задач?\n\nБудут удалены записи истории ИМПОРТА и РЕГЕНА из админки."
+                        );
+                        if (!ok) return;
+                        void clearAdminJobHistory();
+                      }}
+                    >
+                      ОЧИСТИТЬ
+                    </Button>
+                  ) : null}
                 </div>
               </div>
 

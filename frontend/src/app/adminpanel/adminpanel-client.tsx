@@ -306,6 +306,22 @@ export default function AdminPanelClient() {
     }
   }
 
+  async function clearAdminJobHistory() {
+    try {
+      setError(null);
+      await apiFetch<any>(`/admin/jobs/history/clear`, { method: "POST" } as any);
+      await Promise.all([loadRegenHistory(false), loadImportQueue(50, true, false)]);
+      window.dispatchEvent(
+        new CustomEvent("corelms:toast", {
+          detail: { title: "ИСТОРИЯ ОЧИЩЕНА", description: "История импорта и регена удалена" },
+        })
+      );
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ОЧИСТИТЬ ИСТОРИЮ");
+    }
+  }
+
   async function retryImportJob(jobId: string) {
     const id = String(jobId || "").trim();
     if (!id) return;
@@ -2943,6 +2959,7 @@ export default function AdminPanelClient() {
             setRegenQueueModalOpen={setRegenQueueModalOpen}
             regenQueueModalOpen={regenQueueModalOpen}
             regenHistory={regenHistory}
+            clearAdminJobHistory={clearAdminJobHistory}
             jobPanelOpen={jobPanelOpen}
             selectedJobId={selectedJobId}
             jobStatus={jobStatus}

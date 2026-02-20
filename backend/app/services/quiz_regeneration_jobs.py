@@ -653,6 +653,13 @@ def regenerate_module_quizzes_job(
                 db.flush()
             except Exception:
                 pass
+            try:
+                db.commit()
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             _job_heartbeat(detail=f"DONE {si}/{len(subs)}: {title}")
 
         # Auto-publish only if there are no needs_regen:* questions left in DB for this module.

@@ -2533,6 +2533,32 @@ def list_regen_jobs(
     return {"items": (active_items + terminal_items)[:take]}
 
 
+@router.post("/jobs/history/clear")
+def clear_admin_job_history(
+    request: Request,
+    current: User = Depends(require_roles(UserRole.admin)),
+):
+    try:
+        r = get_redis()
+        r.delete("admin:import_jobs_history")
+        r.delete("admin:regen_jobs")
+    except Exception:
+        pass
+
+    try:
+        audit_log(
+            db=SessionLocal(),
+            request=request,
+            event_type="admin_clear_job_history",
+            actor_user_id=current.id,
+            meta={},
+        )
+    except Exception:
+        pass
+
+    return {"ok": True}
+
+
 @router.get("/modules/needs-regen")
 def modules_needs_regen(
     _: User = Depends(require_roles(UserRole.admin)),
