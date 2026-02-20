@@ -87,7 +87,7 @@ export function ModulesTab(props: ModulesTabProps) {
   return (
     <div className="mt-8 space-y-6">
       <div className="grid gap-6 lg:grid-cols-12 items-start min-w-0">
-        <div className="lg:col-span-4 relative overflow-y-auto overflow-x-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10 min-w-0">
+        <div className="lg:col-span-4 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10 min-w-0">
           <div className="flex items-end justify-between gap-6">
             <div>
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">МОДУЛИ</div>
@@ -103,7 +103,7 @@ export function ModulesTab(props: ModulesTabProps) {
             </Button>
           </div>
 
-          <div className="mt-5 grid gap-2 max-h-[520px] overflow-y-auto overflow-x-hidden pr-1 min-w-0">
+          <div className="mt-5 grid gap-1.5 max-h-[520px] overflow-y-auto overflow-x-hidden pr-1 min-w-0">
             {(adminModules || []).map((m: AdminModuleItem) => {
               const active = String(m.id) === String(selectedAdminModuleId);
               const q = m.question_quality;
@@ -115,36 +115,32 @@ export function ModulesTab(props: ModulesTabProps) {
                   type="button"
                   onClick={() => setSelectedAdminModuleId(String(m.id))}
                   className={
-                    "w-full text-left rounded-2xl border px-3 py-2.5 transition " +
+                    "w-full text-left rounded-2xl border px-3 py-2 transition " +
                     (active ? "border-[#fe9900]/25 bg-[#fe9900]/10" : "border-zinc-200 bg-white hover:bg-zinc-50")
                   }
                 >
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex items-start justify-between gap-3 min-w-0">
                     <div className="min-w-0">
-                      <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">
+                      <div className="truncate text-[10px] font-black uppercase tracking-[0.22em] text-zinc-950">
                         {m.title}
                       </div>
-                      <div className="mt-1 truncate text-[9px] font-black uppercase tracking-widest text-zinc-600">
+                      <div className="mt-1 truncate text-[9px] font-black uppercase tracking-[0.22em] text-zinc-600">
                         {m.is_active ? "АКТИВЕН" : needs ? "НЕОБХОДИМ РЕГЕН (СКРЫТ ДО ГОТОВНОСТИ)" : heur ? "ЭВРИСТИКА (МОЖНО ПОКАЗАТЬ)" : "СКРЫТ"}
-                      </div>
-                      <div
-                        className={
-                          "mt-2 inline-flex items-center rounded-full border px-2.5 py-1 text-[9px] font-black uppercase tracking-widest " +
-                          (needs ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]" : "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]")
-                        }
-                      >
-                        {needs ? "NEEDS REGEN" : heur ? "HEUR" : "OK"}
                       </div>
                     </div>
                     <div
                       className={
-                        "shrink-0 rounded-full px-3 py-1 text-[9px] font-black uppercase tracking-widest border " +
+                        "shrink-0 rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.22em] border " +
                         (m.is_active
                           ? "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]"
-                          : "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]")
+                          : needs
+                            ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]"
+                            : heur
+                              ? "border-zinc-200 bg-zinc-50 text-zinc-700"
+                              : "border-zinc-200 bg-zinc-50 text-zinc-700")
                       }
                     >
-                      {m.is_active ? "АКТИВЕН" : "РЕГЕН"}
+                      {m.is_active ? "АКТИВЕН" : needs ? "REGEN" : heur ? "HEUR" : "СКРЫТ"}
                     </div>
                   </div>
                 </button>

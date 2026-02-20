@@ -183,9 +183,15 @@ def _public_role(role: UserRole) -> str:
 
 
 def _client_ip_from_request(request: Request) -> str | None:
-    xff = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    if xff:
-        return xff
+    if bool(getattr(settings, "trust_proxy_headers", False)):
+        xri = str(request.headers.get("x-real-ip") or "").strip()
+        if xri:
+            return xri
+        xff = str(request.headers.get("x-forwarded-for") or "")
+        if xff:
+            ip = xff.split(",")[0].strip()
+            if ip:
+                return ip
     if request.client and request.client.host:
         return request.client.host
     return None

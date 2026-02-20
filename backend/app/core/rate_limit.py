@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request
 
+from app.core.config import settings
 from app.core.redis_client import get_redis
 
 
@@ -16,9 +17,15 @@ class RateLimit:
 
 
 def _client_ip(request: Request) -> str:
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
+    if bool(getattr(settings, "trust_proxy_headers", False)):
+        xri = str(request.headers.get("x-real-ip") or "").strip()
+        if xri:
+            return xri
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            ip = xff.split(",")[0].strip()
+            if ip:
+                return ip
     if request.client and request.client.host:
         return request.client.host
     return "unknown"

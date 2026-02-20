@@ -1,8 +1,10 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import text
 
+from app.core.queue import get_queue
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal
+from app.services.storage_cleanup_jobs import cleanup_admin_uploads_job
 from app.services.storage import get_s3_client
 from app.core.config import settings
 
@@ -43,3 +45,33 @@ def ready():
         raise HTTPException(status_code=503, detail="s3 not ready") from e
 
     return {"status": "ready"}
+
+
+@router.post("/health/cron/admin-uploads-cleanup")
+def cron_admin_uploads_cleanup(request: Request):
+    secret = str(getattr(settings, "cron_secret", "") or "").strip()
+    if not secret:
+        raise HTTPException(status_code=404, detail="not found")
+
+    provided = str(request.headers.get("x-cron-secret") or "").strip()
+    if not provided or provided != secret:
+        raise HTTPException(status_code=403, detail="forbidden")
+
+    interval_seconds = max(60, int(getattr(settings, "uploads_admin_cleanup_interval_minutes", 15)) * 60)
+    lock_key = "locks:admin_uploads_cleanup"
+    lock_ttl = max(60, interval_seconds - 5)
+
+    r = get_redis()
+    acquired = r.set(lock_key, "1", nx=True, ex=int(lock_ttl))
+    if not acquired:
+        return {"ok": True, "enqueued": False, "reason": "locked"}
+
+    q = get_queue("corelms")
+    job = q.enqueue(
+        cleanup_admin_uploads_job,
+        ttl_hours=int(getattr(settings, "uploads_admin_ttl_hours", 6)),
+        job_timeout=60 * 10,
+        result_ttl=60 * 60,
+        failure_ttl=60 * 60,
+    )
+    return {"ok": True, "enqueued": True, "job_id": str(job.id)}

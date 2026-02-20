@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import uuid
+import urllib.parse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import func, select
@@ -138,6 +139,11 @@ def presign_download(
     if act not in {"view", "download"}:
         act = "download"
 
+    filename = str(asset.original_filename or "").strip() or "file"
+    quoted = urllib.parse.quote(filename, safe="")
+    disp_kind = "inline" if act == "view" else "attachment"
+    disposition = f"{disp_kind}; filename*=UTF-8''{quoted}"
+
     meta = {
         "action": act,
         "filename": str(asset.original_filename or ""),
@@ -166,5 +172,9 @@ def presign_download(
     )
     db.commit()
 
-    url = presign_get(object_key=asset.object_key)
+    url = presign_get(
+        object_key=asset.object_key,
+        response_content_type=str(asset.mime_type or "").strip() or None,
+        response_content_disposition=disposition,
+    )
     return AssetGetUrlResponse(asset_id=str(asset.id), download_url=url)

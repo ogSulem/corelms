@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     session_absolute_timeout_days: int = Field(default=30, validation_alias="SESSION_ABSOLUTE_TIMEOUT_DAYS")
 
     cors_allow_origins: str = Field(default="http://localhost:3000", validation_alias="CORS_ALLOW_ORIGINS")
+    cors_allow_methods: str = Field(default="*", validation_alias="CORS_ALLOW_METHODS")
+    cors_allow_headers: str = Field(default="*", validation_alias="CORS_ALLOW_HEADERS")
+
+    enable_inprocess_scheduler: bool = Field(default=False, validation_alias="ENABLE_INPROCESS_SCHEDULER")
+    cron_secret: str | None = Field(default=None, validation_alias="CRON_SECRET")
+
+    trust_proxy_headers: bool = Field(default=False, validation_alias="TRUST_PROXY_HEADERS")
 
     s3_endpoint_url: str = Field(default="http://localhost:9000", validation_alias="S3_ENDPOINT_URL")
     s3_public_endpoint_url: str | None = Field(default=None, validation_alias="S3_PUBLIC_ENDPOINT_URL")
@@ -65,6 +72,11 @@ class Settings(BaseSettings):
 
     uploads_admin_ttl_hours: int = Field(default=6, validation_alias="UPLOADS_ADMIN_TTL_HOURS")
     uploads_admin_cleanup_interval_minutes: int = Field(default=15, validation_alias="UPLOADS_ADMIN_CLEANUP_INTERVAL_MINUTES")
+
+    import_zip_max_uncompressed_bytes: int = Field(default=2_500_000_000, validation_alias="IMPORT_ZIP_MAX_UNCOMPRESSED_BYTES")
+    import_zip_max_files: int = Field(default=12000, validation_alias="IMPORT_ZIP_MAX_FILES")
+    import_zip_max_entry_bytes: int = Field(default=750_000_000, validation_alias="IMPORT_ZIP_MAX_ENTRY_BYTES")
+    import_zip_max_compression_ratio: int = Field(default=250, validation_alias="IMPORT_ZIP_MAX_COMPRESSION_RATIO")
 
     openrouter_enabled: bool = Field(default=False, validation_alias="OPENROUTER_ENABLED")
     openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1", validation_alias="OPENROUTER_BASE_URL")

@@ -29,6 +29,27 @@ def create_app() -> FastAPI:
     if "*" in allow_origins:
         raise RuntimeError("CORS_ALLOW_ORIGINS must not include '*' when allow_credentials=true")
 
+    is_prod = (settings.app_env or "").strip().lower() in {"prod", "production"}
+
+    def _parse_csv(value: str) -> list[str]:
+        return [x.strip() for x in str(value or "").split(",") if x.strip()]
+
+    allow_methods_raw = str(getattr(settings, "cors_allow_methods", "*") or "*").strip()
+    allow_headers_raw = str(getattr(settings, "cors_allow_headers", "*") or "*").strip()
+    if is_prod:
+        if allow_methods_raw == "*":
+            allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+        else:
+            allow_methods = _parse_csv(allow_methods_raw)
+
+        if allow_headers_raw == "*":
+            allow_headers = ["authorization", "content-type", "x-request-id"]
+        else:
+            allow_headers = _parse_csv(allow_headers_raw)
+    else:
+        allow_methods = ["*"] if allow_methods_raw == "*" else _parse_csv(allow_methods_raw)
+        allow_headers = ["*"] if allow_headers_raw == "*" else _parse_csv(allow_headers_raw)
+
     @app.middleware("http")
     async def request_id_middleware(request: Request, call_next):
         t0 = time.perf_counter()
@@ -126,8 +147,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=allow_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=allow_methods,
+        allow_headers=allow_headers,
     )
 
     app.include_router(health.router)
@@ -175,7 +196,8 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def _startup_tasks() -> None:
-        _start_admin_uploads_cleanup_scheduler()
+        if bool(getattr(settings, "enable_inprocess_scheduler", False)):
+            _start_admin_uploads_cleanup_scheduler()
 
     return app
 

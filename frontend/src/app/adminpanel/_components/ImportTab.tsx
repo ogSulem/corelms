@@ -339,69 +339,19 @@ export default function ImportTab(props: ImportTabProps) {
     return st !== "processing" && st !== "done" && st !== "failed" && st !== "canceled";
   })();
 
+  React.useEffect(() => {
+    if (!uploadActive) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [uploadActive]);
+
   return (
     <div className="mt-8 space-y-6">
-      <Modal
-        open={uploadActive && !uploadOverlayMinimized}
-        title="ИДЁТ ЗАГРУЗКА"
-        disableClose
-        onClose={() => {
-          // non-closable by design
-        }}
-        className="max-w-[min(96vw,720px)]"
-        footer={
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-[10px] font-bold text-zinc-600">Можно свернуть, но не обновляй страницу.</div>
-            <button
-              type="button"
-              className="h-10 rounded-xl px-4 text-[10px] font-black uppercase tracking-widest transition border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
-              onClick={() => setUploadOverlayMinimized(true)}
-            >
-              СВЕРНУТЬ
-            </button>
-          </div>
-        }
-      >
-        <div className="space-y-3">
-          <div className="text-[11px] font-bold text-zinc-900">
-            Не обновляй страницу и не закрывай вкладку — иначе файл потеряется.
-          </div>
-          {String(clientImportFileName || "").trim() ? (
-            <div className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[11px] font-bold text-zinc-700 break-words">
-              {String(clientImportFileName || "").trim()}
-            </div>
-          ) : null}
-
-          {String(clientImportStage || "")
-            .trim()
-            .toLowerCase() === "upload_s3" && s3Label ? (
-            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-700">STORAGE UPLOAD</div>
-                <div className="text-[10px] font-black tabular-nums text-zinc-900">{s3Label.percent}%</div>
-              </div>
-              <div className="mt-2 h-2 w-full rounded-full bg-white border border-zinc-200 overflow-hidden">
-                <div className="h-full bg-[#fe9900] transition-all" style={{ width: `${s3Label.percent}%` }} />
-              </div>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">
-                  {s3Label.loadedHuman} / {s3Label.totalHuman}
-                </div>
-                <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">{s3Label.speed}</div>
-                <div className="rounded-full border border-zinc-200 bg-white px-2.5 py-1">ОСТАЛОСЬ ~ {s3Label.eta}</div>
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-3">
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-700">ОБРАБОТКА</div>
-              <div className="mt-2 text-[11px] font-bold text-zinc-700">
-                {String(importStageLabel || "").trim() || "..."}
-              </div>
-            </div>
-          )}
-        </div>
-      </Modal>
-
       {uploadActive ? (
         <div className="rounded-2xl border border-zinc-200 bg-white p-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -421,6 +371,8 @@ export default function ImportTab(props: ImportTabProps) {
               </button>
             ) : null}
           </div>
+
+          <div className="mt-2 text-[10px] font-bold text-zinc-700">Не обновляй страницу и не закрывай вкладку — иначе загрузка прервётся.</div>
 
           {String(clientImportStage || "").trim().toLowerCase() === "upload_s3" && s3Label ? (
             <div className="mt-3">
@@ -453,7 +405,6 @@ export default function ImportTab(props: ImportTabProps) {
                 <input
                   ref={importInputRef}
                   type="file"
-                  accept=".zip"
                   multiple
                   className="hidden"
                   onChange={(e) => setImportFiles(Array.from(e.target.files || []))}
@@ -463,7 +414,7 @@ export default function ImportTab(props: ImportTabProps) {
                   className="h-8 rounded-xl border border-zinc-200 bg-white px-3 text-[9px] font-black uppercase tracking-widest text-zinc-800 hover:bg-zinc-50"
                   onClick={() => importInputRef.current?.click()}
                 >
-                  Выбрать ZIP
+                  Выбрать файл
                 </button>
                 {importFiles.length ? (
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">

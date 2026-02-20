@@ -1677,6 +1677,20 @@ export default function AdminPanelClient() {
       return;
     }
 
+    const bad = picked.filter((f) => {
+      const n = String((f as any)?.name || "").trim().toLowerCase();
+      return !n.endsWith(".zip");
+    });
+    if (bad.length) {
+      const sample = bad
+        .slice(0, 3)
+        .map((f) => String((f as any)?.name || "").trim())
+        .filter(Boolean)
+        .join(", ");
+      setError(`СЕЙЧАС ПОДДЕРЖИВАЕТСЯ ТОЛЬКО .ZIP${sample ? ` (НЕ ZIP: ${sample})` : ""}`);
+      return;
+    }
+
     // Queue imports instead of clobbering the current run.
     // Product rule: allow batching many imports so admin can start a batch and walk away.
     if (!filesOverride && (importRunnerActiveRef.current || importBusy)) {

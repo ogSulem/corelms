@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import re
 from typing import Any
 
 from app.core.config import settings
@@ -28,6 +29,93 @@ def generate_quiz_questions_ai(
 
     Returns questions with fields: type, prompt, correct_answer, explanation.
     """
+
+    def _clean(s: object) -> str:
+        return re.sub(r"\s+", " ", str(s or "").strip()).strip()
+
+    def _extract_abcd_options(prompt: str) -> list[str] | None:
+        if not prompt:
+            return None
+        lines = [ln.strip() for ln in str(prompt).splitlines() if ln.strip()]
+        opts: dict[str, str] = {}
+        for ln in lines:
+            if len(ln) < 3:
+                continue
+            head = ln[:2].upper()
+            if head in {"A)", "B)", "C)", "D)"}:
+                key = head[0]
+                val = ln[2:].strip()
+                if val:
+                    opts[key] = val
+        if all(k in opts for k in ("A", "B", "C", "D")):
+            return [opts["A"], opts["B"], opts["C"], opts["D"]]
+        return None
+
+    def _is_valid_question(q: Any, *, seen_prompts: set[str]) -> bool:
+        raw_type = _clean(getattr(q, "type", "") or "single").lower()
+        if raw_type not in {"single", "multi", "case"}:
+            return False
+
+        prompt = str(getattr(q, "prompt", "") or "").strip()
+        if len(_clean(prompt)) < 25:
+            return False
+
+        norm_p = _clean(prompt).lower()
+        if norm_p in seen_prompts:
+            return False
+
+        opts = _extract_abcd_options(prompt)
+        if not opts:
+            return False
+
+        norm_opts = [_clean(o).lower() for o in opts]
+        if len({o for o in norm_opts if o}) != 4:
+            return False
+        if any(len(o) < 2 for o in norm_opts):
+            return False
+
+        ca_raw = _clean(getattr(q, "correct_answer", ""))
+        if raw_type == "multi":
+            # Format: A,C (letters, comma-separated, no spaces)
+            parts = [p.strip().upper() for p in ca_raw.split(",") if p.strip()]
+            if len(parts) < 2:
+                return False
+            if any(p not in {"A", "B", "C", "D"} for p in parts):
+                return False
+        else:
+            if (ca_raw[:1].upper() if ca_raw else "") not in {"A", "B", "C", "D"}:
+                return False
+
+        exp = _clean(getattr(q, "explanation", ""))
+        if len(exp) < 10:
+            return False
+
+        seen_prompts.add(norm_p)
+        return True
+
+    def _filter_questions(items: list[Any], *, want: int) -> list[Any]:
+        seen: set[str] = set()
+        out: list[Any] = []
+        for q in items or []:
+            if _is_valid_question(q, seen_prompts=seen):
+                out.append(q)
+            if len(out) >= want:
+                break
+        return out
+
+    def _is_degenerate(items: list[Any]) -> bool:
+        # Reject common failure mode where model returns correct_answer always 'A' or always same.
+        if not items or len(items) < 3:
+            return False
+        answers: list[str] = []
+        for q in items:
+            ca = _clean(getattr(q, "correct_answer", ""))
+            if not ca:
+                continue
+            answers.append(ca[:1].upper())
+        if len(answers) < 3:
+            return False
+        return len(set(answers)) <= 1
 
     def _set_debug(key: str, value: object) -> None:
         if debug_out is None:
@@ -113,6 +201,7 @@ def generate_quiz_questions_ai(
 
                 local_debug = {}
                 best: list[Any] = []
+                best_valid: list[Any] = []
                 last_err = None
 
                 strict_prompt = (
@@ -151,14 +240,22 @@ def generate_quiz_questions_ai(
                         temperature=(0.2 if attempt >= 2 else None),
                         timeout_read_seconds=dyn_read,
                     )
-                    if out and len(out) >= min_q:
+                    valid = _filter_questions(list(out or []), want=want)
+                    if valid and _is_degenerate(valid):
+                        valid = []
+                        local_debug["error"] = "degenerate_answers"
+
+                    if valid and len(valid) >= min_q:
                         _set_debug("provider", "openrouter")
                         _set_debug("provider_error", None)
                         if debug_out is not None:
                             debug_out.setdefault("openrouter_attempts", attempt)
-                        return out
+                        return valid
+
+                    if valid and len(valid) > len(best_valid):
+                        best_valid = valid
                     if out and len(out) > len(best):
-                        best = out
+                        best = list(out)
                     last_err = str(local_debug.get("error") or "empty")
 
                     if not ok_or:
@@ -166,10 +263,10 @@ def generate_quiz_questions_ai(
                     if attempt < max_tries:
                         time.sleep(max(0.1, float(backoff_seconds) * float(attempt)))
 
-                if best and len(best) >= min_q:
+                if best_valid and len(best_valid) >= min_q:
                     _set_debug("provider", "openrouter")
                     _set_debug("provider_error", None)
-                    return best
+                    return best_valid
                 errors.append("openrouter:" + str(last_err or "empty"))
                 continue
 
@@ -187,29 +284,57 @@ def generate_quiz_questions_ai(
                 eff_ollama_enabled = bool(settings.ollama_enabled) if runtime_ollama_enabled is None else bool(runtime_ollama_enabled)
                 if not eff_ollama_enabled:
                     continue
-                local_debug: dict[str, object] = {}
-                rem_call = _remaining_s()
-                dyn_read = None
-                try:
-                    if rem_call is not None:
-                        dyn_read = max(4.0, min(per_attempt, float(rem_call) - 1.0))
-                except Exception:
+                best_valid: list[Any] = []
+                last_err = None
+                rem = _remaining_s()
+                cap_tries = _cap_tries_by_budget(rem_s=rem, per_attempt_s=per_attempt, max_tries_in=max_tries)
+                for attempt in range(1, cap_tries + 1):
+                    if _budget_exhausted():
+                        last_err = "budget_exhausted"
+                        break
+                    local_debug = {}
+                    rem_call = _remaining_s()
                     dyn_read = None
-                out = generate_quiz_questions_ollama(
-                    title=title,
-                    text=text,
-                    n_questions=n_questions,
-                    debug_out=local_debug,
-                    enabled=eff_ollama_enabled,
-                    base_url=runtime_ollama_base_url,
-                    model=runtime_ollama_model,
-                    timeout_read_seconds=dyn_read,
-                )
-                if out:
+                    try:
+                        if rem_call is not None:
+                            dyn_read = max(4.0, min(per_attempt, float(rem_call) - 1.0))
+                    except Exception:
+                        dyn_read = None
+
+                    out = generate_quiz_questions_ollama(
+                        title=title,
+                        text=text,
+                        n_questions=n_questions,
+                        debug_out=local_debug,
+                        enabled=eff_ollama_enabled,
+                        base_url=runtime_ollama_base_url,
+                        model=runtime_ollama_model,
+                        timeout_read_seconds=dyn_read,
+                    )
+                    valid = _filter_questions(list(out or []), want=want)
+                    if valid and _is_degenerate(valid):
+                        valid = []
+                        local_debug["error"] = "degenerate_answers"
+
+                    if valid and len(valid) > len(best_valid):
+                        best_valid = valid
+                    if valid and len(valid) >= min_q:
+                        _set_debug("provider", "ollama")
+                        _set_debug("provider_error", None)
+                        if debug_out is not None:
+                            debug_out.setdefault("ollama_attempts", attempt)
+                        return valid
+
+                    last_err = str(local_debug.get("error") or "empty")
+                    if attempt < cap_tries:
+                        time.sleep(max(0.1, float(backoff_seconds) * float(attempt)))
+
+                if best_valid and len(best_valid) >= min_q:
                     _set_debug("provider", "ollama")
                     _set_debug("provider_error", None)
-                    return out
-                errors.append("ollama:" + str(local_debug.get("error") or "empty"))
+                    return best_valid
+
+                errors.append("ollama:" + str(last_err or "empty"))
                 continue
 
             if provider in {"hf", "hf_router"}:
@@ -220,28 +345,56 @@ def generate_quiz_questions_ai(
                     continue
                 if not (bool(settings.hf_router_enabled) or bool(runtime_hf_enabled)):
                     continue
-                local_debug = {}
-                rem_call = _remaining_s()
-                dyn_read = None
-                try:
-                    if rem_call is not None:
-                        dyn_read = max(3.0, min(per_attempt, float(rem_call) - 1.0))
-                except Exception:
+                best_valid: list[Any] = []
+                last_err = None
+                rem = _remaining_s()
+                cap_tries = _cap_tries_by_budget(rem_s=rem, per_attempt_s=per_attempt, max_tries_in=max_tries)
+                for attempt in range(1, cap_tries + 1):
+                    if _budget_exhausted():
+                        last_err = "budget_exhausted"
+                        break
+                    local_debug = {}
+                    rem_call = _remaining_s()
                     dyn_read = None
-                out = generate_quiz_questions_hf_router(
-                    title=title,
-                    text=text,
-                    n_questions=n_questions,
-                    debug_out=local_debug,
-                    base_url=runtime_hf_base_url,
-                    model=runtime_hf_model,
-                    timeout_read_seconds=dyn_read,
-                )
-                if out:
+                    try:
+                        if rem_call is not None:
+                            dyn_read = max(3.0, min(per_attempt, float(rem_call) - 1.0))
+                    except Exception:
+                        dyn_read = None
+
+                    out = generate_quiz_questions_hf_router(
+                        title=title,
+                        text=text,
+                        n_questions=n_questions,
+                        debug_out=local_debug,
+                        base_url=runtime_hf_base_url,
+                        model=runtime_hf_model,
+                        timeout_read_seconds=dyn_read,
+                    )
+                    valid = _filter_questions(list(out or []), want=want)
+                    if valid and _is_degenerate(valid):
+                        valid = []
+                        local_debug["error"] = "degenerate_answers"
+
+                    if valid and len(valid) > len(best_valid):
+                        best_valid = valid
+                    if valid and len(valid) >= min_q:
+                        _set_debug("provider", "hf_router")
+                        _set_debug("provider_error", None)
+                        if debug_out is not None:
+                            debug_out.setdefault("hf_router_attempts", attempt)
+                        return valid
+
+                    last_err = str(local_debug.get("error") or "empty")
+                    if attempt < cap_tries:
+                        time.sleep(max(0.1, float(backoff_seconds) * float(attempt)))
+
+                if best_valid and len(best_valid) >= min_q:
                     _set_debug("provider", "hf_router")
                     _set_debug("provider_error", None)
-                    return out
-                errors.append("hf_router:" + str(local_debug.get("error") or "empty"))
+                    return best_valid
+
+                errors.append("hf_router:" + str(last_err or "empty"))
                 continue
         except Exception as e:
             errors.append(provider + ":" + type(e).__name__)

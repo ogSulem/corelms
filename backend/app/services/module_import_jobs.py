@@ -143,6 +143,22 @@ def _set_job_error(*, error: Exception, error_code: str | None = None, error_hin
                 code = "ZIP_INVALID"
                 if not hint:
                     hint = "Проверьте, что ZIP не повреждён и содержит структуру модуля."
+            elif "zip has too many files" in msg.lower():
+                code = "ZIP_TOO_MANY_FILES"
+                if not hint:
+                    hint = "ZIP содержит слишком много файлов. Удалите лишнее или разбейте модуль на части."
+            elif "zip uncompressed total too large" in msg.lower():
+                code = "ZIP_TOO_LARGE"
+                if not hint:
+                    hint = "ZIP слишком большой после распаковки. Удалите тяжёлые материалы или разделите модуль."
+            elif "zip entry too large" in msg.lower():
+                code = "ZIP_ENTRY_TOO_LARGE"
+                if not hint:
+                    hint = "В ZIP есть слишком большой файл. Сожмите/уменьшите его или вынесите отдельно."
+            elif "zip suspicious compression ratio" in msg.lower():
+                code = "ZIP_SUSPICIOUS"
+                if not hint:
+                    hint = "ZIP похож на zip-bomb или содержит подозрительно сжатые данные. Проверьте архив."
             elif "module title already exists" in msg.lower() or "title already exists" in msg.lower():
                 code = "DUPLICATE_MODULE_TITLE"
                 if not hint:
@@ -165,6 +181,14 @@ def _set_job_error(*, error: Exception, error_code: str | None = None, error_hin
 
 def _safe_extract_zip(*, zf: zipfile.ZipFile, dest: pathlib.Path) -> None:
     dest = dest.resolve()
+    max_files = int(getattr(settings, "import_zip_max_files", 12000) or 12000)
+    max_total = int(getattr(settings, "import_zip_max_uncompressed_bytes", 2_500_000_000) or 2_500_000_000)
+    max_entry = int(getattr(settings, "import_zip_max_entry_bytes", 750_000_000) or 750_000_000)
+    max_ratio = int(getattr(settings, "import_zip_max_compression_ratio", 250) or 250)
+
+    extracted_files = 0
+    total_uncompressed = 0
+
     for member in zf.infolist():
         name = member.filename
         if name:
@@ -190,6 +214,34 @@ def _safe_extract_zip(*, zf: zipfile.ZipFile, dest: pathlib.Path) -> None:
                 pass
         if not name or name.endswith("/"):
             continue
+
+        extracted_files += 1
+        if extracted_files > max_files:
+            raise ValueError(f"zip has too many files: {extracted_files} > {max_files}")
+
+        try:
+            file_size = int(getattr(member, "file_size", 0) or 0)
+        except Exception:
+            file_size = 0
+        try:
+            comp_size = int(getattr(member, "compress_size", 0) or 0)
+        except Exception:
+            comp_size = 0
+
+        if file_size > max_entry:
+            raise ValueError(f"zip entry too large: {file_size} > {max_entry}: {name}")
+
+        total_uncompressed += max(0, file_size)
+        if total_uncompressed > max_total:
+            raise ValueError(f"zip uncompressed total too large: {total_uncompressed} > {max_total}")
+
+        # Detect classic zip-bomb patterns (tiny compressed -> huge uncompressed)
+        # Note: allow small files and stored entries.
+        if comp_size > 0 and file_size > 0:
+            ratio = file_size / max(1, comp_size)
+            if ratio > float(max_ratio) and file_size > 10_000_000:
+                raise ValueError(f"zip suspicious compression ratio: {ratio:.1f} > {max_ratio}: {name}")
+
         target = (dest / name).resolve()
         if not str(target).startswith(str(dest)):
             continue

@@ -122,7 +122,7 @@ type AssetLike = {
   mime_type: string | null;
 };
 
-type InlineKind = "iframe" | "image" | "video" | "text";
+type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text";
 
 type InlineTextBlock = { kind: "h" | "p" | "ul" | "pre"; text?: string; items?: string[] };
 
@@ -171,10 +171,11 @@ export default function SubmodulePage() {
   const canInlinePreview = useMemo(() => {
     const mime = String(inlineMime || "").toLowerCase();
     if (!inlineUrl) return false;
-    if (!mime) return true;
+    if (!mime) return false;
     if (mime.includes("pdf")) return true;
     if (mime.startsWith("image/")) return true;
     if (mime.startsWith("video/")) return true;
+    if (mime.startsWith("audio/")) return true;
     if (mime.startsWith("text/")) return true;
     return false;
   }, [inlineMime, inlineUrl]);
@@ -317,7 +318,11 @@ export default function SubmodulePage() {
       const ext = getExtFromName(nm);
 
       const kind: InlineKind =
-        mime.startsWith("video/") || ["mp4", "webm"].includes(ext)
+        mime.includes("pdf") || ext === "pdf"
+          ? "pdf"
+          : mime.startsWith("audio/") || ["mp3", "wav", "ogg", "m4a"].includes(ext)
+            ? "audio"
+            : mime.startsWith("video/") || ["mp4", "webm"].includes(ext)
           ? "video"
           : mime.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "gif"].includes(ext)
             ? "image"
@@ -883,6 +888,17 @@ export default function SubmodulePage() {
                       <div className="mt-4 overflow-hidden rounded-2xl border border-zinc-200 bg-white">
                         {inlineKind === "video" ? (
                           <video src={inlineUrl} controls className="w-full h-auto bg-black" preload="metadata" />
+                        ) : inlineKind === "audio" ? (
+                          <div className="p-4">
+                            <audio src={inlineUrl} controls className="w-full" preload="metadata" />
+                          </div>
+                        ) : inlineKind === "pdf" ? (
+                          <iframe
+                            src={inlineUrl}
+                            className="w-full h-[640px]"
+                            sandbox="allow-same-origin allow-scripts allow-forms"
+                            title={String(inlineName || "PDF")}
+                          />
                         ) : inlineKind === "image" ? (
                           <img src={inlineUrl} alt="" className="w-full h-auto" />
                         ) : inlineKind === "text" ? (
@@ -920,15 +936,22 @@ export default function SubmodulePage() {
                             src={inlineUrl}
                             className="w-full h-[520px]"
                             sandbox="allow-same-origin allow-scripts allow-forms"
+                            title={String(inlineName || "Файл")}
                           />
                         )}
                       </div>
-                    ) : (
-                      <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                        <div className="text-[10px] font-black uppercase tracking-widest text-zinc-700">Этот формат не поддерживает просмотр</div>
-                        <div className="mt-2 text-xs text-zinc-600 font-medium">Используйте кнопку “скачать” в списке материалов.</div>
+                    ) : inlineUrl ? (
+                      <div className="mt-4 rounded-2xl border border-zinc-200 bg-white p-4">
+                        <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">ПРЕДПРОСМОТР НЕДОСТУПЕН</div>
+                        <div className="mt-2 text-[11px] font-bold text-zinc-800">
+                          Этот формат лучше скачать и открыть локально (например, Excel/PowerPoint/Word).
+                        </div>
                       </div>
-                    )}
+                    ) : null}
+                    <div className="mt-4 rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-700">Этот формат не поддерживает просмотр</div>
+                      <div className="mt-2 text-xs text-zinc-600 font-medium">Используйте кнопку “скачать” в списке материалов.</div>
+                    </div>
                   </div>
                 ) : null}
                 

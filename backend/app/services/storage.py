@@ -158,7 +158,13 @@ def presign_put(*, object_key: str, content_type: str | None, expires_seconds: i
     )
 
 
-def presign_get(*, object_key: str, expires_seconds: int = 900) -> str:
+def presign_get(
+    *,
+    object_key: str,
+    expires_seconds: int = 900,
+    response_content_type: str | None = None,
+    response_content_disposition: str | None = None,
+) -> str:
     ensure_bucket_exists()
     s3 = _get_presign_client()
     try:
@@ -169,9 +175,15 @@ def presign_get(*, object_key: str, expires_seconds: int = 900) -> str:
             expires_seconds = max(60, min(int(expires_seconds), 300))
     except Exception:
         pass
+    params: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key}
+    if response_content_type:
+        params["ResponseContentType"] = str(response_content_type)
+    if response_content_disposition:
+        params["ResponseContentDisposition"] = str(response_content_disposition)
+
     return s3.generate_presigned_url(
         "get_object",
-        Params={"Bucket": settings.s3_bucket, "Key": object_key},
+        Params=params,
         ExpiresIn=expires_seconds,
     )
 
