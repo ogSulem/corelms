@@ -2656,7 +2656,21 @@ export default function AdminPanelClient() {
         // Update client-side queue display as soon as we start this file.
         try {
           const remaining = files.slice(idx + 1);
-          const merged = remaining.concat(importQueuePendingRef.current || []);
+          const prev = importQueuePendingRef.current || [];
+          const merged: File[] = [];
+          const seen = new Set<string>();
+          const push = (it: any) => {
+            if (!it) return;
+            const name = String(it?.name || "");
+            const size = typeof it?.size === "number" ? Number(it.size) : 0;
+            const lm = typeof it?.lastModified === "number" ? Number(it.lastModified) : 0;
+            const fp = `${name}:${size}:${lm}`;
+            if (seen.has(fp)) return;
+            seen.add(fp);
+            merged.push(it as File);
+          };
+          for (const it of remaining) push(it);
+          for (const it of prev) push(it);
           importQueuePendingRef.current = merged;
           setImportPendingCount(merged.length);
           setImportPendingNames(merged.map((x) => String((x as any)?.name || "")).filter(Boolean));

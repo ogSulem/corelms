@@ -1245,8 +1245,14 @@ def presign_import_zip(
     except Exception:
         lm = None
 
-    # If client does not provide size/mtime, fallback to legacy behavior (filename-only).
-    fp = f"{norm_fn}:{sz}:{lm}" if (sz is not None and lm is not None) else norm_fn
+    raw_title = str(body.title or "").strip()
+    base_for_fp = raw_title if raw_title else norm_fn
+    base_for_fp = re.sub(r"\s+", " ", base_for_fp).strip().lower()
+    if base_for_fp.endswith(".zip"):
+        base_for_fp = base_for_fp[: -len(".zip")]
+
+    # If client does not provide size/mtime, fallback to legacy behavior (base-only).
+    fp = f"{base_for_fp}:{sz}:{lm}" if (sz is not None and lm is not None) else base_for_fp
     try:
         r = get_redis()
         existing_key = str(r.get(f"admin:import_zip_by_fingerprint:{fp}") or "").strip()
@@ -1263,7 +1269,6 @@ def presign_import_zip(
             # If object is missing, fall through to generating a new presign.
             pass
 
-    raw_title = str(body.title or "").strip()
     base_name = raw_title if raw_title else norm_fn
     base_name = re.sub(r"\s+", " ", base_name).strip().lower()
     if base_name.endswith(".zip"):
@@ -1323,7 +1328,13 @@ def multipart_import_create(
     except Exception:
         lm = None
 
-    fp = f"{norm_fn}:{sz}:{lm}" if (sz is not None and lm is not None) else norm_fn
+    raw_title = str(body.title or "").strip()
+    base_for_fp = raw_title if raw_title else norm_fn
+    base_for_fp = re.sub(r"\s+", " ", base_for_fp).strip().lower()
+    if base_for_fp.endswith(".zip"):
+        base_for_fp = base_for_fp[: -len(".zip")]
+
+    fp = f"{base_for_fp}:{sz}:{lm}" if (sz is not None and lm is not None) else base_for_fp
     sess_key = f"admin:import_multipart_by_fingerprint:{fp}"
     try:
         r = get_redis()
