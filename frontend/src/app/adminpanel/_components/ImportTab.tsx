@@ -305,18 +305,33 @@ export default function ImportTab(props: ImportTabProps) {
   };
 
   const storageRows = useMemo(() => {
+    const hideKeys = new Set<string>();
+    try {
+      for (const it of importQueue || []) {
+        const k = String((it as any)?.object_key || "").trim();
+        if (k) hideKeys.add(k);
+      }
+      for (const it of importQueueHistory || []) {
+        const k = String((it as any)?.object_key || "").trim();
+        if (k) hideKeys.add(k);
+      }
+    } catch {
+      // ignore
+    }
+
     const items = storageUploads || [];
     return items
       .map((it) => {
         const key = String((it as any)?.key || "").trim();
+        if (key && hideKeys.has(key)) return null;
         const name = key.split("/").slice(-1)[0] || key;
         const size = typeof (it as any)?.size === "number" ? Number((it as any).size) : Number((it as any)?.size || 0);
         const lmRaw = (it as any)?.last_modified;
         const lm = lmRaw ? String(lmRaw) : "";
         return { key, name, size, lm };
       })
-      .filter((x) => !!x.key);
-  }, [storageUploads]);
+      .filter((x): x is { key: string; name: string; size: number; lm: string } => !!(x as any)?.key);
+  }, [storageUploads, importQueue, importQueueHistory]);
 
   const pipelineHistory = useMemo(() => {
     const out: PipelineItem[] = [];

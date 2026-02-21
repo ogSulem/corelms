@@ -13,6 +13,9 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
 
   const token = (await cookies()).get("core_token")?.value;
 
+  const accept = String(req.headers.get("accept") || "");
+  const isSse = accept.includes("text/event-stream") || path[path.length - 1] === "events";
+
   const headers = new Headers(req.headers);
   headers.delete("host");
   headers.delete("connection");
@@ -35,7 +38,7 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
 
   const timeoutMs = Number.parseInt(process.env.BACKEND_PROXY_TIMEOUT_MS || "180000", 10) || 180000;
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), Math.max(1000, timeoutMs));
+  const t = isSse ? null : setTimeout(() => ac.abort(), Math.max(1000, timeoutMs));
 
   let res: Response;
   try {
@@ -45,7 +48,7 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   } catch {
     return new NextResponse("upstream unavailable", { status: 502 });
   } finally {
-    clearTimeout(t);
+    if (t) clearTimeout(t);
   }
 
   const responseHeaders = new Headers(res.headers);

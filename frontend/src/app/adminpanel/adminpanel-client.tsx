@@ -2380,6 +2380,7 @@ export default function AdminPanelClient() {
 
       const uploadS3MultipartWithProgress = async (file: File, ac: AbortController) => {
         const filename = String((file as any)?.name || "module.zip");
+        const inferredTitle = deriveTitleFromZipName(filename);
         const sizeBytes = typeof (file as any)?.size === "number" ? Number((file as any).size) : null;
         const lastModifiedMs = typeof (file as any)?.lastModified === "number" ? Number((file as any).lastModified) : null;
         const res = await apiFetch<{ ok: boolean; object_key: string; upload_id: string; reused?: boolean }>(
@@ -2388,6 +2389,7 @@ export default function AdminPanelClient() {
             method: "POST",
             body: JSON.stringify({
               filename,
+              title: inferredTitle || null,
               content_type: String((file as any)?.type || "application/zip"),
               size_bytes: sizeBytes,
               last_modified_ms: lastModifiedMs,
@@ -2737,6 +2739,7 @@ export default function AdminPanelClient() {
                 method: "POST",
                 body: JSON.stringify({
                   filename: String(f?.name || "module.zip"),
+                  title: title || null,
                   content_type: String((f as any)?.type || "application/zip"),
                   size_bytes: typeof (f as any)?.size === "number" ? Number((f as any).size) : null,
                   last_modified_ms: typeof (f as any)?.lastModified === "number" ? Number((f as any).lastModified) : null,
@@ -3343,6 +3346,26 @@ export default function AdminPanelClient() {
     return questionsByQuizId[qid] || [];
   }, [questionsByQuizId, selectedQuizId]);
 
+  const switchTabGuarded = (next: TabKey) => {
+    if (next === tab) return;
+    try {
+      const st = String(clientImportStage || "").trim().toLowerCase();
+      const uploadActive = !!importBusy && (st === "upload_s3" || st === "upload" || st === "enqueue");
+      if (uploadActive && next !== "import") {
+        const ok = window.confirm(
+          "Сейчас идет загрузка/импорт. Если перейти на другую вкладку, браузер может прервать загрузку.\n\nПерейти всё равно?"
+        );
+        if (!ok) {
+          setTab("import");
+          return;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    setTab(next);
+  };
+
   return (
     <AppShell>
       <div className="mx-auto w-full max-w-7xl px-4 py-10">
@@ -3366,7 +3389,7 @@ export default function AdminPanelClient() {
                 <button
                   key={t.key}
                   type="button"
-                  onClick={() => setTab(t.key)}
+                  onClick={() => switchTabGuarded(t.key)}
                   className={
                     "h-10 rounded-xl px-4 text-[10px] font-black uppercase tracking-widest transition " +
                     (active

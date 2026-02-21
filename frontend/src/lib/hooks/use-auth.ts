@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export type User = {
   name: string;
@@ -14,9 +14,18 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
 
+  const meInFlightRef = useRef(false);
+  const lastMeAtRef = useRef(0);
+  const hasLoadedOnceRef = useRef(false);
+
   const fetchMe = async () => {
+    const now = Date.now();
+    if (meInFlightRef.current) return;
+    if (now - lastMeAtRef.current < 3000) return;
+    meInFlightRef.current = true;
+    lastMeAtRef.current = now;
     try {
-      setLoading(true);
+      if (!hasLoadedOnceRef.current) setLoading(true);
       const res = await fetch('/api/auth/me', { cache: 'no-store' });
       if (res.ok) {
         const data = await res.json();
@@ -32,7 +41,9 @@ export function useAuth() {
       setError(err as Error);
       setUser(null);
     } finally {
+      hasLoadedOnceRef.current = true;
       setLoading(false);
+      meInFlightRef.current = false;
     }
   };
 

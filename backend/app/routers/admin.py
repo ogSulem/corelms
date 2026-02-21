@@ -1157,6 +1157,7 @@ def list_storage_objects(
 
 class AdminPresignImportZipRequest(BaseModel):
     filename: str
+    title: str | None = None
     content_type: str | None = None
     size_bytes: int | None = None
     last_modified_ms: int | None = None
@@ -1164,6 +1165,7 @@ class AdminPresignImportZipRequest(BaseModel):
 
 class AdminMultipartCreateRequest(BaseModel):
     filename: str
+    title: str | None = None
     content_type: str | None = None
     size_bytes: int | None = None
     last_modified_ms: int | None = None
@@ -1261,10 +1263,14 @@ def presign_import_zip(
             # If object is missing, fall through to generating a new presign.
             pass
 
-    # Keep the uploaded zip in the same prefix used by legacy flow.
-    safe = re.sub(r"[^a-zA-Z0-9\-_.]+", "-", norm_fn).strip("-._")
+    raw_title = str(body.title or "").strip()
+    base_name = raw_title if raw_title else norm_fn
+    base_name = re.sub(r"\s+", " ", base_name).strip().lower()
+    if base_name.endswith(".zip"):
+        base_name = base_name[: -len(".zip")]
+    safe = re.sub(r"[^a-zA-Z0-9\-_.]+", "-", base_name).strip("-._")
     safe = re.sub(r"-+", "-", safe)[:80] or "module"
-    object_key = f"uploads/admin/{safe}__{uuid.uuid4()}.zip"
+    object_key = f"uploads/admin/{safe}/{safe}__{uuid.uuid4()}.zip"
     try:
         # Do not bind the presigned URL to Content-Type.
         # Browsers may send a slightly different content-type (or none), which would cause SignatureDoesNotMatch.
@@ -1339,7 +1345,9 @@ def multipart_import_create(
 
     # Keep object keys human-readable: derive a slug from the filename *without* the .zip suffix,
     # and store uploads under a folder matching the slug.
-    base_name = norm_fn
+    raw_title = str(body.title or "").strip()
+    base_name = raw_title if raw_title else norm_fn
+    base_name = re.sub(r"\s+", " ", base_name).strip().lower()
     if base_name.endswith(".zip"):
         base_name = base_name[: -len(".zip")]
     safe = re.sub(r"[^a-zA-Z0-9\-_.]+", "-", base_name).strip("-._")

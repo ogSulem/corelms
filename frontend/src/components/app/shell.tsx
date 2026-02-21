@@ -18,6 +18,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const keepAliveInFlightRef = React.useRef(false);
   const lastKeepAliveAtRef = React.useRef(0);
   const keepAliveTimerRef = React.useRef<any>(null);
+  const keepAliveFailStreakRef = React.useRef(0);
 
   React.useEffect(() => {
     function onRefresh() {
@@ -31,7 +32,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     if (loading) return;
     if (!authenticated) return;
 
-    const minIntervalMs = 60_000;
+    const minIntervalMs = 4 * 60_000;
 
     const tick = async (reason: string) => {
       const now = Date.now();
@@ -47,10 +48,13 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         });
         if (res.ok) {
           lastKeepAliveAtRef.current = now;
+          keepAliveFailStreakRef.current = 0;
           window.dispatchEvent(new Event("corelms:refresh-me"));
+        } else {
+          keepAliveFailStreakRef.current = Math.min(10, keepAliveFailStreakRef.current + 1);
         }
       } catch {
-        // ignore
+        keepAliveFailStreakRef.current = Math.min(10, keepAliveFailStreakRef.current + 1);
       } finally {
         keepAliveInFlightRef.current = false;
       }
@@ -58,20 +62,21 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
     const schedule = () => {
       if (keepAliveTimerRef.current) window.clearInterval(keepAliveTimerRef.current);
-      keepAliveTimerRef.current = window.setInterval(() => void tick("interval"), 5 * 60_000);
+
+      // Base cadence is 10 minutes. If refresh fails repeatedly, slow down to reduce load.
+      const baseMs = 10 * 60_000;
+      const streak = Math.max(0, Number(keepAliveFailStreakRef.current || 0));
+      const multiplier = Math.min(6, 1 + streak);
+      const intervalMs = Math.max(baseMs, baseMs * multiplier);
+      keepAliveTimerRef.current = window.setInterval(() => void tick("interval"), intervalMs);
     };
 
-    const onActivity = () => void tick("activity");
     const onFocus = () => void tick("focus");
     const onVisibility = () => {
       if (document.visibilityState === "visible") void tick("visible");
     };
     const onUpload = () => void tick("upload");
 
-    window.addEventListener("mousemove", onActivity, { passive: true });
-    window.addEventListener("keydown", onActivity);
-    window.addEventListener("scroll", onActivity, { passive: true });
-    window.addEventListener("touchstart", onActivity, { passive: true });
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("corelms:keepalive", onUpload as EventListener);
@@ -80,10 +85,6 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     schedule();
     return () => {
       if (keepAliveTimerRef.current) window.clearInterval(keepAliveTimerRef.current);
-      window.removeEventListener("mousemove", onActivity as any);
-      window.removeEventListener("keydown", onActivity as any);
-      window.removeEventListener("scroll", onActivity as any);
-      window.removeEventListener("touchstart", onActivity as any);
       window.removeEventListener("focus", onFocus as any);
       document.removeEventListener("visibilitychange", onVisibility as any);
       window.removeEventListener("corelms:keepalive", onUpload as EventListener);
