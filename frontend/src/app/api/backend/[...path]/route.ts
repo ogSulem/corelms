@@ -7,11 +7,29 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ||
   "http://backend:8000";
 
+function getCookieValue(cookieHeader: string, name: string): string {
+  const raw = String(cookieHeader || "");
+  if (!raw) return "";
+  const parts = raw.split(";");
+  for (const p of parts) {
+    const s = p.trim();
+    if (!s) continue;
+    const eq = s.indexOf("=");
+    if (eq <= 0) continue;
+    const k = s.slice(0, eq).trim();
+    if (k !== name) continue;
+    return s.slice(eq + 1).trim();
+  }
+  return "";
+}
+
 async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
   const { path = [] } = await ctx.params;
   const url = `${API_BASE_URL}/${path.join("/")}`;
 
-  const token = (await cookies()).get("core_token")?.value;
+  const cookieHeader = String(req.headers.get("cookie") || "");
+  const tokenFromHeader = getCookieValue(cookieHeader, "core_token");
+  const token = tokenFromHeader || (await cookies()).get("core_token")?.value;
 
   const accept = String(req.headers.get("accept") || "");
   const isSse = accept.includes("text/event-stream") || path[path.length - 1] === "events";
@@ -59,7 +77,7 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     headers: responseHeaders,
   });
 
-  if (res.status === 401) {
+  if (res.status === 401 && !isSse) {
     const isProd = process.env.NODE_ENV === "production";
     out.cookies.set({
       name: "core_token",
