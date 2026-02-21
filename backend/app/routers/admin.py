@@ -2254,6 +2254,20 @@ def set_module_visibility(
     target = bool(body.is_active)
 
     if target:
+        try:
+            has_content = bool(s3_prefix_has_objects(prefix=f"modules/{str(m.id)}/", bypass_cache=True))
+        except Exception:
+            has_content = False
+        if not has_content:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "MODULE_CONTENT_NOT_READY",
+                    "error_message": "module content is not in storage yet",
+                    "error_hint": "Сотрудники видят только опубликованные модули с готовым контентом. Дождитесь завершения импорта (появятся файлы в storage modules/<id>/) и попробуйте снова.",
+                },
+            )
+
         needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
         lesson_quiz_ids = list(
             db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == m.id).where(Submodule.quiz_id.is_not(None))).all()

@@ -3366,13 +3366,14 @@ export default function AdminPanelClient() {
       const st = String(clientImportStage || "").trim().toLowerCase();
       const uploadActive = !!importBusy && (st === "upload_s3" || st === "upload" || st === "enqueue");
       if (uploadActive && next !== "import") {
-        const ok = window.confirm(
-          "Сейчас идет загрузка/импорт. Если перейти на другую вкладку, браузер может прервать загрузку.\n\nПерейти всё равно?"
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: {
+              title: "ЗАГРУЗКА ПРОДОЛЖАЕТСЯ",
+              description: "Можно переключаться между вкладками — главное не закрывать вкладку/не обновлять страницу до завершения.",
+            },
+          })
         );
-        if (!ok) {
-          setTab("import");
-          return;
-        }
       }
     } catch {
       // ignore
