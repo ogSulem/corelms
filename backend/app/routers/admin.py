@@ -158,6 +158,7 @@ def _delete_s3_prefix_best_effort(*, prefix: str) -> None:
 
 @router.get("/system/status")
 def system_status(
+    db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
     runtime: dict[str, str] = {}
@@ -212,7 +213,7 @@ def system_status(
     try:
         db.execute(text("SELECT 1"))
         out["db"] = {"ok": True}
-    except Exception as e:
+    except Exception:
         out["db"] = {"ok": False}
 
     try:
@@ -922,11 +923,6 @@ async def import_module_zip(
             fingerprint = ""
         if fingerprint:
             jm["import_fingerprint"] = fingerprint
-        try:
-            if meta.get("object_key"):
-                jm["import_object_key"] = str(meta.get("object_key") or "")
-        except Exception:
-            pass
         job.meta = jm
         job.save_meta()
     except Exception:
@@ -1917,87 +1913,6 @@ def retry_import_job(
     }
 
 
-@router.get("/jobs/{job_id}")
-def job_status(
-    job_id: str,
-    _: User = Depends(require_roles(UserRole.admin)),
-):
-    job = fetch_job(job_id)
-    if job is None:
-        return {
-            "id": str(job_id),
-            "status": "missing",
-            "enqueued_at": None,
-            "started_at": None,
-            "ended_at": None,
-            "job_kind": None,
-            "module_id": None,
-            "module_title": None,
-            "target_questions": None,
-            "stage": "missing",
-            "stage_at": None,
-            "stage_started_at": None,
-            "stage_durations_s": None,
-            "job_started_at": None,
-            "detail": None,
-            "error_code": "JOB_NOT_FOUND",
-            "error_class": None,
-            "error_hint": "Задача уже удалена из очереди (TTL) или была очищена. Обновите историю.",
-            "error_message": "job not found",
-            "cancel_requested": False,
-            "cancel_requested_at": None,
-            "result": None,
-            "error": "job not found",
-        }
-
-    status = job.get_status(refresh=True)
-    meta = dict(job.meta or {})
-
-    error_summary = None
-    try:
-        if status == "failed":
-            error_summary = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
-            if error_summary:
-                error_summary = error_summary.splitlines()[0][:500]
-    except Exception:
-        error_summary = None
-
-    result_payload = None
-    try:
-        if status == "finished":
-            result_payload = job.result
-    except Exception:
-        result_payload = None
-
-    resp: dict[str, object] = {
-        "id": job.id,
-        "status": status,
-        "queue": str(getattr(job, "origin", "") or "").strip() or None,
-        "enqueued_at": job.enqueued_at.isoformat() if job.enqueued_at else None,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "ended_at": job.ended_at.isoformat() if job.ended_at else None,
-        "job_kind": meta.get("job_kind"),
-        "module_id": meta.get("module_id"),
-        "module_title": meta.get("module_title"),
-        "target_questions": meta.get("target_questions"),
-        "stage": meta.get("stage"),
-        "stage_at": meta.get("stage_at"),
-        "stage_started_at": meta.get("stage_started_at"),
-        "stage_durations_s": meta.get("stage_durations_s"),
-        "job_started_at": meta.get("job_started_at"),
-        "detail": meta.get("detail"),
-        "error_code": meta.get("error_code"),
-        "error_class": meta.get("error_class"),
-        "error_hint": meta.get("error_hint"),
-        "error_message": meta.get("error_message"),
-        "cancel_requested": bool(meta.get("cancel_requested")),
-        "cancel_requested_at": meta.get("cancel_requested_at"),
-        "result": result_payload,
-        "error": error_summary,
-    }
-    return resp
-
-
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(
     job_id: str,
@@ -2703,10 +2618,90 @@ async def admin_job_events(
 
     return StreamingResponse(gen(), media_type="text/event-stream")
 
+@router.get("/jobs/{job_id}")
+def job_status(
+    job_id: str,
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    job = fetch_job(job_id)
+    if job is None:
+        return {
+            "id": str(job_id),
+            "status": "missing",
+            "enqueued_at": None,
+            "started_at": None,
+            "ended_at": None,
+            "job_kind": None,
+            "module_id": None,
+            "module_title": None,
+            "target_questions": None,
+            "stage": "missing",
+            "stage_at": None,
+            "stage_started_at": None,
+            "stage_durations_s": None,
+            "job_started_at": None,
+            "detail": None,
+            "error_code": "JOB_NOT_FOUND",
+            "error_class": None,
+            "error_hint": "Задача уже удалена из очереди (TTL) или была очищена. Обновите историю.",
+            "error_message": "job not found",
+            "cancel_requested": False,
+            "cancel_requested_at": None,
+            "result": None,
+            "error": "job not found",
+        }
+
+    status = job.get_status(refresh=True)
+    meta = dict(job.meta or {})
+
+    error_summary = None
+    try:
+        if status == "failed":
+            error_summary = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
+            if error_summary:
+                error_summary = error_summary.splitlines()[0][:500]
+    except Exception:
+        error_summary = None
+
+    result_payload = None
+    try:
+        if status == "finished":
+            result_payload = job.result
+    except Exception:
+        result_payload = None
+
+    resp: dict[str, object] = {
+        "id": job.id,
+        "status": status,
+        "queue": str(getattr(job, "origin", "") or "").strip() or None,
+        "enqueued_at": job.enqueued_at.isoformat() if job.enqueued_at else None,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+        "job_kind": meta.get("job_kind"),
+        "module_id": meta.get("module_id"),
+        "module_title": meta.get("module_title"),
+        "target_questions": meta.get("target_questions"),
+        "stage": meta.get("stage"),
+        "stage_at": meta.get("stage_at"),
+        "stage_started_at": meta.get("stage_started_at"),
+        "stage_durations_s": meta.get("stage_durations_s"),
+        "job_started_at": meta.get("job_started_at"),
+        "detail": meta.get("detail"),
+        "error_code": meta.get("error_code"),
+        "error_class": meta.get("error_class"),
+        "error_hint": meta.get("error_hint"),
+        "error_message": meta.get("error_message"),
+        "cancel_requested": bool(meta.get("cancel_requested")),
+        "cancel_requested_at": meta.get("cancel_requested_at"),
+        "result": result_payload,
+        "error": error_summary,
+    }
+    return resp
 
 @router.post("/jobs/history/clear")
 def clear_admin_job_history(
     request: Request,
+    db: Session = Depends(get_db),
     current: User = Depends(require_roles(UserRole.admin)),
 ):
     try:
@@ -2719,7 +2714,7 @@ def clear_admin_job_history(
 
     try:
         audit_log(
-            db=SessionLocal(),
+            db=db,
             request=request,
             event_type="admin_clear_job_history",
             actor_user_id=current.id,
