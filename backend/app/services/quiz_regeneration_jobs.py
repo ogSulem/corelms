@@ -426,6 +426,31 @@ def regenerate_submodule_quiz_job(
             db.add(sub)
             qid = lesson_quiz.id
 
+            try:
+                # Expose before/after info for debugging in admin UI (/admin/jobs/{id}).
+                job = get_current_job()
+                if job is not None:
+                    meta = dict(job.meta or {})
+                    meta.setdefault("regen_lessons", [])
+                    lessons_meta = list(meta.get("regen_lessons") or [])
+                    lessons_meta.append(
+                        {
+                            "submodule_id": str(sub.id),
+                            "submodule_title": str(title),
+                            "old_quiz_id": old_quiz_id,
+                            "old_questions": int(old_questions_count),
+                            "new_quiz_id": str(qid),
+                            "ai_failed": bool(ai_failed),
+                            "used_heuristic": bool(used_heuristic),
+                            "questions_written": int(len(qs or []) or 1),
+                        }
+                    )
+                    meta["regen_lessons"] = lessons_meta[-200:]
+                    job.meta = meta
+                    job.save_meta()
+            except Exception:
+                pass
+
             if qs:
                 for qi, q in enumerate(qs, start=1):
                     raw_type = str(getattr(q, "type", "") or "").strip().lower()
@@ -532,6 +557,12 @@ def regenerate_module_quizzes_job(
 
     db = SessionLocal()
     try:
+        try:
+            _job = get_current_job()
+        except Exception:
+            _job = None
+        job_seed = str(getattr(_job, "id", "") or "").strip() or datetime.utcnow().isoformat()
+
         mid_raw = str(module_id).strip()
         try:
             mid = uuid.UUID(mid_raw)
@@ -591,6 +622,20 @@ def regenerate_module_quizzes_job(
             text = str(sub.content or "")
             # Keep prompts small for speed and to reduce LLM latency.
             text = text[:8000]
+
+            old_quiz_id = None
+            try:
+                old_quiz_id = str(getattr(sub, "quiz_id", None) or "") or None
+            except Exception:
+                old_quiz_id = None
+            old_questions_count = 0
+            if old_quiz_id:
+                try:
+                    old_questions_count = int(
+                        db.scalar(select(func.count()).select_from(Question).where(Question.quiz_id == sub.quiz_id)) or 0
+                    )
+                except Exception:
+                    old_questions_count = 0
 
             if not bool(getattr(sub, "requires_quiz", True)):
                 _set_job_stage(stage="skip", detail=f"{si}/{len(subs)}: {title} · materials_only")
@@ -699,7 +744,7 @@ def regenerate_module_quizzes_job(
                 report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
 
                 generated = generate_quiz_questions_heuristic(
-                    seed=f"regen:{m.id}:{sub.id}",
+                    seed=f"regen:{job_seed}:{m.id}:{sub.id}",
                     title=title,
                     theory_text=text,
                     target=int(tq),
@@ -799,6 +844,24 @@ def regenerate_module_quizzes_job(
                 except Exception:
                     pass
             _job_heartbeat(detail=f"DONE {si}/{len(subs)}: {title}")
+
+            try:
+                report.setdefault("lessons_meta", [])
+                lessons_meta = report.get("lessons_meta")
+                if isinstance(lessons_meta, list):
+                    lessons_meta.append(
+                    {
+                        "submodule_id": str(sub.id),
+                        "old_quiz_id": old_quiz_id,
+                        "new_quiz_id": str(qid),
+                        "old_questions": int(old_questions_count),
+                        "new_questions": int(len(qs or []) or 1),
+                        "ai_failed": bool(ai_failed),
+                        "used_heuristic": bool(used_heuristic),
+                    }
+                    )
+            except Exception:
+                pass
 
         # Auto-publish only if there are no needs_regen:* questions left in DB for this module.
         # This is more reliable than using report counters (which may diverge from persisted data).

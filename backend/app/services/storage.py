@@ -40,6 +40,17 @@ def get_s3_client(*, endpoint_url: str | None = None):
 
 def _get_presign_client():
     pub = (settings.s3_public_endpoint_url or "").strip()
+    try:
+        env = (getattr(settings, "app_env", "") or "").strip().lower()
+    except Exception:
+        env = ""
+    if env in {"prod", "production"} and not pub:
+        try:
+            log.warning(
+                "S3_PUBLIC_ENDPOINT_URL is empty in production; presigned URLs may use internal endpoint and fail in browser"
+            )
+        except Exception:
+            pass
     # Presign client does not contact S3; endpoint_url affects only the signed host.
     return get_s3_client(endpoint_url=pub or settings.s3_endpoint_url)
 
@@ -56,7 +67,7 @@ def ensure_bucket_cors() -> None:
                 "CORSRules": [
                     {
                         "AllowedOrigins": origins,
-                        "AllowedMethods": ["GET", "PUT", "HEAD"],
+                        "AllowedMethods": ["GET", "PUT", "POST", "HEAD"],
                         "AllowedHeaders": ["*"],
                         "ExposeHeaders": ["ETag", "x-amz-request-id", "x-amz-id-2"],
                         "MaxAgeSeconds": 3600,
@@ -137,6 +148,70 @@ def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 60, bypass_cache:
             pass
 
     return ok
+
+
+def s3_list_objects(
+    *,
+    prefix: str,
+    limit: int = 50,
+    suffix: str | None = None,
+) -> list[dict[str, object]]:
+    """List objects under a prefix.
+
+    Intended for admin UI (pick already uploaded ZIPs).
+    Returns a stable subset of metadata needed for display.
+    """
+
+    pfx = str(prefix or "").strip().lstrip("/")
+    if not pfx:
+        return []
+    take = max(1, min(int(limit or 50), 200))
+    suf = (suffix or "").strip().lower() or None
+
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+
+    out: list[dict[str, object]] = []
+    token: str | None = None
+    while True:
+        kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Prefix": pfx, "MaxKeys": min(1000, take)}
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kwargs)
+        contents = resp.get("Contents") or []
+        for it in contents:
+            try:
+                key = str((it or {}).get("Key") or "")
+                if not key:
+                    continue
+                if suf and not key.lower().endswith(suf):
+                    continue
+                out.append(
+                    {
+                        "key": key,
+                        "size": int((it or {}).get("Size") or 0),
+                        "last_modified": (it or {}).get("LastModified"),
+                        "etag": str((it or {}).get("ETag") or ""),
+                    }
+                )
+            except Exception:
+                continue
+            if len(out) >= take:
+                break
+        if len(out) >= take:
+            break
+        if not resp.get("IsTruncated"):
+            break
+        token = resp.get("NextContinuationToken")
+        if not token:
+            break
+
+    # Newest first (best-effort).
+    try:
+        out.sort(key=lambda x: str(x.get("last_modified") or ""), reverse=True)
+    except Exception:
+        pass
+    return out
 
 
 def presign_put(*, object_key: str, content_type: str | None, expires_seconds: int | None = None) -> str:

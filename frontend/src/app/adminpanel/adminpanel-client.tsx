@@ -10,6 +10,13 @@ import { useAuth } from "@/lib/hooks/use-auth";
 
 type Module = { id: string; title: string };
 
+type StorageObjectItem = {
+  key: string;
+  size?: number;
+  last_modified?: any;
+  etag?: string;
+};
+
 import { DiagnosticsTab } from "./_components/DiagnosticsTab";
 import { UsersTab } from "./_components/UsersTab";
 import { ModulesTab } from "./_components/ModulesTab";
@@ -234,6 +241,7 @@ export default function AdminPanelClient() {
 
   const IMPORT_STATE_KEY = "corelms:admin_import_state:v4";
   const UPLOAD_HISTORY_KEY = "corelms:admin_upload_history:v1";
+  const STORAGE_UPLOADS_PREFIX_KEY = "corelms:admin_storage_uploads_prefix:v1";
 
   const importQueueSigRef = useRef<string>("");
   const importQueueHistorySigRef = useRef<string>("");
@@ -304,6 +312,78 @@ export default function AdminPanelClient() {
       setImportQueueHistory([]);
     } finally {
       if (!silent) setImportQueueLoading(false);
+    }
+  }
+
+  async function loadStorageUploads(prefixOverride?: string) {
+    const pfx = String(prefixOverride ?? storageUploadsPrefix ?? "uploads/admin/").trim() || "uploads/admin/";
+    try {
+      setStorageUploadsLoading(true);
+      const res = await apiFetch<{ ok: boolean; items: any[] }>(
+        `/admin/storage/objects?prefix=${encodeURIComponent(pfx)}&limit=80&suffix=.zip` as any
+      );
+      const items = Array.isArray((res as any)?.items) ? ((res as any).items as any[]) : [];
+      setStorageUploads(
+        items
+          .map((it) => ({
+            key: String((it as any)?.key || "").trim(),
+            size: typeof (it as any)?.size === "number" ? Number((it as any).size) : Number((it as any)?.size || 0),
+            last_modified: (it as any)?.last_modified,
+            etag: String((it as any)?.etag || ""),
+          }))
+          .filter((x) => !!x.key)
+      );
+      setStorageUploadsPrefix(pfx);
+      try {
+        window.localStorage.setItem(STORAGE_UPLOADS_PREFIX_KEY, pfx);
+      } catch {
+        // ignore
+      }
+    } catch {
+      setStorageUploads([]);
+    } finally {
+      setStorageUploadsLoading(false);
+    }
+  }
+
+  async function enqueueImportFromS3(objectKey: string) {
+    const object_key = String(objectKey || "").trim();
+    if (!object_key) return;
+    setTab("import");
+    setJobPanelOpen(true);
+    const inferredName = object_key.split("/").slice(-1)[0] || "module.zip";
+    const enq = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/enqueue-import-zip` as any, {
+      method: "POST",
+      body: JSON.stringify({ object_key, title: null, source_filename: inferredName }),
+    });
+    const jid = String((enq as any)?.job_id || "").trim();
+    if (jid) {
+      try {
+        window.dispatchEvent(
+          new CustomEvent("corelms:toast", {
+            detail: {
+              title: "ИМПОРТ В ОЧЕРЕДИ",
+              description: `JOB: ${jid}`,
+            },
+          })
+        );
+      } catch {
+        // ignore
+      }
+      setSelectedJobId(jid);
+      setJobStatus("queued");
+      setJobStage("start");
+      setJobStageAt("");
+      setJobStageStartedAt("");
+      setJobStageDurations(null);
+      setJobStartedAt("");
+      setJobDetail("");
+      setJobError("");
+      setJobErrorCode("");
+      setJobErrorHint("");
+      setJobResult(null);
+      saveImportState();
+      void loadImportQueue(20, false, true);
     }
   }
 
@@ -601,6 +681,21 @@ export default function AdminPanelClient() {
   const [importQueueModalOpen, setImportQueueModalOpen] = useState(false);
   const [importQueueHistory, setImportQueueHistory] = useState<ImportJobItem[]>([]);
   const [importQueueView, setImportQueueView] = useState<"active" | "history">("active");
+
+  const [storageUploads, setStorageUploads] = useState<StorageObjectItem[]>([]);
+  const [storageUploadsLoading, setStorageUploadsLoading] = useState(false);
+  const [storageUploadsPrefix, setStorageUploadsPrefix] = useState("uploads/admin/");
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_UPLOADS_PREFIX_KEY);
+      const pfx = String(raw || "").trim();
+      if (pfx) setStorageUploadsPrefix(pfx);
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const [adminModules, setAdminModules] = useState<AdminModuleItem[]>([]);
   const [adminModulesLoading, setAdminModulesLoading] = useState(false);
@@ -1766,11 +1861,62 @@ export default function AdminPanelClient() {
   useEffect(() => {
     if (!jobPanelOpen) return;
     if (String(selectedJobId || "").trim()) return;
-    const pick = (importQueue || [])[0]?.job_id || (regenQueue || [])[0]?.job_id || "";
+    const pickRunning = (xs: any[]) => {
+      for (const it of xs || []) {
+        const st = String((it as any)?.status || "").trim().toLowerCase();
+        if (st === "started") return String((it as any)?.job_id || (it as any)?.id || "").trim();
+      }
+      return "";
+    };
+    const pickAny = (xs: any[]) => {
+      const it = (xs || [])[0] as any;
+      return String(it?.job_id || it?.id || "").trim();
+    };
+    const pick = pickRunning(importQueue as any) || pickRunning(regenQueue as any) || pickAny(importQueue as any) || pickAny(regenQueue as any) || "";
     const jid = String(pick || "").trim();
     if (!jid) return;
     setSelectedJobId(jid);
   }, [jobPanelOpen, selectedJobId, importQueue, regenQueue]);
+
+  useEffect(() => {
+    if (!jobPanelOpen) return;
+    const jid = String(selectedJobId || "").trim();
+    if (!jid) return;
+    const stl = String(jobStatus || "").trim().toLowerCase();
+    const stagel = String(jobStage || "").trim().toLowerCase();
+    const terminal =
+      stl === "missing" ||
+      stl === "finished" ||
+      stl === "failed" ||
+      stl === "canceled" ||
+      stagel === "canceled" ||
+      stagel === "done";
+    if (!terminal) return;
+
+    const pickRunning = (xs: any[]) => {
+      for (const it of xs || []) {
+        const id = String((it as any)?.job_id || (it as any)?.id || "").trim();
+        if (!id || id === jid) continue;
+        const st = String((it as any)?.status || "").trim().toLowerCase();
+        if (st === "started") return id;
+      }
+      return "";
+    };
+    const next = pickRunning(importQueue as any) || pickRunning(regenQueue as any);
+    if (!next) return;
+    setSelectedJobId(next);
+    setJobStatus("queued");
+    setJobStage("queued");
+    setJobStageAt("");
+    setJobStageStartedAt("");
+    setJobStageDurations(null);
+    setJobStartedAt("");
+    setJobDetail("");
+    setJobError("");
+    setJobErrorCode("");
+    setJobErrorHint("");
+    setJobResult(null);
+  }, [jobPanelOpen, selectedJobId, jobStatus, jobStage, importQueue, regenQueue]);
 
   useEffect(() => {
     (async () => {
@@ -3121,6 +3267,11 @@ export default function AdminPanelClient() {
             importQueue={importQueue}
             importQueueLoading={importQueueLoading}
             loadImportQueue={loadImportQueue}
+            storageUploads={storageUploads}
+            storageUploadsLoading={storageUploadsLoading}
+            storageUploadsPrefix={storageUploadsPrefix}
+            loadStorageUploads={loadStorageUploads}
+            enqueueImportFromS3={(key) => void enqueueImportFromS3(key)}
             setImportQueueView={setImportQueueView}
             setImportQueueModalOpen={setImportQueueModalOpen}
             importQueueModalOpen={importQueueModalOpen}

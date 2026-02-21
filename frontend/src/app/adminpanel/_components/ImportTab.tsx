@@ -34,6 +34,11 @@ interface ImportTabProps {
   importQueue: ImportJobItem[];
   importQueueLoading: boolean;
   loadImportQueue: (limit?: number, includeTerminal?: boolean) => Promise<void>;
+  storageUploads: { key: string; size?: number; last_modified?: any; etag?: string }[];
+  storageUploadsLoading: boolean;
+  storageUploadsPrefix: string;
+  loadStorageUploads: (prefixOverride?: string) => Promise<void>;
+  enqueueImportFromS3: (objectKey: string) => void;
   setImportQueueView: (view: "active" | "history") => void;
   setImportQueueModalOpen: (open: boolean) => void;
   importQueueModalOpen: boolean;
@@ -96,6 +101,11 @@ export default function ImportTab(props: ImportTabProps) {
     importQueue,
     importQueueLoading,
     loadImportQueue,
+    storageUploads,
+    storageUploadsLoading,
+    storageUploadsPrefix,
+    loadStorageUploads,
+    enqueueImportFromS3,
     setImportQueueView,
     setImportQueueModalOpen,
     importQueueModalOpen,
@@ -132,6 +142,17 @@ export default function ImportTab(props: ImportTabProps) {
     selectedAdminModuleQuality,
     jobResult,
   } = props;
+
+  const [storagePrefixDraft, setStoragePrefixDraft] = useState(storageUploadsPrefix || "uploads/admin/");
+
+  React.useEffect(() => {
+    setStoragePrefixDraft(storageUploadsPrefix || "uploads/admin/");
+  }, [storageUploadsPrefix]);
+
+  React.useEffect(() => {
+    void loadStorageUploads(storageUploadsPrefix || "uploads/admin/");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const s3Label = useMemo(() => {
     const p = s3UploadProgress;
@@ -269,6 +290,33 @@ export default function ImportTab(props: ImportTabProps) {
     out.sort((a, b) => score(b.created_at) - score(a.created_at));
     return out;
   }, [clientImportStage, clientImportFileName, s3Label, importQueue, regenQueue]);
+
+  const humanBytes = (n: number): string => {
+    const v = Math.max(0, Number(n || 0));
+    const units = ["B", "KB", "MB", "GB"];
+    let x = v;
+    let i = 0;
+    while (x >= 1024 && i < units.length - 1) {
+      x /= 1024;
+      i++;
+    }
+    const digits = i <= 1 ? 0 : 1;
+    return `${x.toFixed(digits)} ${units[i]}`;
+  };
+
+  const storageRows = useMemo(() => {
+    const items = storageUploads || [];
+    return items
+      .map((it) => {
+        const key = String((it as any)?.key || "").trim();
+        const name = key.split("/").slice(-1)[0] || key;
+        const size = typeof (it as any)?.size === "number" ? Number((it as any).size) : Number((it as any)?.size || 0);
+        const lmRaw = (it as any)?.last_modified;
+        const lm = lmRaw ? String(lmRaw) : "";
+        return { key, name, size, lm };
+      })
+      .filter((x) => !!x.key);
+  }, [storageUploads]);
 
   const pipelineHistory = useMemo(() => {
     const out: PipelineItem[] = [];
@@ -452,6 +500,79 @@ export default function ImportTab(props: ImportTabProps) {
           )}
         </div>
       ) : null}
+
+      <div className="rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-[220px]">
+            <div className="text-[9px] font-black uppercase tracking-[0.28em] text-zinc-500">ФАЙЛЫ В STORAGE (S3)</div>
+            <div className="mt-2 text-[10px] font-bold text-zinc-600">
+              Префикс: <span className="font-mono">{String(storageUploadsPrefix || "uploads/admin/")}</span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={storagePrefixDraft}
+              onChange={(e) => setStoragePrefixDraft(String(e.target.value || ""))}
+              className="h-9 w-[260px] rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-bold text-zinc-800"
+              placeholder="uploads/admin/"
+            />
+            <button
+              type="button"
+              className="h-9 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50 disabled:opacity-60"
+              disabled={storageUploadsLoading}
+              onClick={() => void loadStorageUploads(storagePrefixDraft)}
+            >
+              ОБНОВИТЬ
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-3 grid gap-2">
+          {storageUploadsLoading ? (
+            <div className="text-[11px] font-bold text-zinc-600">ЗАГРУЖАЮ СПИСОК…</div>
+          ) : !storageRows.length ? (
+            <div className="text-[11px] font-bold text-zinc-600">НЕТ ZIP В ЭТОМ ПРЕФИКСЕ</div>
+          ) : (
+            storageRows.slice(0, 40).map((it) => (
+              <div
+                key={it.key}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">{it.name}</div>
+                  <div className="mt-1 text-[11px] font-bold text-zinc-600 break-words">
+                    <span className="font-mono">{it.key}</span>
+                    {it.size ? <span> · {humanBytes(it.size)}</span> : null}
+                    {it.lm ? <span> · {it.lm.slice(0, 19).replace("T", " ")}</span> : null}
+                  </div>
+                </div>
+
+                <div className="shrink-0 flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="h-9 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                    onClick={() => copy(it.key)}
+                  >
+                    COPY KEY
+                  </button>
+                  <button
+                    type="button"
+                    className="h-9 rounded-xl border border-[#fe9900]/30 bg-[#fe9900]/10 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-900 hover:bg-[#fe9900]/20"
+                    onClick={() => {
+                      const ok = window.confirm(`Импортировать ZIP из STORAGE?\n\n${it.name}\n\n${it.key}`);
+                      if (!ok) return;
+                      enqueueImportFromS3(it.key);
+                    }}
+                  >
+                    ИМПОРТ
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
 
       <div className="grid gap-6 lg:grid-cols-12 items-start">
         <div className="lg:col-span-7 relative overflow-hidden rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">

@@ -81,7 +81,7 @@ from app.services.storage import (
     presign_get,
     presign_put,
 )
-from app.services.storage import s3_prefix_has_objects
+from app.services.storage import s3_list_objects, s3_prefix_has_objects
 from app.services.ollama import ollama_healthcheck
 from app.services.openrouter_health import openrouter_healthcheck
 
@@ -1133,6 +1133,23 @@ def set_bucket_cors(
     db.commit()
 
     return {"ok": True, "bucket": settings.s3_bucket, "rules": cors_rules}
+
+
+@router.get("/storage/objects")
+def list_storage_objects(
+    _: User = Depends(require_roles(UserRole.admin)),
+    prefix: str = Query(default="uploads/admin/"),
+    limit: int = Query(default=50),
+    suffix: str = Query(default=".zip"),
+):
+    items = s3_list_objects(prefix=str(prefix or "").strip(), limit=int(limit or 50), suffix=str(suffix or "").strip() or None)
+    # Keep response minimal & stable for frontend.
+    return {
+        "ok": True,
+        "bucket": settings.s3_bucket,
+        "prefix": str(prefix or "").strip(),
+        "items": items,
+    }
 
 
 class AdminPresignImportZipRequest(BaseModel):
