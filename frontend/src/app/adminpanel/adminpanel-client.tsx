@@ -1324,7 +1324,10 @@ export default function AdminPanelClient() {
     const stClient = String(clientImportStage || "").trim().toLowerCase();
     const uploading = importBusy && (stClient === "upload_s3" || stClient === "upload");
 
-    void loadRegenHistory(false);
+    const sseRecentlyOk = Date.now() - Number(jobsSseLastOkAtRef.current || 0) < 30000;
+    if (!jobsSseConnected && !sseRecentlyOk) {
+      void loadRegenHistory(false);
+    }
     const intervalMs = uploading ? 15000 : 4000;
     const t = window.setInterval(() => {
       // During multipart upload, keep the network quiet so browser upload connections are not starved.
