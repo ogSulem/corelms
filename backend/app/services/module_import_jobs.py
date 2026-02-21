@@ -26,6 +26,30 @@ from app.core.redis_client import get_redis
 log = logging.getLogger(__name__)
 
 
+def _publish_admin_jobs_changed(*, job) -> None:
+    try:
+        r = get_redis()
+        r.publish("admin:jobs:changed", str(getattr(job, "id", "") or "1"))
+    except Exception:
+        return
+
+
+def _publish_admin_jobs_changed_throttled(*, job, meta: dict, force: bool = False) -> None:
+    try:
+        now_ms = int(datetime.utcnow().timestamp() * 1000)
+        last_ms = 0
+        try:
+            last_ms = int(meta.get("_admin_jobs_pub_at_ms") or 0)
+        except Exception:
+            last_ms = 0
+        if (not force) and last_ms and (now_ms - last_ms) < 5000:
+            return
+        meta["_admin_jobs_pub_at_ms"] = now_ms
+        _publish_admin_jobs_changed(job=job)
+    except Exception:
+        return
+
+
 def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
     try:
         job = get_current_job()
@@ -62,6 +86,7 @@ def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
         meta["stage_started_at"] = now.isoformat()
         if detail is not None:
             meta["detail"] = str(detail)
+        _publish_admin_jobs_changed_throttled(job=job, meta=meta, force=True)
         job.meta = meta
         job.save_meta()
     except Exception:
@@ -92,6 +117,7 @@ def _job_heartbeat(*, detail: str | None = None) -> None:
         if detail is not None:
             meta["detail"] = str(detail)
         meta["_heartbeat_at"] = now
+        _publish_admin_jobs_changed_throttled(job=job, meta=meta, force=False)
         job.meta = meta
         job.save_meta()
     except Exception:
@@ -174,6 +200,7 @@ def _set_job_error(*, error: Exception, error_code: str | None = None, error_hin
         meta["error_message"] = msg
         if hint:
             meta["error_hint"] = hint
+        _publish_admin_jobs_changed_throttled(job=job, meta=meta, force=True)
         job.meta = meta
         job.save_meta()
     except Exception:

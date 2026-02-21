@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import re
 import uuid
+import asyncio
+import threading
 from datetime import datetime
 import secrets
 import string
 from collections import defaultdict
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from passlib.context import CryptContext
 from sqlalchemy import and_, bindparam, case, delete, func, or_, select, text
@@ -1334,9 +1337,14 @@ def multipart_import_create(
         except Exception:
             pass
 
-    safe = re.sub(r"[^a-zA-Z0-9\-_.]+", "-", norm_fn).strip("-._")
+    # Keep object keys human-readable: derive a slug from the filename *without* the .zip suffix,
+    # and store uploads under a folder matching the slug.
+    base_name = norm_fn
+    if base_name.endswith(".zip"):
+        base_name = base_name[: -len(".zip")]
+    safe = re.sub(r"[^a-zA-Z0-9\-_.]+", "-", base_name).strip("-._")
     safe = re.sub(r"-+", "-", safe)[:80] or "module"
-    object_key = f"uploads/admin/{safe}__{uuid.uuid4()}.zip"
+    object_key = f"uploads/admin/{safe}/{safe}__{uuid.uuid4()}.zip"
     upload_id = multipart_create(object_key=object_key, content_type=str(body.content_type or "").strip() or None)
     if not upload_id:
         raise HTTPException(status_code=500, detail="failed to create multipart upload")
@@ -1661,6 +1669,10 @@ def list_import_jobs(
     include_terminal: bool = False,
     _: User = Depends(require_roles(UserRole.admin)),
 ):
+    return _admin_list_import_jobs(limit=limit, include_terminal=include_terminal)
+
+
+def _admin_list_import_jobs(*, limit: int = 20, include_terminal: bool = False) -> dict[str, object]:
     take = max(1, min(int(limit or 20), 50))
     include_terminal = bool(include_terminal)
     try:
@@ -1737,7 +1749,6 @@ def list_import_jobs(
         except Exception:
             continue
 
-    # Move terminal jobs out of active queue into history (best-effort), and keep the active list clean.
     try:
         r = get_redis()
         if terminal_moved:
@@ -1754,9 +1765,6 @@ def list_import_jobs(
     except Exception:
         pass
 
-    # IMPORTANT: UI uses this endpoint to disable regen buttons.
-    # Never hide active jobs behind the limit, otherwise the UI may incorrectly
-    # re-enable regen controls while jobs are still running.
     items_out = active_items[:200]
     out: dict[str, object] = {"items": items_out}
     if include_terminal:
@@ -2495,6 +2503,10 @@ def list_regen_jobs(
     include_terminal: bool = False,
     _: User = Depends(require_roles(UserRole.admin)),
 ):
+    return _admin_list_regen_jobs(limit=limit, include_terminal=include_terminal)
+
+
+def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -> dict[str, object]:
     take = max(1, min(int(limit or 20), 50))
     include_terminal = bool(include_terminal)
     try:
@@ -2522,7 +2534,7 @@ def list_regen_jobs(
                 obj["error_hint"] = obj.get("error_hint") or "Задача уже удалена из очереди (TTL) или была очищена. Обновите историю."
                 obj["error_message"] = obj.get("error_message") or "job not found"
                 obj["error"] = obj.get("error") or "job not found"
-                terminal_items.append(obj)
+                terminal_moved.append(obj)
                 continue
 
             st = str(job.get_status(refresh=True) or "").strip().lower()
@@ -2567,9 +2579,6 @@ def list_regen_jobs(
     except Exception:
         pass
 
-    # IMPORTANT: UI uses this endpoint to disable regen buttons.
-    # Never hide active jobs behind the limit, otherwise the UI may incorrectly
-    # re-enable regen controls while jobs are still running.
     items_out = active_items[:200]
     out: dict[str, object] = {"items": items_out}
     if include_terminal:
@@ -2583,6 +2592,97 @@ def list_regen_jobs(
                 continue
         out["history"] = hist_items[:take]
     return out
+
+
+@router.get("/jobs/events")
+async def admin_job_events(
+    request: Request,
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    async def gen():
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue[object] = asyncio.Queue()
+        stop = threading.Event()
+
+        def _push(msg: object) -> None:
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, msg)
+            except Exception:
+                pass
+
+        def _listen() -> None:
+            try:
+                r = get_redis()
+                pubsub = r.pubsub(ignore_subscribe_messages=True)
+                pubsub.subscribe("admin:jobs:changed")
+                while not stop.is_set():
+                    try:
+                        m = pubsub.get_message(timeout=1.0)
+                    except Exception:
+                        m = None
+                    if m:
+                        _push(m)
+            except Exception:
+                # If Redis pubsub fails, fall back to periodic wakeups.
+                while not stop.is_set():
+                    stop.wait(2.0)
+                    _push({"type": "tick"})
+
+        t = threading.Thread(target=_listen, name="admin_jobs_sse_pubsub", daemon=True)
+        t.start()
+
+        last_sig = ""
+        last_ping_ms = 0
+
+        # Initial snapshot so UI can render immediately.
+        try:
+            _push({"type": "init"})
+        except Exception:
+            pass
+
+        while True:
+            try:
+                if await request.is_disconnected():
+                    break
+            except Exception:
+                pass
+
+            now_ms = int(datetime.utcnow().timestamp() * 1000)
+            timeout_s = max(0.25, (15000 - (now_ms - last_ping_ms)) / 1000.0) if last_ping_ms else 2.0
+
+            msg = None
+            try:
+                msg = await asyncio.wait_for(q.get(), timeout=timeout_s)
+            except asyncio.TimeoutError:
+                msg = None
+            except Exception:
+                msg = None
+
+            if msg is not None:
+                payload = {
+                    "import": _admin_list_import_jobs(limit=200, include_terminal=True),
+                    "regen": _admin_list_regen_jobs(limit=200, include_terminal=True),
+                    "ts": datetime.utcnow().isoformat(),
+                }
+                sig = ""
+                try:
+                    sig = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                except Exception:
+                    sig = str(payload.get("ts") or "")
+
+                if sig and sig != last_sig:
+                    last_sig = sig
+                    data = json.dumps(payload, ensure_ascii=False)
+                    yield f"event: jobs\ndata: {data}\n\n"
+
+            now_ms = int(datetime.utcnow().timestamp() * 1000)
+            if (not last_ping_ms) or (now_ms - last_ping_ms >= 15000):
+                last_ping_ms = now_ms
+                yield ": ping\n\n"
+
+        stop.set()
+
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
 @router.post("/jobs/history/clear")

@@ -682,6 +682,8 @@ export default function AdminPanelClient() {
   const [importQueueHistory, setImportQueueHistory] = useState<ImportJobItem[]>([]);
   const [importQueueView, setImportQueueView] = useState<"active" | "history">("active");
 
+  const [jobsSseConnected, setJobsSseConnected] = useState(false);
+
   const [storageUploads, setStorageUploads] = useState<StorageObjectItem[]>([]);
   const [storageUploadsLoading, setStorageUploadsLoading] = useState(false);
   const [storageUploadsPrefix, setStorageUploadsPrefix] = useState("uploads/admin/");
@@ -694,6 +696,141 @@ export default function AdminPanelClient() {
     } catch {
       // ignore
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let es: EventSource | null = null;
+    let closed = false;
+
+    const connect = () => {
+      try {
+        if (closed) return;
+        if (es) {
+          try {
+            es.close();
+          } catch {
+            // ignore
+          }
+        }
+        setJobsSseConnected(false);
+        es = new EventSource(`/api/backend/admin/jobs/events` as any, { withCredentials: true } as any);
+
+        es.addEventListener("jobs", (ev: MessageEvent) => {
+          try {
+            const payload = JSON.parse(String((ev as any)?.data || "{}"));
+            const imp = (payload as any)?.import;
+            const reg = (payload as any)?.regen;
+
+            const items = Array.isArray(imp?.items) ? imp.items : [];
+            const hist = Array.isArray(imp?.history) ? imp.history : [];
+            const nextQueue = items.map((x: any) => ({
+              job_id: String(x?.job_id || x?.id || ""),
+              object_key: String(x?.object_key || ""),
+              title: String(x?.title || ""),
+              source_filename: String(x?.source_filename || ""),
+              module_id: x?.module_id ? String(x.module_id) : undefined,
+              module_title: x?.module_title ? String(x.module_title) : undefined,
+              created_at: x?.created_at ? String(x.created_at) : undefined,
+              status: x?.status ? String(x.status) : undefined,
+              stage: x?.stage ? String(x.stage) : undefined,
+              stage_at: x?.stage_at ? String(x.stage_at) : undefined,
+              detail: x?.detail ? String(x.detail) : undefined,
+              error_code: x?.error_code ? String(x.error_code) : undefined,
+              error_hint: x?.error_hint ? String(x.error_hint) : undefined,
+              error_message: x?.error_message ? String(x.error_message) : undefined,
+              error: x?.error ? String(x.error) : null,
+            }));
+            const nextHist = hist.map((x: any) => ({
+              job_id: String(x?.job_id || x?.id || ""),
+              object_key: String(x?.object_key || ""),
+              title: String(x?.title || ""),
+              source_filename: String(x?.source_filename || ""),
+              module_id: x?.module_id ? String(x.module_id) : undefined,
+              module_title: x?.module_title ? String(x.module_title) : undefined,
+              created_at: x?.created_at ? String(x.created_at) : undefined,
+              status: x?.status ? String(x.status) : undefined,
+              stage: x?.stage ? String(x.stage) : undefined,
+              stage_at: x?.stage_at ? String(x.stage_at) : undefined,
+              detail: x?.detail ? String(x.detail) : undefined,
+              error_code: x?.error_code ? String(x.error_code) : undefined,
+              error_hint: x?.error_hint ? String(x.error_hint) : undefined,
+              error_message: x?.error_message ? String(x.error_message) : undefined,
+              error: x?.error ? String(x.error) : null,
+            }));
+
+            const rsItems = Array.isArray(reg?.items) ? reg.items : [];
+            const nextRegen = rsItems.map((x: any) => ({
+              job_id: String(x?.job_id || x?.id || ""),
+              module_id: x?.module_id ? String(x.module_id) : undefined,
+              module_title: x?.module_title ? String(x.module_title) : undefined,
+              submodule_id: x?.submodule_id ? String(x.submodule_id) : undefined,
+              submodule_title: x?.submodule_title ? String(x.submodule_title) : undefined,
+              target_questions: typeof x?.target_questions === "number" ? Number(x.target_questions) : undefined,
+              created_at: x?.created_at ? String(x.created_at) : undefined,
+              status: x?.status ? String(x.status) : undefined,
+              stage: x?.stage ? String(x.stage) : undefined,
+              stage_at: x?.stage_at ? String(x.stage_at) : undefined,
+              detail: x?.detail ? String(x.detail) : undefined,
+              error_code: x?.error_code ? String(x.error_code) : undefined,
+              error_hint: x?.error_hint ? String(x.error_hint) : undefined,
+              error_message: x?.error_message ? String(x.error_message) : undefined,
+              error: x?.error ? String(x.error) : null,
+            }));
+
+            const sig = JSON.stringify(nextQueue);
+            if (sig !== importQueueSigRef.current) {
+              importQueueSigRef.current = sig;
+              setImportQueue(nextQueue);
+            }
+            const hsig = JSON.stringify(nextHist);
+            if (hsig !== importQueueHistorySigRef.current) {
+              importQueueHistorySigRef.current = hsig;
+              setImportQueueHistory(nextHist);
+            }
+
+            const rsig = JSON.stringify(nextRegen);
+            if (rsig !== regenHistorySigRef.current) {
+              regenHistorySigRef.current = rsig;
+              setRegenHistory(nextRegen);
+            }
+
+            setJobsSseConnected(true);
+          } catch {
+            // ignore
+          }
+        });
+
+        es.onopen = () => {
+          setJobsSseConnected(true);
+        };
+
+        es.onerror = () => {
+          setJobsSseConnected(false);
+          try {
+            es?.close();
+          } catch {
+            // ignore
+          }
+          es = null;
+          window.setTimeout(() => connect(), 2500);
+        };
+      } catch {
+        setJobsSseConnected(false);
+        window.setTimeout(() => connect(), 4000);
+      }
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      setJobsSseConnected(false);
+      try {
+        es?.close();
+      } catch {
+        // ignore
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1166,14 +1303,22 @@ export default function AdminPanelClient() {
   }
 
   useEffect(() => {
+    const stClient = String(clientImportStage || "").trim().toLowerCase();
+    const uploading = importBusy && (stClient === "upload_s3" || stClient === "upload");
+
     void loadRegenHistory(false);
+    const intervalMs = uploading ? 15000 : 4000;
     const t = window.setInterval(() => {
+      // During multipart upload, keep the network quiet so browser upload connections are not starved.
+      if (uploading) return;
+      // If SSE is connected, avoid polling. SSE is our primary realtime transport.
+      if (jobsSseConnected) return;
       // Include terminal jobs so history stays fresh.
       if (tab === "modules" || tab === "import") void loadImportQueue(20, true, true);
       void loadRegenHistory(true);
-    }, 4000);
+    }, intervalMs);
     return () => window.clearInterval(t);
-  }, [tab]);
+  }, [tab, importBusy, clientImportStage, jobsSseConnected]);
 
   // After regen status changes, refresh module list and submodule quality so UI reflects real state.
   const regenRefreshSigRef = useRef<string>("");
