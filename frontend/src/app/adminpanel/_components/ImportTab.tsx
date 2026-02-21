@@ -209,25 +209,11 @@ export default function ImportTab(props: ImportTabProps) {
       });
     }
 
-    const pendingUploads = Array.isArray(importPendingNames)
-      ? importPendingNames.map((x) => String(x || "").trim()).filter(Boolean)
-      : [];
-    for (let i = 0; i < pendingUploads.length; i++) {
-      const name = pendingUploads[i];
-      out.push({
-        kind: "upload",
-        job_id: `upload:queued:${i}:${name}`,
-        title: name,
-        created_at: undefined,
-        status: "queued",
-        stage: "queued",
-        detail: "В ОЧЕРЕДИ",
-      });
-    }
-
     for (const it of importQueue || []) {
       const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
       if (!jid) continue;
+      const st = String((it as any)?.status || "").trim().toLowerCase();
+      if (st !== "started") continue;
       out.push({
         kind: "import",
         job_id: jid,
@@ -251,6 +237,8 @@ export default function ImportTab(props: ImportTabProps) {
     for (const it of regenQueue || []) {
       const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
       if (!jid) continue;
+      const st = String((it as any)?.status || "").trim().toLowerCase();
+      if (st !== "started") continue;
       const subTitle = String((it as any)?.submodule_title || "").trim();
       out.push({
         kind: "regen",
@@ -280,7 +268,7 @@ export default function ImportTab(props: ImportTabProps) {
     };
     out.sort((a, b) => score(b.created_at) - score(a.created_at));
     return out;
-  }, [clientImportStage, clientImportFileName, s3Label, importPendingNames, importQueue, regenQueue]);
+  }, [clientImportStage, clientImportFileName, s3Label, importQueue, regenQueue]);
 
   const pipelineHistory = useMemo(() => {
     const out: PipelineItem[] = [];
@@ -571,14 +559,9 @@ export default function ImportTab(props: ImportTabProps) {
                           const badge = badgeFor(it);
                           const pct = progressForImport(it);
                           return (
-                            <button
+                            <div
                               key={`${it.kind}:${it.job_id}`}
-                              type="button"
-                              className="w-full text-left rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50"
-                              onClick={() => {
-                                setSelectedJobId(String(it.job_id));
-                                setJobPanelOpen(true);
-                              }}
+                              className="w-full text-left rounded-xl border border-zinc-200 bg-white px-3 py-2"
                             >
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
@@ -630,7 +613,6 @@ export default function ImportTab(props: ImportTabProps) {
                                     disabled={terminal}
                                     onClick={(e) => {
                                       e.preventDefault();
-                                      e.stopPropagation();
                                       void cancelImportJob(String(it.job_id));
                                     }}
                                   >
@@ -638,7 +620,7 @@ export default function ImportTab(props: ImportTabProps) {
                                   </button>
                                 </div>
                               </div>
-                            </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -661,14 +643,9 @@ export default function ImportTab(props: ImportTabProps) {
                           const detail = String(it.detail || "").trim();
                           const badge = badgeFor(it);
                           return (
-                            <button
+                            <div
                               key={`${it.kind}:${it.job_id}`}
-                              type="button"
-                              className="w-full text-left flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50"
-                              onClick={() => {
-                                setSelectedJobId(String(it.job_id));
-                                setJobPanelOpen(true);
-                              }}
+                              className="w-full text-left flex items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2"
                             >
                               <div className="min-w-0">
                                 <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">
@@ -708,7 +685,7 @@ export default function ImportTab(props: ImportTabProps) {
                                   ОТМЕНА
                                 </button>
                               </div>
-                            </button>
+                            </div>
                           );
                         })}
                       </div>

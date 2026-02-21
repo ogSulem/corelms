@@ -1071,11 +1071,10 @@ export default function AdminPanelClient() {
   }
 
   useEffect(() => {
-    if (tab !== "modules" && tab !== "import") return;
     void loadRegenHistory(false);
     const t = window.setInterval(() => {
       // Include terminal jobs so history stays fresh.
-      void loadImportQueue(20, true, true);
+      if (tab === "modules" || tab === "import") void loadImportQueue(20, true, true);
       void loadRegenHistory(true);
     }, 4000);
     return () => window.clearInterval(t);
