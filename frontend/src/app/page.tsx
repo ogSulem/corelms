@@ -5,25 +5,21 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowRight, BookOpen, LineChart, Settings2, ShieldCheck, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/hooks/use-auth";
 
 export default function HomePage() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
+  const { user, loading: authLoading } = useAuth();
 
   useEffect(() => {
-    (async () => {
-      try {
-        const auth = await fetch("/api/auth/me", { cache: "no-store" });
-        const data = auth.ok ? ((await auth.json()) as { authenticated?: boolean }) : null;
-        if (data?.authenticated) {
-          router.replace("/dashboard");
-          return;
-        }
-      } finally {
-        setChecking(false);
-      }
-    })();
-  }, [router]);
+    if (authLoading) return;
+    if (user) {
+      router.replace("/dashboard");
+      return;
+    }
+    setChecking(false);
+  }, [authLoading, user, router]);
 
   if (checking) return <main className="min-h-screen bg-white" />;
 

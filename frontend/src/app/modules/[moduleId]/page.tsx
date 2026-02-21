@@ -135,15 +135,27 @@ export default function ModulePage() {
   useEffect(() => {
     if (!moduleId) return;
     let inFlight = false;
+    let lastReloadAt = 0;
     const safeReload = () => {
+      const now = Date.now();
+      if (now - lastReloadAt < 3000) return;
       if (inFlight) return;
       inFlight = true;
+      lastReloadAt = now;
       Promise.resolve(fetchModuleData()).finally(() => {
         inFlight = false;
       });
     };
 
-    const onRefresh = () => safeReload();
+    const onRefresh = (e: any) => {
+      try {
+        const reason = String(e?.detail?.reason || "").trim().toLowerCase();
+        if (reason === "keepalive") return;
+      } catch {
+        // ignore
+      }
+      safeReload();
+    };
     const onFocus = () => safeReload();
     const onVisibility = () => {
       if (document.visibilityState === "visible") safeReload();

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
@@ -13,46 +13,72 @@ export function ContinueCard() {
     pct: number;
   } | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const resp = await apiFetch<{
-          items: Array<{
-            id: string;
-            title: string;
-            progress?: {
-              read_count: number;
-              total_lessons: number;
-              passed_count: number;
-              final_passed: boolean;
-              completed: boolean;
-            };
-          }>;
-        }>("/modules/overview");
+  const loadInFlightRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
 
-        const items = resp.items || [];
-        const candidate = items.find((m) => {
-          const p = m.progress;
-          if (!p) return false;
-          if (p.completed) return false;
-          return (p.read_count || 0) > 0 || (p.passed_count || 0) > 0 || Boolean(p.final_passed);
+  async function loadOverview() {
+    const now = Date.now();
+    if (loadInFlightRef.current) return;
+    if (now - Number(lastLoadAtRef.current || 0) < 2500) return;
+    loadInFlightRef.current = true;
+    lastLoadAtRef.current = now;
+    try {
+      const resp = await apiFetch<{
+        items: Array<{
+          id: string;
+          title: string;
+          progress?: {
+            read_count: number;
+            total_lessons: number;
+            passed_count: number;
+            final_passed: boolean;
+            completed: boolean;
+          };
+        }>;
+      }>("/modules/overview");
+
+      const items = resp.items || [];
+      const candidate = items.find((m) => {
+        const p = m.progress;
+        if (!p) return false;
+        if (p.completed) return false;
+        return (p.read_count || 0) > 0 || (p.passed_count || 0) > 0 || Boolean(p.final_passed);
+      });
+
+      if (candidate) {
+        const p = candidate.progress!;
+        const total = Math.max(1, p.total_lessons || 0);
+        const pct = Math.round((p.passed_count / total) * 100);
+        setInProgress({
+          id: candidate.id,
+          title: candidate.title,
+          progressText: `${p.passed_count}/${total}`,
+          pct,
         });
+      } else {
+        setInProgress(null);
+      }
+    } catch {
+    } finally {
+      loadInFlightRef.current = false;
+    }
+  }
 
-        if (candidate) {
-          const p = candidate.progress!;
-          const total = Math.max(1, p.total_lessons || 0);
-          const pct = Math.round((p.passed_count / total) * 100);
-          setInProgress({
-            id: candidate.id,
-            title: candidate.title,
-            progressText: `${p.passed_count}/${total}`,
-            pct,
-          });
-        } else {
-          setInProgress(null);
-        }
-      } catch { /* ignore */ }
-    })();
+  useEffect(() => {
+    void loadOverview();
+  }, []);
+
+  useEffect(() => {
+    const onRefresh = (e: any) => {
+      try {
+        const reason = String(e?.detail?.reason || "").trim().toLowerCase();
+        if (reason === "keepalive") return;
+      } catch {
+      }
+      void loadOverview();
+    };
+    window.addEventListener("corelms:refresh-me", onRefresh as EventListener);
+    return () => window.removeEventListener("corelms:refresh-me", onRefresh as EventListener);
   }, []);
 
   return (

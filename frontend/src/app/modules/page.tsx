@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
@@ -32,7 +32,15 @@ export default function ModulesPage() {
 
   const [query, setQuery] = useState("");
 
+  const reloadInFlightRef = useRef(false);
+  const lastReloadAtRef = useRef(0);
+
   async function reload() {
+    const now = Date.now();
+    if (reloadInFlightRef.current) return;
+    if (now - Number(lastReloadAtRef.current || 0) < 2500) return;
+    reloadInFlightRef.current = true;
+    lastReloadAtRef.current = now;
     try {
       setError(null);
       setLoading(true);
@@ -45,6 +53,7 @@ export default function ModulesPage() {
       setError((msg || "Не удалось загрузить список модулей") + (rid ? ` (код: ${rid})` : ""));
     } finally {
       setLoading(false);
+      reloadInFlightRef.current = false;
     }
   }
 
@@ -61,6 +70,15 @@ export default function ModulesPage() {
   }, []);
 
   useEffect(() => {
+    const onRefresh = (e: any) => {
+      try {
+        const reason = String(e?.detail?.reason || "").trim().toLowerCase();
+        if (reason === "keepalive") return;
+      } catch {
+        // ignore
+      }
+      void reload();
+    };
     const onStorage = (e: StorageEvent) => {
       if (e.key === "corelms:modules-updated") {
         void reload();
@@ -77,10 +95,12 @@ export default function ModulesPage() {
 
     window.addEventListener("storage", onStorage);
     window.addEventListener("focus", onFocus);
+    window.addEventListener("corelms:refresh-me", onRefresh as EventListener);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("corelms:refresh-me", onRefresh as EventListener);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);

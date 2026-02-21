@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AppShell } from "@/components/app/shell";
 import { InsightCard } from "@/components/app/insight-card";
@@ -31,7 +31,15 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [quoteNonce, setQuoteNonce] = useState(0);
 
+  const loadInFlightRef = useRef(false);
+  const lastLoadAtRef = useRef(0);
+
   async function loadData() {
+    const now = Date.now();
+    if (loadInFlightRef.current) return;
+    if (now - Number(lastLoadAtRef.current || 0) < 2500) return;
+    loadInFlightRef.current = true;
+    lastLoadAtRef.current = now;
     try {
       setError(null);
       setLoading(true);
@@ -48,12 +56,38 @@ export default function DashboardPage() {
       setError((msg || "Не удалось загрузить данные") + (rid ? ` (код: ${rid})` : ""));
     } finally {
       setLoading(false);
+      loadInFlightRef.current = false;
     }
   }
 
   useEffect(() => {
     setQuoteNonce(Date.now());
     loadData();
+  }, []);
+
+  useEffect(() => {
+    const onRefresh = (e: any) => {
+      try {
+        const reason = String(e?.detail?.reason || "").trim().toLowerCase();
+        if (reason === "keepalive") return;
+      } catch {
+      }
+      void loadData();
+    };
+
+    const onFocus = () => void loadData();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void loadData();
+    };
+
+    window.addEventListener("corelms:refresh-me", onRefresh as EventListener);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("corelms:refresh-me", onRefresh as EventListener);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   const didSomethingToday = useMemo(() => {

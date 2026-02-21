@@ -1280,6 +1280,14 @@ export default function AdminPanelClient() {
       await loadAdminModules();
       await reloadModules();
       await loadSelectedAdminModule();
+
+      try {
+        localStorage.setItem("corelms:modules-updated", String(Date.now()));
+      } catch {
+        // ignore
+      }
+      window.dispatchEvent(new Event("corelms:modules-updated"));
+
       window.dispatchEvent(
         new CustomEvent("corelms:toast", {
           detail: {
@@ -1295,12 +1303,18 @@ export default function AdminPanelClient() {
       const msg = e instanceof Error ? e.message : String(e);
       const raw = String(msg || "").trim();
 
-      if (status === 409 && code === "MODULE_NOT_READY") {
+      if (status === 409 && (code === "MODULE_NOT_READY" || code === "MODULE_CONTENT_NOT_READY")) {
+        const hint = String(anyErr?.errorHint || anyErr?.hint || "").trim();
         window.dispatchEvent(
           new CustomEvent("corelms:toast", {
             detail: {
               title: "МОДУЛЬ НЕ ГОТОВ",
-              description: raw || "Запустите РЕГЕН ТЕСТОВ и дождитесь завершения.",
+              description:
+                hint ||
+                raw ||
+                (code === "MODULE_CONTENT_NOT_READY"
+                  ? "Дождитесь завершения импорта (контент должен появиться в storage) и попробуйте снова."
+                  : "Запустите РЕГЕН ТЕСТОВ и дождитесь завершения."),
             },
           })
         );
@@ -1324,11 +1338,16 @@ export default function AdminPanelClient() {
     const stClient = String(clientImportStage || "").trim().toLowerCase();
     const uploading = importBusy && (stClient === "upload_s3" || stClient === "upload");
 
+    // Only keep import/regen queues fresh while the user is on relevant tabs.
+    const wantsQueues = tab === "modules" || tab === "import";
+    if (!wantsQueues) return;
+
     const sseRecentlyOk = Date.now() - Number(jobsSseLastOkAtRef.current || 0) < 30000;
-    if (!jobsSseConnected && !sseRecentlyOk) {
+    if (wantsQueues && !jobsSseConnected && !sseRecentlyOk) {
       void loadRegenHistory(false);
     }
-    const intervalMs = uploading ? 15000 : 4000;
+
+    const intervalMs = uploading ? 15000 : (jobsSseConnected || sseRecentlyOk) ? 12000 : 5000;
     const t = window.setInterval(() => {
       // During multipart upload, keep the network quiet so browser upload connections are not starved.
       if (uploading) return;
@@ -1337,7 +1356,8 @@ export default function AdminPanelClient() {
       // If SSE was recently OK, avoid immediate polling spikes during reconnect.
       if (Date.now() - Number(jobsSseLastOkAtRef.current || 0) < 30000) return;
       // Include terminal jobs so history stays fresh.
-      if (tab === "modules" || tab === "import") void loadImportQueue(20, true, true);
+      if (!wantsQueues) return;
+      void loadImportQueue(20, true, true);
       void loadRegenHistory(true);
     }, intervalMs);
     return () => window.clearInterval(t);
@@ -1345,6 +1365,8 @@ export default function AdminPanelClient() {
 
   // After regen status changes, refresh module list and submodule quality so UI reflects real state.
   const regenRefreshSigRef = useRef<string>("");
+  const regenRefreshTimerRef = useRef<number | null>(null);
+  const regenRefreshLastRunAtRef = useRef<number>(0);
   useEffect(() => {
     try {
       const rh = Array.isArray(regenHistory) ? regenHistory : [];
@@ -1355,15 +1377,36 @@ export default function AdminPanelClient() {
       if (!sig || sig === regenRefreshSigRef.current) return;
       regenRefreshSigRef.current = sig;
 
-      // Best-effort: refresh currently selected module quality.
-      if (selectedAdminModuleId) {
-        void loadSelectedAdminModule();
-        void loadSelectedAdminModuleSubQuality(String(selectedAdminModuleId));
+      // Coalesce refreshes: regen status/stage can change frequently, but re-fetching modules/submodules
+      // on every step makes the admin panel feel laggy.
+      if (regenRefreshTimerRef.current) {
+        window.clearTimeout(regenRefreshTimerRef.current);
+        regenRefreshTimerRef.current = null;
       }
-      void loadAdminModules();
+
+      const nowMs = Date.now();
+      const minGapMs = 2500;
+      const waitMs = Math.max(250, minGapMs - (nowMs - (regenRefreshLastRunAtRef.current || 0)));
+      regenRefreshTimerRef.current = window.setTimeout(() => {
+        regenRefreshTimerRef.current = null;
+        regenRefreshLastRunAtRef.current = Date.now();
+
+        // Best-effort: refresh currently selected module details (this also refreshes submodule quality).
+        if (selectedAdminModuleId) {
+          void loadSelectedAdminModule();
+        }
+        void loadAdminModules();
+      }, waitMs);
     } catch {
       // ignore
     }
+
+    return () => {
+      if (regenRefreshTimerRef.current) {
+        window.clearTimeout(regenRefreshTimerRef.current);
+        regenRefreshTimerRef.current = null;
+      }
+    };
   }, [regenHistory, selectedAdminModuleId]);
 
   async function cancelCurrentJob() {
@@ -1918,9 +1961,15 @@ export default function AdminPanelClient() {
     if (!jobPanelOpen) return;
     let alive = true;
     let timer: any = null;
-    let delayMs = 2000;
+    let delayMs = jobsSseConnected ? 6000 : 2000;
     const tick = async () => {
       try {
+        if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+          delayMs = Math.max(delayMs, 8000);
+          timer = window.setTimeout(() => void tick(), delayMs);
+          return;
+        }
+
         const s = await apiFetch<any>(`/admin/jobs/${encodeURIComponent(selectedJobId)}`, { timeoutMs: 60_000 } as any);
         if (!alive) return;
         const st = String(s?.status || "");
@@ -2011,7 +2060,13 @@ export default function AdminPanelClient() {
         setJobError(msg || "НЕ УДАЛОСЬ ПОЛУЧИТЬ СТАТУС JOB");
       }
 
-      delayMs = Math.min(7000, Math.floor(delayMs * 1.15));
+      // If SSE is healthy, reduce polling pressure: SSE handles queue/history; polling is just for detail freshness.
+      const sseRecentlyOk = Date.now() - Number(jobsSseLastOkAtRef.current || 0) < 30000;
+      if (jobsSseConnected || sseRecentlyOk) {
+        delayMs = Math.min(15000, Math.max(6000, Math.floor(delayMs * 1.15)));
+      } else {
+        delayMs = Math.min(7000, Math.floor(delayMs * 1.15));
+      }
       timer = window.setTimeout(() => void tick(), delayMs);
     };
 
@@ -2020,7 +2075,7 @@ export default function AdminPanelClient() {
       alive = false;
       if (timer) window.clearTimeout(timer);
     };
-  }, [jobPanelOpen, selectedJobId, selectedQuizId]);
+  }, [jobPanelOpen, selectedJobId, jobsSseConnected]);
 
   useEffect(() => {
     return;
@@ -2423,6 +2478,8 @@ export default function AdminPanelClient() {
         const totalParts = Math.max(1, Math.ceil(totalSize / partSize));
         const partsOut: { part_number: number; etag: string }[] = [];
 
+        const presignedUrlByPart = new Map<number, string>();
+
         const alreadyBytes = Object.keys(existingParts).reduce((acc, k) => {
           const pn = Number(k);
           if (!pn) return acc;
@@ -2474,13 +2531,18 @@ export default function AdminPanelClient() {
           }
         };
 
-        const uploadPart = async (partNumber: number, blob: Blob) => {
-          const pres = await apiFetch<{ ok: boolean; upload_url: string }>(`/admin/modules/multipart-import-presign-part` as any, {
-            method: "POST",
-            body: JSON.stringify({ object_key: objectKey, upload_id: uploadId, part_number: partNumber }),
-          });
-          const url = String((pres as any)?.upload_url || "").trim();
-          if (!url) throw new Error("multipart presign failed");
+        const uploadPart = async (partNumber: number, blob: Blob, opts?: { forcePresign?: boolean }) => {
+          const forcePresign = !!opts?.forcePresign;
+          let url = forcePresign ? "" : String(presignedUrlByPart.get(partNumber) || "").trim();
+          if (!url) {
+            const pres = await apiFetch<{ ok: boolean; upload_url: string }>(`/admin/modules/multipart-import-presign-part` as any, {
+              method: "POST",
+              body: JSON.stringify({ object_key: objectKey, upload_id: uploadId, part_number: partNumber }),
+            });
+            url = String((pres as any)?.upload_url || "").trim();
+            if (!url) throw new Error("multipart presign failed");
+            presignedUrlByPart.set(partNumber, url);
+          }
 
           return await new Promise<string>((resolve, reject) => {
             const xhr = new XMLHttpRequest();
@@ -2531,6 +2593,13 @@ export default function AdminPanelClient() {
                 return;
               }
               const body = String(xhr.responseText || "").replace(/\s+/g, " ").slice(0, 320);
+              if (xhr.status === 400 || xhr.status === 403) {
+                try {
+                  presignedUrlByPart.delete(partNumber);
+                } catch {
+                  // ignore
+                }
+              }
               finish(new Error(`multipart upload part failed: HTTP ${xhr.status}${body ? ` body: ${body}` : ""}`));
             };
 
@@ -2558,7 +2627,7 @@ export default function AdminPanelClient() {
           pendingParts.push(pn);
         }
 
-        const concurrency = 4;
+        const concurrency = 2;
         let fatalErr: unknown = null;
         const worker = async () => {
           while (!fatalErr) {
@@ -2574,7 +2643,7 @@ export default function AdminPanelClient() {
             while (!etag && attempt < 6) {
               attempt += 1;
               try {
-                etag = await uploadPart(pn, blob);
+                etag = await uploadPart(pn, blob, { forcePresign: attempt > 1 });
               } catch (e) {
                 if (attempt >= 6) throw e;
                 await new Promise<void>((resolve) => setTimeout(() => resolve(), 800 + attempt * 800));

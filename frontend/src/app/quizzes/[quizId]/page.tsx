@@ -194,7 +194,7 @@ export default function QuizPage() {
           })
         );
       }
-      if (typeof window !== "undefined") window.dispatchEvent(new Event("corelms:refresh-me"));
+      if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("corelms:refresh-me", { detail: { reason: "progress" } }));
     } catch (e) {
       const anyErr = e as any;
       const msg = e instanceof Error ? e.message : String(e);

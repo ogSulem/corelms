@@ -49,7 +49,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         if (res.ok) {
           lastKeepAliveAtRef.current = now;
           keepAliveFailStreakRef.current = 0;
-          window.dispatchEvent(new Event("corelms:refresh-me"));
+          window.dispatchEvent(new CustomEvent("corelms:refresh-me", { detail: { reason: "keepalive" } }));
         } else {
           keepAliveFailStreakRef.current = Math.min(10, keepAliveFailStreakRef.current + 1);
         }

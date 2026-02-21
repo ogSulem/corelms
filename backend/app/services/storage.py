@@ -143,7 +143,10 @@ def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 60, bypass_cache:
     if not bypass_cache:
         try:
             r = get_redis()
-            r.setex(cache_key, int(max(5, min(int(cache_seconds or 60), 3600))), "1" if ok else "0")
+            ttl = int(max(5, min(int(cache_seconds or 60), 3600)))
+            if not ok:
+                ttl = min(ttl, 5)
+            r.setex(cache_key, ttl, "1" if ok else "0")
         except Exception:
             pass
 

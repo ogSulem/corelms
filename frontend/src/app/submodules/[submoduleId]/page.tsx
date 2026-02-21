@@ -580,7 +580,7 @@ export default function SubmodulePage() {
           detail: { title: `+${xp} XP`, description: "Теория изучена" },
         }));
       }
-      window.dispatchEvent(new Event("corelms:refresh-me"));
+      window.dispatchEvent(new CustomEvent("corelms:refresh-me", { detail: { reason: "progress" } }));
     } catch (e) {
       setError("Ошибка при подтверждении прочтения");
     }
@@ -645,7 +645,7 @@ export default function SubmodulePage() {
       }
       
       await fetchData();
-      window.dispatchEvent(new Event("corelms:refresh-me"));
+      window.dispatchEvent(new CustomEvent("corelms:refresh-me", { detail: { reason: "progress" } }));
     } catch (e) {
       setError("Ошибка при сдаче теста");
     } finally {

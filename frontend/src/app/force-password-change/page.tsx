@@ -7,9 +7,11 @@ import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/lib/hooks/use-auth";
 
 export default function ForcePasswordChangePage() {
   const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -18,19 +20,11 @@ export default function ForcePasswordChangePage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/auth/me", { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { authenticated: boolean; user?: { must_change_password?: boolean } };
-        if (data.authenticated && !data.user?.must_change_password) {
-          router.replace("/dashboard");
-        }
-      } catch {
-        // ignore
-      }
-    })();
-  }, [router]);
+    if (authLoading) return;
+    if (user && !user.must_change_password) {
+      router.replace("/dashboard");
+    }
+  }, [authLoading, user, router]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -56,7 +50,7 @@ export default function ForcePasswordChangePage() {
         ...( { timeoutMs: 45_000 } as any ),
       } as any);
 
-      window.dispatchEvent(new Event("corelms:refresh-me"));
+      window.dispatchEvent(new CustomEvent("corelms:refresh-me", { detail: { reason: "password_change" } }));
       window.dispatchEvent(
         new CustomEvent("corelms:toast", {
           detail: { title: "Пароль обновлён", description: "Теперь можно продолжить обучение." },

@@ -6,9 +6,11 @@ import Link from "next/link";
 import { Eye, EyeOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/lib/hooks/use-auth";
 
 export function LoginClient() {
   const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
 
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -22,17 +24,9 @@ export function LoginClient() {
   }, [loading, name, password]);
 
   useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("/api/auth/me", { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { authenticated: boolean };
-        if (data.authenticated) router.replace("/dashboard");
-      } catch {
-        // ignore
-      }
-    })();
-  }, [router]);
+    if (authLoading) return;
+    if (user) router.replace("/dashboard");
+  }, [authLoading, user, router]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -62,8 +56,7 @@ export function LoginClient() {
         throw new Error(message || hint || "Не удалось войти");
       }
 
-      window.dispatchEvent(new Event("corelms:refresh-me"));
-      router.refresh();
+      window.dispatchEvent(new CustomEvent("corelms:refresh-me", { detail: { reason: "login" } }));
 
       router.push("/dashboard");
     } catch (err) {
