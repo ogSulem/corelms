@@ -683,6 +683,7 @@ export default function AdminPanelClient() {
   const [importQueueView, setImportQueueView] = useState<"active" | "history">("active");
 
   const [jobsSseConnected, setJobsSseConnected] = useState(false);
+  const jobsSseLastOkAtRef = useRef<number>(0);
 
   const [storageUploads, setStorageUploads] = useState<StorageObjectItem[]>([]);
   const [storageUploadsLoading, setStorageUploadsLoading] = useState(false);
@@ -702,10 +703,16 @@ export default function AdminPanelClient() {
   useEffect(() => {
     let es: EventSource | null = null;
     let closed = false;
+    let reconnectTimer: number | null = null;
+    let backoffMs = 2000;
 
     const connect = () => {
       try {
         if (closed) return;
+        if (reconnectTimer) {
+          window.clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
         if (es) {
           try {
             es.close();
@@ -795,6 +802,7 @@ export default function AdminPanelClient() {
               setRegenHistory(nextRegen);
             }
 
+            jobsSseLastOkAtRef.current = Date.now();
             setJobsSseConnected(true);
           } catch {
             // ignore
@@ -802,7 +810,9 @@ export default function AdminPanelClient() {
         });
 
         es.onopen = () => {
+          jobsSseLastOkAtRef.current = Date.now();
           setJobsSseConnected(true);
+          backoffMs = 2000;
         };
 
         es.onerror = () => {
@@ -813,11 +823,15 @@ export default function AdminPanelClient() {
             // ignore
           }
           es = null;
-          window.setTimeout(() => connect(), 2500);
+          const wait = Math.max(1500, Math.min(backoffMs, 30000));
+          backoffMs = Math.min(30000, Math.floor(backoffMs * 1.8));
+          reconnectTimer = window.setTimeout(() => connect(), wait);
         };
       } catch {
         setJobsSseConnected(false);
-        window.setTimeout(() => connect(), 4000);
+        const wait = Math.max(2000, Math.min(backoffMs, 30000));
+        backoffMs = Math.min(30000, Math.floor(backoffMs * 1.8));
+        reconnectTimer = window.setTimeout(() => connect(), wait);
       }
     };
 
@@ -825,6 +839,10 @@ export default function AdminPanelClient() {
     return () => {
       closed = true;
       setJobsSseConnected(false);
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       try {
         es?.close();
       } catch {
@@ -1313,6 +1331,8 @@ export default function AdminPanelClient() {
       if (uploading) return;
       // If SSE is connected, avoid polling. SSE is our primary realtime transport.
       if (jobsSseConnected) return;
+      // If SSE was recently OK, avoid immediate polling spikes during reconnect.
+      if (Date.now() - Number(jobsSseLastOkAtRef.current || 0) < 30000) return;
       // Include terminal jobs so history stays fresh.
       if (tab === "modules" || tab === "import") void loadImportQueue(20, true, true);
       void loadRegenHistory(true);
