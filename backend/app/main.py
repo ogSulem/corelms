@@ -1,0 +1,316 @@
+import ipaddress
+import hmac
+import uuid
+import json
+import logging
+import threading
+import time
+from pathlib import Path
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy import create_engine
+from sqlalchemy import select
+
+from app.core.config import settings
+from app.core.redis_client import get_redis
+from app.core.queue import get_queue
+from app.services.storage_cleanup_jobs import cleanup_admin_multipart_uploads_job, cleanup_admin_uploads_job
+from app.routers import admin, assets, auth, health, linear, me, modules, progress, quizzes, submodules
+from app.db.session import SessionLocal
+from app.models.user import User, UserRole
+from passlib.context import CryptContext
+
+def create_app() -> FastAPI:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    app = FastAPI(title="CoreLMS API", version="1.0.0")
+
+    logger = logging.getLogger("corelms")
+
+    try:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+    except Exception:
+        pass
+
+    allow_origins = [o.strip() for o in str(settings.cors_allow_origins or "").split(",") if o.strip()]
+    if "*" in allow_origins:
+        raise RuntimeError("CORS_ALLOW_ORIGINS must not include '*' when allow_credentials=true")
+
+    is_prod = (settings.app_env or "").strip().lower() in {"prod", "production"}
+
+    def _client_ip_for_log(request: Request) -> str | None:
+        if bool(getattr(settings, "trust_proxy_headers", False)):
+            fwd = str(request.headers.get("forwarded") or "").strip()
+            if fwd:
+                try:
+                    parts = [p.strip() for p in fwd.split(";") if p.strip()]
+                    for part in parts:
+                        if part.lower().startswith("for="):
+                            v = part.split("=", 1)[1].strip().strip('"').strip()
+                            if v.startswith("[") and "]" in v:
+                                v = v[1 : v.index("]")]
+                            if ":" in v and not v.count(":") > 1:
+                                v = v.split(":", 1)[0]
+                            if v:
+                                return v
+                except Exception:
+                    pass
+
+            xri = str(request.headers.get("x-real-ip") or "").strip()
+            if xri:
+                return xri
+            xff = str(request.headers.get("x-forwarded-for") or "")
+            if xff:
+                ip = xff.split(",")[0].strip()
+                if ip:
+                    return ip
+        if request.client and request.client.host:
+            return request.client.host
+        return None
+
+    def _parse_csv(value: str) -> list[str]:
+        return [x.strip() for x in str(value or "").split(",") if x.strip()]
+
+    allow_methods_raw = str(getattr(settings, "cors_allow_methods", "*") or "*").strip()
+    allow_headers_raw = str(getattr(settings, "cors_allow_headers", "*") or "*").strip()
+    if is_prod:
+        if allow_methods_raw == "*":
+            allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+        else:
+            allow_methods = _parse_csv(allow_methods_raw)
+
+        if allow_headers_raw == "*":
+            allow_headers = ["authorization", "content-type", "x-request-id"]
+        else:
+            allow_headers = _parse_csv(allow_headers_raw)
+    else:
+        allow_methods = ["*"] if allow_methods_raw == "*" else _parse_csv(allow_methods_raw)
+        allow_headers = ["*"] if allow_headers_raw == "*" else _parse_csv(allow_headers_raw)
+
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next):
+        t0 = time.perf_counter()
+        rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+        request.state.request_id = rid
+        status_code: int | None = None
+        try:
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                origin = (request.headers.get("origin") or "").strip()
+                if origin and origin not in allow_origins:
+                    from fastapi import HTTPException
+
+                    raise HTTPException(status_code=403, detail="invalid origin")
+            response = await call_next(request)
+            status_code = int(getattr(response, "status_code", 0) or 0)
+        except Exception:
+            status_code = 500
+            raise
+        finally:
+            try:
+                dur_ms = int((time.perf_counter() - t0) * 1000)
+                path = getattr(getattr(request, "url", None), "path", "")
+                if not (
+                    path.startswith("/health")
+                    or path == "/healthz"
+                    or path.startswith("/admin/jobs/")
+                ):
+                    ip = _client_ip_for_log(request)
+                    logger.info(
+                        json.dumps(
+                            {
+                                "ts": datetime.utcnow().isoformat(),
+                                "rid": rid,
+                                "ip": ip,
+                                "user_id": getattr(getattr(request, "state", None), "user_id", None),
+                                "method": request.method,
+                                "path": path,
+                                "status": status_code,
+                                "duration_ms": dur_ms,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+            except Exception:
+                pass
+        response.headers["X-Request-ID"] = rid
+
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+        if (settings.app_env or "").strip().lower() in {"prod", "production"}:
+            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        return response
+
+    def _request_id(request: Request) -> str | None:
+        rid = getattr(getattr(request, "state", None), "request_id", None)
+        rid = str(rid or "").strip()
+        return rid or None
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        rid = _request_id(request)
+        detail = exc.detail
+        if isinstance(detail, dict):
+            error_code = str(detail.get("error_code") or "http_error")
+            error_message = str(detail.get("error_message") or detail.get("detail") or "request failed")
+        else:
+            error_code = "forbidden" if int(exc.status_code) == 403 else "unauthorized" if int(exc.status_code) == 401 else "http_error"
+            error_message = str(detail or "request failed")
+
+        payload = {
+            "ok": False,
+            "error_code": error_code,
+            "error_message": error_message,
+            "request_id": rid,
+        }
+        return JSONResponse(status_code=int(exc.status_code), content=payload, headers=getattr(exc, "headers", None))
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        rid = _request_id(request)
+        logger.exception("unhandled exception", extra={"rid": rid})
+        return JSONResponse(
+            status_code=500,
+            content={
+                "ok": False,
+                "error_code": "internal_error",
+                "error_message": "internal server error",
+                "request_id": rid,
+            },
+        )
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allow_origins,
+        allow_credentials=True,
+        allow_methods=allow_methods,
+        allow_headers=allow_headers,
+    )
+
+    app.include_router(health.router)
+    app.include_router(auth.router)
+    app.include_router(quizzes.router)
+    app.include_router(assets.router)
+    app.include_router(me.router)
+    app.include_router(modules.router)
+    app.include_router(admin.router)
+    app.include_router(progress.router)
+    app.include_router(submodules.router)
+    app.include_router(linear.router)
+
+    def _start_admin_uploads_cleanup_scheduler() -> None:
+        interval_seconds = max(60, int(settings.uploads_admin_cleanup_interval_minutes) * 60)
+
+        def _tick() -> None:
+            try:
+                r = get_redis()
+                lock_key = "locks:admin_uploads_cleanup"
+                lock_ttl = max(60, interval_seconds - 5)
+
+                acquired = r.set(lock_key, "1", nx=True, ex=int(lock_ttl))
+                if not acquired:
+                    return
+
+                q = get_queue(str(settings.rq_queue_cleanup))
+                q.enqueue(
+                    cleanup_admin_uploads_job,
+                    ttl_hours=int(settings.uploads_admin_ttl_hours),
+                    job_timeout=60 * 10,
+                    result_ttl=60 * 60,
+                    failure_ttl=60 * 60,
+                )
+
+                q.enqueue(
+                    cleanup_admin_multipart_uploads_job,
+                    ttl_hours=int(getattr(settings, "uploads_admin_multipart_ttl_hours", 12)),
+                    job_timeout=60 * 10,
+                    result_ttl=60 * 60,
+                    failure_ttl=60 * 60,
+                )
+            except Exception:
+                return
+            finally:
+                t = threading.Timer(interval_seconds, _tick)
+                t.daemon = True
+                t.start()
+
+        t0 = threading.Timer(10, _tick)
+        t0.daemon = True
+        t0.start()
+
+    def _bootstrap_admin_if_needed() -> None:
+        name = str(getattr(settings, "bootstrap_admin_name", None) or "").strip()
+        password = str(getattr(settings, "bootstrap_admin_password", None) or "").strip()
+        if not name or not password:
+            return
+
+        db = SessionLocal()
+        try:
+            existing_admin = db.scalar(select(User).where(User.role == UserRole.admin))
+            if existing_admin is not None:
+                return
+
+            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+            user = User(
+                name=name,
+                position=None,
+                role=UserRole.admin,
+                xp=0,
+                level=1,
+                streak=0,
+                phone=None,
+                password_hash=pwd_context.hash(password),
+                must_change_password=False,
+                password_changed_at=None,
+            )
+            db.add(user)
+            db.commit()
+            logger.info(json.dumps({"event": "bootstrap_admin_created", "name": name}, ensure_ascii=False))
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.exception("bootstrap admin failed")
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+    @app.on_event("startup")
+    async def _startup_tasks() -> None:
+        if settings.auto_migrate_on_start:
+            try:
+                root = Path(__file__).resolve().parents[1]
+                cfg_path = root / "alembic.ini"
+                alembic_cfg = Config(str(cfg_path))
+                alembic_cfg.set_main_option("script_location", str(root / "alembic"))
+                alembic_cfg.set_main_option("sqlalchemy.url", str(settings.database_url))
+
+                engine = create_engine(str(settings.database_url), pool_pre_ping=True)
+                with engine.connect() as conn:
+                    conn.execute(text("select pg_advisory_lock(hashtext('corelms_alembic'))"))
+                    try:
+                        command.upgrade(alembic_cfg, "head")
+                    finally:
+                        conn.execute(text("select pg_advisory_unlock(hashtext('corelms_alembic'))"))
+            except Exception:
+                logger.exception("startup migrations failed")
+                raise
+
+        _bootstrap_admin_if_needed()
+        if bool(getattr(settings, "enable_inprocess_scheduler", False)):
+            _start_admin_uploads_cleanup_scheduler()
+
+    return app
+
+app = create_app()

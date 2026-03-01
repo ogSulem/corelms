@@ -1,0 +1,157 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sdlp}
+      POSTGRES_USER: ${POSTGRES_USER:-sdlp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sdlp}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  worker_import:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - AUTO_MIGRATE_ON_START=false
+      - RQ_WORKER_QUEUES=${RQ_WORKER_IMPORT_QUEUES:-corelms_import}
+      - RQ_WORKER_PROCESSES=${RQ_WORKER_IMPORT_PROCESSES:-1}
+    entrypoint: ["python", "-m", "app.worker"]
+
+  worker_regen:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - AUTO_MIGRATE_ON_START=false
+      - RQ_WORKER_QUEUES=${RQ_WORKER_REGEN_QUEUES:-corelms_regen}
+      - RQ_WORKER_PROCESSES=${RQ_WORKER_REGEN_PROCESSES:-1}
+    entrypoint: ["python", "-m", "app.worker"]
+
+  worker_default:
+    build: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - AUTO_MIGRATE_ON_START=false
+      - RQ_WORKER_QUEUES=${RQ_WORKER_DEFAULT_QUEUES:-corelms_cleanup,corelms}
+      - RQ_WORKER_PROCESSES=${RQ_WORKER_DEFAULT_PROCESSES:-1}
+    entrypoint: ["python", "-m", "app.worker"]
+
+  redis:
+    image: redis:7
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio12345}
+    command: server /data --console-address ":9001"
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - backend_data:/data
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - AUTO_MIGRATE_ON_START=true
+      - BOOTSTRAP_ADMIN_NAME=${BOOTSTRAP_ADMIN_NAME:-admin}
+      - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-admin12345}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      - CORE_INTERNAL_API_BASE_URL=${CORE_INTERNAL_API_BASE_URL:-http://backend:8000}
+      - JWT_ACCESS_TOKEN_MINUTES=${JWT_ACCESS_TOKEN_MINUTES:-60}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000', { method: 'GET' }).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pg_data:
+  minio_data:
+  backend_data:
