@@ -49,6 +49,9 @@ export async function POST(req: Request) {
 
   const response = NextResponse.json({ ok: true });
   const isProd = process.env.NODE_ENV === "production";
+  const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
+    ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
+    : isProd;
   const configuredMaxAge = Number.parseInt(process.env.CORE_TOKEN_MAX_AGE_SECONDS || "3600", 10) || 3600;
   const upstreamExpiresIn = Number.isFinite(Number(data.expires_in)) ? Number(data.expires_in) : null;
   const maxAge = upstreamExpiresIn ? Math.min(configuredMaxAge, upstreamExpiresIn) : configuredMaxAge;
@@ -58,7 +61,7 @@ export async function POST(req: Request) {
     value: data.access_token,
     httpOnly: true,
     sameSite: "lax",
-    secure: isProd,
+    secure: cookieSecure,
     path: "/",
     maxAge,
     expires,
@@ -74,7 +77,7 @@ export async function POST(req: Request) {
       value: refresh,
       httpOnly: true,
       sameSite: "lax",
-      secure: isProd,
+      secure: cookieSecure,
       path: "/",
       maxAge: refreshMaxAge,
       expires: refreshExpires,

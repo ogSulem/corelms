@@ -4,9 +4,12 @@ from datetime import datetime, timedelta, timezone
 import logging
 
 from rq import get_current_job
+from sqlalchemy import delete
 
 from app.core.config import settings
 from app.core.redis_client import get_redis
+from app.db.session import SessionLocal
+from app.models.asset import ContentAsset
 from app.services.storage import ensure_bucket_exists, get_s3_client
 
 
@@ -32,6 +35,7 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int 
 
     deleted_objects = 0
     deleted_bytes = 0
+    deleted_asset_rows = 0
 
     token: str | None = None
     while True:
@@ -67,6 +71,32 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int 
             try:
                 s3.delete_objects(Bucket=settings.s3_bucket, Delete={"Objects": to_delete, "Quiet": True})
                 deleted_objects += len(to_delete)
+
+                # Product hardening: also remove ContentAsset rows for admin upload artifacts.
+                # These objects are temporary and must not bloat the DB over time.
+                try:
+                    keys = [str(x.get("Key") or "").strip() for x in to_delete]
+                    keys = [k for k in keys if k]
+                    if keys:
+                        db = SessionLocal()
+                        try:
+                            # Safety: keep it scoped strictly to the admin uploads prefix.
+                            safe_keys = [k for k in keys if k.startswith(prefix)]
+                            if safe_keys:
+                                # Chunk to avoid large IN clauses.
+                                step = 500
+                                for i in range(0, len(safe_keys), step):
+                                    chunk = safe_keys[i : i + step]
+                                    res = db.execute(delete(ContentAsset).where(ContentAsset.object_key.in_(chunk)))
+                                    try:
+                                        deleted_asset_rows += int(res.rowcount or 0)
+                                    except Exception:
+                                        pass
+                                db.commit()
+                        finally:
+                            db.close()
+                except Exception:
+                    log.exception("cleanup_admin_uploads_job: failed to delete ContentAsset rows")
             except Exception:
                 log.exception("cleanup_admin_uploads_job: delete_objects failed")
 
@@ -81,6 +111,7 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int 
         "cutoff": cutoff.isoformat(),
         "deleted_objects": int(deleted_objects),
         "deleted_bytes": int(deleted_bytes),
+        "deleted_asset_rows": int(deleted_asset_rows),
     }
 
     if job is not None:
@@ -93,11 +124,12 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int 
             pass
 
     log.info(
-        "cleanup_admin_uploads_job: prefix=%s ttl_hours=%s deleted_objects=%s deleted_bytes=%s",
+        "cleanup_admin_uploads_job: prefix=%s ttl_hours=%s deleted_objects=%s deleted_bytes=%s deleted_asset_rows=%s",
         prefix,
         ttl,
         deleted_objects,
         deleted_bytes,
+        deleted_asset_rows,
     )
 
     return out

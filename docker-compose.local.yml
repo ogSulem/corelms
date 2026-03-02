@@ -1,0 +1,12 @@
+services:
+  nginx:
+    ports:
+      - "8080:80"
+
+  frontend:
+    ports:
+      - "3000:3000"
+
+  backend:
+    ports:
+      - "8000:8000"

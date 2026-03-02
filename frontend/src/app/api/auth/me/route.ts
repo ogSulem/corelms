@@ -27,12 +27,15 @@ export async function GET() {
   if (!res.ok) {
     const out = NextResponse.json({ authenticated: false });
     const isProd = process.env.NODE_ENV === "production";
+    const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
+      ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
+      : isProd;
     out.cookies.set({
       name: "core_token",
       value: "",
       httpOnly: true,
       sameSite: "lax",
-      secure: isProd,
+      secure: cookieSecure,
       path: "/",
       maxAge: 0,
       expires: new Date(0),

@@ -28,12 +28,15 @@ export async function POST() {
   if (!res.ok) {
     const out = NextResponse.json({ ok: false, error_code: "refresh_failed" }, { status: 401 });
     const isProd = process.env.NODE_ENV === "production";
+    const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
+      ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
+      : isProd;
     out.cookies.set({
       name: "core_token",
       value: "",
       httpOnly: true,
       sameSite: "lax",
-      secure: isProd,
+      secure: cookieSecure,
       path: "/",
       maxAge: 0,
       expires: new Date(0),
@@ -44,7 +47,7 @@ export async function POST() {
       value: "",
       httpOnly: true,
       sameSite: "lax",
-      secure: isProd,
+      secure: cookieSecure,
       path: "/",
       maxAge: 0,
       expires: new Date(0),
@@ -66,12 +69,15 @@ export async function POST() {
 
   const response = NextResponse.json({ ok: true });
   const isProd = process.env.NODE_ENV === "production";
+  const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
+    ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
+    : isProd;
   response.cookies.set({
     name: "core_token",
     value: access,
     httpOnly: true,
     sameSite: "lax",
-    secure: isProd,
+    secure: cookieSecure,
     path: "/",
     maxAge,
     expires,
@@ -87,7 +93,7 @@ export async function POST() {
       value: nextRefresh,
       httpOnly: true,
       sameSite: "lax",
-      secure: isProd,
+      secure: cookieSecure,
       path: "/",
       maxAge: refreshMaxAge,
       expires: refreshExpires,
