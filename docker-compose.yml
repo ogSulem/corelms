@@ -2,7 +2,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     ports:
-      - "80:80"
+      - "${NGINX_HTTP_PORT:-80}:80"
     depends_on:
       frontend:
         condition: service_healthy
