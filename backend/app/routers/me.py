@@ -447,6 +447,53 @@ def my_history(
         except Exception:
             return None
 
+    def _sanitize_security_meta(meta: dict | None) -> str | None:
+        if not isinstance(meta, dict) or not meta:
+            return None
+        allowed = {
+            "ip": meta.get("ip"),
+            "ip_fp": meta.get("ip_fp"),
+            "user_agent": meta.get("user_agent"),
+            "new_device": bool(meta.get("new_device")) if "new_device" in meta else None,
+            "new_ip": bool(meta.get("new_ip")) if "new_ip" in meta else None,
+        }
+        clean = {k: v for k, v in allowed.items() if v is not None and str(v).strip() != ""}
+        if not clean:
+            return None
+        return json.dumps(clean, ensure_ascii=False)
+
+    def _sanitize_learning_meta(meta: dict | None) -> str | None:
+        if not isinstance(meta, dict) or not meta:
+            return None
+        # Never leak internal storage keys or fingerprints in the user-facing history.
+        deny = {"object_key", "device_hash", "token", "refresh_token", "refresh"}
+        out: dict[str, object] = {}
+        for k, v in meta.items():
+            if k in deny:
+                continue
+            out[str(k)] = v
+
+        # Keep only product-level fields.
+        allow = {
+            "action",
+            "filename",
+            "mime_type",
+            "quiz_id",
+            "attempt_no",
+            "score",
+            "passed",
+            "correct",
+            "total",
+            "time_spent_seconds",
+            "module_id",
+            "submodule_id",
+        }
+        clean = {k: out.get(k) for k in allow if k in out}
+        clean = {k: v for k, v in clean.items() if v is not None and str(v).strip() != ""}
+        if not clean:
+            return None
+        return json.dumps(clean, ensure_ascii=False)
+
     def _ua_device_label(ua: str) -> str | None:
         s = str(ua or "").strip()
         if not s:
@@ -583,6 +630,7 @@ def my_history(
 
     for se in sec_events:
         title, subtitle = _sec_event_display(se)
+        sec_meta = _try_parse_meta(se.meta)
         items.append(
             {
                 "id": f"security:{se.id}",
@@ -593,7 +641,7 @@ def my_history(
                 "href": None,
                 "event_type": se.event_type,
                 "ref_id": None,
-                "meta": se.meta,
+                "meta": _sanitize_security_meta(sec_meta),
                 "ip": str(se.ip) if se.ip else None,
                 "request_id": str(se.request_id) if se.request_id else None,
                 "module_id": None,
@@ -607,6 +655,7 @@ def my_history(
 
     for e in events:
         kind, title, subtitle, _code = _event_display(e)
+        ev_meta = _sanitize_learning_meta(_try_parse_meta(e.meta))
         module_id = (
             subs_by_id.get(str(e.ref_id), {}).get("module_id")
             if e.ref_id and e.type.value == "submodule_opened"
@@ -646,7 +695,7 @@ def my_history(
                 "href": href,
                 "event_type": e.type.value,
                 "ref_id": str(e.ref_id) if e.ref_id else None,
-                "meta": e.meta,
+                "meta": ev_meta,
                 "ip": None,
                 "request_id": None,
                 "module_id": module_id,

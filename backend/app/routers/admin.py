@@ -5342,6 +5342,51 @@ def admin_user_history(
         except Exception:
             return None
 
+    def _sanitize_security_meta(meta: dict | None) -> str | None:
+        if not isinstance(meta, dict) or not meta:
+            return None
+        allowed = {
+            "ip": meta.get("ip"),
+            "ip_fp": meta.get("ip_fp"),
+            "user_agent": meta.get("user_agent"),
+            "new_device": bool(meta.get("new_device")) if "new_device" in meta else None,
+            "new_ip": bool(meta.get("new_ip")) if "new_ip" in meta else None,
+        }
+        clean = {k: v for k, v in allowed.items() if v is not None and str(v).strip() != ""}
+        if not clean:
+            return None
+        return json.dumps(clean, ensure_ascii=False)
+
+    def _sanitize_learning_meta(meta: dict | None) -> str | None:
+        if not isinstance(meta, dict) or not meta:
+            return None
+        deny = {"object_key", "device_hash", "token", "refresh_token", "refresh"}
+        out: dict[str, object] = {}
+        for k, v in meta.items():
+            if k in deny:
+                continue
+            out[str(k)] = v
+
+        allow = {
+            "action",
+            "filename",
+            "mime_type",
+            "quiz_id",
+            "attempt_no",
+            "score",
+            "passed",
+            "correct",
+            "total",
+            "time_spent_seconds",
+            "module_id",
+            "submodule_id",
+        }
+        clean = {k: out.get(k) for k in allow if k in out}
+        clean = {k: v for k, v in clean.items() if v is not None and str(v).strip() != ""}
+        if not clean:
+            return None
+        return json.dumps(clean, ensure_ascii=False)
+
     def _ua_device_label(ua: str) -> str | None:
         s = str(ua or "").strip()
         if not s:
@@ -5470,6 +5515,7 @@ def admin_user_history(
 
     for e in events:
         kind, title, subtitle = _event_display(e)
+        ev_meta = _sanitize_learning_meta(_try_parse_meta(e.meta))
         module_id = (
             subs_by_id.get(str(e.ref_id), {}).get("module_id")
             if e.ref_id and e.type.value == "submodule_opened"
@@ -5509,7 +5555,7 @@ def admin_user_history(
                 "href": href,
                 "event_type": e.type.value,
                 "ref_id": str(e.ref_id) if e.ref_id else None,
-                "meta": e.meta,
+                "meta": ev_meta,
                 "module_id": module_id,
                 "module_title": module_title,
                 "submodule_id": submodule_id,
@@ -5521,6 +5567,7 @@ def admin_user_history(
 
     for se in sec_events:
         title, subtitle = _sec_event_display(se)
+        sec_meta = _try_parse_meta(se.meta)
         items.append(
             {
                 "id": str(se.id),
@@ -5531,7 +5578,7 @@ def admin_user_history(
                 "href": None,
                 "event_type": str(se.event_type),
                 "ref_id": None,
-                "meta": se.meta,
+                "meta": _sanitize_security_meta(sec_meta),
                 "module_id": None,
                 "module_title": None,
                 "submodule_id": None,

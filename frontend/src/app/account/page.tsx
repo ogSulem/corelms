@@ -60,6 +60,17 @@ type HistoryItem = {
   asset_name?: string | null;
 };
 
+type SessionItem = {
+  session_id: string;
+  created_at?: string | null;
+  last_used_at?: string | null;
+  expires_at?: string | null;
+  ip?: string | null;
+  ip_fp?: string | null;
+  user_agent?: string | null;
+  current?: boolean;
+};
+
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
@@ -70,17 +81,50 @@ function formatDuration(seconds: number): string {
 export default function AccountPage() {
   const [profile, setProfile] = useState<MyProfile | null>(null);
   const [historyAll, setHistoryAll] = useState<HistoryItem[]>([]);
+  const [sessions, setSessions] = useState<SessionItem[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
 
+  const parseMeta = (meta: string | null | undefined): Record<string, any> | null => {
+    const raw = String(meta || "").trim();
+    if (!raw) return null;
+    try {
+      const obj = JSON.parse(raw);
+      return obj && typeof obj === "object" ? (obj as any) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const deviceLabelFromUa = (ua: string | null | undefined): string => {
+    const s = String(ua || "").trim();
+    if (!s) return "—";
+    const low = s.toLowerCase();
+    let os = "";
+    if (low.includes("windows")) os = "Windows";
+    else if (low.includes("mac os x") || low.includes("macintosh")) os = "macOS";
+    else if (low.includes("android")) os = "Android";
+    else if (low.includes("iphone") || low.includes("ipad") || low.includes("ios")) os = "iOS";
+    else if (low.includes("linux")) os = "Linux";
+    let br = "";
+    if (low.includes("edg/")) br = "Edge";
+    else if (low.includes("opr/") || low.includes("opera")) br = "Opera";
+    else if (low.includes("chrome/") && !low.includes("chromium") && !low.includes("edg/") && !low.includes("opr/")) br = "Chrome";
+    else if (low.includes("safari/") && !low.includes("chrome/")) br = "Safari";
+    else if (low.includes("firefox/")) br = "Firefox";
+    const out = [os, br].filter(Boolean).join(" ");
+    return out || "—";
+  };
+
   const securitySummary = useMemo(() => {
-    const sec = (historyAll || []).filter((x) => x.kind === "security");
+    const sec = (historyAll || []).filter((x: HistoryItem) => x.kind === "security");
     const latest = sec.length ? sec[0] : null;
     const latestSubtitle = String(latest?.subtitle || "").trim();
 
-    const newIpCount = sec.filter((x) => String(x.title || "").toLowerCase().includes("нового ip")).length;
-    const newDevCount = sec.filter((x) => String(x.title || "").toLowerCase().includes("нового устройства")).length;
+    const newIpCount = sec.filter((x: HistoryItem) => Boolean(parseMeta(x.meta)?.new_ip)).length;
+    const newDevCount = sec.filter((x: HistoryItem) => Boolean(parseMeta(x.meta)?.new_device)).length;
 
     return {
       latestSubtitle,
@@ -101,6 +145,16 @@ export default function AccountPage() {
         const hist = await apiFetch<{ items: HistoryItem[] }>(`/me/history?limit=200`);
         const items = Array.isArray(hist?.items) ? hist.items : [];
         setHistoryAll(items);
+
+        try {
+          setSessionsLoading(true);
+          const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
+          setSessions(Array.isArray(sess?.items) ? sess.items : []);
+        } catch {
+          setSessions([]);
+        } finally {
+          setSessionsLoading(false);
+        }
       } catch (e) {
         setError("НЕ УДАЛОСЬ ЗАГРУЗИТЬ ДАННЫЕ ПРОФИЛЯ");
       } finally {
@@ -109,29 +163,52 @@ export default function AccountPage() {
     })();
   }, []);
 
+  const revokeSession = async (sessionId: string) => {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return;
+    try {
+      await apiFetch(`/auth/sessions/revoke`, {
+        method: "POST",
+        body: JSON.stringify({ session_id: sid }),
+      });
+    } catch {
+      // ignore
+    }
+    try {
+      const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
+      setSessions(Array.isArray(sess?.items) ? sess.items : []);
+    } catch {
+      // ignore
+    }
+  };
+
   const ipWidget = useMemo(() => {
-    const sec = (historyAll || []).filter((x) => x.kind === "security");
-    const seen: Array<{ ip: string; at: string }> = [];
+    const sec = (historyAll || []).filter((x: HistoryItem) => x.kind === "security");
+    const seen: Array<{ key: string; ip: string; ip_fp: string; at: string }> = [];
 
     for (const it of sec) {
-      const ip = String(it.ip || "")
-        .trim()
-        .replace(/^IP:\s*/i, "");
       const at = String(it.created_at || "").trim();
-      if (!ip || !at) continue;
-      seen.push({ ip, at });
+      if (!at) continue;
+
+      const meta = parseMeta(it.meta);
+      const rawIp = String(meta?.ip || it.ip || "").trim().replace(/^IP:\s*/i, "");
+      const ipFp = String(meta?.ip_fp || "").trim();
+      const key = ipFp || rawIp;
+      if (!key) continue;
+      seen.push({ key, ip: rawIp || "—", ip_fp: ipFp, at });
     }
 
-    const uniq: Array<{ ip: string; last_at: string }> = [];
-    const map = new Map<string, string>();
+    const uniq: Array<{ key: string; label: string; last_at: string; sample_ip?: string }> = [];
+    const map = new Map<string, { last_at: string; sample_ip?: string }>();
     for (const s of seen) {
-      const prev = map.get(s.ip);
-      if (!prev || String(s.at) > String(prev)) {
-        map.set(s.ip, s.at);
+      const prev = map.get(s.key);
+      if (!prev || String(s.at) > String(prev.last_at)) {
+        map.set(s.key, { last_at: s.at, sample_ip: s.ip });
       }
     }
-    for (const [ip, last_at] of map.entries()) {
-      uniq.push({ ip, last_at });
+    for (const [key, v] of map.entries()) {
+      const label = key.includes("/") ? key : key;
+      uniq.push({ key, label, last_at: v.last_at, sample_ip: v.sample_ip });
     }
     uniq.sort((a, b) => String(b.last_at).localeCompare(String(a.last_at)));
 
@@ -150,9 +227,9 @@ export default function AccountPage() {
   const levelProgress = Math.max(0, Math.min(100, Math.round((inLevel / levelSpan) * 100)));
 
   const achievements = useMemo(() => {
-    const hasQuizAttempt = (historyAll || []).some((it) => it.kind === "quiz_attempt");
-    const hasLesson = (historyAll || []).some((it) => it.kind === "lesson");
-    const hasAsset = (historyAll || []).some((it) => it.kind === "asset");
+    const hasQuizAttempt = (historyAll || []).some((it: HistoryItem) => it.kind === "quiz_attempt");
+    const hasLesson = (historyAll || []).some((it: HistoryItem) => it.kind === "lesson");
+    const hasAsset = (historyAll || []).some((it: HistoryItem) => it.kind === "asset");
 
     return [
       { key: "first_step", title: "ПЕРВЫЙ ШАГ", desc: "АКТИВНОСТЬ ЗАФИКСИРОВАНА", done: (historyAll || []).length > 0 },
@@ -207,8 +284,13 @@ export default function AccountPage() {
                 <div className="mt-3">
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Текущий</div>
                   <div className="mt-1 text-sm font-black text-zinc-950 tabular-nums">
-                    {ipWidget.current?.ip || "—"}
+                    {ipWidget.current?.sample_ip || "—"}
                   </div>
+                  {ipWidget.current?.label ? (
+                    <div className="mt-1 text-[10px] font-black text-zinc-700 tabular-nums">
+                      {ipWidget.current.label}
+                    </div>
+                  ) : null}
                   {ipWidget.current?.last_at ? (
                     <div className="mt-1 text-[10px] font-bold text-zinc-500 tabular-nums">
                       {new Date(ipWidget.current.last_at).toLocaleString("ru-RU", {
@@ -227,8 +309,11 @@ export default function AccountPage() {
                   <div className="mt-2 space-y-2">
                     {ipWidget.last5.length ? (
                       ipWidget.last5.slice(0, 5).map((x) => (
-                        <div key={x.ip} className="flex items-center justify-between gap-3">
-                          <div className="text-[10px] font-black text-zinc-950 tabular-nums">{x.ip}</div>
+                        <div key={x.key} className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-[10px] font-black text-zinc-950 tabular-nums">{x.sample_ip || "—"}</div>
+                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 truncate">{x.label}</div>
+                          </div>
                           <div className="text-[10px] font-bold text-zinc-500 tabular-nums shrink-0">
                             {new Date(x.last_at).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })}
                           </div>
@@ -315,6 +400,82 @@ export default function AccountPage() {
           </div>
 
           <div className="lg:col-span-4 space-y-10">
+            <div className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-2xl shadow-zinc-950/10">
+              <div className="flex items-center justify-between mb-8">
+                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Сессии</div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl"
+                  onClick={async () => {
+                    try {
+                      setSessionsLoading(true);
+                      const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
+                      setSessions(Array.isArray(sess?.items) ? sess.items : []);
+                    } catch {
+                      // ignore
+                    } finally {
+                      setSessionsLoading(false);
+                    }
+                  }}
+                  disabled={sessionsLoading}
+                >
+                  Обновить
+                </Button>
+              </div>
+
+              {sessionsLoading ? (
+                <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Загрузка…</div>
+              ) : sessions.length === 0 ? (
+                <div className="text-[10px] font-bold text-zinc-500">—</div>
+              ) : (
+                <div className="space-y-3">
+                  {sessions.map((s: SessionItem) => {
+                    const dev = deviceLabelFromUa(s.user_agent);
+                    const ip = String(s.ip || "").trim();
+                    const ipFp = String(s.ip_fp || "").trim();
+                    const lastUsed = String(s.last_used_at || "").trim();
+                    return (
+                      <div key={s.session_id} className="rounded-2xl border border-zinc-200 bg-white/70 p-4">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-900 truncate">
+                              {dev}{s.current ? " · ТЕКУЩАЯ" : ""}
+                            </div>
+                            <div className="mt-1 text-[10px] font-bold text-zinc-500 tabular-nums">
+                              {ip ? `IP: ${ip}` : "IP: —"}{ipFp ? ` · ${ipFp}` : ""}
+                            </div>
+                            {lastUsed ? (
+                              <div className="mt-1 text-[10px] font-bold text-zinc-500 tabular-nums">
+                                {new Date(lastUsed).toLocaleString("ru-RU", {
+                                  day: "2-digit",
+                                  month: "2-digit",
+                                  year: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
+
+                          {!s.current ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="rounded-xl"
+                              onClick={() => void revokeSession(s.session_id)}
+                            >
+                              Завершить
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
             <div className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-2xl shadow-zinc-950/10">
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-8">Достижения</div>
               <div className="grid gap-3">
