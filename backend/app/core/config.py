@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     auto_migrate_on_start: bool = Field(default=False, validation_alias="AUTO_MIGRATE_ON_START")
 
     trust_proxy_headers: bool = Field(default=False, validation_alias="TRUST_PROXY_HEADERS")
+    trusted_proxy_ips: str | None = Field(default=None, validation_alias="TRUSTED_PROXY_IPS")
 
     s3_endpoint_url: str = Field(validation_alias="S3_ENDPOINT_URL")
     s3_public_endpoint_url: str | None = Field(default=None, validation_alias="S3_PUBLIC_ENDPOINT_URL")

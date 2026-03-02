@@ -41,6 +41,15 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   headers.delete("content-length");
   headers.delete("transfer-encoding");
 
+  // Preserve real client IP through the Next.js proxy.
+  // Backend will only trust these headers if TRUST_PROXY_HEADERS=true and request comes from TRUSTED_PROXY_IPS.
+  const xri = req.headers.get("x-real-ip");
+  const xff = req.headers.get("x-forwarded-for");
+  const fwd = req.headers.get("forwarded");
+  if (xri) headers.set("x-real-ip", xri);
+  if (xff) headers.set("x-forwarded-for", xff);
+  if (fwd) headers.set("forwarded", fwd);
+
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
   // Use `any` to allow Node.js fetch option `duplex` (not present in TS lib dom typings).

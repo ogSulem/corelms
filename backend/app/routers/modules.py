@@ -123,7 +123,10 @@ def module_assets(module_id: str, db: Session = Depends(get_db), _: User = Depen
 
     # Convention (no DB migrations): module-level materials are stored by object_key prefix.
     # IMPORTANT: lesson files are linked via SubmoduleAssetMap, so do NOT list them here.
-    prefix = f"modules/{module_id}/_module/"
+    pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{module_id}/"
+    if pfx and (not pfx.endswith("/")):
+        pfx = pfx + "/"
+    prefix = f"{pfx}_module/"
     assets = db.scalars(
         select(ContentAsset).where(ContentAsset.object_key.like(prefix + "%")).order_by(ContentAsset.original_filename)
     ).all()

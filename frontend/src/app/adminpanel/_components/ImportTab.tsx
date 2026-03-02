@@ -1300,7 +1300,7 @@ export default function ImportTab(props: ImportTabProps) {
           <div className="relative overflow-hidden rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">
             <div className="grid gap-3">
               {(() => {
-                const it = currentJobFor("regen") as any;
+                const it = currentRegenJob as any;
                 const jid = String(it?.job_id || it?.id || "").trim();
                 if (!jid) {
                   return (

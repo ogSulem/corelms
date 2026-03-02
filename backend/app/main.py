@@ -18,6 +18,7 @@ from sqlalchemy import create_engine
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.client_ip import client_ip_from_request
 from app.core.redis_client import get_redis
 from app.core.queue import get_queue
 from app.services.storage_cleanup_jobs import cleanup_admin_multipart_uploads_job, cleanup_admin_uploads_job
@@ -44,34 +45,7 @@ def create_app() -> FastAPI:
     is_prod = (settings.app_env or "").strip().lower() in {"prod", "production"}
 
     def _client_ip_for_log(request: Request) -> str | None:
-        if bool(getattr(settings, "trust_proxy_headers", False)):
-            fwd = str(request.headers.get("forwarded") or "").strip()
-            if fwd:
-                try:
-                    parts = [p.strip() for p in fwd.split(";") if p.strip()]
-                    for part in parts:
-                        if part.lower().startswith("for="):
-                            v = part.split("=", 1)[1].strip().strip('"').strip()
-                            if v.startswith("[") and "]" in v:
-                                v = v[1 : v.index("]")]
-                            if ":" in v and not v.count(":") > 1:
-                                v = v.split(":", 1)[0]
-                            if v:
-                                return v
-                except Exception:
-                    pass
-
-            xri = str(request.headers.get("x-real-ip") or "").strip()
-            if xri:
-                return xri
-            xff = str(request.headers.get("x-forwarded-for") or "")
-            if xff:
-                ip = xff.split(",")[0].strip()
-                if ip:
-                    return ip
-        if request.client and request.client.host:
-            return request.client.host
-        return None
+        return client_ip_from_request(request)
 
     def _parse_csv(value: str) -> list[str]:
         return [x.strip() for x in str(value or "").split(",") if x.strip()]

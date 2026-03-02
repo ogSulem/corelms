@@ -278,8 +278,9 @@ def stream_asset(
     # Parse Range: bytes=start-end
     range_value = str(range_header or "").strip()
     range_value_l = range_value.lower()
-    start = None
-    end = None
+    start: int | None = None
+    end: int | None = None
+    suffix_len: int | None = None
     if range_value_l.startswith("bytes="):
         try:
             spec = range_value_l.split("=", 1)[1]
@@ -287,11 +288,21 @@ def stream_asset(
             a, b = part.split("-", 1)
             a = a.strip()
             b = b.strip()
-            start = int(a) if a else None
-            end = int(b) if b else None
+            if a and b:
+                start = int(a)
+                end = int(b)
+            elif a and (not b):
+                start = int(a)
+                end = None
+            elif (not a) and b:
+                suffix_len = int(b)
+            else:
+                start = None
+                end = None
         except Exception:
             start = None
             end = None
+            suffix_len = None
 
     def _body_iter(body):
         while True:
@@ -302,9 +313,49 @@ def stream_asset(
 
     try:
         kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key}
-        if start is not None or end is not None:
-            if start is None and end is not None:
-                start = 0
+
+        # If Range is requested, validate against object size and normalize to a concrete range.
+        if range_value_l.startswith("bytes="):
+            try:
+                head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+                size_total = int(head.get("ContentLength") or 0)
+            except ClientError as e:
+                code = str((e.response or {}).get("Error", {}).get("Code") or "").strip()
+                status = int((e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode") or 0)
+                if code in {"NoSuchKey", "NotFound"} or status == 404:
+                    raise HTTPException(status_code=404, detail="file missing in storage") from e
+                raise HTTPException(status_code=503, detail="storage unavailable") from e
+            except Exception as e:
+                raise HTTPException(status_code=503, detail="storage unavailable") from e
+
+            # Normalize / validate.
+            invalid = False
+            if size_total <= 0:
+                invalid = True
+            elif suffix_len is not None:
+                if suffix_len <= 0:
+                    invalid = True
+                else:
+                    take = min(int(suffix_len), int(size_total))
+                    start = int(size_total) - take
+                    end = int(size_total) - 1
+            else:
+                if start is None:
+                    invalid = True
+                else:
+                    if start < 0:
+                        invalid = True
+                    if end is not None and end < start:
+                        invalid = True
+                    if start >= size_total:
+                        invalid = True
+                    if end is not None and end >= size_total:
+                        end = size_total - 1
+
+            if invalid:
+                headers = {"Accept-Ranges": "bytes", "Content-Range": f"bytes */{int(size_total)}"}
+                raise HTTPException(status_code=416, detail="invalid range", headers=headers)
+
             if start is not None and end is None:
                 kwargs["Range"] = f"bytes={start}-"
             elif start is not None and end is not None:
@@ -322,7 +373,7 @@ def stream_asset(
         if obj.get("ContentRange"):
             headers["Content-Range"] = str(obj.get("ContentRange"))
 
-        status_code = 206 if (start is not None or end is not None) else 200
+        status_code = 206 if ("Range" in kwargs) else 200
         resp = StreamingResponse(
             _body_iter(body),
             media_type=content_type,

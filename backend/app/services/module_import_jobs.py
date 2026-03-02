@@ -13,6 +13,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+import unicodedata
 from datetime import datetime
 
 from botocore.exceptions import ClientError
@@ -387,6 +388,40 @@ def import_module_zip_job(
     s3 = get_s3_client()
 
     cleanup_done = False
+
+    def _cleanup_uploaded_keys_best_effort() -> None:
+        # Best-effort cleanup of S3 objects uploaded during this job.
+        # IMPORTANT: do NOT delete the source ZIP key.
+        try:
+            job = get_current_job()
+        except Exception:
+            job = None
+        if job is None:
+            return
+        try:
+            keys = list((job.meta or {}).get("uploaded_keys") or [])
+        except Exception:
+            keys = []
+        if not keys:
+            return
+
+        try:
+            ensure_bucket_exists()
+            s3c = get_s3_client()
+        except Exception:
+            return
+
+        src = str(s3_object_key or "").strip()
+        for k in keys:
+            try:
+                kk = str(k or "").strip()
+                if not kk:
+                    continue
+                if src and kk == src:
+                    continue
+                s3c.delete_object(Bucket=settings.s3_bucket, Key=kk)
+            except Exception:
+                continue
 
     def _release_enqueue_locks() -> None:
         try:
@@ -932,6 +967,11 @@ def import_module_zip_job(
                 db.rollback()
             except Exception:
                 pass
+            try:
+                if not cleanup_done:
+                    _cleanup_uploaded_keys_best_effort()
+            except Exception:
+                pass
             _release_enqueue_locks()
             return {"ok": False, "canceled": True}
         except Exception as e:
@@ -939,6 +979,11 @@ def import_module_zip_job(
             _set_job_error(error=e)
             log.exception("import_module_zip_job: failed")
             db.rollback()
+            try:
+                if not cleanup_done:
+                    _cleanup_uploaded_keys_best_effort()
+            except Exception:
+                pass
             _release_enqueue_locks()
             raise
         finally:

@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.client_ip import client_ip_from_request
 from app.core.rate_limit import rate_limit
 from app.core.security_audit_log import audit_log
 from app.core.security import get_current_user
@@ -304,18 +305,7 @@ def _public_role(role: UserRole) -> str:
 
 
 def _client_ip_from_request(request: Request) -> str | None:
-    if bool(getattr(settings, "trust_proxy_headers", False)):
-        xri = str(request.headers.get("x-real-ip") or "").strip()
-        if xri:
-            return xri
-        xff = str(request.headers.get("x-forwarded-for") or "")
-        if xff:
-            ip = xff.split(",")[0].strip()
-            if ip:
-                return ip
-    if request.client and request.client.host:
-        return request.client.host
-    return None
+    return client_ip_from_request(request)
 
 
 def _ip_fingerprint(ip: str | None) -> str | None:
@@ -632,6 +622,9 @@ def list_sessions(
         tok = ""
         if auth.lower().startswith("bearer "):
             tok = auth.split(" ", 1)[1].strip()
+        if not tok:
+            # Frontend stores refresh token in httpOnly cookie. Authorization typically holds the access token.
+            tok = str(request.cookies.get("core_refresh") or "").strip()
         if tok:
             current_h = _refresh_token_hash(tok)
     except Exception:
@@ -723,6 +716,8 @@ def revoke_other_sessions(
         tok = ""
         if auth.lower().startswith("bearer "):
             tok = auth.split(" ", 1)[1].strip()
+        if not tok:
+            tok = str(request.cookies.get("core_refresh") or "").strip()
         if tok:
             current_h = _refresh_token_hash(tok)
     except Exception:

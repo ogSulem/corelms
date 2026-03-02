@@ -4,6 +4,7 @@ import boto3
 import logging
 from botocore.client import Config
 from botocore.exceptions import ClientError
+from boto3.s3.transfer import TransferConfig
 
 from app.core.config import settings
 from app.core.redis_client import get_redis
@@ -62,6 +63,7 @@ def get_s3_client(*, endpoint_url: str | None = None):
             signature_version="s3v4",
             connect_timeout=float(getattr(settings, "s3_connect_timeout_seconds", 3.0)),
             read_timeout=float(getattr(settings, "s3_read_timeout_seconds", 60.0)),
+            tcp_keepalive=True,
             retries={
                 "max_attempts": int(getattr(settings, "s3_max_attempts", 5)),
                 "mode": "standard",
@@ -72,6 +74,64 @@ def get_s3_client(*, endpoint_url: str | None = None):
             },
         ),
     )
+
+
+def upload_fileobj_with_retry(
+    *,
+    s3,
+    object_key: str,
+    fileobj,
+    content_type: str,
+    size_bytes: int | None = None,
+    multipart_threshold_bytes: int = 8 * 1024 * 1024,
+    multipart_chunksize_bytes: int = 8 * 1024 * 1024,
+    max_concurrency: int = 4,
+) -> None:
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
+
+    threshold = int(multipart_threshold_bytes)
+    chunksize = int(multipart_chunksize_bytes)
+    use_multipart = (size_bytes is None) or (int(size_bytes) >= threshold)
+
+    config = (
+        TransferConfig(
+            multipart_threshold=threshold,
+            multipart_chunksize=chunksize,
+            max_concurrency=int(max_concurrency),
+            use_threads=True,
+        )
+        if use_multipart
+        else None
+    )
+
+    tries = 4
+    base = 0.6
+    last: Exception | None = None
+    for attempt in range(1, tries + 1):
+        try:
+            try:
+                fileobj.seek(0)
+            except Exception:
+                pass
+            extra_args = {"ContentType": str(content_type or "application/octet-stream")}
+            if config is not None:
+                s3.upload_fileobj(fileobj, bucket, object_key, ExtraArgs=extra_args, Config=config)
+            else:
+                s3.upload_fileobj(fileobj, bucket, object_key, ExtraArgs=extra_args)
+            return
+        except Exception as e:
+            last = e
+            if attempt >= tries:
+                raise
+            try:
+                import time, random
+
+                time.sleep(base * (2 ** (attempt - 1)) + random.random() * 0.25)
+            except Exception:
+                pass
+    if last is not None:
+        raise last
 
 
 def _get_presign_client():

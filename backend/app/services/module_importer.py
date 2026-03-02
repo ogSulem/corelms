@@ -23,7 +23,7 @@ from app.models.submodule_asset import SubmoduleAssetMap
 from app.services.llm_handler import choose_llm_provider_order_fast, generate_quiz_questions_ai
 from app.services.quiz_generation import generate_quiz_questions_heuristic
 from app.services.quiz_text import is_useful_quiz_text
-from app.services.storage import ensure_bucket_exists, get_s3_client
+from app.services.storage import ensure_bucket_exists, get_s3_client, upload_fileobj_with_retry
 
 
 log = logging.getLogger(__name__)
@@ -363,10 +363,16 @@ def _is_previewable_lesson_asset(p: pathlib.Path) -> bool:
 
 def _upload_file(*, s3, object_key: str, file_path: pathlib.Path) -> tuple[str | None, int | None]:
     ct = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
-    with file_path.open("rb") as f:
-        _s3_put_object_with_retry(s3=s3, object_key=object_key, body=f, content_type=ct)
-    _track_uploaded_key(object_key)
     size = int(file_path.stat().st_size) if file_path.exists() else None
+    with file_path.open("rb") as f:
+        upload_fileobj_with_retry(
+            s3=s3,
+            object_key=object_key,
+            fileobj=f,
+            content_type=ct,
+            size_bytes=size,
+        )
+    _track_uploaded_key(object_key)
     return ct, size
 
 
