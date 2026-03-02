@@ -1290,10 +1290,15 @@ def llm_probe(
 
     dbg: dict[str, object] = {}
     qs = generate_quiz_questions_ai(title=title, text=text, n_questions=n, debug_out=dbg)
+
+    # Hardening: do not leak internal debug traces (prompts, provider internals, etc.) in production.
+    # Allow debug only when explicitly enabled.
+    is_prod = (str(getattr(settings, "app_env", "") or "").strip().lower() in {"prod", "production"})
+    allow_debug = bool(getattr(settings, "llm_debug_log", False) or getattr(settings, "llm_debug_save", False) or (not is_prod))
     out["results"]["auto"] = {
         "ok": bool(qs),
         "count": int(len(qs or [])),
-        "debug": dbg,
+        "debug": dbg if allow_debug else None,
         "sample": [getattr(q, "model_dump", lambda: dict(q))() if q is not None else {} for q in (qs or [])[:2]],
     }
 

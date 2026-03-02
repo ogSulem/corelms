@@ -476,7 +476,9 @@ export default function AdminPanelClient() {
         setRegenQueueWorkers(0);
       }
 
-      const next = (res?.items || []).concat(res?.history || []);
+      const normItems = (res?.items || []).map((x) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+      const normHist = (res?.history || []).map((x) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+      const next = normItems.concat(normHist);
       if (JSON.stringify(next) !== regenHistorySigRef.current) {
         regenHistorySigRef.current = JSON.stringify(next);
         setRegenHistory(next);
@@ -1394,7 +1396,9 @@ export default function AdminPanelClient() {
           }
           const rgItems = Array.isArray(rg?.items) ? rg.items : [];
           const rgHist = Array.isArray(rg?.history) ? rg.history : [];
-          const next = (rgItems || []).concat(rgHist || []);
+          const next = (rgItems || [])
+            .map((x: any) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }))
+            .concat((rgHist || []).map((x: any) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x })));
           if (JSON.stringify(next) !== regenHistorySigRef.current) {
             regenHistorySigRef.current = JSON.stringify(next);
             setRegenHistory(next);
@@ -1435,6 +1439,42 @@ export default function AdminPanelClient() {
       setJobsSseConnected(false);
     };
   }, [authLoading, user]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) return;
+
+    let stopped = false;
+
+    const tick = async () => {
+      if (stopped) return;
+      // Poll only when SSE is disconnected or stale.
+      const lastOk = Number(jobsSseLastOkAtRef.current || 0);
+      const connected = Boolean(jobsSseConnected);
+      const stale = !lastOk || Date.now() - lastOk > 20_000;
+      if (connected && !stale) return;
+
+      try {
+        await Promise.all([
+          loadImportQueue(200, true, true),
+          loadRegenHistory(true),
+        ]);
+      } catch {
+        // ignore
+      }
+    };
+
+    // Fast first tick so UI heals quickly after reload.
+    void tick();
+    const id = window.setInterval(() => {
+      void tick();
+    }, 7000);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [authLoading, user, jobsSseConnected]);
 
   useEffect(() => {
     if (didInitFromQueryRef.current) return;

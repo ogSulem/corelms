@@ -188,8 +188,11 @@ export default function ImportTab(props: ImportTabProps) {
     if (fallback) return fallback;
 
     const title = String(it?.title || "").trim();
-    if (title) return title;
-    return mid || "—";
+    // Never show raw UUID/job-id-like values as a user-facing title.
+    const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(title);
+    if (title && !looksLikeUuid) return title;
+    if (mid) return mid;
+    return "—";
   };
 
   const [storagePrefixDraft, setStoragePrefixDraft] = useState(storageUploadsPrefix || "uploads/admin/");

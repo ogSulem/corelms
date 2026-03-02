@@ -182,6 +182,23 @@ export default function AccountPage() {
     }
   };
 
+  const revokeOtherSessions = async () => {
+    try {
+      setSessionsLoading(true);
+      await apiFetch(`/auth/sessions/revoke-others`, { method: "POST" });
+    } catch {
+      // ignore
+    } finally {
+      try {
+        const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
+        setSessions(Array.isArray(sess?.items) ? sess.items : []);
+      } catch {
+        // ignore
+      }
+      setSessionsLoading(false);
+    }
+  };
+
   const ipWidget = useMemo(() => {
     const sec = (historyAll || []).filter((x: HistoryItem) => x.kind === "security");
     const seen: Array<{ key: string; ip: string; ip_fp: string; at: string }> = [];
@@ -403,25 +420,37 @@ export default function AccountPage() {
             <div className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-2xl shadow-zinc-950/10">
               <div className="flex items-center justify-between mb-8">
                 <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Сессии</div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-xl"
-                  onClick={async () => {
-                    try {
-                      setSessionsLoading(true);
-                      const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
-                      setSessions(Array.isArray(sess?.items) ? sess.items : []);
-                    } catch {
-                      // ignore
-                    } finally {
-                      setSessionsLoading(false);
-                    }
-                  }}
-                  disabled={sessionsLoading}
-                >
-                  Обновить
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={async () => {
+                      try {
+                        setSessionsLoading(true);
+                        const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
+                        setSessions(Array.isArray(sess?.items) ? sess.items : []);
+                      } catch {
+                        // ignore
+                      } finally {
+                        setSessionsLoading(false);
+                      }
+                    }}
+                    disabled={sessionsLoading}
+                  >
+                    Обновить
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={() => void revokeOtherSessions()}
+                    disabled={sessionsLoading || sessions.length <= 1}
+                  >
+                    Завершить остальные
+                  </Button>
+                </div>
               </div>
 
               {sessionsLoading ? (
