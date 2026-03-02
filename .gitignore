@@ -45,6 +45,10 @@ backups/
 # Logs
 *.log
 
+# Local tool artifacts (do not commit)
+.yadisk_public_to_s3.*
+_importtab_*.tsx
+
 # IDE
 .idea/
 .vscode/

@@ -1,104 +1,97 @@
-# CoreLMS — Контроль квалификации
+# CoreLMS
 
-[![CI](https://github.com/ogSulem/SulemLMS/actions/workflows/ci.yml/badge.svg)](https://github.com/ogSulem/SulemLMS/actions/workflows/ci.yml)
+[![CI](https://github.com/ogSulem/corelms/actions/workflows/ci.yml/badge.svg)](https://github.com/ogSulem/corelms/actions/workflows/ci.yml)
 
 > License: **Proprietary**. This repository is provided for evaluation/demo purposes. For commercial use, a separate license agreement is required.
 
-Коммерчески‑готовая система контроля квалификации сотрудников: обучение, тестирование, прогресс, управление контентом и аудит безопасности.
+CoreLMS — система обучения и контроля квалификации сотрудников:
 
-Этот репозиторий предназначен для демонстрации продукта потенциальным владельцам/директорам компании и для быстрого развёртывания пилота.
+- обучение по модулям/урокам
+- материалы уроков (S3/MinIO)
+- тестирование (квизы), прогресс, XP
+- админ-панель: импорт контента, регенерация квизов, управление пользователями
+- аудит безопасности (security audit log)
 
-- **One‑pager (для собственника/CEO)**: `docs/one-pager.md`
-- **Demo‑script (10–15 минут)**: `docs/demo-script.md`
+## Архитектура
 
-## Почему этому можно доверять (Proof)
+- **Frontend**: Next.js + TypeScript
+- **Backend**: FastAPI + SQLAlchemy + Alembic
+- **DB**: Postgres
+- **Queue**: Redis + RQ (импорт/реген/cleanup очереди)
+- **Storage**: S3-compatible (в dev можно MinIO)
 
-- **Тесты**: быстрый прогон `pytest -q` (зелёный)
-- **Security by default**:
-  - принудительная смена пароля
-  - запрет публичной регистрации в production
-  - prod‑guards на секреты (fail‑fast)
-- **Audit trail**: ключевые события безопасности и админ‑действия логируются (request_id + IP)
-- **Ops‑готовность**: healthchecks + backup/restore инструкции
+## Быстрый старт (локально, Docker Compose)
 
-## Зачем это бизнесу
+1) Создай `.env` из шаблона:
 
-- **Единый контур квалификации**: обучение + проверка знаний + фиксация результата.
-- **Прозрачность**: видно, кто прошёл уроки/тесты и где «проваливается» компетенция.
-- **Управляемость**: админ создаёт пользователей, назначает обучение, управляет контентом.
-- **Безопасность и расследуемость**: аудит ключевых действий + request_id + IP.
+```bash
+cp .env.example .env
+```
 
-## Ключевые возможности
-
-- **Пользователи**
-  - роли: `admin` и `employee`
-  - принудительная смена пароля при первом входе (`must_change_password`)
-- **Контент и обучение**
-  - модули, уроки (submodules), материалы (S3/MinIO)
-  - линейный доступ (можно открывать следующий урок только после прохождения предыдущих)
-- **Тестирование**
-  - запуск теста, сессия теста, отправка ответов
-  - попытки, результаты, XP/активность
-- **Наблюдаемость / эксплуатация**
-  - healthchecks: liveness/readiness
-  - структурные request‑логи (JSON) с `request_id` и `user_id`
-  - rate limiting на чувствительных эндпоинтах
-- **Security audit log**
-  - логируются: login/register/password change, админ‑действия (создание пользователей, сброс пароля, управление контентом, выдача presigned upload и т.д.)
-
-## Демо
-
-- **Короткое демо (GIF)**
-
-![Demo](docs/screenshots/demo.gif)
-
-- **Скриншоты**: `docs/screenshots/` (добавь свои изображения)
-
-![Dashboard](docs/screenshots/dashboard.png)
-
-![Module progress](docs/screenshots/module-progress.png)
-
-![Quiz](docs/screenshots/quiz.png)
-
-![Admin users](docs/screenshots/admin-users.png)
-
-![Audit log](docs/screenshots/audit-log.png)
-
-  - `docs/screenshots/dashboard.png`
-  - `docs/screenshots/module-progress.png`
-  - `docs/screenshots/quiz.png`
-  - `docs/screenshots/admin-users.png`
-  - `docs/screenshots/audit-log.png`
-
-## Быстрый старт (Docker Compose)
-
-1. Создай файл `backend/.env` на основе `backend/.env.example`.
-2. Запусти:
+2) Запусти:
 
 ```bash
 docker compose up --build
 ```
 
-- Frontend: http://localhost:3000
-- Backend: http://localhost:8000
+Открыть:
 
-### Auth (cookie-only)
+- UI: `http://localhost:3000`
+- API: `http://localhost:8000`
 
-Фронт хранит JWT в HttpOnly cookie `core_token` (не доступно JavaScript).
+### Первый вход / админ
 
-Опционально можно задать TTL cookie (в секундах) для Next.js auth route handlers:
+При первом старте backend может автоматически создать администратора, если в БД ещё нет admin-пользователя:
 
-```bash
-CORE_TOKEN_MAX_AGE_SECONDS=3600
-```
+- `BOOTSTRAP_ADMIN_NAME`
+- `BOOTSTRAP_ADMIN_PASSWORD`
 
-## Архитектура (в двух словах)
+## Админ-панель (как пользоваться)
 
-- **Backend**: FastAPI + SQLAlchemy + Alembic
-- **Frontend**: Next.js (React) + TypeScript
-- **DB**: Postgres
-- **Cache/limits/sessions**: Redis
-- **Storage**: S3‑совместимое (MinIO)
+### Импорт контента
+
+- Импорт ZIP ставится в очередь `corelms_import`.
+- В админке видны:
+  - текущая активная задача (started)
+  - очередь (queued/deferred/scheduled)
+  - история
+- Можно отменять queued задачи (и best-effort отменять started через cancel checkpoints).
+
+### Регенерация квизов (AI)
+
+- Реген ставится в очередь `corelms_regen`.
+- Статусы в UI опираются на RQ `status` (а не на `stage`), чтобы “Current” не пропадал при обновлениях.
+
+### Пользователи: создание и сброс пароля
+
+- При создании пользователя и при сбросе пароля админ получает **временный пароль**.
+- UI показывает модалку с инструкцией и временным паролем.
+- Пользователь при первом входе попадает на `/force-password-change`:
+  - вводит текущий (временный) пароль
+  - задаёт новый пароль + подтверждение
+  - указывает номер телефона
+
+## Переменные окружения (.env)
+
+Шаблон: `.env.example`.
+
+Минимальный набор для production:
+
+- `APP_ENV=production`
+- `JWT_SECRET_KEY` (сильный)
+- `ALLOW_PUBLIC_REGISTER=false`
+- `PUBLIC_APP_URL` (URL фронта)
+- `CORS_ALLOW_ORIGINS` (URL фронта)
+
+Storage:
+
+- для внешнего S3 укажи `S3_ENDPOINT_URL` / `S3_PUBLIC_ENDPOINT_URL` и ключи
+- для dev можно использовать MinIO из `docker-compose.yml`
+
+## Healthchecks
+
+- `GET /health/live`
+- `GET /health/ready`
 
 ## Тесты
 
@@ -106,124 +99,62 @@ CORE_TOKEN_MAX_AGE_SECONDS=3600
 python -m pytest -q
 ```
 
-## Миграции
+## Деплой на VPS (как сайт)
 
-Миграции применяются автоматически при старте `backend` контейнера (см. `backend/scripts/entrypoint.sh`).
+В репозитории есть отдельная схема для VPS:
 
-## Healthchecks
+- `docker-compose.vps.yml`
+- `Caddyfile`
 
-- `GET /health/live` — процесс жив
-- `GET /health/ready` — зависимости (Postgres + Redis)
+Принцип:
 
-## Production заметки
+- наружу открыты только **80/443** (reverse proxy)
+- Postgres/Redis/MinIO/backend/frontend/workers работают внутри docker-сети
 
-- В production обязательно:
-  - `APP_ENV=production`
-  - `ALLOW_PUBLIC_REGISTER=false`
-  - `JWT_SECRET_KEY` — сильный секрет
+### Запуск
 
-### Storage lifecycle (anti-bloat)
+1) На VPS создай `.env` (из `.env.example`).
 
-- `uploads/admin/*` — **временные** артефакты импорта (ZIP).
-  - после успешного импорта ZIP удаляется автоматически.
-  - при ошибке импорта ZIP удаляется best-effort.
-  - дополнительно работает фоновая TTL‑уборка по префиксу `uploads/admin/`.
-- `content/*` — **постоянный** контент (ассеты уроков).
-
-Рекомендовано для production:
-- настроить внешнее S3/объектное хранилище (AWS/Yandex/etc)
-- закрыть публичный листинг бакетов
-- выдавать доступ к ассетам через короткоживущие presigned URL
-
-### IP / лицензирование (anti-theft)
-
-- License: **Proprietary** (см. шапку README).
-- Для пилота/внедрения:
-  - заключить лицензионное соглашение
-  - ограничить доступ по ролям (admin/employee)
-  - включить аудит админ‑действий
-  - запретить публичный доступ к контенту (только через API/presign)
-
-### Production checklist
-
-- Secrets:
-  - `JWT_SECRET_KEY` задан и не дефолтный
-  - `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY` не дефолтные
-- Network:
-  - `CORS_ALLOW_ORIGINS` ограничен доменом(ами) фронта
-- Storage:
-  - включён TTL cleanup для `uploads/admin/*` (`UPLOADS_ADMIN_TTL_HOURS`)
-  - настроены таймауты/ретраи S3 клиента (см. `backend/.env.example`)
-- Backups:
-  - ежедневный backup Postgres (вне сервера)
-  - backup/replication объектного хранилища
-- Observability:
-  - логи собираются централизованно
-  - healthchecks мониторятся
-
-## Эксплуатация: Backup/Restore Postgres (Docker)
-
-### Backup
+2) Запусти:
 
 ```bash
-docker compose exec -T postgres pg_dump -U sdlp -d sdlp > backup.sql
+docker compose -f docker-compose.vps.yml up --build -d
 ```
 
-Рекомендовано для production (более надёжно и быстрее на больших БД):
+Открыть:
+
+- сайт: `http://<VPS_IP>/`
+- API: `http://<VPS_IP>/api/`
+
+### HTTPS
+
+Сейчас `Caddyfile` настроен для работы по IP (HTTP на 80).
+Когда появится домен — включи HTTPS в Caddy и укажи домен в `PUBLIC_APP_URL`/`CORS_ALLOW_ORIGINS`.
+
+## Перенос данных (локально -> VPS)
+
+### Postgres (рекомендуемый способ)
+
+Локально:
 
 ```bash
 docker compose exec -T postgres pg_dump -U sdlp -d sdlp -Fc > backup.dump
 ```
 
-### Restore
+На VPS:
 
 ```bash
-docker compose exec -T postgres psql -U sdlp -d sdlp -f - < backup.sql
+cat backup.dump | docker compose -f docker-compose.vps.yml exec -T postgres pg_restore -U sdlp -d sdlp --clean --if-exists
 ```
 
-Restore из `backup.dump` (custom format):
+### Контент (S3/MinIO)
 
-```bash
-docker compose exec -T postgres pg_restore -U sdlp -d sdlp --clean --if-exists < backup.dump
-```
+- Если используешь внешний S3 (REG.RU/AWS/etc) — контент не нужно переносить, он уже в бакете.
+- Если используешь MinIO на локалке и хочешь перенести на VPS:
+  - переноси данные volume `minio_data` на уровне хоста (tar/rsync) **или** включи внешний S3.
 
-Рекомендация для production: хранить бэкапы вне сервера (S3/облако) и делать ежедневный бэкап по расписанию.
+## Troubleshooting
 
-## Эксплуатация: Backup MinIO (файлы/контент)
-
-Контент в MinIO хранится во volume `minio_data`. Для Docker-окружения самый простой вариант — бэкапить сам volume на уровне хоста.
-
-Примечание: для production обычно удобнее настроить регулярное зеркало/экспорт в внешний S3 (или объектное хранилище) с помощью MinIO Client (`mc mirror`).
-
-## Seed / миграции
-
-- Миграции применяются автоматически при старте `backend` контейнера.
-- Seed выполняется один раз и помечается файлом `/data/.seeded` во volume `backend_data`.
-
-Чтобы пересоздать seed (только для dev/test):
-
-```bash
-docker compose down
-docker volume rm "$(basename "$PWD")_backend_data"
-docker compose up --build
-```
-
-## Smoke-check сценарии
-
-- Войти пользователем
-- Если выдан временный пароль и `must_change_password=true`:
-  - система принуждает перейти на `/force-password-change`
-  - после смены пароля доступ открывается
-- Стартовать квиз и отправить ответы
-- В админке:
-  - создать пользователя
-  - сбросить пароль пользователю
-- Проверить `/health/ready`
-
-## Dev hygiene (cleanup)
-
-Локальная уборка мусора (освобождение места: `node_modules`, `.next`, `__pycache__`, caches):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\cleanup.ps1
-```
+- **Очередь “не исполняется”**: проверь workers для нужной очереди (`WORKERS: 0` в UI) и что контейнеры `worker_import`/`worker_regen` запущены.
+- **CORS ошибки**: выставь `CORS_ALLOW_ORIGINS` ровно на URL фронта.
+- **Force password change**: убедись, что пользователь реально имеет `must_change_password=true` и что фронт редиректит на `/force-password-change`.

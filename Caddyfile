@@ -1,0 +1,19 @@
+{
+  auto_https off
+}
+
+:80 {
+  encode zstd gzip
+
+  handle_path /api/* {
+    reverse_proxy backend:8000
+  }
+
+  handle_path /health/* {
+    reverse_proxy backend:8000
+  }
+
+  handle {
+    reverse_proxy frontend:3000
+  }
+}
