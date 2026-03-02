@@ -6,8 +6,8 @@ const API_BASE_URL =
   "http://backend:8000";
 
 export async function POST(req: Request) {
-  const body = (await req.json()) as { name?: string; password?: string };
-  const name = body.name?.trim() || "";
+  const body = (await req.json()) as { name?: string; email?: string; password?: string };
+  const name = (body.email ?? body.name)?.trim() || "";
   const password = body.password || "";
 
   if (!name || !password) {

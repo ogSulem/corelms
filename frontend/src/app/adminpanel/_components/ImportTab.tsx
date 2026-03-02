@@ -582,6 +582,12 @@ export default function ImportTab(props: ImportTabProps) {
     return st === "queued" || st === "deferred" || st === "scheduled";
   };
 
+  const isTerminalJobLike = (it: any): boolean => {
+    const st = String((it as any)?.status || "").trim().toLowerCase();
+    const stage = String((it as any)?.stage || "").trim().toLowerCase();
+    return st === "finished" || st === "failed" || st === "canceled" || stage === "canceled" || stage === "done";
+  };
+
   const timeOfJobLike = (x: any) => {
     const a = String(x?.stage_at || "").trim();
     const b = String(x?.created_at || "").trim();
@@ -623,8 +629,52 @@ export default function ImportTab(props: ImportTabProps) {
     return null;
   };
 
-  const currentRegenJob = currentJobFor("regen") as any;
-  const currentImportJob = currentJobFor("import") as any;
+  const stickyRegenRef = React.useRef<{ job: any; ts: number } | null>(null);
+  const stickyImportRef = React.useRef<{ job: any; ts: number } | null>(null);
+
+  const currentRegenJob = React.useMemo(() => {
+    const xs = (regenQueue as any[]) || [];
+    const started = xs.filter((it) => isStartedJobLike(it));
+    if (started.length) {
+      started.sort((a, b) => timeOfJobLike(b) - timeOfJobLike(a));
+      const j = started[0] as any;
+      stickyRegenRef.current = { job: j, ts: Date.now() };
+      return j;
+    }
+    const hist = (pipelineHistory || []).filter((it: PipelineItem) => it.kind === "regen");
+    const terminal = hist.filter((it: any) => isTerminalJobLike(it));
+    terminal.sort((a: any, b: any) => timeOfJobLike(b) - timeOfJobLike(a));
+    const lastTerminal = terminal[0];
+    if (lastTerminal) {
+      stickyRegenRef.current = { job: lastTerminal as any, ts: Date.now() };
+      return lastTerminal as any;
+    }
+    const sticky = stickyRegenRef.current;
+    if (sticky && Date.now() - sticky.ts < 15_000) return sticky.job;
+    return null;
+  }, [regenQueue, pipelineHistory]);
+
+  const currentImportJob = React.useMemo(() => {
+    const xs = (importQueue as any[]) || [];
+    const started = xs.filter((it) => isStartedJobLike(it));
+    if (started.length) {
+      started.sort((a, b) => timeOfJobLike(b) - timeOfJobLike(a));
+      const j = started[0] as any;
+      stickyImportRef.current = { job: j, ts: Date.now() };
+      return j;
+    }
+    const hist = (pipelineHistory || []).filter((it: PipelineItem) => it.kind === "import");
+    const terminal = hist.filter((it: any) => isTerminalJobLike(it));
+    terminal.sort((a: any, b: any) => timeOfJobLike(b) - timeOfJobLike(a));
+    const lastTerminal = terminal[0];
+    if (lastTerminal) {
+      stickyImportRef.current = { job: lastTerminal as any, ts: Date.now() };
+      return lastTerminal as any;
+    }
+    const sticky = stickyImportRef.current;
+    if (sticky && Date.now() - sticky.ts < 15_000) return sticky.job;
+    return null;
+  }, [importQueue, pipelineHistory]);
 
   const currentRegenJobId = String(currentRegenJob?.job_id || currentRegenJob?.id || "").trim();
   const currentImportJobId = String(currentImportJob?.job_id || currentImportJob?.id || "").trim();

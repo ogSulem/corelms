@@ -104,9 +104,22 @@ def _persist_job_snapshot(*, job, meta: dict) -> None:
         return
 
 
+def _bump_admin_jobs_rev() -> None:
+    try:
+        r = get_redis()
+        r.incr("admin:jobs:rev")
+        try:
+            r.expire("admin:jobs:rev", 60 * 60 * 24 * 30)
+        except Exception:
+            pass
+    except Exception:
+        return
+
+
 def _publish_admin_jobs_changed(*, job) -> None:
     try:
         r = get_redis()
+        _bump_admin_jobs_rev()
         r.publish("admin:jobs:changed", str(getattr(job, "id", "") or "1"))
     except Exception:
         return

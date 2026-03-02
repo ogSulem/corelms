@@ -339,7 +339,7 @@ export default function ModulePage() {
     try {
       const sid = String(assetId || "").trim();
       if (!sid) return;
-      const url = `/assets/${encodeURIComponent(sid)}/stream`;
+      const url = `/api/backend/assets/${encodeURIComponent(sid)}/stream`;
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -370,7 +370,7 @@ export default function ModulePage() {
   }
 
   function streamUrl(assetId: string): string {
-    return `/assets/${encodeURIComponent(String(assetId || "").trim())}/stream`;
+    return `/api/backend/assets/${encodeURIComponent(String(assetId || "").trim())}/stream`;
   }
 
   async function presignViewUrl(assetId: string): Promise<string> {

@@ -245,6 +245,11 @@ export function UsersTab(props: UsersTabProps) {
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">{u.name}</div>
+                        {String((u as any)?.email || "").trim() ? (
+                          <div className="mt-1 truncate text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                            {String((u as any)?.email || "").trim()}
+                          </div>
+                        ) : null}
                         <div className="mt-1 truncate text-[10px] font-black uppercase tracking-widest text-zinc-600">
                           {u.position ? u.position : u.role}
                         </div>
@@ -333,6 +338,10 @@ export function UsersTab(props: UsersTabProps) {
                       value={draftName}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraftName(String(e.target.value || ""))}
                     />
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Email</div>
+                    <div className="mt-2 text-[11px] font-black tracking-widest text-zinc-950 break-all">{String(userDetail.email || "")}</div>
                   </div>
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Должность</div>

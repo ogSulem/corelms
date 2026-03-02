@@ -252,6 +252,10 @@ def create_app() -> FastAPI:
         if not name or not password:
             return
 
+        email = name.strip().lower()
+        if "@" not in email:
+            email = f"{email}@bootstrap.local"
+
         db = SessionLocal()
         try:
             existing_admin = db.scalar(select(User).where(User.role == UserRole.admin))
@@ -261,6 +265,7 @@ def create_app() -> FastAPI:
             pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
             user = User(
                 name=name,
+                email=email,
                 position=None,
                 role=UserRole.admin,
                 xp=0,

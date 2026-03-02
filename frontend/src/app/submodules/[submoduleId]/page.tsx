@@ -402,7 +402,7 @@ export default function SubmodulePage() {
   };
 
   function streamUrl(assetId: string): string {
-    return `/assets/${encodeURIComponent(String(assetId || "").trim())}/stream`;
+    return `/api/backend/assets/${encodeURIComponent(String(assetId || "").trim())}/stream`;
   }
 
   async function presignViewUrl(assetId: string): Promise<string> {

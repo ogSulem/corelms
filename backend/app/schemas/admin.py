@@ -111,6 +111,7 @@ class AssignmentCreateResponse(BaseModel):
 
 class UserCreateRequest(BaseModel):
     name: str
+    email: str | None = None
     position: str | None = None
     role: Literal["employee", "admin"] = "employee"
     password: str | None = None

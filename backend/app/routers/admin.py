@@ -98,6 +98,109 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
+def _admin_jobs_get_rev() -> int:
+    try:
+        r = get_redis()
+        raw = r.get("admin:jobs:rev")
+        if raw is None:
+            return 0
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="ignore")
+        return int(str(raw or "0").strip() or "0")
+    except Exception:
+        return 0
+
+
+def _admin_jobs_bump_rev() -> int:
+    try:
+        r = get_redis()
+        v = int(r.incr("admin:jobs:rev"))
+        try:
+            r.expire("admin:jobs:rev", 60 * 60 * 24 * 30)
+        except Exception:
+            pass
+        return v
+    except Exception:
+        return _admin_jobs_get_rev()
+
+
+def _admin_jobs_pick_current(*, items: list[dict], history: list[dict]) -> dict | None:
+    # Option 2 semantics: current is the most recently updated started job.
+    # If none started, show the most recent terminal job (finished/failed/canceled).
+    try:
+        started = [it for it in (items or []) if str(it.get("status") or "").strip().lower() == "started"]
+        if started:
+            def _t(x: dict) -> int:
+                for k in ("stage_at", "started_at", "created_at"):
+                    v = str((x or {}).get(k) or "").strip()
+                    if v:
+                        try:
+                            return int(datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp() * 1000)
+                        except Exception:
+                            pass
+                return 0
+
+            started.sort(key=_t, reverse=True)
+            return started[0]
+    except Exception:
+        pass
+
+    try:
+        if history:
+            return history[0]
+    except Exception:
+        pass
+    return None
+
+
+def _admin_jobs_build_lane(*, kind: str, listing: dict) -> dict:
+    items = list(listing.get("items") or []) if isinstance(listing, dict) else []
+    hist = list(listing.get("history") or []) if isinstance(listing, dict) else []
+
+    # Normalize items: separate queued vs started; queued must never appear in current.
+    def _is_queued(it: dict) -> bool:
+        st = str((it or {}).get("status") or "").strip().lower()
+        return st in {"queued", "deferred", "scheduled"}
+
+    def _is_started(it: dict) -> bool:
+        st = str((it or {}).get("status") or "").strip().lower()
+        return st == "started"
+
+    queue = [it for it in items if _is_queued(it)]
+    started = [it for it in items if _is_started(it)]
+    merged_for_current = started
+
+    current = _admin_jobs_pick_current(items=merged_for_current, history=hist)
+    cid = str((current or {}).get("job_id") or "").strip()
+    if cid:
+        queue = [it for it in queue if str((it or {}).get("job_id") or "").strip() != cid]
+
+    return {
+        "kind": kind,
+        "workers": int(listing.get("workers") or 0) if isinstance(listing, dict) else 0,
+        "queue": queue,
+        "current": current,
+        "history": hist,
+        "queue_stats": listing.get("queue_stats") if isinstance(listing, dict) else None,
+        "queue_name": listing.get("queue") if isinstance(listing, dict) else None,
+    }
+
+
+@router.get("/jobs/model")
+def admin_jobs_model(
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    rev = _admin_jobs_get_rev()
+    imp = _admin_list_import_jobs(limit=200, include_terminal=True)
+    reg = _admin_list_regen_jobs(limit=200, include_terminal=True)
+    return {
+        "rev": rev,
+        "import": _admin_jobs_build_lane(kind="import", listing=imp),
+        "regen": _admin_jobs_build_lane(kind="regen", listing=reg),
+        "ts": datetime.utcnow().isoformat(),
+    }
+
+
 def _random_password(length: int = 12) -> str:
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(int(length)))
@@ -194,6 +297,13 @@ def _normalize_import_text(v: str | None) -> str:
     except Exception:
         pass
     return s
+
+
+def _looks_like_uuid(s: str) -> bool:
+    """Return True if string looks like a UUID (common pattern)."""
+    if not s:
+        return False
+    return bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", s, re.IGNORECASE))
 
 
 def _delete_s3_prefix_best_effort(*, prefix: str) -> None:
@@ -3599,6 +3709,7 @@ def regenerate_module_quizzes(
         r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
         r.ltrim("admin:regen_jobs", 0, 49)
         r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
+        _admin_jobs_bump_rev()
         r.publish("admin:jobs:changed", str(job.id))
     except Exception:
         pass
@@ -3706,6 +3817,7 @@ def regenerate_submodule_quiz(
         r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
         r.ltrim("admin:regen_jobs", 0, 49)
         r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
+        _admin_jobs_bump_rev()
         r.publish("admin:jobs:changed", str(job.id))
     except Exception:
         pass
@@ -3870,6 +3982,16 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
             obj["module_title"] = obj.get("module_title") or meta.get("module_title") or ""
             obj["submodule_id"] = obj.get("submodule_id") or meta.get("submodule_id") or ""
             obj["submodule_title"] = obj.get("submodule_title") or meta.get("submodule_title") or ""
+            # Prevent UUID from being shown as module_title
+            if not obj["module_title"] or _looks_like_uuid(obj["module_title"]):
+                mid = obj.get("module_id") or meta.get("module_id")
+                if mid:
+                    try:
+                        mod = db.scalar(select(Module).where(Module.id == mid))
+                        if mod and mod.title:
+                            obj["module_title"] = mod.title
+                    except Exception:
+                        pass
             try:
                 if st == "failed":
                     err = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
@@ -3877,8 +3999,15 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
             except Exception:
                 obj["error"] = None
 
-            terminal = st in {"finished", "failed", "canceled"} or stage == "canceled" or stage == "done"
+            # Stronger terminal check: if RQ says it is done, it MUST be terminal regardless of what's in Redis.
+            is_rq_terminal = st in {"finished", "failed", "canceled"}
+            is_meta_terminal = stage in {"canceled", "done"}
+            terminal = is_rq_terminal or is_meta_terminal
+
             if terminal:
+                # Ensure status is actually reflecting terminal state if meta says so
+                if is_meta_terminal and st not in {"finished", "failed", "canceled"}:
+                    obj["status"] = "finished" if stage == "done" else "canceled"
                 terminal_moved.append(obj)
             else:
                 active_items.append(obj)
@@ -3950,8 +4079,15 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
                 "queue": str(getattr(job, "origin", "") or "").strip() or None,
             }
 
-            terminal = st in {"finished", "failed", "canceled"} or stage == "canceled" or stage == "done"
+            # Stronger terminal check: if RQ says it is done, it MUST be terminal regardless of what's in Redis.
+            is_rq_terminal = st in {"finished", "failed", "canceled"}
+            is_meta_terminal = stage in {"canceled", "done"}
+            terminal = is_rq_terminal or is_meta_terminal
+
             if terminal:
+                # Ensure status is actually reflecting terminal state if meta says so
+                if is_meta_terminal and st not in {"finished", "failed", "canceled"}:
+                    obj["status"] = "finished" if stage == "done" else "canceled"
                 terminal_moved.append(obj)
             else:
                 active_items.append(obj)
@@ -4229,14 +4365,20 @@ async def admin_job_events(
                         await asyncio.sleep(0)
                     else:
                         last_recompute_ms = now_ms
+                        rev = _admin_jobs_get_rev()
+                        imp = _admin_list_import_jobs(limit=200, include_terminal=True)
+                        reg = _admin_list_regen_jobs(limit=200, include_terminal=True)
                         payload = {
-                            "import": _admin_list_import_jobs(limit=200, include_terminal=True),
-                            "regen": _admin_list_regen_jobs(limit=200, include_terminal=True),
+                            "rev": rev,
+                            "import": _admin_jobs_build_lane(kind="import", listing=imp),
+                            "regen": _admin_jobs_build_lane(kind="regen", listing=reg),
                             "ts": datetime.utcnow().isoformat(),
                         }
                         sig = ""
                         try:
-                            sig = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                            sig_payload = dict(payload)
+                            sig_payload.pop("ts", None)
+                            sig = json.dumps(sig_payload, ensure_ascii=False, sort_keys=True)
                         except Exception:
                             sig = str(payload.get("ts") or "")
 
@@ -5220,6 +5362,7 @@ def get_user_detail(
     return {
         "id": str(u.id),
         "name": u.name,
+        "email": str(getattr(u, "email", None) or "") or None,
         "role": u.role.value,
         "position": u.position,
         "xp": int(u.xp or 0),
@@ -5676,18 +5819,27 @@ def create_user(
     _: object = rate_limit(key_prefix="admin_create_user", limit=20, window_seconds=60),
 ):
     name = (body.name or "").strip()
+    email = str(getattr(body, "email", None) or "").strip().lower() or None
     if not name:
         raise HTTPException(status_code=400, detail="invalid name")
+
+    if not email or "@" not in str(email):
+        raise HTTPException(status_code=400, detail="invalid email")
 
     existing = db.scalar(select(User).where(User.name == name))
     if existing is not None:
         raise HTTPException(status_code=409, detail="user already exists")
+
+    existing_email = db.scalar(select(User).where(func.lower(User.email) == str(email)))
+    if existing_email is not None:
+        raise HTTPException(status_code=409, detail="user email already exists")
 
     # Admin receives a temporary password (must be changed on first login).
     temp_password = str(body.password or "").strip() or _random_password(14)
 
     user = User(
         name=name,
+        email=email,
         position=body.position,
         role=UserRole(str(body.role)),
         xp=0,

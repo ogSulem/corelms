@@ -9,7 +9,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from jose import jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -450,7 +450,14 @@ def token(
     db: Session = Depends(get_db),
     _: object = rate_limit(key_prefix="auth_token", limit=20, window_seconds=60),
 ):
-    user = db.scalar(select(User).where(User.name == form_data.username))
+    login_raw = str(form_data.username or "").strip()
+    login_norm = login_raw.lower()
+
+    user = None
+    if "@" in login_norm:
+        user = db.scalar(select(User).where(func.lower(User.email) == login_norm))
+    if user is None:
+        user = db.scalar(select(User).where(User.name == login_raw))
     if user is None or not _verify_password(form_data.password, user.password_hash):
         audit_log(db=db, request=request, event_type="auth_login_failed", meta={"username": form_data.username})
         db.commit()
@@ -775,6 +782,12 @@ def change_password(
         user.phone = norm
 
     user.password_hash = _hash_password(body.new_password)
+    user.must_change_password = False
+    user.password_changed_at = datetime.utcnow()
+    db.add(user)
+    audit_log(db=db, request=request, event_type="auth_change_password_success", actor_user_id=user.id, target_user_id=user.id)
+    db.commit()
+    return {"ok": True}
     user.must_change_password = False
     user.password_changed_at = datetime.utcnow()
     db.add(user)

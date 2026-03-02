@@ -39,7 +39,7 @@ export function LoginClient() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: n, password: p }),
+        body: JSON.stringify({ email: n, password: p }),
         credentials: "include",
       });
       if (!res.ok) {

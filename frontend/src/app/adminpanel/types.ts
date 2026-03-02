@@ -152,6 +152,7 @@ export type AdminQuestionItem = {
 export type UserItem = {
   id: string;
   name: string;
+  email?: string | null;
   role: string;
   position?: string | null;
   xp?: number;

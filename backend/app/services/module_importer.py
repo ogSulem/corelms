@@ -504,9 +504,6 @@ def import_module_from_dir(
     module_material_viewable: list[pathlib.Path] = []
     if module_material_dir.exists() and module_material_dir.is_dir():
         for fp in _list_files_recursive(module_material_dir):
-            if _is_previewable_lesson_asset(fp):
-                module_material_viewable.append(fp)
-                continue
             try:
                 rel = fp.relative_to(module_material_dir)
                 rel_name = str(rel.as_posix())
@@ -517,17 +514,22 @@ def import_module_from_dir(
             object_key = f"{pfx}_module/{rel_name}"
             mime, size = _upload_file(s3=s3, object_key=object_key, file_path=fp)
 
-            asset = ContentAsset(
-                bucket=settings.s3_bucket,
-                object_key=object_key,
-                original_filename=rel_name,
-                mime_type=mime,
-                size_bytes=size,
-                checksum_sha256=None,
-                created_by=None,
-            )
-            db.add(asset)
-            db.flush()
+            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == object_key))
+            if asset is None:
+                asset = ContentAsset(
+                    bucket=settings.s3_bucket,
+                    object_key=object_key,
+                    original_filename=rel_name,
+                    mime_type=mime,
+                    size_bytes=size,
+                    checksum_sha256=None,
+                    created_by=None,
+                )
+                db.add(asset)
+                db.flush()
+
+            if _is_previewable_lesson_asset(fp):
+                module_material_viewable.append(fp)
 
             if report is not None:
                 report["module_assets"] = int(report.get("module_assets") or 0) + 1

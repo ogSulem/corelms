@@ -56,12 +56,31 @@ export default function AdminPanelClient() {
   const importQueuePendingRef = useRef<File[]>([]);
   const lastAdminSseRefreshMsRef = useRef<number>(0);
   const jobsSseLastOkAtRef = useRef<number>(0);
+  const jobsSseLastRevRef = useRef<number>(0);
   const jobsPollInFlightRef = useRef<boolean>(false);
   const jobPanelLastStableRef = useRef<{ status: string; stage: string; stageAtUpdatedMs: number; detailUpdatedMs: number }>({ status: "", stage: "", stageAtUpdatedMs: 0, detailUpdatedMs: 0 });
   const restoredJobFromStorageRef = useRef<boolean>(false);
   const didInitFromQueryRef = useRef<boolean>(false);
   const optimisticActiveModuleRegenRef = useRef<Record<string, any>>({});
   const optimisticActiveSubmoduleRegenRef = useRef<Record<string, any>>({});
+
+  const jobsDebugEnabled = useMemo(() => {
+    try {
+      return String(window.localStorage.getItem("corelms:admin_jobs_debug") || "").trim() === "1";
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const jobsLog = (label: string, data: any) => {
+    if (!jobsDebugEnabled) return;
+    try {
+      // eslint-disable-next-line no-console
+      console.log(`[admin:jobs] ${label}`, data);
+    } catch {
+      // ignore
+    }
+  };
 
   // --- Utilities ---
   function readAdminQuery(): { tab?: TabKey; mid?: string; sid?: string; qid?: string } {
@@ -314,17 +333,31 @@ export default function AdminPanelClient() {
     for (const p of Array.isArray(prev) ? prev : []) {
       const jid = String((p as any)?.job_id || (p as any)?.id || "").trim();
       if (!jid || byId.has(jid)) continue;
-      if (isTerminalJobLike(p)) continue;
+      const terminal = isTerminalJobLike(p);
 
       // If a job was only pending in queue and it disappears from the authoritative snapshot,
       // drop it immediately (otherwise it looks like the UI is stale until refresh).
-      if (isPendingLike(p) && (!isStartedLike(p))) continue;
+      if (!terminal && isPendingLike(p) && (!isStartedLike(p))) continue;
+
+      // Keep terminal jobs briefly even if backend temporarily omits history between transitions.
+      if (terminal) {
+        const stageAt = String((p as any)?.stage_at || (p as any)?.created_at || "").trim();
+        const tParsed = stageAt ? Date.parse(stageAt) : 0;
+        const tSeen = Number((p as any)?._client_seen_at || 0);
+        const t = (tParsed && Number.isFinite(tParsed)) ? tParsed : (tSeen || 0);
+        if (t && Number.isFinite(t) && now - t <= 2 * 60 * 1000) {
+          byId.set(jid, p);
+        }
+        continue;
+      }
 
       // Only retain missing jobs briefly if they were started.
       if (!isStartedLike(p)) continue;
 
       const stageAt = String((p as any)?.stage_at || (p as any)?.created_at || "").trim();
-      const t = stageAt ? Date.parse(stageAt) : 0;
+      const tParsed = stageAt ? Date.parse(stageAt) : 0;
+      const tSeen = Number((p as any)?._client_seen_at || 0);
+      const t = (tParsed && Number.isFinite(tParsed)) ? tParsed : (tSeen || 0);
       if (t && Number.isFinite(t) && now - t > 2 * 60 * 1000) continue;
       byId.set(jid, p);
     }
@@ -375,6 +408,49 @@ export default function AdminPanelClient() {
     }
 
     return Array.from(byId.values());
+  };
+
+  const hasStartedJobLike = (xs: any[]): boolean => {
+    try {
+      for (const it of Array.isArray(xs) ? xs : []) {
+        const st = String((it as any)?.status || "").trim().toLowerCase();
+        const stage = String((it as any)?.stage || "").trim().toLowerCase();
+        if (st === "started" || stage === "started") return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  };
+
+  const shouldIgnoreEmptySnapshot = (prev: any[], incoming: any[], kind: "import" | "regen", source: string): boolean => {
+    try {
+      const inc = Array.isArray(incoming) ? incoming : [];
+      if (inc.length > 0) return false;
+
+      const p = Array.isArray(prev) ? prev : [];
+      if (!p.length) return false;
+
+      // If we recently saw a started job, an empty snapshot is most likely transient.
+      // Ignore it briefly to prevent UI from dropping the current job until refresh.
+      const hasStarted = hasStartedJobLike(p);
+      if (!hasStarted) return false;
+
+      // Tight window: we only guard against short transient gaps.
+      const now = Date.now();
+      let newestSeenAt = 0;
+      for (const it of p) {
+        const tSeen = Number((it as any)?._client_seen_at || 0);
+        if (tSeen && Number.isFinite(tSeen)) newestSeenAt = Math.max(newestSeenAt, tSeen);
+      }
+      if (newestSeenAt && now - newestSeenAt <= 25_000) {
+        jobsLog("snapshot.empty_ignored", { kind, source, prev: p.length });
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
   };
 
   const s3Label = useMemo(() => {
@@ -454,6 +530,72 @@ export default function AdminPanelClient() {
     setJobResult(null);
   }
 
+  const applyJobPanelSnapshot = (snap: any, source: string) => {
+    try {
+      if (!snap) return;
+      const id = String((snap as any)?.id || (snap as any)?.job_id || "").trim();
+      if (!id) return;
+      if (id !== String(selectedJobIdRef.current || "").trim()) return;
+
+      const st = String((snap as any)?.status || "").trim();
+      const stage = String((snap as any)?.stage || "").trim();
+      const stageAt = String((snap as any)?.stage_at || "").trim();
+      const stageStartedAt = String((snap as any)?.stage_started_at || "").trim();
+      const jobStartedAt = String((snap as any)?.job_started_at || (snap as any)?.started_at || "").trim();
+      const detail = String((snap as any)?.detail || "").trim();
+      const errorMessage = String((snap as any)?.error_message || (snap as any)?.error || "").trim();
+      const errorCode = String((snap as any)?.error_code || "").trim();
+      const errorHint = String((snap as any)?.error_hint || "").trim();
+      const kind = String((snap as any)?.job_kind || "").trim();
+      const moduleTitle = String((snap as any)?.module_title || "").trim();
+      const moduleId = String((snap as any)?.module_id || "").trim();
+      const durations = (snap as any)?.stage_durations_s;
+      const result = (snap as any)?.result ?? null;
+
+      setJobStatus(st);
+      setJobStage(stage);
+      setJobStageAt(stageAt);
+      setJobStageStartedAt(stageStartedAt);
+      setJobStartedAt(jobStartedAt);
+      setJobDetail(detail);
+      setJobError(errorMessage);
+      setJobErrorCode(errorCode);
+      setJobErrorHint(errorHint);
+      setJobKind(kind);
+      setJobModuleTitle(moduleTitle);
+      setJobModuleId(moduleId);
+      if (durations && typeof durations === "object") setJobStageDurations(durations);
+      if (result !== undefined) setJobResult(result);
+
+      jobsLog("panel.apply", {
+        source,
+        id,
+        status: st,
+        stage,
+        hasDetail: Boolean(detail),
+        hasError: Boolean(errorMessage),
+      });
+    } catch {
+      // ignore
+    }
+  };
+
+  const hydrateJobPanel = async (jobId: string, reason: string) => {
+    const id = String(jobId || "").trim();
+    if (!id) return;
+    try {
+      const now = Date.now();
+      const st = jobPanelHydrateRef.current;
+      if (st.jobId === id && now - (st.lastAtMs || 0) < 1200) return;
+      jobPanelHydrateRef.current = { jobId: id, lastAtMs: now };
+      jobsLog("panel.hydrate", { id, reason });
+      const snap = await apiFetch<any>(`/admin/jobs/${encodeURIComponent(id)}`);
+      applyJobPanelSnapshot({ id, ...(snap as any) }, "api");
+    } catch {
+      // ignore
+    }
+  };
+
   function hasActiveCurrentJob(): boolean {
     const jid = String(selectedJobId || "").trim();
     if (!jid) return false;
@@ -476,12 +618,22 @@ export default function AdminPanelClient() {
         setRegenQueueWorkers(0);
       }
 
-      const normItems = (res?.items || []).map((x) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
-      const normHist = (res?.history || []).map((x) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+      const now = Date.now();
+      const normItems = (res?.items || []).map((x) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+      const normHist = (res?.history || []).map((x) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
       const next = normItems.concat(normHist);
+      jobsLog("poll.regen", {
+        items: normItems.length,
+        history: normHist.length,
+        total: next.length,
+        workers: Number((res as any)?.workers || 0),
+      });
       if (JSON.stringify(next) !== regenHistorySigRef.current) {
-        regenHistorySigRef.current = JSON.stringify(next);
-        setRegenHistory(next);
+        setRegenHistory((prev: any[]) => {
+          if (shouldIgnoreEmptySnapshot(prev, next, "regen", "poll")) return prev;
+          regenHistorySigRef.current = JSON.stringify(next);
+          return mergeRegenSnapshots(prev, next);
+        });
       }
     } catch {
       // Keep last known snapshot to avoid UI flicker (queues temporarily disappearing).
@@ -501,15 +653,31 @@ export default function AdminPanelClient() {
         setImportQueueWorkers(0);
       }
 
-      const items = (res?.items || []).map(x => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
-      const hist = (res?.history || []).map(x => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+      const now = Date.now();
+      const items = (res?.items || []).map((x) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+      const hist = (res?.history || []).map((x) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+
+      jobsLog("poll.import", {
+        items: items.length,
+        history: hist.length,
+        limit,
+        includeTerminal,
+        workers: Number((res as any)?.workers || 0),
+      });
+
       if (JSON.stringify(items) !== importQueueSigRef.current) {
-        importQueueSigRef.current = JSON.stringify(items);
-        setImportQueue(items);
+        setImportQueue((prev: any[]) => {
+          if (shouldIgnoreEmptySnapshot(prev, items, "import", "poll.items")) return prev;
+          importQueueSigRef.current = JSON.stringify(items);
+          return mergeImportSnapshots(prev, items);
+        });
       }
       if (JSON.stringify(hist) !== importQueueHistorySigRef.current) {
-        importQueueHistorySigRef.current = JSON.stringify(hist);
-        setImportQueueHistory(hist);
+        setImportQueueHistory((prev: any[]) => {
+          if (shouldIgnoreEmptySnapshot(prev, hist, "import", "poll.history")) return prev;
+          importQueueHistorySigRef.current = JSON.stringify(hist);
+          return mergeImportSnapshots(prev, hist);
+        });
       }
     } catch {
       // Keep last known snapshot to avoid UI flicker (queues temporarily disappearing).
@@ -517,6 +685,95 @@ export default function AdminPanelClient() {
       if (!silent) setImportQueueLoading(false);
     }
   }
+
+  const applyJobsModel = (payload: any, source: string) => {
+    try {
+      const impLane = (payload as any)?.import || {};
+      const rgLane = (payload as any)?.regen || {};
+
+      const now = Date.now();
+
+      const impCurrent = (impLane as any)?.current && typeof (impLane as any)?.current === "object" ? (impLane as any).current : null;
+      const impQueue = Array.isArray((impLane as any)?.queue) ? (impLane as any).queue : [];
+      const impHist = Array.isArray((impLane as any)?.history) ? (impLane as any).history : [];
+      const impItems = (impCurrent ? [impCurrent] : []).concat(impQueue).map((x: any) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+      const impHistory = impHist.map((x: any) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+
+      try {
+        setImportQueueWorkers(Number((impLane as any)?.workers || 0));
+      } catch {
+        setImportQueueWorkers(0);
+      }
+
+      jobsLog("model.apply", {
+        source,
+        rev: Number((payload as any)?.rev || 0) || 0,
+        import_queue: impQueue.length,
+        import_current: Boolean(impCurrent),
+        import_history: impHist.length,
+        regen_queue: Array.isArray((rgLane as any)?.queue) ? (rgLane as any).queue.length : 0,
+        regen_current: Boolean((rgLane as any)?.current),
+        regen_history: Array.isArray((rgLane as any)?.history) ? (rgLane as any).history.length : 0,
+      });
+
+      if (JSON.stringify(impItems) !== importQueueSigRef.current) {
+        setImportQueue((prev: any[]) => {
+          if (shouldIgnoreEmptySnapshot(prev, impItems, "import", `${source}.import.queue_current`)) return prev;
+          importQueueSigRef.current = JSON.stringify(impItems);
+          return mergeImportSnapshots(prev, impItems);
+        });
+      }
+      if (JSON.stringify(impHistory) !== importQueueHistorySigRef.current) {
+        setImportQueueHistory((prev: any[]) => {
+          if (shouldIgnoreEmptySnapshot(prev, impHistory, "import", `${source}.import.history`)) return prev;
+          importQueueHistorySigRef.current = JSON.stringify(impHistory);
+          return mergeImportSnapshots(prev, impHistory);
+        });
+      }
+
+      // Regen lane: keep a single merged list for current queue + history.
+      const rgCurrent = (rgLane as any)?.current && typeof (rgLane as any)?.current === "object" ? (rgLane as any).current : null;
+      const rgQueue = Array.isArray((rgLane as any)?.queue) ? (rgLane as any).queue : [];
+      const rgHist = Array.isArray((rgLane as any)?.history) ? (rgLane as any).history : [];
+      const rgAll = (rgCurrent ? [rgCurrent] : []).concat(rgQueue).concat(rgHist).map((x: any) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+
+      try {
+        setRegenQueueWorkers(Number((rgLane as any)?.workers || 0));
+      } catch {
+        setRegenQueueWorkers(0);
+      }
+
+      if (JSON.stringify(rgAll) !== regenHistorySigRef.current) {
+        setRegenHistory((prev: any[]) => {
+          if (shouldIgnoreEmptySnapshot(prev, rgAll, "regen", `${source}.regen.all`)) return prev;
+          regenHistorySigRef.current = JSON.stringify(rgAll);
+          return mergeRegenSnapshots(prev, rgAll);
+        });
+      }
+
+      // Opportunistically refresh the job detail panel from the lane payload.
+      try {
+        const sel = String(selectedJobIdRef.current || "").trim();
+        if (sel) {
+          const found = impItems.concat(impHistory).concat(rgAll).find((x: any) => String((x as any)?.job_id || (x as any)?.id || "").trim() === sel);
+          if (found) applyJobPanelSnapshot({ id: sel, ...(found as any) }, `${source}.panel`);
+        }
+      } catch {
+        // ignore
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const loadJobsModel = async (silent = true) => {
+    try {
+      const payload = await apiFetch<any>(`/admin/jobs/model`);
+      applyJobsModel(payload, "poll.model");
+    } catch {
+      // ignore
+    }
+  };
 
   async function startImport() {
     if (importFiles.length === 0) return;
@@ -640,7 +897,7 @@ export default function AdminPanelClient() {
           setSelectedJobId(jid);
           setJobStatus("queued");
         }
-        void loadImportQueue(20, false, true);
+        void loadJobsModel(true);
         void loadStorageUploads(storageUploadsPrefix);
       }
     } catch (e) {
@@ -651,7 +908,7 @@ export default function AdminPanelClient() {
   async function retryImportJob(id: string) {
     try {
       await apiFetch(`/admin/import-jobs/${encodeURIComponent(id)}/retry`, { method: "POST" });
-      void loadImportQueue(20, true, true);
+      void loadJobsModel(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка повтора");
     }
@@ -661,7 +918,7 @@ export default function AdminPanelClient() {
     try {
       setCancelBusy(true);
       await apiFetch(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
-      void loadImportQueue(20, true, true);
+      void loadJobsModel(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка отмены");
     } finally {
@@ -673,7 +930,7 @@ export default function AdminPanelClient() {
     try {
       setCancelBusy(true);
       await apiFetch(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
-      void loadRegenHistory();
+      void loadJobsModel(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка отмены");
     } finally {
@@ -684,7 +941,7 @@ export default function AdminPanelClient() {
   async function clearAdminJobHistory() {
     try {
       await apiFetch(`/admin/jobs/history/clear`, { method: "POST" });
-      await Promise.all([loadRegenHistory(), loadImportQueue(50, true)]);
+      await loadJobsModel(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка очистки");
     }
@@ -749,14 +1006,18 @@ export default function AdminPanelClient() {
   async function createUser() {
     const nm = String(newUserName || "").trim();
     const em = String(newUserEmail || "").trim();
-    if (!nm && !em) return;
+    if (!em) {
+      setError("EMAIL ОБЯЗАТЕЛЕН ДЛЯ ВХОДА");
+      return;
+    }
     try {
       setNewUserBusy(true);
       setError(null);
       const res = await apiFetch<{ id: string; temp_password?: string | null }>(`/admin/users`, {
         method: "POST",
         body: JSON.stringify({
-          name: nm || em,
+          name: nm || em.split("@", 1)[0] || em,
+          email: em,
           position: newUserPosition,
           role: newUserRole,
           must_change_password: true,
@@ -774,6 +1035,8 @@ export default function AdminPanelClient() {
       const m = String(msg || "").toLowerCase();
       if (m.includes("user already exists")) {
         setError("ПОЛЬЗОВАТЕЛЬ УЖЕ СУЩЕСТВУЕТ (ИМЯ/ЛОГИН ДОЛЖЕН БЫТЬ УНИКАЛЬНЫМ)");
+      } else if (m.includes("user email already exists")) {
+        setError("EMAIL УЖЕ ЗАНЯТ");
       } else {
         setError(msg || "НЕ УДАЛОСЬ СОЗДАТЬ ПОЛЬЗОВАТЕЛЯ");
       }
@@ -1313,96 +1576,28 @@ export default function AdminPanelClient() {
         try {
           const payload = JSON.parse(String((ev as any)?.data || "{}")) as any;
 
-          const imp = payload?.import || {};
-          try {
-            setImportQueueWorkers(Number((imp as any)?.workers || 0));
-          } catch {
-            setImportQueueWorkers(0);
+          // Ignore out-of-order events to prevent UI regressions.
+          const rev = Number(payload?.rev || 0);
+          const lastRev = Number(jobsSseLastRevRef.current || 0);
+          if (rev && rev <= lastRev) {
+            jobsLog("sse.ignored", { rev, lastRev });
+            return;
           }
-          const impItems = Array.isArray(imp?.items) ? imp.items : [];
-          const impHist = Array.isArray(imp?.history) ? imp.history : [];
-          const items = impItems.map((x: any) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
-          const hist = impHist.map((x: any) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
+          if (rev) jobsSseLastRevRef.current = rev;
 
-          // Product UX: regen must appear immediately after import enqueues it.
-          // Optimistically materialize regen job into regenHistory when import meta already has regen_job_id.
-          try {
-            const allImp = items.concat(hist);
-            const optimistic: any[] = [];
-            for (const it of allImp) {
-              const regenJobId = String((it as any)?.regen_job_id || (it as any)?.meta?.regen_job_id || "").trim();
-              const mid = String((it as any)?.module_id || (it as any)?.meta?.module_id || "").trim();
-              if (!regenJobId || !mid) continue;
-              optimistic.push({
-                job_id: regenJobId,
-                id: regenJobId,
-                status: "queued",
-                stage: "queued",
-                module_id: mid,
-                module_title: String((it as any)?.module_title || (it as any)?.meta?.module_title || "").trim(),
-                created_at: String((it as any)?.stage_at || (it as any)?.created_at || new Date().toISOString()),
-                source: "auto_after_import",
-              });
-            }
-            if (optimistic.length) {
-              setRegenHistory((prev: any[]) => mergeOptimisticRegen(prev, optimistic));
-            }
-          } catch {
-            // ignore
-          }
+          jobsLog("sse.jobs", {
+            rev,
+            ts: String(payload?.ts || ""),
+            import_queue: Array.isArray(payload?.import?.queue) ? payload.import.queue.length : 0,
+            import_has_current: Boolean(payload?.import?.current),
+            import_history: Array.isArray(payload?.import?.history) ? payload.import.history.length : 0,
+            regen_queue: Array.isArray(payload?.regen?.queue) ? payload.regen.queue.length : 0,
+            regen_has_current: Boolean(payload?.regen?.current),
+            regen_history: Array.isArray(payload?.regen?.history) ? payload.regen.history.length : 0,
+          });
 
-          // Detect finished import jobs and refresh module list automatically.
-          try {
-            const prevMap = importJobStatusByIdRef.current || {};
-            const nextMap: Record<string, string> = { ...prevMap };
-            let sawNewFinished = false;
-
-            for (const it of items.concat(hist)) {
-              const jid = String((it as any)?.id || (it as any)?.job_id || "").trim();
-              if (!jid) continue;
-              const st = String((it as any)?.status || "").trim().toLowerCase();
-              const prev = String(prevMap[jid] || "").trim().toLowerCase();
-              nextMap[jid] = st;
-              if (st === "finished" && prev && prev !== "finished") sawNewFinished = true;
-              if (st === "finished" && !prev) sawNewFinished = true;
-            }
-            importJobStatusByIdRef.current = nextMap;
-
-            if (sawNewFinished) {
-              if (refreshModulesDebounceRef.current) window.clearTimeout(refreshModulesDebounceRef.current);
-              refreshModulesDebounceRef.current = window.setTimeout(() => {
-                refreshModulesDebounceRef.current = null;
-                void loadAdminModules();
-              }, 600);
-            }
-          } catch {
-            // ignore
-          }
-
-          if (JSON.stringify(items) !== importQueueSigRef.current) {
-            importQueueSigRef.current = JSON.stringify(items);
-            setImportQueue(items as any);
-          }
-          if (JSON.stringify(hist) !== importQueueHistorySigRef.current) {
-            importQueueHistorySigRef.current = JSON.stringify(hist);
-            setImportQueueHistory(hist);
-          }
-
-          const rg = payload?.regen || {};
-          try {
-            setRegenQueueWorkers(Number((rg as any)?.workers || 0));
-          } catch {
-            setRegenQueueWorkers(0);
-          }
-          const rgItems = Array.isArray(rg?.items) ? rg.items : [];
-          const rgHist = Array.isArray(rg?.history) ? rg.history : [];
-          const next = (rgItems || [])
-            .map((x: any) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }))
-            .concat((rgHist || []).map((x: any) => ({ job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x })));
-          if (JSON.stringify(next) !== regenHistorySigRef.current) {
-            regenHistorySigRef.current = JSON.stringify(next);
-            setRegenHistory(next);
-          }
+          // Apply canonical lane payload atomically.
+          applyJobsModel(payload, "sse");
         } catch {
           // ignore
         }
@@ -1455,10 +1650,7 @@ export default function AdminPanelClient() {
       if (connected && !stale) return;
 
       try {
-        await Promise.all([
-          loadImportQueue(200, true, true),
-          loadRegenHistory(true),
-        ]);
+        await loadJobsModel(true);
       } catch {
         // ignore
       }
@@ -1475,6 +1667,40 @@ export default function AdminPanelClient() {
       window.clearInterval(id);
     };
   }, [authLoading, user, jobsSseConnected]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) return;
+    const id = String(selectedJobId || "").trim();
+    if (!id) return;
+    if (!jobPanelOpen) return;
+    void hydrateJobPanel(id, "selected_change");
+  }, [authLoading, user, selectedJobId, jobPanelOpen]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) return;
+    if (!jobPanelOpen) return;
+
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      const id = String(selectedJobIdRef.current || "").trim();
+      if (!id) return;
+      // Refresh only while the job is active; terminal jobs don't need constant polling.
+      if (!hasActiveCurrentJob()) return;
+      await hydrateJobPanel(id, "panel_watchdog");
+    };
+
+    void tick();
+    const t = window.setInterval(() => {
+      void tick();
+    }, 2500);
+    return () => {
+      stopped = true;
+      window.clearInterval(t);
+    };
+  }, [authLoading, user, jobPanelOpen]);
 
   useEffect(() => {
     if (didInitFromQueryRef.current) return;
@@ -1496,8 +1722,7 @@ export default function AdminPanelClient() {
     if (tab === "diagnostics") { void loadSystemStatus(); void Promise.all([loadRuntimeLlmSettings(), loadRuntimeS3Settings()]); }
     if (tab === "modules") void loadAdminModules();
     if (tab === "import") {
-      void loadImportQueue(50, true);
-      void loadRegenHistory(true);
+      void loadJobsModel(true);
     }
   }, [tab]);
 
@@ -1505,9 +1730,9 @@ export default function AdminPanelClient() {
     // Keep regen queue authoritative even when the user stays on "modules" tab.
     // Otherwise optimistic/stale queued markers can stick on module cards.
     if (tab !== "modules") return;
-    void loadRegenHistory(true);
+    void loadJobsModel(true);
     const t = window.setInterval(() => {
-      void loadRegenHistory(true);
+      void loadJobsModel(true);
     }, 15_000);
     return () => window.clearInterval(t);
   }, [tab]);
@@ -1522,7 +1747,7 @@ export default function AdminPanelClient() {
       if (sseFresh) return;
 
       jobsPollInFlightRef.current = true;
-      Promise.all([loadImportQueue(50, true, true), loadRegenHistory(true)])
+      Promise.resolve(loadJobsModel(true))
         .catch(() => {
           // ignore
         })
