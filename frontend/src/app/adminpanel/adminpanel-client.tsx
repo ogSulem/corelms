@@ -139,6 +139,30 @@ export default function AdminPanelClient() {
   const [resetBusy, setResetBusy] = useState(false);
   const [resetTempPassword, setResetTempPassword] = useState("");
   const [tempPasswordModalOpen, setTempPasswordModalOpen] = useState(false);
+
+  async function copy(text: string) {
+    const t = String(text ?? "");
+    try {
+      await navigator.clipboard.writeText(t);
+      return;
+    } catch {
+      // ignore
+    }
+    try {
+      const el = document.createElement("textarea");
+      el.value = t;
+      el.style.position = "fixed";
+      el.style.left = "-9999px";
+      el.style.top = "-9999px";
+      document.body.appendChild(el);
+      el.focus();
+      el.select();
+      document.execCommand("copy");
+      document.body.removeChild(el);
+    } catch {
+      // ignore
+    }
+  }
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
 
   const closeTempPasswordModal = () => {
@@ -187,16 +211,26 @@ export default function AdminPanelClient() {
   const [sys, setSys] = useState<any>(null);
   const [sysLoading, setSysLoading] = useState(false);
   const [diagSaving, setDiagSaving] = useState(false);
-  const [llmOrderDraft, setLlmOrderDraft] = useState<string>("");
-  const [ollamaEnabledDraft, setOllamaEnabledDraft] = useState<boolean>(false);
-  const [ollamaBaseUrlDraft, setOllamaBaseUrlDraft] = useState<string>("");
-  const [ollamaModelDraft, setOllamaModelDraft] = useState<string>("");
-  const [hfEnabledDraft, setHfEnabledDraft] = useState<boolean>(false);
-  const [hfBaseUrlDraft, setHfBaseUrlDraft] = useState<string>("");
-  const [hfModelDraft, setHfModelDraft] = useState<string>("");
-  const [hfTokenDraft, setHfTokenDraft] = useState<string>("");
-  const [hfTokenMasked, setHfTokenMasked] = useState<string>("");
+  const [openrouterEnabledDraft, setOpenrouterEnabledDraft] = useState<boolean>(false);
+  const [openrouterBaseUrlDraft, setOpenrouterBaseUrlDraft] = useState<string>("");
+  const [openrouterModelDraft, setOpenrouterModelDraft] = useState<string>("");
+  const [openrouterApiKeyDraft, setOpenrouterApiKeyDraft] = useState<string>("");
+  const [openrouterApiKeyMasked, setOpenrouterApiKeyMasked] = useState<string>("");
+  const [openrouterHttpRefererDraft, setOpenrouterHttpRefererDraft] = useState<string>("");
+  const [openrouterAppTitleDraft, setOpenrouterAppTitleDraft] = useState<string>("");
   const [llmEffective, setLlmEffective] = useState<any>(null);
+
+  const [s3Draft, setS3Draft] = useState<any>({
+    s3_endpoint_url: "",
+    s3_public_endpoint_url: "",
+    s3_access_key_id: "",
+    s3_secret_access_key: "",
+    s3_bucket: "",
+    s3_region_name: "",
+    s3_addressing_style: "",
+    s3_access_key_id_masked: "",
+    s3_secret_access_key_masked: "",
+  });
   const [brokenModulesBusy, setBrokenModulesBusy] = useState(false);
   const [brokenModules, setBrokenModules] = useState<{ id: string; title: string }[]>([]);
   const [brokenModulesCount, setBrokenModulesCount] = useState<number>(0);
@@ -243,7 +277,7 @@ export default function AdminPanelClient() {
       if (!jid || seen.has(jid)) continue;
       const createdAt = String((p as any)?.created_at || "").trim();
       const t = createdAt ? Date.parse(createdAt) : 0;
-      if (t && Number.isFinite(t) && now - t > 10 * 60 * 1000) continue;
+      if (t && Number.isFinite(t) && now - t > 2 * 60 * 1000) continue;
       const stl = String((p as any)?.status || "").trim().toLowerCase();
       const stagel = String((p as any)?.stage || "").trim().toLowerCase();
       const terminal = stl === "missing" || stl === "finished" || stl === "failed" || stl === "canceled" || stagel === "canceled" || stagel === "done" || stagel === "missing";
@@ -259,14 +293,12 @@ export default function AdminPanelClient() {
 
     const isStartedLike = (it: any): boolean => {
       const st = String((it as any)?.status || "").trim().toLowerCase();
-      const stage = String((it as any)?.stage || "").trim().toLowerCase();
-      return st === "started" || stage === "started";
+      return st === "started";
     };
 
     const isPendingLike = (it: any): boolean => {
       const st = String((it as any)?.status || "").trim().toLowerCase();
-      const stage = String((it as any)?.stage || "").trim().toLowerCase();
-      return st === "queued" || st === "deferred" || st === "scheduled" || stage === "queued" || stage === "deferred" || stage === "scheduled";
+      return st === "queued" || st === "deferred" || st === "scheduled";
     };
 
     for (const it of xs) {
@@ -401,15 +433,6 @@ export default function AdminPanelClient() {
         queue: (it as any).queue,
       });
     }
-    const timeOf = (x: any) => {
-      const a = String(x?.stage_at || "").trim();
-      const b = String(x?.created_at || "").trim();
-      const t1 = a ? Date.parse(a) : 0;
-      const t2 = b ? Date.parse(b) : 0;
-      const t = t1 || t2 || 0;
-      return Number.isFinite(t) ? t : 0;
-    };
-    items.sort((a: any, b: any) => timeOf(a) - timeOf(b));
     return items;
   }, [regenHistory]);
 
@@ -459,7 +482,8 @@ export default function AdminPanelClient() {
         setRegenHistory(next);
       }
     } catch {
-      setRegenHistory([]);
+      // Keep last known snapshot to avoid UI flicker (queues temporarily disappearing).
+      // Backend/SSE can be transiently unavailable.
     } finally {
       if (!silent) setRegenHistoryLoading(false);
     }
@@ -486,8 +510,7 @@ export default function AdminPanelClient() {
         setImportQueueHistory(hist);
       }
     } catch {
-      setImportQueue([]);
-      setImportQueueHistory([]);
+      // Keep last known snapshot to avoid UI flicker (queues temporarily disappearing).
     } finally {
       if (!silent) setImportQueueLoading(false);
     }
@@ -722,15 +745,16 @@ export default function AdminPanelClient() {
   }
 
   async function createUser() {
-    if (!newUserName.trim()) return;
+    const nm = String(newUserName || "").trim();
+    const em = String(newUserEmail || "").trim();
+    if (!nm && !em) return;
     try {
       setNewUserBusy(true);
       setError(null);
       const res = await apiFetch<{ id: string; temp_password?: string | null }>(`/admin/users`, {
         method: "POST",
         body: JSON.stringify({
-          name: newUserName,
-          email: newUserEmail || null,
+          name: nm || em,
           position: newUserPosition,
           role: newUserRole,
           must_change_password: true,
@@ -745,7 +769,12 @@ export default function AdminPanelClient() {
       await loadUsers();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setError(msg || "НЕ УДАЛОСЬ СОЗДАТЬ ПОЛЬЗОВАТЕЛЯ");
+      const m = String(msg || "").toLowerCase();
+      if (m.includes("user already exists")) {
+        setError("ПОЛЬЗОВАТЕЛЬ УЖЕ СУЩЕСТВУЕТ (ИМЯ/ЛОГИН ДОЛЖЕН БЫТЬ УНИКАЛЬНЫМ)");
+      } else {
+        setError(msg || "НЕ УДАЛОСЬ СОЗДАТЬ ПОЛЬЗОВАТЕЛЯ");
+      }
     } finally {
       setNewUserBusy(false);
     }
@@ -906,6 +935,23 @@ export default function AdminPanelClient() {
     }
   }
 
+  async function loadQuestionsForQuiz(quizId: string) {
+    const qid = String(quizId || "").trim();
+    if (!qid) return;
+    if (questionsLoadingQuizId) return;
+    try {
+      setQuestionsLoadingQuizId(qid);
+      const res = await apiFetch<{ ok: boolean; items: AdminQuestionItem[] }>(
+        `/admin/quizzes/${encodeURIComponent(qid)}/questions`
+      );
+      setQuestionsByQuizId((prev: Record<string, AdminQuestionItem[]>) => ({ ...prev, [qid]: res?.items || [] }));
+    } catch {
+      setQuestionsByQuizId((prev: Record<string, AdminQuestionItem[]>) => ({ ...prev, [qid]: [] }));
+    } finally {
+      setQuestionsLoadingQuizId("");
+    }
+  }
+
   async function loadStorageOrphansCount() {
     try {
       const res = await apiFetch<{ orphans_count: number }>("/admin/maintenance/storage/orphan-module-prefixes?sample_keys=0");
@@ -946,42 +992,29 @@ export default function AdminPanelClient() {
   async function loadRuntimeLlmSettings() {
     try {
       const data = await apiFetch<any>("/admin/runtime/llm");
-      setLlmOrderDraft(data?.llm_provider_order || "");
-      setOllamaEnabledDraft(!!data?.ollama_enabled);
-      setOllamaBaseUrlDraft(data?.ollama_base_url || "");
-      setOllamaModelDraft(data?.ollama_model || "");
-      setHfEnabledDraft(!!data?.hf_router_enabled);
-      setHfBaseUrlDraft(data?.hf_router_base_url || "");
-      setHfModelDraft(data?.hf_router_model || "");
-      setHfTokenMasked(data?.hf_router_token_masked || "");
+      setOpenrouterEnabledDraft(!!data?.openrouter_enabled);
+      setOpenrouterBaseUrlDraft(data?.openrouter_base_url || "");
+      setOpenrouterModelDraft(data?.openrouter_model || "");
+      setOpenrouterApiKeyMasked(data?.openrouter_api_key_masked || "");
+      setOpenrouterHttpRefererDraft(data?.openrouter_http_referer || "");
+      setOpenrouterAppTitleDraft(data?.openrouter_app_title || "");
       setLlmEffective(data?.effective || null);
-    } catch { /* ignore */ }
-  }
-
-  async function loadQuestionsForQuiz(quizId: string) {
-    if (!quizId) return;
-    try {
-      setQuestionsLoadingQuizId(quizId);
-      const res = await apiFetch<{ items: AdminQuestionItem[] }>(`/admin/quizzes/${encodeURIComponent(quizId)}/questions`);
-      setQuestionsByQuizId((prev: Record<string, AdminQuestionItem[]>) => ({ ...prev, [quizId]: res?.items || [] }));
-    } finally {
-      setQuestionsLoadingQuizId("");
+    } catch {
+      // ignore
     }
-  }
-
-  async function copy(text: string) {
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "СКОПИРОВАНО", description: "" } }));
-    } catch { /* ignore */ }
   }
 
   async function saveRuntimeLlmSettings() {
     try {
       setDiagSaving(true);
-      const body: any = { llm_provider_order: llmOrderDraft, ollama_enabled: ollamaEnabledDraft, ollama_base_url: ollamaBaseUrlDraft, ollama_model: ollamaModelDraft, hf_router_enabled: hfEnabledDraft, hf_router_base_url: hfBaseUrlDraft, hf_router_model: hfModelDraft };
-      if (hfTokenDraft) body.hf_router_token = hfTokenDraft;
+      const body: any = {
+        openrouter_enabled: openrouterEnabledDraft,
+        openrouter_base_url: openrouterBaseUrlDraft,
+        openrouter_model: openrouterModelDraft,
+        openrouter_http_referer: openrouterHttpRefererDraft,
+        openrouter_app_title: openrouterAppTitleDraft,
+      };
+      if (openrouterApiKeyDraft) body.openrouter_api_key = openrouterApiKeyDraft;
       await apiFetch("/admin/runtime/llm", { method: "POST", body: JSON.stringify(body) });
       await Promise.all([loadSystemStatus(), loadRuntimeLlmSettings()]);
       window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "НАСТРОЙКИ СОХРАНЕНЫ", description: "" } }));
@@ -992,12 +1025,68 @@ export default function AdminPanelClient() {
     }
   }
 
-  async function clearRuntimeHfToken() {
-    if (!window.confirm("Очистить HF token?")) return;
+  async function resetRuntimeLlmSettings() {
     try {
       setDiagSaving(true);
-      await apiFetch("/admin/runtime/llm", { method: "POST", body: JSON.stringify({ hf_router_token: "" }) });
-      await loadRuntimeLlmSettings();
+      await apiFetch("/admin/runtime/llm/reset", { method: "POST" });
+      await Promise.all([loadSystemStatus(), loadRuntimeLlmSettings()]);
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "RUNTIME LLM СБРОШЕН", description: "" } }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СБРОСИТЬ RUNTIME LLM");
+    } finally {
+      setDiagSaving(false);
+    }
+  }
+
+  async function loadRuntimeS3Settings() {
+    try {
+      const data = await apiFetch<any>("/admin/runtime/s3");
+      setS3Draft({
+        s3_endpoint_url: data?.s3_endpoint_url || "",
+        s3_public_endpoint_url: data?.s3_public_endpoint_url || "",
+        s3_access_key_id: "",
+        s3_secret_access_key: "",
+        s3_bucket: data?.s3_bucket || "",
+        s3_region_name: data?.s3_region_name || "",
+        s3_addressing_style: data?.s3_addressing_style || "",
+        s3_access_key_id_masked: data?.s3_access_key_id_masked || "",
+        s3_secret_access_key_masked: data?.s3_secret_access_key_masked || "",
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  async function saveRuntimeS3Settings() {
+    try {
+      setDiagSaving(true);
+      const body: any = {
+        s3_endpoint_url: String(s3Draft?.s3_endpoint_url || "").trim(),
+        s3_public_endpoint_url: String(s3Draft?.s3_public_endpoint_url || "").trim(),
+        s3_bucket: String(s3Draft?.s3_bucket || "").trim(),
+        s3_region_name: String(s3Draft?.s3_region_name || "").trim(),
+        s3_addressing_style: String(s3Draft?.s3_addressing_style || "").trim(),
+      };
+      if (String(s3Draft?.s3_access_key_id || "").trim()) body.s3_access_key_id = String(s3Draft.s3_access_key_id).trim();
+      if (String(s3Draft?.s3_secret_access_key || "").trim()) body.s3_secret_access_key = String(s3Draft.s3_secret_access_key).trim();
+      await apiFetch("/admin/runtime/s3", { method: "POST", body: JSON.stringify(body) });
+      await Promise.all([loadRuntimeS3Settings(), loadSystemStatus()]);
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "S3 НАСТРОЙКИ СОХРАНЕНЫ", description: "" } }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СОХРАНИТЬ S3 НАСТРОЙКИ");
+    } finally {
+      setDiagSaving(false);
+    }
+  }
+
+  async function resetRuntimeS3Settings() {
+    try {
+      setDiagSaving(true);
+      await apiFetch("/admin/runtime/s3/reset", { method: "POST" });
+      await Promise.all([loadRuntimeS3Settings(), loadSystemStatus()]);
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "RUNTIME S3 СБРОШЕН", description: "" } }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СБРОСИТЬ RUNTIME S3");
     } finally {
       setDiagSaving(false);
     }
@@ -1246,7 +1335,7 @@ export default function AdminPanelClient() {
                 job_id: regenJobId,
                 id: regenJobId,
                 status: "queued",
-                stage: "start",
+                stage: "queued",
                 module_id: mid,
                 module_title: String((it as any)?.module_title || (it as any)?.meta?.module_title || "").trim(),
                 created_at: String((it as any)?.stage_at || (it as any)?.created_at || new Date().toISOString()),
@@ -1364,12 +1453,23 @@ export default function AdminPanelClient() {
 
   useEffect(() => {
     if (tab === "users") void loadUsers();
-    if (tab === "diagnostics") { void loadSystemStatus(); void loadRuntimeLlmSettings(); }
+    if (tab === "diagnostics") { void loadSystemStatus(); void Promise.all([loadRuntimeLlmSettings(), loadRuntimeS3Settings()]); }
     if (tab === "modules") void loadAdminModules();
     if (tab === "import") {
       void loadImportQueue(50, true);
       void loadRegenHistory(true);
     }
+  }, [tab]);
+
+  useEffect(() => {
+    // Keep regen queue authoritative even when the user stays on "modules" tab.
+    // Otherwise optimistic/stale queued markers can stick on module cards.
+    if (tab !== "modules") return;
+    void loadRegenHistory(true);
+    const t = window.setInterval(() => {
+      void loadRegenHistory(true);
+    }, 15_000);
+    return () => window.clearInterval(t);
   }, [tab]);
 
   useEffect(() => {
@@ -1552,28 +1652,30 @@ export default function AdminPanelClient() {
               sys={sys}
               sysLoading={sysLoading}
               loadSystemStatus={loadSystemStatus}
-              llmOrderDraft={llmOrderDraft}
-              setLlmOrderDraft={setLlmOrderDraft}
-              ollamaEnabledDraft={ollamaEnabledDraft}
-              setOllamaEnabledDraft={setOllamaEnabledDraft}
-              ollamaBaseUrlDraft={ollamaBaseUrlDraft}
-              setOllamaBaseUrlDraft={setOllamaBaseUrlDraft}
-              ollamaModelDraft={ollamaModelDraft}
-              setOllamaModelDraft={setOllamaModelDraft}
-              hfEnabledDraft={hfEnabledDraft}
-              setHfEnabledDraft={setHfEnabledDraft}
-              hfBaseUrlDraft={hfBaseUrlDraft}
-              setHfBaseUrlDraft={setHfBaseUrlDraft}
-              hfModelDraft={hfModelDraft}
-              setHfModelDraft={setHfModelDraft}
-              hfTokenDraft={hfTokenDraft}
-              setHfTokenDraft={setHfTokenDraft}
-              hfTokenMasked={hfTokenMasked}
+              openrouterEnabledDraft={openrouterEnabledDraft}
+              setOpenrouterEnabledDraft={setOpenrouterEnabledDraft}
+              openrouterBaseUrlDraft={openrouterBaseUrlDraft}
+              setOpenrouterBaseUrlDraft={setOpenrouterBaseUrlDraft}
+              openrouterModelDraft={openrouterModelDraft}
+              setOpenrouterModelDraft={setOpenrouterModelDraft}
+              openrouterApiKeyDraft={openrouterApiKeyDraft}
+              setOpenrouterApiKeyDraft={setOpenrouterApiKeyDraft}
+              openrouterApiKeyMasked={openrouterApiKeyMasked}
+              openrouterHttpRefererDraft={openrouterHttpRefererDraft}
+              setOpenrouterHttpRefererDraft={setOpenrouterHttpRefererDraft}
+              openrouterAppTitleDraft={openrouterAppTitleDraft}
+              setOpenrouterAppTitleDraft={setOpenrouterAppTitleDraft}
               llmEffective={llmEffective}
               diagSaving={diagSaving}
-              clearRuntimeHfToken={clearRuntimeHfToken}
               saveRuntimeLlmSettings={saveRuntimeLlmSettings}
               loadRuntimeLlmSettings={loadRuntimeLlmSettings}
+              resetRuntimeLlmSettings={resetRuntimeLlmSettings}
+
+              s3Draft={s3Draft}
+              setS3Draft={setS3Draft}
+              saveRuntimeS3Settings={saveRuntimeS3Settings}
+              loadRuntimeS3Settings={loadRuntimeS3Settings}
+              resetRuntimeS3Settings={resetRuntimeS3Settings}
               brokenModulesBusy={brokenModulesBusy}
               brokenModules={brokenModules}
               brokenModulesCount={brokenModulesCount}

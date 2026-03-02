@@ -7,28 +7,40 @@ interface DiagnosticsTabProps {
   sys: any;
   sysLoading: boolean;
   loadSystemStatus: () => Promise<void>;
-  llmOrderDraft: string;
-  setLlmOrderDraft: (val: string) => void;
-  ollamaEnabledDraft: boolean;
-  setOllamaEnabledDraft: (val: boolean) => void;
-  ollamaBaseUrlDraft: string;
-  setOllamaBaseUrlDraft: (val: string) => void;
-  ollamaModelDraft: string;
-  setOllamaModelDraft: (val: string) => void;
-  hfEnabledDraft: boolean;
-  setHfEnabledDraft: (val: boolean) => void;
-  hfBaseUrlDraft: string;
-  setHfBaseUrlDraft: (val: string) => void;
-  hfModelDraft: string;
-  setHfModelDraft: (val: string) => void;
-  hfTokenDraft: string;
-  setHfTokenDraft: (val: string) => void;
-  hfTokenMasked: string;
+  openrouterEnabledDraft: boolean;
+  setOpenrouterEnabledDraft: (val: boolean) => void;
+  openrouterBaseUrlDraft: string;
+  setOpenrouterBaseUrlDraft: (val: string) => void;
+  openrouterModelDraft: string;
+  setOpenrouterModelDraft: (val: string) => void;
+  openrouterApiKeyDraft: string;
+  setOpenrouterApiKeyDraft: (val: string) => void;
+  openrouterApiKeyMasked: string;
+  openrouterHttpRefererDraft: string;
+  setOpenrouterHttpRefererDraft: (val: string) => void;
+  openrouterAppTitleDraft: string;
+  setOpenrouterAppTitleDraft: (val: string) => void;
   llmEffective: any;
   diagSaving: boolean;
-  clearRuntimeHfToken: () => Promise<void>;
   saveRuntimeLlmSettings: () => Promise<void>;
   loadRuntimeLlmSettings: () => Promise<void>;
+  resetRuntimeLlmSettings: () => Promise<void>;
+
+  s3Draft: {
+    s3_endpoint_url: string;
+    s3_public_endpoint_url: string;
+    s3_access_key_id: string;
+    s3_secret_access_key: string;
+    s3_bucket: string;
+    s3_region_name: string;
+    s3_addressing_style: string;
+    s3_access_key_id_masked: string;
+    s3_secret_access_key_masked: string;
+  };
+  setS3Draft: (next: any) => void;
+  saveRuntimeS3Settings: () => Promise<void>;
+  loadRuntimeS3Settings: () => Promise<void>;
+  resetRuntimeS3Settings: () => Promise<void>;
 
   brokenModulesBusy: boolean;
   brokenModules: { id: string; title: string }[];
@@ -46,27 +58,24 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
     sys,
     sysLoading,
     loadSystemStatus,
-    llmOrderDraft,
-    setLlmOrderDraft,
-    ollamaEnabledDraft,
-    setOllamaEnabledDraft,
-    ollamaBaseUrlDraft,
-    setOllamaBaseUrlDraft,
-    ollamaModelDraft,
-    setOllamaModelDraft,
-    hfEnabledDraft,
-    setHfEnabledDraft,
-    hfBaseUrlDraft,
-    setHfBaseUrlDraft,
-    hfModelDraft,
-    setHfModelDraft,
-    hfTokenDraft,
-    setHfTokenDraft,
-    hfTokenMasked,
+    openrouterEnabledDraft,
+    setOpenrouterEnabledDraft,
+    openrouterBaseUrlDraft,
+    setOpenrouterBaseUrlDraft,
+    openrouterModelDraft,
+    setOpenrouterModelDraft,
+    openrouterApiKeyDraft,
+    setOpenrouterApiKeyDraft,
+    openrouterApiKeyMasked,
+    openrouterHttpRefererDraft,
+    setOpenrouterHttpRefererDraft,
+    openrouterAppTitleDraft,
+    setOpenrouterAppTitleDraft,
     llmEffective,
     diagSaving,
-    clearRuntimeHfToken,
     saveRuntimeLlmSettings,
+    loadRuntimeLlmSettings,
+    resetRuntimeLlmSettings,
     brokenModulesBusy,
     brokenModules,
     brokenModulesCount,
@@ -76,6 +85,12 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
     modulesStorageScanBusy,
     modulesStorageScan,
     scanModulesStorage,
+
+    s3Draft,
+    setS3Draft,
+    saveRuntimeS3Settings,
+    loadRuntimeS3Settings,
+    resetRuntimeS3Settings,
   } = props;
 
   const [storageProblemsOnly, setStorageProblemsOnly] = useState(true);
@@ -95,9 +110,80 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
     });
   }, [modulesStorageScan, storageProblemsOnly]);
 
+  const instance = (sys as any)?.instance || {};
+  const cfg = (sys as any)?.config || {};
+
   return (
     <div className="mt-8 space-y-6">
       <div className="grid gap-6 lg:grid-cols-12 items-start">
+        <div className="lg:col-span-6 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-xl">
+          <div className="flex items-end justify-between gap-6">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">INSTANCE</div>
+              <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">ПАСПОРТ</div>
+              <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Без секретов. Для быстрой проверки прод-конфига.</div>
+            </div>
+          </div>
+          <div className="mt-6 grid gap-3">
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-4 text-[10px] font-black uppercase tracking-widest text-zinc-500">APP_ENV</div>
+              <div className="col-span-8 font-mono text-[12px] text-zinc-900 break-all">{String(instance.app_env || "") || "—"}</div>
+            </div>
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-4 text-[10px] font-black uppercase tracking-widest text-zinc-500">HOSTNAME</div>
+              <div className="col-span-8 font-mono text-[12px] text-zinc-900 break-all">{String(instance.hostname || "") || "—"}</div>
+            </div>
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-4 text-[10px] font-black uppercase tracking-widest text-zinc-500">TIME (UTC)</div>
+              <div className="col-span-8 font-mono text-[12px] text-zinc-900 break-all">{String(instance.time_utc || "") || "—"}</div>
+            </div>
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-4 text-[10px] font-black uppercase tracking-widest text-zinc-500">PUBLIC_APP_URL</div>
+              <div className="col-span-8 font-mono text-[12px] text-zinc-900 break-all">{String(instance.public_app_url || "") || "—"}</div>
+            </div>
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-4 text-[10px] font-black uppercase tracking-widest text-zinc-500">CORS</div>
+              <div className="col-span-8 font-mono text-[12px] text-zinc-900 break-all">{String(instance.cors_allow_origins || "") || "—"}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="lg:col-span-6 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-xl">
+          <div className="flex items-end justify-between gap-6">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">CONFIG</div>
+              <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">EFFECTIVE (SAFE)</div>
+              <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Очереди, лимиты, таймауты. Без ключей.</div>
+            </div>
+          </div>
+          <div className="mt-6 grid gap-3">
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-5 text-[10px] font-black uppercase tracking-widest text-zinc-500">RQ QUEUES</div>
+              <div className="col-span-7 font-mono text-[12px] text-zinc-900 break-all">
+                {String((cfg as any)?.rq?.queue_import || "") || "—"} / {String((cfg as any)?.rq?.queue_regen || "") || "—"}
+              </div>
+            </div>
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-5 text-[10px] font-black uppercase tracking-widest text-zinc-500">ZIP LIMITS</div>
+              <div className="col-span-7 font-mono text-[12px] text-zinc-900 break-all">
+                files={String((cfg as any)?.import_zip?.max_files ?? "")} entry={String((cfg as any)?.import_zip?.max_entry_bytes ?? "")} total={String((cfg as any)?.import_zip?.max_uncompressed_bytes ?? "")}
+              </div>
+            </div>
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-5 text-[10px] font-black uppercase tracking-widest text-zinc-500">S3 TIMEOUTS</div>
+              <div className="col-span-7 font-mono text-[12px] text-zinc-900 break-all">
+                c={String((cfg as any)?.s3?.connect_timeout_seconds ?? "")} r={String((cfg as any)?.s3?.read_timeout_seconds ?? "")} attempts={String((cfg as any)?.s3?.max_attempts ?? "")}
+              </div>
+            </div>
+            <div className="grid grid-cols-12 gap-3">
+              <div className="col-span-5 text-[10px] font-black uppercase tracking-widest text-zinc-500">OPENROUTER</div>
+              <div className="col-span-7 font-mono text-[12px] text-zinc-900 break-all">
+                {String((cfg as any)?.llm?.openrouter?.base_url || "") || "—"} | {String((cfg as any)?.llm?.openrouter?.model || "") || "—"}
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div className="lg:col-span-6 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-xl">
           <div className="flex items-end justify-between gap-6">
             <div>
@@ -120,9 +206,8 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                 { key: "db", label: "DB" },
                 { key: "redis", label: "REDIS" },
                 { key: "rq", label: "RQ" },
-                { key: "ollama", label: "OLLAMA" },
-                { key: "hf_router", label: "HF ROUTER" },
                 { key: "s3", label: "S3" },
+                { key: "openrouter", label: "OPENROUTER" },
               ] as { key: string; label: string }[]
             ).map((x) => {
               const ok = !!(sys as any)?.[x.key]?.ok;
@@ -148,14 +233,15 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                       {typeof (sys as any)?.rq?.failed === "number" ? ` · failed: ${Number((sys as any)?.rq?.failed || 0)}` : ""}
                     </div>
                   ) : null}
-                  {x.key === "ollama" && (sys as any)?.ollama ? (
+                  {x.key === "openrouter" && (sys as any)?.openrouter ? (
                     <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest break-words">
-                      {String((sys as any)?.ollama?.base_url || "")} · {String((sys as any)?.ollama?.model || "")}
+                      {String((sys as any)?.openrouter?.base_url || "")} · {String((sys as any)?.openrouter?.model || "")}
+                      {String((sys as any)?.openrouter?.reason || "").trim() ? ` · ${String((sys as any)?.openrouter?.reason || "")}` : ""}
                     </div>
                   ) : null}
-                  {x.key === "hf_router" && (sys as any)?.hf_router ? (
-                    <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest break-words">
-                      {String((sys as any)?.hf_router?.base_url || "")} · {String((sys as any)?.hf_router?.model || "")}
+                  {x.key === "s3" && (sys as any)?.s3 && String((sys as any)?.s3?.reason || "").trim() ? (
+                    <div className="mt-2 text-[10px] font-bold text-rose-700 uppercase tracking-widest break-words">
+                      {String((sys as any)?.s3?.reason || "")}
                     </div>
                   ) : null}
                 </div>
@@ -165,125 +251,67 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
         </div>
 
         <div className="lg:col-span-6 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-xl">
-          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">НЕЙРОСЕТЬ</div>
-          <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">НАСТРОЙКИ</div>
+          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">OPENROUTER</div>
+          <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">НАСТРОЙКИ (RUNTIME)</div>
 
           <div className="mt-6 grid gap-4">
-            <label className="flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white px-5 py-4">
-              <div>
-                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">LLM PROVIDER ORDER</div>
-                <div className="mt-1 text-[11px] font-bold text-zinc-700">например: ollama,hf_router</div>
-              </div>
-              <input
-                value={llmOrderDraft}
-                onChange={(e) => setLlmOrderDraft(e.target.value)}
-                placeholder="ollama,hf_router"
-                className="w-[240px] h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-              />
-            </label>
-
             <div className="grid gap-3 rounded-2xl border border-zinc-200 bg-white p-5">
-              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">OLLAMA</div>
               <label className="flex items-center justify-between gap-4">
                 <div className="text-[11px] font-bold text-zinc-800">ВКЛЮЧЕНО</div>
                 <input
                   type="checkbox"
-                  checked={ollamaEnabledDraft}
-                  onChange={(e) => setOllamaEnabledDraft(e.target.checked)}
+                  checked={openrouterEnabledDraft}
+                  onChange={(e) => setOpenrouterEnabledDraft(e.target.checked)}
                   className="h-5 w-5"
                 />
               </label>
               <div className="grid gap-2">
                 <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">BASE URL</div>
                 <input
-                  value={ollamaBaseUrlDraft}
-                  onChange={(e) => setOllamaBaseUrlDraft(e.target.value)}
-                  placeholder="http://host.docker.internal:11434"
+                  value={openrouterBaseUrlDraft}
+                  onChange={(e) => setOpenrouterBaseUrlDraft(e.target.value)}
+                  placeholder="https://openrouter.ai/api/v1"
                   className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
                 />
-                {llmEffective?.ollama_base_url ? (
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                    EFFECTIVE: {String(llmEffective.ollama_base_url)}
-                  </div>
-                ) : null}
               </div>
               <div className="grid gap-2">
                 <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">MODEL</div>
                 <input
-                  value={ollamaModelDraft}
-                  onChange={(e) => setOllamaModelDraft(e.target.value)}
-                  placeholder="gemma3:4b"
+                  value={openrouterModelDraft}
+                  onChange={(e) => setOpenrouterModelDraft(e.target.value)}
+                  placeholder="openai/gpt-4o-mini"
                   className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
                 />
-                {llmEffective?.ollama_model ? (
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                    EFFECTIVE: {String(llmEffective.ollama_model)}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="grid gap-3 rounded-2xl border border-zinc-200 bg-white p-5">
-              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">HF ROUTER</div>
-              <label className="flex items-center justify-between gap-4">
-                <div className="text-[11px] font-bold text-zinc-800">ВКЛЮЧЕНО</div>
-                <input
-                  type="checkbox"
-                  checked={hfEnabledDraft}
-                  onChange={(e) => setHfEnabledDraft(e.target.checked)}
-                  className="h-5 w-5"
-                />
-              </label>
-              <div className="grid gap-2">
-                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">BASE URL</div>
-                <input
-                  value={hfBaseUrlDraft}
-                  onChange={(e) => setHfBaseUrlDraft(e.target.value)}
-                  placeholder="https://router.huggingface.co/v1"
-                  className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                />
-                {llmEffective?.hf_router_base_url ? (
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                    EFFECTIVE: {String(llmEffective.hf_router_base_url)}
-                  </div>
-                ) : null}
               </div>
               <div className="grid gap-2">
-                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">MODEL</div>
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">API KEY</div>
                 <input
-                  value={hfModelDraft}
-                  onChange={(e) => setHfModelDraft(e.target.value)}
-                  placeholder="deepseek-ai/DeepSeek-R1:novita"
+                  value={openrouterApiKeyDraft}
+                  onChange={(e) => setOpenrouterApiKeyDraft(e.target.value)}
+                  placeholder={openrouterApiKeyMasked ? `СЕЙЧАС: ${openrouterApiKeyMasked}` : "sk-or-v1..."}
                   className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
                 />
-                {llmEffective?.hf_router_model ? (
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                    EFFECTIVE: {String(llmEffective.hf_router_model)}
-                  </div>
-                ) : null}
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                  хранится в Redis (runtime), не в .env
+                </div>
               </div>
-            </div>
-
-            <div>
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">HF TOKEN</div>
-              <input
-                value={hfTokenDraft}
-                onChange={(e) => setHfTokenDraft(e.target.value)}
-                placeholder="hf_..."
-                className="mt-2 w-full h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-              />
-              <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                хранится в Redis (runtime), не в .env{hfTokenMasked ? ` · СЕЙЧАС: ${hfTokenMasked}` : ""}
+              <div className="grid gap-2">
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">HTTP REFERER</div>
+                <input
+                  value={openrouterHttpRefererDraft}
+                  onChange={(e) => setOpenrouterHttpRefererDraft(e.target.value)}
+                  placeholder="https://your-app"
+                  className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
+                />
               </div>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Button
-                  variant="outline"
-                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={diagSaving}
-                  onClick={() => void clearRuntimeHfToken()}
-                >
-                  ОЧИСТИТЬ TOKEN
-                </Button>
+              <div className="grid gap-2">
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">APP TITLE</div>
+                <input
+                  value={openrouterAppTitleDraft}
+                  onChange={(e) => setOpenrouterAppTitleDraft(e.target.value)}
+                  placeholder="CoreLMS"
+                  className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
+                />
               </div>
             </div>
 
@@ -295,6 +323,131 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
             >
               {diagSaving ? "..." : "СОХРАНИТЬ"}
             </Button>
+
+            <Button
+              variant="outline"
+              className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+              disabled={diagSaving}
+              onClick={() => void loadRuntimeLlmSettings()}
+            >
+              ОБНОВИТЬ ИЗ RUNTIME
+            </Button>
+          </div>
+        </div>
+
+        <div className="lg:col-span-12 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-xl">
+          <div className="flex items-end justify-between gap-6">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">S3</div>
+              <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">НАСТРОЙКИ (RUNTIME)</div>
+              <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">
+                Для prod используем внешний S3 (REG.RU).
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                disabled={diagSaving}
+                onClick={() => void loadRuntimeS3Settings()}
+              >
+                ОБНОВИТЬ
+              </Button>
+              <Button
+                variant="outline"
+                className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                disabled={diagSaving}
+                onClick={() => void resetRuntimeS3Settings()}
+              >
+                СБРОСИТЬ RUNTIME
+              </Button>
+              <Button
+                variant="primary"
+                className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                disabled={diagSaving}
+                onClick={() => void saveRuntimeS3Settings()}
+              >
+                СОХРАНИТЬ
+              </Button>
+              <Button
+                variant="outline"
+                className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                disabled={sysLoading}
+                onClick={() => void loadSystemStatus()}
+              >
+                {sysLoading ? "..." : "ПРОВЕРИТЬ"}
+              </Button>
+            </div>
+          </div>
+
+          <div className="mt-6 grid gap-4 lg:grid-cols-2">
+            <div className="grid gap-3 rounded-2xl border border-zinc-200 bg-white p-5">
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ENDPOINT URL</div>
+              <input
+                value={String(s3Draft?.s3_endpoint_url || "")}
+                onChange={(e) => setS3Draft({ ...s3Draft, s3_endpoint_url: e.target.value })}
+                placeholder="https://s3.regru.cloud"
+                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
+              />
+
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">PUBLIC ENDPOINT URL</div>
+              <input
+                value={String(s3Draft?.s3_public_endpoint_url || "")}
+                onChange={(e) => setS3Draft({ ...s3Draft, s3_public_endpoint_url: e.target.value })}
+                placeholder="https://s3.regru.cloud"
+                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
+              />
+
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">BUCKET</div>
+              <input
+                value={String(s3Draft?.s3_bucket || "")}
+                onChange={(e) => setS3Draft({ ...s3Draft, s3_bucket: e.target.value })}
+                placeholder="corelms-content"
+                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
+              />
+            </div>
+
+            <div className="grid gap-3 rounded-2xl border border-zinc-200 bg-white p-5">
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ACCESS KEY ID</div>
+              <input
+                value={String(s3Draft?.s3_access_key_id || "")}
+                onChange={(e) => setS3Draft({ ...s3Draft, s3_access_key_id: e.target.value })}
+                placeholder={String(s3Draft?.s3_access_key_id_masked || "") ? `СЕЙЧАС: ${String(s3Draft.s3_access_key_id_masked)}` : ""}
+                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
+              />
+
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">SECRET ACCESS KEY</div>
+              <input
+                value={String(s3Draft?.s3_secret_access_key || "")}
+                onChange={(e) => setS3Draft({ ...s3Draft, s3_secret_access_key: e.target.value })}
+                placeholder={String(s3Draft?.s3_secret_access_key_masked || "") ? `СЕЙЧАС: ${String(s3Draft.s3_secret_access_key_masked)}` : ""}
+                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
+              />
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">REGION</div>
+                  <input
+                    value={String(s3Draft?.s3_region_name || "")}
+                    onChange={(e) => setS3Draft({ ...s3Draft, s3_region_name: e.target.value })}
+                    placeholder="us-east-1"
+                    className="h-11 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
+                  />
+                </div>
+                <div>
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ADDRESSING</div>
+                  <input
+                    value={String(s3Draft?.s3_addressing_style || "")}
+                    onChange={(e) => setS3Draft({ ...s3Draft, s3_addressing_style: e.target.value })}
+                    placeholder="path"
+                    className="h-11 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
+                  />
+                </div>
+              </div>
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                хранится в Redis (runtime), не в .env
+              </div>
+            </div>
           </div>
         </div>
 

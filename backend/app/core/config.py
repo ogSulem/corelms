@@ -92,9 +92,9 @@ class Settings(BaseSettings):
         validation_alias="REGEN_MAX_LESSON_ATTEMPTS",
     )
 
-    import_zip_max_uncompressed_bytes: int = Field(default=2_500_000_000, validation_alias="IMPORT_ZIP_MAX_UNCOMPRESSED_BYTES")
-    import_zip_max_files: int = Field(default=12000, validation_alias="IMPORT_ZIP_MAX_FILES")
-    import_zip_max_entry_bytes: int = Field(default=750_000_000, validation_alias="IMPORT_ZIP_MAX_ENTRY_BYTES")
+    import_zip_max_uncompressed_bytes: int = Field(default=10_000_000_000, validation_alias="IMPORT_ZIP_MAX_UNCOMPRESSED_BYTES")
+    import_zip_max_files: int = Field(default=20000, validation_alias="IMPORT_ZIP_MAX_FILES")
+    import_zip_max_entry_bytes: int = Field(default=3_000_000_000, validation_alias="IMPORT_ZIP_MAX_ENTRY_BYTES")
     import_zip_max_compression_ratio: int = Field(default=250, validation_alias="IMPORT_ZIP_MAX_COMPRESSION_RATIO")
 
     openrouter_enabled: bool = Field(default=False, validation_alias="OPENROUTER_ENABLED")
@@ -152,9 +152,9 @@ if _is_prod():
     if any(s in db_url_l for s in {"//sdlp:sdlp@", "//postgres:postgres@", "//admin:admin@"}):
         raise RuntimeError("DATABASE_URL must not use default credentials in production")
 
-    if (settings.s3_access_key_id or "").strip().lower() in {"minio", "change-me", "your-access-key"}:
+    if (settings.s3_access_key_id or "").strip().lower() in {"change-me", "your-access-key"}:
         raise RuntimeError("S3_ACCESS_KEY_ID must be set to a non-default value in production")
-    if (settings.s3_secret_access_key or "").strip() in {"minio12345", "change-me", "your-secret-key"}:
+    if (settings.s3_secret_access_key or "").strip() in {"change-me", "your-secret-key"}:
         raise RuntimeError("S3_SECRET_ACCESS_KEY must be set to a non-default value in production")
 
     if bool(settings.openrouter_enabled):

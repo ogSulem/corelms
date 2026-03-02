@@ -273,7 +273,7 @@ def _set_job_error(*, error: Exception, error_code: str | None = None, error_hin
             elif "failed to upload zip" in msg.lower() or "failed to enqueue" in msg.lower():
                 code = "IMPORT_QUEUE_OR_UPLOAD_FAILED"
                 if not hint:
-                    hint = "Проверьте доступность Redis/worker и MinIO/S3."
+                    hint = "Проверьте доступность Redis/worker и S3."
 
         meta["error_code"] = code
         meta["error_class"] = cls
@@ -489,7 +489,7 @@ def import_module_zip_job(
 
         _set_job_stage(stage="download", detail=s3_object_key)
         _cancel_checkpoint(s3_object_key=s3_object_key, stage="download")
-        log.info("import_module_zip_job: downloading from minio key=%s -> %s", s3_object_key, str(zip_path))
+        log.info("import_module_zip_job: downloading from s3 key=%s -> %s", s3_object_key, str(zip_path))
 
         try:
             s3.head_object(Bucket=settings.s3_bucket, Key=s3_object_key)
@@ -503,7 +503,7 @@ def import_module_zip_job(
                     error=err,
                     error_code="IMPORT_SOURCE_ZIP_NOT_FOUND",
                     error_hint=(
-                        "Исходный ZIP не найден в S3/MinIO. Возможные причины: загрузка не завершилась, "
+                        "Исходный ZIP не найден в S3. Возможные причины: загрузка не завершилась, "
                         "ключ объекта неверный, либо файл был удалён TTL-cleanup. Попробуйте загрузить ZIP заново."
                     ),
                 )

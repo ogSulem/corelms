@@ -160,6 +160,38 @@ export default function ImportTab(props: ImportTabProps) {
     cancelActiveUpload,
   } = props;
 
+  const moduleTitleById = useMemo(() => {
+    const out: Record<string, string> = {};
+    try {
+      for (const m of adminModules || []) {
+        const id = String((m as any)?.id || "").trim();
+        if (!id) continue;
+        const t = String((m as any)?.title || "").trim();
+        if (!t) continue;
+        out[id] = t;
+      }
+    } catch {
+      // ignore
+    }
+    return out;
+  }, [adminModules]);
+
+  const regenTitleFor = (it: any): string => {
+    const subTitle = String(it?.submodule_title || "").trim();
+    if (subTitle) return subTitle;
+
+    const modTitle = String(it?.module_title || "").trim();
+    if (modTitle) return modTitle;
+
+    const mid = String(it?.module_id || it?.meta?.module_id || "").trim();
+    const fallback = mid ? String(moduleTitleById[mid] || "").trim() : "";
+    if (fallback) return fallback;
+
+    const title = String(it?.title || "").trim();
+    if (title) return title;
+    return mid || "—";
+  };
+
   const [storagePrefixDraft, setStoragePrefixDraft] = useState(storageUploadsPrefix || "uploads/admin/");
 
   React.useEffect(() => {
@@ -457,13 +489,20 @@ export default function ImportTab(props: ImportTabProps) {
       const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
       if (!jid) continue;
       const subTitle = String((it as any)?.submodule_title || "").trim();
+
+      const st0 = String((it as any)?.status || "").trim().toLowerCase();
+      const stage0 = String((it as any)?.stage || "").trim().toLowerCase();
+      const terminal0 = st0 === "finished" || st0 === "failed" || st0 === "canceled" || st0 === "missing" || stage0 === "canceled" || stage0 === "done" || stage0 === "missing";
+      if (!terminal0) continue;
+
+      const normalizedStage = (st0 === "queued" || st0 === "deferred" || st0 === "scheduled") ? "queued" : String((it as any)?.stage || "") || undefined;
       out.push({
         kind: "regen",
         job_id: jid,
         title: String(subTitle ? `УРОК: ${subTitle}` : (it as any)?.module_title || (it as any)?.module_id || "МОДУЛЬ"),
         created_at: String((it as any)?.created_at || "") || undefined,
         status: String((it as any)?.status || "") || undefined,
-        stage: String((it as any)?.stage || "") || undefined,
+        stage: normalizedStage,
         stage_at: String((it as any)?.stage_at || "") || undefined,
         detail: String((it as any)?.detail || "") || undefined,
         error: (it as any)?.error ?? null,
@@ -557,15 +596,19 @@ export default function ImportTab(props: ImportTabProps) {
       started.sort((a, b) => timeOfJobLike(b) - timeOfJobLike(a));
       return started[0] as any;
     }
-
-    try {
-      for (const it of xs) {
-        if (isPendingJobLike(it)) return null;
+    // Import UX: if there is no started job but the queue is not empty, show the next queued job.
+    // Regen UX: Current must only show truly running jobs; queued must stay in the queue list.
+    if (kind === "import") {
+      try {
+        const pending = xs.filter((it) => isPendingJobLike(it));
+        if (pending.length) {
+          pending.sort((a, b) => timeOfJobLike(a) - timeOfJobLike(b));
+          return pending[0] as any;
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
-
     // Product UX: keep the last finished/failed/canceled job visible in the "current" panel
     // until a new job appears.
     try {
@@ -579,6 +622,9 @@ export default function ImportTab(props: ImportTabProps) {
 
   const currentRegenJob = currentJobFor("regen") as any;
   const currentImportJob = currentJobFor("import") as any;
+
+  const currentRegenJobId = String(currentRegenJob?.job_id || currentRegenJob?.id || "").trim();
+  const currentImportJobId = String(currentImportJob?.job_id || currentImportJob?.id || "").trim();
 
   const activeRegenModuleId = (() => {
     if (!isStartedJobLike(currentRegenJob)) return "";
@@ -911,10 +957,8 @@ export default function ImportTab(props: ImportTabProps) {
                   regenQueue
                     .filter((it: any) => {
                       if (!isPendingJobLike(it)) return false;
-                      if (activeRegenModuleId) {
-                        const mid = String((it as any)?.module_id || (it as any)?.meta?.module_id || "").trim();
-                        if (mid && mid === activeRegenModuleId) return false;
-                      }
+                      const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
+                      if (currentRegenJobId && jid && jid === currentRegenJobId) return false;
                       return true;
                     })
                     .slice(0, 3)
@@ -925,7 +969,7 @@ export default function ImportTab(props: ImportTabProps) {
                     >
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[10px] font-bold text-zinc-800">
-                          {it.submodule_title || it.module_title || it.module_id || "Модуль"}
+                          {regenTitleFor(it) || "Модуль"}
                         </div>
                         <div className="text-[9px] text-zinc-500 uppercase font-black tracking-tighter">
                           {it.stage || it.status}
@@ -983,6 +1027,11 @@ export default function ImportTab(props: ImportTabProps) {
                 ) : (
                   importQueue
                     .filter((it: any) => isPendingJobLike(it))
+                    .filter((it: any) => {
+                      const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
+                      if (currentImportJobId && jid && jid === currentImportJobId) return false;
+                      return true;
+                    })
                     .slice(0, 3)
                     .map((it) => (
                     <div
@@ -1200,7 +1249,7 @@ export default function ImportTab(props: ImportTabProps) {
               {(() => {
                 const it = currentJobFor("regen") as any;
                 const jid = String(it?.job_id || it?.id || "").trim();
-                if (!jid || !isStartedJobLike(it)) {
+                if (!jid) {
                   return (
                     <div className="rounded-2xl border border-zinc-200 bg-white p-3">
                       <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ТЕКУЩИЙ REGEN</div>
@@ -1208,8 +1257,16 @@ export default function ImportTab(props: ImportTabProps) {
                     </div>
                   );
                 }
-                const badge = "В РАБОТЕ";
-                const label = String(it?.submodule_title || it?.module_title || it?.title || "—") || "—";
+                const badge = (() => {
+                  const st = String(it?.status || "").trim().toLowerCase();
+                  if (st === "started") return "В РАБОТЕ";
+                  if (st === "queued" || st === "deferred" || st === "scheduled") return "В ОЧЕРЕДИ";
+                  if (st === "finished") return "ГОТОВО";
+                  if (st === "failed") return "ОШИБКА";
+                  if (st === "canceled") return "ОТМЕНЕНО";
+                  return st ? st.toUpperCase() : "—";
+                })();
+                const label = regenTitleFor(it);
                 const detail = String(it?.detail || "").trim() || "—";
                 const err = String(it?.error || "").trim();
                 return (
@@ -1281,7 +1338,7 @@ export default function ImportTab(props: ImportTabProps) {
                 const st = String(it?.status || "").trim().toLowerCase();
                 const stage = String(it?.stage || "").trim().toLowerCase();
                 const terminal = st === "finished" || st === "failed" || st === "canceled" || stage === "canceled";
-                if (!jid || !isStartedJobLike(it)) {
+                if (!jid) {
                   return (
                     <div className="rounded-2xl border border-zinc-200 bg-white p-3">
                       <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ТЕКУЩИЙ IMPORT</div>
@@ -1290,16 +1347,11 @@ export default function ImportTab(props: ImportTabProps) {
                   );
                 }
                 const badge = (() => {
-                  if (!st) return "—";
-                  if (st === "finished") return "ГОТОВО";
-                  if (st === "failed") return "ОШИБКА";
-                  if (st === "missing" || stage === "missing") return "НЕТ";
-                  if (st === "canceled" || stage === "canceled") return "ОТМЕНЕНО";
+                  if (terminal) return st === "finished" ? "ГОТОВО" : st === "failed" ? "ОШИБКА" : "ОТМЕНЕНО";
                   if (st === "queued" || st === "deferred" || st === "scheduled") return "В ОЧЕРЕДИ";
-                  if (st === "started") return "В РАБОТЕ";
-                  return st.toUpperCase();
+                  return "В РАБОТЕ";
                 })();
-                const label = String(it?.module_title || it?.title || it?.source_filename || "—") || "—";
+                const label = String(it?.module_title || it?.title || "—") || "—";
                 const detail = String(it?.detail || "").trim() || "—";
                 const err = String(it?.error || "").trim();
                 return (

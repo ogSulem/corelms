@@ -778,6 +778,17 @@ export default function SubmodulePage() {
     try {
       const resp = await apiFetch<{ ok: boolean; xp_awarded?: number }>(`/submodules/${submoduleId}/read`, { method: "POST" });
       setReadConfirmed(true);
+
+      // Immediately refresh module progress so UI updates without waiting for navigation.
+      try {
+        if (moduleId) {
+          const prog = await apiFetch<any>(`/progress/modules/${moduleId}`);
+          setModuleProgress(prog);
+        }
+      } catch {
+        // ignore
+      }
+
       const xp = Number(resp?.xp_awarded || 0);
       if (xp > 0 && typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent("corelms:toast", {

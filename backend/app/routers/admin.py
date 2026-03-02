@@ -5,6 +5,8 @@ import re
 import uuid
 import asyncio
 import threading
+import os
+import socket
 from datetime import datetime, timedelta
 import hashlib
 import secrets
@@ -256,7 +258,73 @@ def system_status(
         "rq": {"ok": False, "workers": 0, "queued": 0},
         "s3": {"ok": False},
         "openrouter": {"enabled": bool(eff_or_enabled), "ok": False, "reason": None},
+        "instance": {},
+        "config": {},
     }
+
+    try:
+        out["instance"] = {
+            "app_env": str(getattr(settings, "app_env", "") or ""),
+            "hostname": str(socket.gethostname() or ""),
+            "time_utc": datetime.utcnow().isoformat() + "Z",
+            "python": str(os.getenv("PYTHON_VERSION") or ""),
+            "public_app_url": str(getattr(settings, "public_app_url", "") or ""),
+            "cors_allow_origins": str(getattr(settings, "cors_allow_origins", "") or ""),
+        }
+    except Exception:
+        out["instance"] = {
+            "app_env": str(getattr(settings, "app_env", "") or ""),
+            "public_app_url": str(getattr(settings, "public_app_url", "") or ""),
+            "cors_allow_origins": str(getattr(settings, "cors_allow_origins", "") or ""),
+        }
+
+    try:
+        out["config"] = {
+            "jwt_access_token_minutes": int(getattr(settings, "jwt_access_token_minutes", 0) or 0),
+            "session_refresh_token_days": int(getattr(settings, "session_refresh_token_days", 0) or 0),
+            "session_idle_timeout_hours": int(getattr(settings, "session_idle_timeout_hours", 0) or 0),
+            "session_absolute_timeout_days": int(getattr(settings, "session_absolute_timeout_days", 0) or 0),
+            "rq": {
+                "queue_import": str(getattr(settings, "rq_queue_import", "") or ""),
+                "queue_regen": str(getattr(settings, "rq_queue_regen", "") or ""),
+                "queue_cleanup": str(getattr(settings, "rq_queue_cleanup", "") or ""),
+                "queue_default": str(getattr(settings, "rq_queue_default", "") or ""),
+            },
+            "import_zip": {
+                "max_files": int(getattr(settings, "import_zip_max_files", 0) or 0),
+                "max_uncompressed_bytes": int(getattr(settings, "import_zip_max_uncompressed_bytes", 0) or 0),
+                "max_entry_bytes": int(getattr(settings, "import_zip_max_entry_bytes", 0) or 0),
+                "max_compression_ratio": int(getattr(settings, "import_zip_max_compression_ratio", 0) or 0),
+            },
+            "s3": {
+                "endpoint_url": str(getattr(settings, "s3_endpoint_url", "") or ""),
+                "public_endpoint_url": str(getattr(settings, "s3_public_endpoint_url", "") or ""),
+                "bucket": str(getattr(settings, "s3_bucket", "") or ""),
+                "region": str(getattr(settings, "s3_region_name", "") or ""),
+                "addressing_style": str(getattr(settings, "s3_addressing_style", "") or ""),
+                "connect_timeout_seconds": float(getattr(settings, "s3_connect_timeout_seconds", 0.0) or 0.0),
+                "read_timeout_seconds": float(getattr(settings, "s3_read_timeout_seconds", 0.0) or 0.0),
+                "max_attempts": int(getattr(settings, "s3_max_attempts", 0) or 0),
+                "max_pool_connections": int(getattr(settings, "s3_max_pool_connections", 0) or 0),
+                "presign_download_expires_seconds": int(getattr(settings, "s3_presign_download_expires_seconds", 0) or 0),
+                "presign_upload_expires_seconds": int(getattr(settings, "s3_presign_upload_expires_seconds", 0) or 0),
+                "presign_multipart_part_expires_seconds": int(getattr(settings, "s3_presign_multipart_part_expires_seconds", 0) or 0),
+            },
+            "llm": {
+                "provider_order": str(getattr(settings, "llm_provider_order", "") or ""),
+                "openrouter": {
+                    "enabled": bool(getattr(settings, "openrouter_enabled", False)),
+                    "base_url": str(getattr(settings, "openrouter_base_url", "") or ""),
+                    "model": str(getattr(settings, "openrouter_model", "") or ""),
+                    "timeout_connect": float(getattr(settings, "openrouter_timeout_connect", 0.0) or 0.0),
+                    "timeout_read": float(getattr(settings, "openrouter_timeout_read", 0.0) or 0.0),
+                    "timeout_write": float(getattr(settings, "openrouter_timeout_write", 0.0) or 0.0),
+                    "temperature": float(getattr(settings, "openrouter_temperature", 0.0) or 0.0),
+                },
+            },
+        }
+    except Exception:
+        out["config"] = {}
 
     try:
         db.execute(text("SELECT 1"))
@@ -296,14 +364,29 @@ def system_status(
     except Exception:
         out["rq"] = {"ok": False, "workers": 0, "queued": 0, "started": 0, "failed": 0, "deferred": 0, "scheduled": 0}
 
-    # S3
+    # S3 (honor runtime overrides stored in Redis; do not expose secrets)
     try:
+        rt_s3: dict[str, str] = {}
+        try:
+            r = get_redis()
+            raw2 = r.hgetall("runtime:s3") or {}
+            for k, v in (raw2 or {}).items():
+                kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+                rt_s3[str(kk)] = str(vv)
+        except Exception:
+            rt_s3 = {}
+
+        eff_bucket = str(rt_s3.get("s3_bucket") or settings.s3_bucket)
+        eff_ep = str(rt_s3.get("s3_endpoint_url") or settings.s3_endpoint_url)
         ensure_bucket_exists()
         s3 = get_s3_client()
-        s3.head_bucket(Bucket=settings.s3_bucket)
-        out["s3"] = {"ok": True, "bucket": settings.s3_bucket, "endpoint": settings.s3_endpoint_url}
-    except Exception:
-        out["s3"] = {"ok": False, "bucket": settings.s3_bucket, "endpoint": settings.s3_endpoint_url}
+        s3.head_bucket(Bucket=eff_bucket)
+        out["s3"] = {"ok": True, "bucket": eff_bucket, "endpoint": eff_ep}
+    except Exception as e:
+        msg = str(e or "")
+        msg = msg.splitlines()[0][:240] if msg else ""
+        out["s3"] = {"ok": False, "bucket": str(getattr(settings, "s3_bucket", "")), "endpoint": str(getattr(settings, "s3_endpoint_url", "")), "reason": msg or None}
 
     ok_or, reason_or = openrouter_healthcheck(base_url=str(eff_or_base_url or "").strip() or None)
     out["openrouter"] = {
@@ -324,6 +407,16 @@ class RuntimeLlmSettingsRequest(BaseModel):
     openrouter_api_key: str | None = None
     openrouter_http_referer: str | None = None
     openrouter_app_title: str | None = None
+
+
+class RuntimeS3SettingsRequest(BaseModel):
+    s3_endpoint_url: str | None = None
+    s3_public_endpoint_url: str | None = None
+    s3_access_key_id: str | None = None
+    s3_secret_access_key: str | None = None
+    s3_bucket: str | None = None
+    s3_region_name: str | None = None
+    s3_addressing_style: str | None = None
 
 
 @router.get("/runtime/llm")
@@ -430,6 +523,170 @@ def set_runtime_llm_settings(
             event_type="admin_set_runtime_llm_settings",
             actor_user_id=_.id,
             meta={"keys": list(updates.keys())},
+        )
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+@router.post("/runtime/llm/reset")
+def reset_runtime_llm_settings(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    try:
+        r = get_redis()
+    except Exception:
+        raise HTTPException(status_code=500, detail="redis unavailable")
+    try:
+        r.delete("runtime:llm")
+    except Exception:
+        raise HTTPException(status_code=500, detail="failed to reset")
+    try:
+        audit_log(
+            db=db,
+            request=request,
+            event_type="admin_reset_runtime_llm_settings",
+            actor_user_id=_.id,
+            meta={},
+        )
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+@router.get("/runtime/s3")
+def get_runtime_s3_settings(
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    try:
+        r = get_redis()
+        data = r.hgetall("runtime:s3") or {}
+    except Exception:
+        data = {}
+
+    def _get(k: str) -> str:
+        v = data.get(k)
+        if v is None:
+            return ""
+        try:
+            return v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+        except Exception:
+            return str(v)
+
+    ak = _get("s3_access_key_id")
+    sk = _get("s3_secret_access_key")
+
+    ak_masked = (ak[:3] + "…" + ak[-3:]) if ak and len(ak) >= 8 else ("***" if ak else "")
+    sk_masked = (sk[:3] + "…" + sk[-3:]) if sk and len(sk) >= 8 else ("***" if sk else "")
+
+    def _eff_str(rt_val: str, env_val: str | None) -> str:
+        v = (rt_val or "").strip()
+        if v:
+            return v
+        return str(env_val or "").strip()
+
+    eff = {
+        "s3_endpoint_url": _eff_str(_get("s3_endpoint_url"), str(getattr(settings, "s3_endpoint_url", "") or "")),
+        "s3_public_endpoint_url": _eff_str(_get("s3_public_endpoint_url"), str(getattr(settings, "s3_public_endpoint_url", "") or "")),
+        "s3_bucket": _eff_str(_get("s3_bucket"), str(getattr(settings, "s3_bucket", "") or "")),
+        "s3_region_name": _eff_str(_get("s3_region_name"), str(getattr(settings, "s3_region_name", "") or "")),
+        "s3_addressing_style": _eff_str(_get("s3_addressing_style"), str(getattr(settings, "s3_addressing_style", "") or "")),
+        "s3_access_key_id_present": bool(_eff_str(_get("s3_access_key_id"), str(getattr(settings, "s3_access_key_id", "") or "")).strip()),
+        "s3_secret_access_key_present": bool(_eff_str(_get("s3_secret_access_key"), str(getattr(settings, "s3_secret_access_key", "") or "")).strip()),
+    }
+
+    return {
+        "s3_endpoint_url": _get("s3_endpoint_url"),
+        "s3_public_endpoint_url": _get("s3_public_endpoint_url"),
+        "s3_bucket": _get("s3_bucket"),
+        "s3_region_name": _get("s3_region_name"),
+        "s3_addressing_style": _get("s3_addressing_style"),
+        "s3_access_key_id_masked": ak_masked,
+        "s3_secret_access_key_masked": sk_masked,
+        "effective": eff,
+    }
+
+
+@router.post("/runtime/s3")
+def set_runtime_s3_settings(
+    request: Request,
+    body: RuntimeS3SettingsRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    try:
+        r = get_redis()
+    except Exception:
+        raise HTTPException(status_code=500, detail="redis unavailable")
+
+    updates: dict[str, str] = {}
+    if body.s3_endpoint_url is not None:
+        updates["s3_endpoint_url"] = str(body.s3_endpoint_url or "").strip()
+    if body.s3_public_endpoint_url is not None:
+        updates["s3_public_endpoint_url"] = str(body.s3_public_endpoint_url or "").strip()
+    if body.s3_access_key_id is not None:
+        updates["s3_access_key_id"] = str(body.s3_access_key_id or "").strip()
+    if body.s3_secret_access_key is not None:
+        updates["s3_secret_access_key"] = str(body.s3_secret_access_key or "").strip()
+    if body.s3_bucket is not None:
+        updates["s3_bucket"] = str(body.s3_bucket or "").strip()
+    if body.s3_region_name is not None:
+        updates["s3_region_name"] = str(body.s3_region_name or "").strip()
+    if body.s3_addressing_style is not None:
+        updates["s3_addressing_style"] = str(body.s3_addressing_style or "").strip()
+
+    if updates:
+        try:
+            r.hset("runtime:s3", mapping=updates)
+            r.expire("runtime:s3", 60 * 60 * 24 * 30)
+        except Exception:
+            raise HTTPException(status_code=500, detail="failed to save settings")
+
+    try:
+        audit_log(
+            db=db,
+            request=request,
+            event_type="admin_set_runtime_s3_settings",
+            actor_user_id=_.id,
+            meta={"keys": list(updates.keys())},
+        )
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    return {"ok": True}
+
+
+@router.post("/runtime/s3/reset")
+def reset_runtime_s3_settings(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    try:
+        r = get_redis()
+    except Exception:
+        raise HTTPException(status_code=500, detail="redis unavailable")
+    try:
+        r.delete("runtime:s3")
+    except Exception:
+        raise HTTPException(status_code=500, detail="failed to reset")
+    try:
+        audit_log(
+            db=db,
+            request=request,
+            event_type="admin_reset_runtime_s3_settings",
+            actor_user_id=_.id,
+            meta={},
         )
     except Exception:
         try:
@@ -1075,7 +1332,7 @@ async def import_module_zip(
         if int(exists) > 0:
             raise HTTPException(status_code=409, detail="module title already exists")
 
-    # Canonical storage key: stable by title/filename (no UUID spam in MinIO).
+    # Canonical storage key: stable by title/filename (no UUID spam in storage).
     base_for_key = _normalize_import_text(str(effective_title or "").strip() or str(file.filename or "").strip())
     base_for_key = re.sub(r"\.zip$", "", base_for_key, flags=re.IGNORECASE).strip() or "module"
     safe = _slugify_s3_segment(base_for_key)
@@ -3571,7 +3828,30 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
             st = str(job.get_status(refresh=True) or "").strip().lower()
             if job_id and job_id in started_ids:
                 st = "started"
+            # RQ registries can lag; started_at is a strong signal that the job is actually running.
+            try:
+                if st in {"queued", "deferred", "scheduled"} and getattr(job, "started_at", None) is not None:
+                    st = "started"
+            except Exception:
+                pass
             meta = dict(job.meta or {})
+            # In production we sometimes observe regen jobs that have lost meta (e.g. worker restart).
+            # Restore key fields from job kwargs so the admin UI stays consistent.
+            try:
+                kwargs = dict(getattr(job, "kwargs", None) or {})
+            except Exception:
+                kwargs = {}
+            if isinstance(kwargs, dict) and kwargs:
+                meta.setdefault("job_kind", "regen")
+                if not meta.get("module_id") and kwargs.get("module_id"):
+                    meta["module_id"] = str(kwargs.get("module_id") or "")
+                if not meta.get("submodule_id") and kwargs.get("submodule_id"):
+                    meta["submodule_id"] = str(kwargs.get("submodule_id") or "")
+                if meta.get("target_questions") is None and kwargs.get("target_questions") is not None:
+                    try:
+                        meta["target_questions"] = int(kwargs.get("target_questions") or 0)
+                    except Exception:
+                        meta["target_questions"] = kwargs.get("target_questions")
             stage = str(meta.get("stage") or "").strip().lower()
             obj["status"] = st
             obj["stage"] = meta.get("stage")
@@ -3618,7 +3898,27 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
             st = str(job.get_status(refresh=True) or "").strip().lower()
             if jj in started_ids:
                 st = "started"
+            try:
+                if st in {"queued", "deferred", "scheduled"} and getattr(job, "started_at", None) is not None:
+                    st = "started"
+            except Exception:
+                pass
             meta = dict(job.meta or {})
+            try:
+                kwargs = dict(getattr(job, "kwargs", None) or {})
+            except Exception:
+                kwargs = {}
+            if isinstance(kwargs, dict) and kwargs:
+                meta.setdefault("job_kind", "regen")
+                if not meta.get("module_id") and kwargs.get("module_id"):
+                    meta["module_id"] = str(kwargs.get("module_id") or "")
+                if not meta.get("submodule_id") and kwargs.get("submodule_id"):
+                    meta["submodule_id"] = str(kwargs.get("submodule_id") or "")
+                if meta.get("target_questions") is None and kwargs.get("target_questions") is not None:
+                    try:
+                        meta["target_questions"] = int(kwargs.get("target_questions") or 0)
+                    except Exception:
+                        meta["target_questions"] = kwargs.get("target_questions")
             stage = str(meta.get("stage") or "").strip().lower()
 
             # Only include real regen jobs.
@@ -3669,11 +3969,31 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
                 continue
 
             st0 = str(job.get_status(refresh=True) or "queued").strip().lower()
+            try:
+                if st0 in {"queued", "deferred", "scheduled"} and getattr(job, "started_at", None) is not None:
+                    st0 = "started"
+            except Exception:
+                pass
             if jj in started_ids or st0 == "started":
                 # A truly running job must never be shown as queued.
                 continue
 
             meta = dict(job.meta or {})
+            try:
+                kwargs = dict(getattr(job, "kwargs", None) or {})
+            except Exception:
+                kwargs = {}
+            if isinstance(kwargs, dict) and kwargs:
+                meta.setdefault("job_kind", "regen")
+                if not meta.get("module_id") and kwargs.get("module_id"):
+                    meta["module_id"] = str(kwargs.get("module_id") or "")
+                if not meta.get("submodule_id") and kwargs.get("submodule_id"):
+                    meta["submodule_id"] = str(kwargs.get("submodule_id") or "")
+                if meta.get("target_questions") is None and kwargs.get("target_questions") is not None:
+                    try:
+                        meta["target_questions"] = int(kwargs.get("target_questions") or 0)
+                    except Exception:
+                        meta["target_questions"] = kwargs.get("target_questions")
             stage = str(meta.get("stage") or "").strip().lower()
             kind = str(meta.get("job_kind") or "").strip().lower()
             if kind and kind != "regen":
@@ -3721,6 +4041,53 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
             return (2, 0)
 
         active_items.sort(key=_rk)
+    except Exception:
+        pass
+
+    # Fill missing titles from DB for a consistent admin UX.
+    try:
+        db0 = SessionLocal()
+        try:
+            mids: set[uuid.UUID] = set()
+            sids: set[uuid.UUID] = set()
+            for it in active_items:
+                try:
+                    if not str(it.get("module_title") or "").strip():
+                        mid_raw = str(it.get("module_id") or "").strip()
+                        if mid_raw:
+                            mids.add(uuid.UUID(mid_raw))
+                    if not str(it.get("submodule_title") or "").strip():
+                        sid_raw = str(it.get("submodule_id") or "").strip()
+                        if sid_raw:
+                            sids.add(uuid.UUID(sid_raw))
+                except Exception:
+                    continue
+
+            module_titles: dict[str, str] = {}
+            if mids:
+                for mid, title in db0.execute(select(Module.id, Module.title).where(Module.id.in_(list(mids)))).all():
+                    module_titles[str(mid)] = str(title or "").strip()
+
+            submodule_titles: dict[str, str] = {}
+            if sids:
+                for sid, title in db0.execute(select(Submodule.id, Submodule.title).where(Submodule.id.in_(list(sids)))).all():
+                    submodule_titles[str(sid)] = str(title or "").strip()
+
+            if module_titles or submodule_titles:
+                for it in active_items:
+                    try:
+                        if not str(it.get("submodule_title") or "").strip():
+                            sid_raw = str(it.get("submodule_id") or "").strip()
+                            if sid_raw and sid_raw in submodule_titles and submodule_titles[sid_raw]:
+                                it["submodule_title"] = submodule_titles[sid_raw]
+                        if not str(it.get("module_title") or "").strip():
+                            mid_raw = str(it.get("module_id") or "").strip()
+                            if mid_raw and mid_raw in module_titles and module_titles[mid_raw]:
+                                it["module_title"] = module_titles[mid_raw]
+                    except Exception:
+                        continue
+        finally:
+            db0.close()
     except Exception:
         pass
 
@@ -3968,6 +4335,54 @@ def job_status(
 
     status = job.get_status(refresh=True)
     meta = dict(job.meta or {})
+    # Restore key meta fields from kwargs for resilience.
+    try:
+        kwargs = dict(getattr(job, "kwargs", None) or {})
+    except Exception:
+        kwargs = {}
+    if isinstance(kwargs, dict) and kwargs:
+        meta.setdefault("job_kind", str(meta.get("job_kind") or "") or "")
+        if not meta.get("module_id") and kwargs.get("module_id"):
+            meta["module_id"] = str(kwargs.get("module_id") or "")
+        if not meta.get("submodule_id") and kwargs.get("submodule_id"):
+            meta["submodule_id"] = str(kwargs.get("submodule_id") or "")
+        if meta.get("target_questions") is None and kwargs.get("target_questions") is not None:
+            try:
+                meta["target_questions"] = int(kwargs.get("target_questions") or 0)
+            except Exception:
+                meta["target_questions"] = kwargs.get("target_questions")
+
+    # Fill missing titles from DB.
+    try:
+        mid_raw = str(meta.get("module_id") or "").strip()
+        sid_raw = str(meta.get("submodule_id") or "").strip()
+        need_m = (not str(meta.get("module_title") or "").strip()) and bool(mid_raw)
+        need_s = (not str(meta.get("submodule_title") or "").strip()) and bool(sid_raw)
+        if need_m or need_s:
+            db0 = SessionLocal()
+            try:
+                if need_m:
+                    try:
+                        m = db0.scalar(select(Module).where(Module.id == uuid.UUID(mid_raw)))
+                        if m is not None:
+                            meta["module_title"] = str(getattr(m, "title", "") or "").strip()
+                    except Exception:
+                        pass
+                if need_s:
+                    try:
+                        s = db0.scalar(select(Submodule).where(Submodule.id == uuid.UUID(sid_raw)))
+                        if s is not None:
+                            meta["submodule_title"] = str(getattr(s, "title", "") or "").strip()
+                            if (not str(meta.get("module_title") or "").strip()) and getattr(s, "module_id", None) is not None:
+                                mm = db0.scalar(select(Module).where(Module.id == s.module_id))
+                                if mm is not None:
+                                    meta["module_title"] = str(getattr(mm, "title", "") or "").strip()
+                    except Exception:
+                        pass
+            finally:
+                db0.close()
+    except Exception:
+        pass
 
     error_summary = None
     try:
@@ -3995,6 +4410,8 @@ def job_status(
         "job_kind": meta.get("job_kind"),
         "module_id": meta.get("module_id"),
         "module_title": meta.get("module_title"),
+        "submodule_id": meta.get("submodule_id"),
+        "submodule_title": meta.get("submodule_title"),
         "target_questions": meta.get("target_questions"),
         "stage": meta.get("stage"),
         "stage_at": meta.get("stage_at"),

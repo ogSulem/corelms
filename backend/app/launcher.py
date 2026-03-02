@@ -54,26 +54,6 @@ def _run_migrations(*, database_url: str) -> None:
             conn.execute(text("select pg_advisory_unlock(hashtext('corelms_alembic'))"))
 
 
-def _wait_minio_best_effort(*, endpoint_url: str, timeout_s: int = 60) -> None:
-    import urllib.request
-
-    s3 = str(endpoint_url or "").rstrip("/")
-    if not s3:
-        return
-    if "minio" not in s3:
-        return
-
-    url = s3 + "/minio/health/ready"
-    deadline = time.time() + max(1, int(timeout_s))
-    while time.time() < deadline:
-        try:
-            with urllib.request.urlopen(url, timeout=2) as r:
-                if getattr(r, "status", 0) == 200:
-                    return
-        except Exception:
-            time.sleep(1)
-
-
 def _ensure_bucket() -> None:
     from app.services.storage import ensure_bucket_exists
 
@@ -136,7 +116,6 @@ def main(argv: list[str] | None = None) -> None:
 
     s3_endpoint = settings.s3_endpoint_url
     if s3_endpoint:
-        _wait_minio_best_effort(endpoint_url=s3_endpoint, timeout_s=int(os.getenv("CORELMS_WAIT_S3_TIMEOUT_S") or "60"))
         try:
             _ensure_bucket()
         except Exception:

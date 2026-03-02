@@ -12,16 +12,52 @@ from app.core.redis_client import get_redis
 log = logging.getLogger(__name__)
 
 
+def _runtime_s3() -> dict[str, str]:
+    """Runtime S3 overrides stored in Redis.
+
+    IMPORTANT: this is used for admin diagnostics and emergency operations.
+    It intentionally does not persist into git/files.
+    """
+    try:
+        r = get_redis()
+        raw = r.hgetall("runtime:s3") or {}
+    except Exception:
+        raw = {}
+
+    out: dict[str, str] = {}
+    for k, v in (raw or {}).items():
+        try:
+            kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+            vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+            out[str(kk)] = str(vv)
+        except Exception:
+            continue
+    return out
+
+
+def _rt_str(rt: dict[str, str], key: str) -> str:
+    return str(rt.get(key) or "").strip()
+
+
+def _rt_opt(rt: dict[str, str], key: str) -> str | None:
+    v = str(rt.get(key) or "").strip()
+    return v or None
+
+
 def get_s3_client(*, endpoint_url: str | None = None):
+    rt = _runtime_s3()
+
     ep = (endpoint_url or "").strip() or None
+    if not ep:
+        ep = _rt_opt(rt, "s3_endpoint_url")
     # For AWS S3, endpoint_url must be None.
-    # For S3-compatible providers (MinIO/R2/YC), endpoint_url is required.
+    # For S3-compatible providers (R2/YC/REG.RU), endpoint_url is required.
     return boto3.client(
         "s3",
         endpoint_url=ep or (str(getattr(settings, "s3_endpoint_url", "") or "").strip() or None),
-        aws_access_key_id=settings.s3_access_key_id,
-        aws_secret_access_key=settings.s3_secret_access_key,
-        region_name=settings.s3_region_name,
+        aws_access_key_id=_rt_str(rt, "s3_access_key_id") or settings.s3_access_key_id,
+        aws_secret_access_key=_rt_str(rt, "s3_secret_access_key") or settings.s3_secret_access_key,
+        region_name=_rt_str(rt, "s3_region_name") or settings.s3_region_name,
         config=Config(
             signature_version="s3v4",
             connect_timeout=float(getattr(settings, "s3_connect_timeout_seconds", 3.0)),
@@ -32,14 +68,15 @@ def get_s3_client(*, endpoint_url: str | None = None):
             },
             max_pool_connections=int(getattr(settings, "s3_max_pool_connections", 50)),
             s3={
-                "addressing_style": str(getattr(settings, "s3_addressing_style", "path")),
+                "addressing_style": _rt_str(rt, "s3_addressing_style") or str(getattr(settings, "s3_addressing_style", "path")),
             },
         ),
     )
 
 
 def _get_presign_client():
-    pub = (settings.s3_public_endpoint_url or "").strip()
+    rt = _runtime_s3()
+    pub = _rt_str(rt, "s3_public_endpoint_url") or (settings.s3_public_endpoint_url or "").strip()
     try:
         env = (getattr(settings, "app_env", "") or "").strip().lower()
     except Exception:
@@ -52,17 +89,20 @@ def _get_presign_client():
         except Exception:
             pass
     # Presign client does not contact S3; endpoint_url affects only the signed host.
-    return get_s3_client(endpoint_url=pub or settings.s3_endpoint_url)
+    ep = pub or _rt_str(rt, "s3_endpoint_url") or settings.s3_endpoint_url
+    return get_s3_client(endpoint_url=ep)
 
 
 def ensure_bucket_cors() -> None:
     s3 = get_s3_client()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     origins = [o.strip() for o in str(getattr(settings, "cors_allow_origins", "") or "").split(",") if o.strip()]
     if not origins:
         origins = ["*"]
     try:
         s3.put_bucket_cors(
-            Bucket=settings.s3_bucket,
+            Bucket=bucket,
             CORSConfiguration={
                 "CORSRules": [
                     {
@@ -83,8 +123,10 @@ def ensure_bucket_cors() -> None:
 
 def ensure_bucket_exists() -> None:
     s3 = get_s3_client()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     try:
-        s3.head_bucket(Bucket=settings.s3_bucket)
+        s3.head_bucket(Bucket=bucket)
     except Exception:
         env = (getattr(settings, "app_env", "") or "").strip().lower()
         # In production we should NOT auto-create buckets.
@@ -99,11 +141,11 @@ def ensure_bucket_exists() -> None:
         is_aws = not ep
         if is_aws and region not in {"us-east-1", ""}:
             s3.create_bucket(
-                Bucket=settings.s3_bucket,
+                Bucket=bucket,
                 CreateBucketConfiguration={"LocationConstraint": region},
             )
         else:
-            s3.create_bucket(Bucket=settings.s3_bucket)
+            s3.create_bucket(Bucket=bucket)
 
     env = (getattr(settings, "app_env", "") or "").strip().lower()
     try:
@@ -120,7 +162,10 @@ def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 60, bypass_cache:
     if not pfx:
         return False
 
-    cache_key = f"s3:prefix_has_objects:{settings.s3_bucket}:{pfx}"
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
+
+    cache_key = f"s3:prefix_has_objects:{bucket}:{pfx}"
     if not bypass_cache:
         try:
             r = get_redis()
@@ -134,7 +179,7 @@ def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 60, bypass_cache:
     try:
         ensure_bucket_exists()
         s3 = get_s3_client()
-        resp = s3.list_objects_v2(Bucket=settings.s3_bucket, Prefix=pfx, MaxKeys=1)
+        resp = s3.list_objects_v2(Bucket=bucket, Prefix=pfx, MaxKeys=1)
         contents = resp.get("Contents") or []
         ok = bool(contents)
     except Exception:
@@ -171,6 +216,8 @@ def s3_list_objects(
     take = max(1, min(int(limit or 50), 200))
     suf = (suffix or "").strip().lower() or None
 
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     ensure_bucket_exists()
     s3 = get_s3_client()
 
@@ -178,7 +225,7 @@ def s3_list_objects(
     token: str | None = None
     zip_mode = bool(suf == ".zip")
     while True:
-        kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Prefix": pfx, "MaxKeys": 1000}
+        kwargs: dict[str, object] = {"Bucket": bucket, "Prefix": pfx, "MaxKeys": 1000}
         if token:
             kwargs["ContinuationToken"] = token
         resp = s3.list_objects_v2(**kwargs)
@@ -235,8 +282,10 @@ def s3_list_objects(
 
 def presign_put(*, object_key: str, content_type: str | None, expires_seconds: int | None = None) -> str:
     ensure_bucket_exists()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = _get_presign_client()
-    params: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key}
+    params: dict[str, object] = {"Bucket": bucket, "Key": object_key}
     if content_type:
         params["ContentType"] = content_type
 
@@ -259,11 +308,13 @@ def presign_put(*, object_key: str, content_type: str | None, expires_seconds: i
 def presign_get(
     *,
     object_key: str,
-    expires_seconds: int = 900,
+    expires_seconds: int | None = None,
     response_content_type: str | None = None,
     response_content_disposition: str | None = None,
 ) -> str:
     ensure_bucket_exists()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = _get_presign_client()
     try:
         cfg = int(getattr(settings, "s3_presign_download_expires_seconds", 0) or 0)
@@ -273,7 +324,7 @@ def presign_get(
             expires_seconds = max(60, min(int(expires_seconds), 300))
     except Exception:
         pass
-    params: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key}
+    params: dict[str, object] = {"Bucket": bucket, "Key": object_key}
     if response_content_type:
         params["ResponseContentType"] = str(response_content_type)
     if response_content_disposition:
@@ -288,8 +339,10 @@ def presign_get(
 
 def multipart_create(*, object_key: str, content_type: str | None = None) -> str:
     ensure_bucket_exists()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = get_s3_client()
-    params: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key}
+    params: dict[str, object] = {"Bucket": bucket, "Key": object_key}
     if content_type:
         params["ContentType"] = content_type
     resp = s3.create_multipart_upload(**params)
@@ -298,8 +351,10 @@ def multipart_create(*, object_key: str, content_type: str | None = None) -> str
 
 def multipart_abort(*, object_key: str, upload_id: str) -> None:
     ensure_bucket_exists()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = get_s3_client()
-    s3.abort_multipart_upload(Bucket=settings.s3_bucket, Key=object_key, UploadId=upload_id)
+    s3.abort_multipart_upload(Bucket=bucket, Key=object_key, UploadId=upload_id)
 
 
 def multipart_upload_exists(*, object_key: str, upload_id: str) -> bool:
@@ -310,9 +365,11 @@ def multipart_upload_exists(*, object_key: str, upload_id: str) -> bool:
     """
 
     ensure_bucket_exists()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = get_s3_client()
     try:
-        s3.list_parts(Bucket=settings.s3_bucket, Key=object_key, UploadId=upload_id, MaxParts=1)
+        s3.list_parts(Bucket=bucket, Key=object_key, UploadId=upload_id, MaxParts=1)
         return True
     except ClientError as e:
         try:
@@ -329,11 +386,13 @@ def multipart_upload_exists(*, object_key: str, upload_id: str) -> bool:
 
 def multipart_list_parts(*, object_key: str, upload_id: str) -> list[dict[str, object]]:
     ensure_bucket_exists()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = get_s3_client()
     out: list[dict[str, object]] = []
     marker = 0
     while True:
-        kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key, "UploadId": upload_id}
+        kwargs: dict[str, object] = {"Bucket": bucket, "Key": object_key, "UploadId": upload_id}
         if marker:
             kwargs["PartNumberMarker"] = int(marker)
         try:
@@ -352,7 +411,7 @@ def multipart_list_parts(*, object_key: str, upload_id: str) -> list[dict[str, o
                 "multipart_list_parts failed: code=%s message=%s bucket=%s key=%s upload_id=%s",
                 code,
                 msg,
-                settings.s3_bucket,
+                bucket,
                 object_key,
                 upload_id,
             )
@@ -361,7 +420,7 @@ def multipart_list_parts(*, object_key: str, upload_id: str) -> list[dict[str, o
             log.warning(
                 "multipart_list_parts failed: err=%s bucket=%s key=%s upload_id=%s",
                 type(e).__name__,
-                settings.s3_bucket,
+                bucket,
                 object_key,
                 upload_id,
             )
@@ -398,6 +457,8 @@ def multipart_presign_upload_part(
     expires_seconds: int | None = None,
 ) -> str:
     ensure_bucket_exists()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = _get_presign_client()
     if expires_seconds is None:
         try:
@@ -410,7 +471,7 @@ def multipart_presign_upload_part(
     return s3.generate_presigned_url(
         "upload_part",
         Params={
-            "Bucket": settings.s3_bucket,
+            "Bucket": bucket,
             "Key": object_key,
             "UploadId": upload_id,
             "PartNumber": int(part_number),
@@ -426,6 +487,8 @@ def multipart_complete(
     parts: list[dict[str, object]],
 ) -> None:
     ensure_bucket_exists()
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = get_s3_client()
     normalized: list[dict[str, object]] = []
     for p in parts or []:
@@ -441,7 +504,7 @@ def multipart_complete(
     if not normalized:
         raise ValueError("no parts to complete")
     s3.complete_multipart_upload(
-        Bucket=settings.s3_bucket,
+        Bucket=bucket,
         Key=object_key,
         UploadId=upload_id,
         MultipartUpload={"Parts": normalized},

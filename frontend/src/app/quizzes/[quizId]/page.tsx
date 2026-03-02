@@ -186,6 +186,23 @@ export default function QuizPage() {
         body: JSON.stringify(payload),
       });
       setResult(data);
+
+      // Immediately refresh module progress so UI updates (progress bar / unlocks) without waiting for navigation.
+      try {
+        if (moduleId) {
+          const prog = await apiFetch<{
+            passed: number;
+            total: number;
+            final_passed?: boolean;
+            final_quiz_id?: string | null;
+            final_submodule_id?: string | null;
+            submodules: Array<{ submodule_id: string; passed: boolean; best_score: number | null }>;
+          }>(`/progress/modules/${moduleId}`);
+          setModuleProgress(prog);
+        }
+      } catch {
+        // ignore
+      }
       const xp = Number((data as any)?.xp_awarded || 0);
       if (xp > 0 && typeof window !== "undefined") {
         window.dispatchEvent(

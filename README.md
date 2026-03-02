@@ -7,7 +7,7 @@
 CoreLMS — система обучения и контроля квалификации сотрудников:
 
 - обучение по модулям/урокам
-- материалы уроков (S3/MinIO)
+- материалы уроков (S3-compatible storage)
 - тестирование (квизы), прогресс, XP
 - админ-панель: импорт контента, регенерация квизов, управление пользователями
 - аудит безопасности (security audit log)
@@ -18,7 +18,7 @@ CoreLMS — система обучения и контроля квалифик
 - **Backend**: FastAPI + SQLAlchemy + Alembic
 - **DB**: Postgres
 - **Queue**: Redis + RQ (импорт/реген/cleanup очереди)
-- **Storage**: S3-compatible (в dev можно MinIO)
+- **Storage**: S3-compatible
 
 ## Быстрый старт (локально, Docker Compose)
 
@@ -86,7 +86,7 @@ docker compose up --build
 Storage:
 
 - для внешнего S3 укажи `S3_ENDPOINT_URL` / `S3_PUBLIC_ENDPOINT_URL` и ключи
-- для dev можно использовать MinIO из `docker-compose.yml`
+- приложение рассчитано на внешний S3 (например REG.RU)
 
 ## Healthchecks
 
@@ -109,7 +109,7 @@ python -m pytest -q
 Принцип:
 
 - наружу открыты только **80/443** (reverse proxy)
-- Postgres/Redis/MinIO/backend/frontend/workers работают внутри docker-сети
+- Postgres/Redis/backend/frontend/workers работают внутри docker-сети
 
 ### Запуск
 
@@ -147,11 +147,10 @@ docker compose exec -T postgres pg_dump -U sdlp -d sdlp -Fc > backup.dump
 cat backup.dump | docker compose -f docker-compose.vps.yml exec -T postgres pg_restore -U sdlp -d sdlp --clean --if-exists
 ```
 
-### Контент (S3/MinIO)
+### Контент (S3)
 
 - Если используешь внешний S3 (REG.RU/AWS/etc) — контент не нужно переносить, он уже в бакете.
-- Если используешь MinIO на локалке и хочешь перенести на VPS:
-  - переноси данные volume `minio_data` на уровне хоста (tar/rsync) **или** включи внешний S3.
+- Если локально контент был в другом хранилище — перенеси его в S3 заранее (любым S3-клиентом).
 
 ## Troubleshooting
 
