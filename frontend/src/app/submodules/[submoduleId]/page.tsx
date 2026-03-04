@@ -442,10 +442,12 @@ export default function SubmodulePage() {
                 : "iframe";
       setInlineKind(kind);
 
+      let chosenUrl: string | null = null;
+
       if (kind === "office") {
         const viewUrl = await presignViewUrl(a.asset_id);
         const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(viewUrl)}`;
-        setInlineUrl(officeViewerUrl);
+        chosenUrl = officeViewerUrl;
       } else {
         // Best practice: use presigned S3 URL (direct browser fetch) to avoid proxying bytes through backend.
         // Fallback to backend streaming if presign fails.
@@ -476,13 +478,21 @@ export default function SubmodulePage() {
           throw new Error(`Не удалось получить файл (код ${pre.status}).`);
         }
 
-        setInlineUrl(targetUrl);
+        chosenUrl = targetUrl;
+      }
+
+      if (chosenUrl) {
+        setInlineUrl(chosenUrl);
       }
 
       if (kind === "text") {
         try {
-          const viewUrl = await presignViewUrl(a.asset_id);
-          const resp = await fetch(viewUrl, { method: "GET", credentials: "omit" });
+          const targetUrl = String(chosenUrl || "").trim();
+          const isPresigned = /^https?:\/\//i.test(targetUrl);
+          const resp = await fetch(targetUrl || stream, {
+            method: "GET",
+            credentials: isPresigned ? "omit" : "include",
+          });
           if (!resp.ok) {
             if (resp.status === 404) {
               throw new Error("Файл удалён из хранилища (404). Переимпортируйте модуль или загрузите файл заново.");
