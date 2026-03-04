@@ -206,6 +206,32 @@ def presign_download(
     except Exception:
         expires_seconds = 300
 
+    # Office Online viewer requires a stable public URL and often behaves better
+    # with a correct Content-Type. Also give Office embeds a longer TTL.
+    original_name_l = str(asset.original_filename or "").strip().lower()
+    ext = ""
+    try:
+        if "." in original_name_l:
+            ext = original_name_l.rsplit(".", 1)[-1].strip()
+    except Exception:
+        ext = ""
+    office_ct_by_ext: dict[str, str] = {
+        "doc": "application/msword",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "ppt": "application/vnd.ms-powerpoint",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "xls": "application/vnd.ms-excel",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }
+    is_office_ext = ext in office_ct_by_ext
+    if act == "view" and is_office_ext:
+        expires_seconds = max(int(expires_seconds), 900)
+
+    response_ct = str(asset.mime_type or "").strip() or None
+    if is_office_ext:
+        if not response_ct or response_ct.lower() in {"application/octet-stream", "binary/octet-stream"}:
+            response_ct = office_ct_by_ext.get(ext) or response_ct
+
     # Hardening: if the object was manually deleted from storage, return 404 (not a broken presign URL).
     try:
         s3 = get_s3_client()
@@ -222,7 +248,7 @@ def presign_download(
 
     url = presign_get(
         object_key=asset.object_key,
-        response_content_type=str(asset.mime_type or "").strip() or None,
+        response_content_type=response_ct,
         response_content_disposition=disposition,
         expires_seconds=int(expires_seconds),
     )
