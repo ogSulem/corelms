@@ -245,9 +245,10 @@ export default function ModulePage() {
           const assets = (resp?.assets || []).slice();
           assets.sort((a, b) => Number(a?.order || 0) - Number(b?.order || 0));
           for (const a of assets) {
-            const name = String(a?.original_filename || "").replaceAll("\\", "/");
-            const segs = name.split("/").filter(Boolean);
-            const full = segs.length ? segs : [String(a?.original_filename || "Файл")];
+            const rawName = String(a?.original_filename || "");
+            const decodedName = decodeLegacyPercentUnicode(rawName).replaceAll("\\", "/");
+            const segs = decodedName.split("/").map((s) => String(s || "").trim()).filter(Boolean);
+            const full = segs.length ? segs : [decodeLegacyPercentUnicode(rawName).trim() || "Файл"];
             fileRows.push({ full, asset: a });
           }
         } catch {
@@ -542,12 +543,18 @@ export default function ModulePage() {
     if (["xls", "xlsx", "csv"].includes(ext)) return FileSpreadsheet;
     if (mime.startsWith("text/") || ["txt", "md", "json"].includes(ext)) return FileText;
     if (["doc", "docx", "ppt", "pptx"].includes(ext)) return FileText;
+
     return File;
   }
 
   const assetBrowser = useMemo(() => {
     const sep = "/";
-    const safeSeg = (s: string) => String(s || "").replaceAll("\\", "/").split("/").filter(Boolean);
+    const safeSeg = (s: string) =>
+      decodeLegacyPercentUnicode(String(s || "").trim())
+        .replaceAll("\\", "/")
+        .split("/")
+        .map((x) => String(x || "").trim())
+        .filter(Boolean);
     const entries: Array<
       | { type: "dir"; name: string; path: string[] }
       | { type: "file"; name: string; path: string[]; asset: ModuleAsset }
