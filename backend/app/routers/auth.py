@@ -589,12 +589,6 @@ def register(
 
     email_norm = _normalize_email(payload.email)
 
-    existing = db.scalar(select(User).where(User.name == payload.name))
-    if existing is not None:
-        audit_log(db=db, request=request, event_type="auth_register_failed", meta={"reason": "user_exists", "username": payload.name})
-        db.commit()
-        raise HTTPException(status_code=409, detail="user already exists")
-
     if email_norm:
         existing_email = db.scalar(select(User).where(func.lower(User.email) == email_norm))
         if existing_email is not None:
@@ -645,7 +639,15 @@ def token(
     if "@" in login_norm:
         user = db.scalar(select(User).where(func.lower(User.email) == login_norm))
     if user is None:
-        user = db.scalar(select(User).where(User.name == login_raw))
+        # Name-based login is a compatibility mode. Names are not unique.
+        # If the name is ambiguous, force login by email.
+        matches = list(db.scalars(select(User).where(User.name == login_raw)).all())
+        if len(matches) == 1:
+            user = matches[0]
+        elif len(matches) > 1:
+            audit_log(db=db, request=request, event_type="auth_login_failed", meta={"username": form_data.username, "reason": "ambiguous_name"})
+            db.commit()
+            raise HTTPException(status_code=400, detail="ambiguous login; use email")
     if user is None or not _verify_password(form_data.password, user.password_hash):
         audit_log(db=db, request=request, event_type="auth_login_failed", meta={"username": form_data.username})
         db.commit()

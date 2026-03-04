@@ -1226,9 +1226,6 @@ def admin_update_user(
         name = str(name).strip()
         if not name:
             raise HTTPException(status_code=400, detail="invalid name")
-        existing = db.scalar(select(User).where(User.name == name, User.id != uid))
-        if existing is not None:
-            raise HTTPException(status_code=409, detail="user already exists")
         u.name = name
 
     if body.position is not None:
@@ -5830,10 +5827,6 @@ def create_user(
     # Basic safe validation (not fully RFC-complete, but blocks obvious garbage).
     if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$", str(email)):
         raise HTTPException(status_code=400, detail="invalid email")
-
-    existing = db.scalar(select(User).where(User.name == name))
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="user already exists")
 
     existing_email = db.scalar(select(User).where(func.lower(User.email) == str(email)))
     if existing_email is not None:

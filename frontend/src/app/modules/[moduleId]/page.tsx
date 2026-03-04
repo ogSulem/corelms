@@ -161,6 +161,14 @@ export default function ModulePage() {
       .trim();
   }
 
+  function naturalPrefixOrder(name: string, fallback: number): number {
+    const raw = decodeLegacyPercentUnicode(String(name || "").trim());
+    const m = /^\s*(\d{1,6})/u.exec(raw);
+    if (!m) return fallback;
+    const n = Number.parseInt(m[1] || "", 10);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
   const fetchModuleData = async () => {
     if (!moduleId) return;
     try {
@@ -574,6 +582,9 @@ export default function ModulePage() {
 
     entries.sort((a, b) => {
       if (a.type !== b.type) return a.type === "dir" ? -1 : 1;
+      const ao = naturalPrefixOrder(a.name, 999999);
+      const bo = naturalPrefixOrder(b.name, 999999);
+      if (ao !== bo) return ao - bo;
       return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
     });
 
@@ -832,9 +843,16 @@ export default function ModulePage() {
                   <div>
                     {(outlinePath.length ? folderSubmodules : rootFolderSubmodules).length ? (
                       <div className="mb-6">
-                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Каталоги</div>
                         <div className="mt-3 grid gap-3">
-                          {(outlinePath.length ? folderSubmodules : rootFolderSubmodules).map((s: Submodule) => {
+                          {(outlinePath.length ? folderSubmodules : rootFolderSubmodules)
+                            .slice()
+                            .sort((a: any, b: any) => {
+                              const ao = naturalPrefixOrder(String(a?.title || ""), 999999);
+                              const bo = naturalPrefixOrder(String(b?.title || ""), 999999);
+                              if (ao !== bo) return ao - bo;
+                              return String(a?.title || "").localeCompare(String(b?.title || ""), undefined, { sensitivity: "base" });
+                            })
+                            .map((s: Submodule) => {
                             const folderName = String(s.title || "").trim() || "Папка";
                             const nextPath = outlinePath.concat([folderName]);
                             return (
@@ -846,13 +864,13 @@ export default function ModulePage() {
                                 }}
                                 className="group flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white text-left"
                               >
-                                <div className="flex items-center gap-3 min-w-0">
+                                <div className="flex items-start gap-3 min-w-0 flex-1">
                                   <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-700">
                                     <Folder className="h-4 w-4" />
                                   </div>
-                                  <div className="min-w-0">
+                                  <div className="min-w-0 flex-1">
                                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Папка</div>
-                                    <div className="mt-1 truncate text-sm font-bold text-zinc-950 transition-colors">
+                                    <div className="mt-1 text-sm font-bold text-zinc-950 transition-colors break-words whitespace-normal leading-snug">
                                       {folderName}
                                     </div>
                                   </div>
@@ -867,106 +885,108 @@ export default function ModulePage() {
                       </div>
                     ) : null}
 
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                        <button
-                          type="button"
-                          onClick={() => setAssetNavPath([])}
-                          className={
-                            "rounded-lg px-2 py-1 transition " +
-                            (!assetBrowser.current.length ? "bg-zinc-100 text-zinc-900" : "text-zinc-600 hover:bg-zinc-50")
-                          }
-                        >
-                          /
-                        </button>
-                        {assetBrowser.current.map((seg, idx) => (
-                          <div key={`bc:${idx}`} className="flex items-center gap-2">
-                            <span className="text-zinc-400">/</span>
+                    {assetBrowser.hasAny && (assetBrowser.entries.length > 0 || assetBrowser.current.length > 0) ? (
+                      <>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
                             <button
                               type="button"
-                              onClick={() => setAssetNavPath(assetBrowser.current.slice(0, idx + 1))}
+                              onClick={() => setAssetNavPath([])}
                               className={
                                 "rounded-lg px-2 py-1 transition " +
-                                (idx === assetBrowser.current.length - 1
-                                  ? "bg-zinc-100 text-zinc-900"
-                                  : "text-zinc-600 hover:bg-zinc-50")
+                                (!assetBrowser.current.length ? "bg-zinc-100 text-zinc-900" : "text-zinc-600 hover:bg-zinc-50")
                               }
                             >
-                              {seg}
+                              /
                             </button>
+                            {assetBrowser.current.map((seg, idx) => (
+                              <div key={`bc:${idx}`} className="flex items-center gap-2">
+                                <span className="text-zinc-400">/</span>
+                                <button
+                                  type="button"
+                                  onClick={() => setAssetNavPath(assetBrowser.current.slice(0, idx + 1))}
+                                  className={
+                                    "rounded-lg px-2 py-1 transition " +
+                                    (idx === assetBrowser.current.length - 1
+                                      ? "bg-zinc-100 text-zinc-900"
+                                      : "text-zinc-600 hover:bg-zinc-50")
+                                  }
+                                >
+                                  {seg}
+                                </button>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
-                      {assetBrowser.current.length ? (
-                        <button
-                          type="button"
-                          onClick={() => setAssetNavPath(assetBrowser.current.slice(0, -1))}
-                          className="h-9 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        >
-                          Назад
-                        </button>
-                      ) : null}
-                    </div>
+                          {assetBrowser.current.length ? (
+                            <button
+                              type="button"
+                              onClick={() => setAssetNavPath(assetBrowser.current.slice(0, -1))}
+                              className="h-9 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                            >
+                              Назад
+                            </button>
+                          ) : null}
+                        </div>
 
-                    <div className="mt-5 grid gap-3">
-                      {!assetBrowser.entries.length ? (
-                        <div className="text-xs text-zinc-500 font-medium">Папка пустая.</div>
-                      ) : (
-                        assetBrowser.entries.map((e, idx) => {
-                          if (e.type === "dir") {
-                            return (
-                              <button
-                                key={`dir:${e.path.join("/")}`}
-                                type="button"
-                                onClick={() => setAssetNavPath(e.path)}
-                                className="group flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white"
-                              >
-                                <div className="flex items-center gap-3 min-w-0">
-                                  <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-700">
-                                    <Folder className="h-4 w-4" />
-                                  </div>
-                                  <div className="min-w-0">
-                                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Папка</div>
-                                    <div className="mt-1 truncate text-sm font-bold text-zinc-950 transition-colors">
-                                      {e.name}
+                        <div className="mt-5 grid gap-3">
+                          {!assetBrowser.entries.length ? null : (
+                            assetBrowser.entries.map((e, idx) => {
+                              if (e.type === "dir") {
+                                return (
+                                  <button
+                                    key={`dir:${e.path.join("/")}`}
+                                    type="button"
+                                    onClick={() => setAssetNavPath(e.path)}
+                                    className="group flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white"
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-700">
+                                        <Folder className="h-4 w-4" />
+                                      </div>
+                                      <div className="min-w-0">
+                                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Папка</div>
+                                        <div className="mt-1 truncate text-sm font-bold text-zinc-950 transition-colors">
+                                          {e.name}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <span className="text-zinc-400 font-black">→</span>
+                                  </button>
+                                );
+                              }
+
+                              const Icon = getAssetIcon({ original_filename: e.name, mime_type: e.asset.mime_type });
+                              return (
+                                <button
+                                  key={`file:${e.path.join("/")}:${e.asset.asset_id}`}
+                                  type="button"
+                                  onClick={() => void onOpenInline({ ...(e.asset as any), original_filename: e.asset.original_filename })}
+                                  className="group flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white text-left"
+                                >
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <span className="shrink-0 text-[10px] font-black uppercase tracking-widest text-zinc-500 tabular-nums">
+                                      {String(idx + 1).padStart(2, "0")}
+                                    </span>
+                                    <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-700">
+                                      <Icon className="h-4 w-4" />
+                                    </div>
+                                    <div className="min-w-0">
+                                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Файл</div>
+                                      <div className="mt-1 min-w-0 truncate text-sm font-bold text-zinc-950 transition-colors">
+                                        {formatAssetTitle(e.name) || e.name}
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                                <span className="text-zinc-400 font-black">→</span>
-                              </button>
-                            );
-                          }
-
-                          const Icon = getAssetIcon({ original_filename: e.name, mime_type: e.asset.mime_type });
-                          return (
-                            <button
-                              key={`file:${e.path.join("/")}:${e.asset.asset_id}`}
-                              type="button"
-                              onClick={() => void onOpenInline({ ...(e.asset as any), original_filename: e.asset.original_filename })}
-                              className="group flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white text-left"
-                            >
-                              <div className="flex items-center gap-3 min-w-0">
-                                <span className="shrink-0 text-[10px] font-black uppercase tracking-widest text-zinc-500 tabular-nums">
-                                  {String(idx + 1).padStart(2, "0")}
-                                </span>
-                                <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-700">
-                                  <Icon className="h-4 w-4" />
-                                </div>
-                                <div className="min-w-0">
-                                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Файл</div>
-                                  <div className="mt-1 min-w-0 truncate text-sm font-bold text-zinc-950 transition-colors">
-                                    {formatAssetTitle(e.name) || e.name}
-                                  </div>
-                                </div>
-                              </div>
-                              <span className="shrink-0 rounded-xl bg-[#fe9900]/10 border border-[#fe9900]/25 px-3 py-2 text-[9px] font-black text-[#284e13] uppercase tracking-widest hover:bg-[#fe9900] hover:text-zinc-950 transition-all active:scale-95">
-                                открыть
-                              </span>
-                            </button>
-                          );
-                        })
-                      )}
-                    </div>
+                                  <span className="shrink-0 rounded-xl bg-[#fe9900]/10 border border-[#fe9900]/25 px-3 py-2 text-[9px] font-black text-[#284e13] uppercase tracking-widest hover:bg-[#fe9900] hover:text-zinc-950 transition-all active:scale-95">
+                                    открыть
+                                  </span>
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </>
+                    ) : null}
 
                     {inlineUrl ? (
                       <div id="asset-preview-container" className="mt-5 overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-lg animate-in fade-in slide-in-from-top-4 duration-500">

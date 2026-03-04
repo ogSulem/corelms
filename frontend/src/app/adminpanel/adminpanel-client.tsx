@@ -151,7 +151,6 @@ export default function AdminPanelClient() {
   const [deleteUserBusy, setDeleteUserBusy] = useState(false);
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
-  const [newUserPosition, setNewUserPosition] = useState("");
   const [newUserRole, setNewUserRole] = useState<"employee" | "admin">("employee");
   const [newUserBusy, setNewUserBusy] = useState(false);
   const [newUserTempPassword, setNewUserTempPassword] = useState("");
@@ -1008,6 +1007,10 @@ export default function AdminPanelClient() {
       setError("EMAIL ОБЯЗАТЕЛЕН ДЛЯ ВХОДА");
       return;
     }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(em)) {
+      setError("НЕВЕРНЫЙ ФОРМАТ EMAIL");
+      return;
+    }
     try {
       setNewUserBusy(true);
       setError(null);
@@ -1016,7 +1019,6 @@ export default function AdminPanelClient() {
         body: JSON.stringify({
           name: nm || em.split("@", 1)[0] || em,
           email: em,
-          position: newUserPosition,
           role: newUserRole,
           must_change_password: true,
         }),
@@ -1026,15 +1028,16 @@ export default function AdminPanelClient() {
       setTempPasswordModalOpen(true);
       setNewUserName("");
       setNewUserEmail("");
-      setNewUserPosition("");
       await loadUsers();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const m = String(msg || "").toLowerCase();
-      if (m.includes("user already exists")) {
-        setError("ПОЛЬЗОВАТЕЛЬ УЖЕ СУЩЕСТВУЕТ (ИМЯ/ЛОГИН ДОЛЖЕН БЫТЬ УНИКАЛЬНЫМ)");
+      if (m.includes("invalid email")) {
+        setError("НЕВЕРНЫЙ ФОРМАТ EMAIL");
       } else if (m.includes("user email already exists")) {
         setError("EMAIL УЖЕ ЗАНЯТ");
+      } else if (m.includes("user already exists")) {
+        setError("ПОЛЬЗОВАТЕЛЬ УЖЕ СУЩЕСТВУЕТ");
       } else {
         setError(msg || "НЕ УДАЛОСЬ СОЗДАТЬ ПОЛЬЗОВАТЕЛЯ");
       }
@@ -1737,6 +1740,7 @@ export default function AdminPanelClient() {
     if (tab === "users") void loadUsers();
     if (tab === "diagnostics") { void loadSystemStatus(); void Promise.all([loadRuntimeLlmSettings(), loadRuntimeS3Settings()]); }
     if (tab === "modules") void loadAdminModules();
+    if (tab === "analytics") void Promise.all([loadUsers(), loadAdminModules()]);
     if (tab === "import") {
       void loadJobsModel(true);
     }
@@ -1811,6 +1815,53 @@ export default function AdminPanelClient() {
     regenHistory.forEach((it: any) => { if (it.submodule_id && it.status !== "finished") out[it.submodule_id] = it; });
     return out;
   }, [regenHistory]);
+
+  const analytics = useMemo(() => {
+    const registered = Array.isArray(users) ? users.length : 0;
+    const now = Date.now();
+    const onlineWindowMs = 10 * 60 * 1000;
+    const online = (Array.isArray(users) ? users : []).filter((u: any) => {
+      const ts = String(u?.last_activity_at || "").trim();
+      if (!ts) return false;
+      const t = Date.parse(ts);
+      if (!t || !Number.isFinite(t)) return false;
+      return now - t <= onlineWindowMs;
+    }).length;
+
+    const byCurrentModule: Record<string, { id: string; title: string; count: number }> = {};
+    for (const u of Array.isArray(users) ? users : []) {
+      const cur = (u as any)?.progress_summary?.current;
+      const mid = String(cur?.module_id || "").trim();
+      if (!mid) continue;
+      const title = String(cur?.title || "").trim();
+      if (!byCurrentModule[mid]) byCurrentModule[mid] = { id: mid, title, count: 0 };
+      byCurrentModule[mid].count += 1;
+      if (title && !byCurrentModule[mid].title) byCurrentModule[mid].title = title;
+    }
+
+    const popularCurrent = Object.values(byCurrentModule)
+      .sort((a, b) => (b.count - a.count) || String(a.title).localeCompare(String(b.title)))
+      .slice(0, 5);
+
+    const mostPopular = popularCurrent.length ? popularCurrent[0] : null;
+
+    let mostProblematic: { id: string; title: string; needs: number } | null = null;
+    for (const m of Array.isArray(adminModules) ? adminModules : []) {
+      const q = (m as any)?.question_quality;
+      const needs = Number(q?.needs_regen_current || 0);
+      if (!mostProblematic || needs > mostProblematic.needs) {
+        mostProblematic = { id: String((m as any)?.id || ""), title: String((m as any)?.title || ""), needs };
+      }
+    }
+
+    return {
+      registered,
+      online,
+      mostPopular,
+      mostProblematic,
+      popularCurrent,
+    };
+  }, [users, adminModules]);
 
   const switchTabGuarded = (next: TabKey) => { if (next !== tab) setTab(next); };
 
@@ -1897,8 +1948,6 @@ export default function AdminPanelClient() {
               setNewUserName={setNewUserName}
               newUserEmail={newUserEmail}
               setNewUserEmail={setNewUserEmail}
-              newUserPosition={newUserPosition}
-              setNewUserPosition={setNewUserPosition}
               newUserRole={newUserRole}
               setNewUserRole={setNewUserRole}
               usersLoading={usersLoading}
@@ -1926,6 +1975,93 @@ export default function AdminPanelClient() {
                 else setTempPasswordModalOpen(true);
               }}
             />
+          )}
+          {tab === "analytics" && (
+            <div className="grid gap-6 lg:grid-cols-12 items-start">
+              <div className="lg:col-span-8 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-10 shadow-2xl shadow-zinc-950/10">
+                <div className="flex items-start justify-between gap-6">
+                  <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Сводка</div>
+                    <div className="text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none">Аналитика</div>
+                    <div className="mt-3 text-[10px] font-black uppercase tracking-widest text-zinc-500">без новых эндпоинтов</div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                    disabled={usersLoading || adminModulesLoading}
+                    onClick={() => void Promise.all([loadUsers(), loadAdminModules()])}
+                  >
+                    {usersLoading || adminModulesLoading ? "ОБНОВЛЕНИЕ..." : "ОБНОВИТЬ"}
+                  </Button>
+                </div>
+
+                <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Пользователей</div>
+                    <div className="mt-2 text-3xl font-black tabular-nums text-zinc-950">{analytics.registered}</div>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Онлайн (≈10 мин)</div>
+                    <div className="mt-2 text-3xl font-black tabular-nums text-zinc-950">{analytics.online}</div>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Популярный модуль</div>
+                    <div className="mt-2 text-[11px] font-black uppercase tracking-widest text-zinc-950 truncate">
+                      {analytics.mostPopular ? analytics.mostPopular.title || analytics.mostPopular.id : "—"}
+                    </div>
+                    <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-zinc-600">
+                      {analytics.mostPopular ? `в работе: ${analytics.mostPopular.count}` : ""}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Проблемный модуль</div>
+                    <div className="mt-2 text-[11px] font-black uppercase tracking-widest text-zinc-950 truncate">
+                      {analytics.mostProblematic ? analytics.mostProblematic.title || analytics.mostProblematic.id : "—"}
+                    </div>
+                    <div className="mt-2 text-[9px] font-black uppercase tracking-widest text-zinc-600">
+                      {analytics.mostProblematic ? `needs regen: ${analytics.mostProblematic.needs}` : ""}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-8 rounded-2xl border border-zinc-200 bg-white p-6">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Топ модулей</div>
+                      <div className="mt-2 text-lg font-black uppercase text-zinc-950">Сейчас в работе</div>
+                    </div>
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">{analytics.popularCurrent.length}</div>
+                  </div>
+
+                  <div className="mt-5 space-y-2">
+                    {analytics.popularCurrent.length ? (
+                      analytics.popularCurrent.map((x: { id: string; title?: string; count: number }) => (
+                        <div key={x.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 rounded-xl border border-zinc-200 bg-zinc-50/40 px-4 py-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">{x.title || x.id}</div>
+                            <div className="mt-1 text-[9px] font-black uppercase tracking-widest text-zinc-500">ID: {String(x.id).slice(0, 8)}</div>
+                          </div>
+                          <div className="shrink-0 rounded-full border border-[#fe9900]/25 bg-[#fe9900]/10 px-3 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-900 tabular-nums">
+                            {x.count}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="py-10 text-center text-[10px] font-black uppercase tracking-widest text-zinc-500">Нет данных</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-4 space-y-6">
+                <div className="relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-2xl shadow-zinc-950/10">
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Примечание</div>
+                  <div className="mt-2 text-sm font-bold text-zinc-600">
+                    Онлайн считается по последней активности пользователя (поле last_activity_at) за ~10 минут.
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
           {tab === "diagnostics" && (
             <DiagnosticsTab

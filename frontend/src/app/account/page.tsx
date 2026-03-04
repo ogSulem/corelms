@@ -362,7 +362,7 @@ export default function AccountPage() {
             </div>
           </div>
           <p className="mt-4 text-xl text-zinc-500 font-medium uppercase tracking-tight">
-            {profile?.role === "admin" ? "АДМИНИСТРАТОР" : "СОТРУДНИК"} {profile?.position ? `· ${profile.position}` : ""}
+            {profile?.role === "admin" ? "АДМИНИСТРАТОР" : "СОТРУДНИК"}
           </p>
         </div>
         <div className="grid gap-10 lg:grid-cols-12">

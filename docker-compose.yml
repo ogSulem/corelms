@@ -38,8 +38,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-sdlp}
       POSTGRES_USER: ${POSTGRES_USER:-sdlp}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sdlp}
-    ports:
-      - "127.0.0.1:5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     restart: unless-stopped
@@ -105,8 +103,6 @@ services:
 
   redis:
     image: redis:7
-    ports:
-      - "127.0.0.1:6379:6379"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -192,6 +188,30 @@ services:
     network_mode: service:frontend
     ports:
       - "127.0.0.1:3000:3000"
+    command: ["sh", "-lc", "sleep infinity"]
+    restart: unless-stopped
+
+  postgres_expose:
+    image: alpine:3.20
+    profiles: ["dev"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    network_mode: service:postgres
+    ports:
+      - "127.0.0.1:5432:5432"
+    command: ["sh", "-lc", "sleep infinity"]
+    restart: unless-stopped
+
+  redis_expose:
+    image: alpine:3.20
+    profiles: ["dev"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    network_mode: service:redis
+    ports:
+      - "127.0.0.1:6379:6379"
     command: ["sh", "-lc", "sleep infinity"]
     restart: unless-stopped
 

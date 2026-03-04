@@ -14,8 +14,6 @@ interface UsersTabProps {
   setNewUserName: (val: string) => void;
   newUserEmail: string;
   setNewUserEmail: (val: string) => void;
-  newUserPosition: string;
-  setNewUserPosition: (val: string) => void;
   newUserRole: "employee" | "admin";
   setNewUserRole: (val: "employee" | "admin") => void;
   usersLoading: boolean;
@@ -55,8 +53,6 @@ export function UsersTab(props: UsersTabProps) {
     setNewUserName,
     newUserEmail,
     setNewUserEmail,
-    newUserPosition,
-    setNewUserPosition,
     newUserRole,
     setNewUserRole,
     usersLoading,
@@ -85,7 +81,6 @@ export function UsersTab(props: UsersTabProps) {
   const isSelf = Boolean(selectedUserId) && String(selectedUserId) === String(currentUserId || "");
 
   const [draftName, setDraftName] = useState<string>("");
-  const [draftPosition, setDraftPosition] = useState<string>("");
   const [draftRole, setDraftRole] = useState<"employee" | "admin">("employee");
   const [historyOpen, setHistoryOpen] = useState(false);
 
@@ -93,20 +88,17 @@ export function UsersTab(props: UsersTabProps) {
     if (!userDetail) return false;
     return (
       String(draftName || "") !== String(userDetail.name || "") ||
-      String(draftPosition || "") !== String(userDetail.position || "") ||
       String(draftRole || "") !== String(userDetail.role || "")
     );
-  }, [draftName, draftPosition, draftRole, userDetail]);
+  }, [draftName, draftRole, userDetail]);
 
   useEffect(() => {
     if (!userDetail) {
       setDraftName("");
-      setDraftPosition("");
       setDraftRole("employee");
       return;
     }
     setDraftName(String(userDetail.name || ""));
-    setDraftPosition(String(userDetail.position || ""));
     setDraftRole((String(userDetail.role || "employee") as any) === "admin" ? "admin" : "employee");
   }, [userDetail?.id]);
 
@@ -150,15 +142,6 @@ export function UsersTab(props: UsersTabProps) {
             </div>
 
             <div className="lg:col-span-4">
-              <div className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">Должность</div>
-              <input
-                className="mt-2 w-full h-12 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                value={newUserPosition}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewUserPosition(e.target.value)}
-                placeholder="Например: Менеджер"
-              />
-            </div>
-            <div className="lg:col-span-2">
               <div className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">Роль</div>
               <select
                 className="mt-2 w-full h-12 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
@@ -169,16 +152,7 @@ export function UsersTab(props: UsersTabProps) {
                 <option value="admin">АДМИН</option>
               </select>
             </div>
-            <div className="lg:col-span-2 flex items-center justify-end">
-              <Button
-                variant="ghost"
-                className="h-12 w-full rounded-xl font-black uppercase tracking-widest text-[9px]"
-                disabled={usersLoading}
-                onClick={() => void loadUsers()}
-              >
-                {usersLoading ? "ОБНОВЛЕНИЕ..." : "ОБНОВИТЬ"}
-              </Button>
-            </div>
+            <div className="lg:col-span-2" />
           </div>
 
           {newUserTempPassword ? (
@@ -250,7 +224,7 @@ export function UsersTab(props: UsersTabProps) {
                           </div>
                         ) : null}
                         <div className="mt-1 truncate text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                          {u.position ? u.position : u.role}
+                          {u.role}
                         </div>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
@@ -283,9 +257,6 @@ export function UsersTab(props: UsersTabProps) {
                 <div className="text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none">
                   {userDetail ? userDetail.name : selectedUserId ? "Загрузка..." : "Выберите сотрудника"}
                 </div>
-                {userDetail?.position ? (
-                  <div className="mt-3 text-sm text-zinc-500 font-bold uppercase tracking-widest">{userDetail.position}</div>
-                ) : null}
               </div>
 
               <div className="shrink-0 flex flex-col gap-2">
@@ -296,7 +267,6 @@ export function UsersTab(props: UsersTabProps) {
                   onClick={() =>
                     void updateSelectedUser({
                       name: String(draftName || "").trim() || null,
-                      position: String(draftPosition || "").trim() || null,
                       role: (draftRole as any) ?? null,
                       must_change_password: userDetail?.must_change_password ?? null,
                     })
@@ -341,14 +311,6 @@ export function UsersTab(props: UsersTabProps) {
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Email</div>
                     <div className="mt-2 text-[11px] font-black tracking-widest text-zinc-950 break-all">{String(userDetail.email || "")}</div>
-                  </div>
-                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Должность</div>
-                    <input
-                      className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                      value={draftPosition}
-                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraftPosition(String(e.target.value || ""))}
-                    />
                   </div>
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Роль</div>

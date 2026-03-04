@@ -158,7 +158,7 @@ export function ModulesTab(props: ModulesTabProps) {
                     (active ? "border-[#fe9900]/25 bg-[#fe9900]/10" : "border-zinc-200 bg-white hover:bg-zinc-50")
                   }
                 >
-                  <div className="flex items-start justify-between gap-3 min-w-0">
+                  <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 min-w-0">
                     <div className="min-w-0">
                       <div className="truncate text-[10px] font-black uppercase tracking-[0.22em] text-zinc-950">
                         {m.title}
@@ -323,7 +323,7 @@ export function ModulesTab(props: ModulesTabProps) {
                             (active ? "border-[#fe9900]/25 bg-[#fe9900]/10" : "border-zinc-200 bg-white hover:bg-zinc-50")
                           }
                         >
-                          <div className="flex items-start justify-between gap-3">
+                          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 min-w-0">
                             <button
                               type="button"
                               onClick={() => {
@@ -334,17 +334,17 @@ export function ModulesTab(props: ModulesTabProps) {
                                   setSelectedQuizId("");
                                 }
                               }}
-                              className="min-w-0 flex-1 text-left"
+                              className="min-w-0 text-left"
                             >
-                              <div className="flex items-center gap-3">
-                                <div className="h-6 w-6 rounded-lg bg-zinc-100 flex items-center justify-center text-[10px] font-black text-zinc-500">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="h-6 w-6 shrink-0 rounded-lg bg-zinc-100 flex items-center justify-center text-[10px] font-black text-zinc-500">
                                   {s.order}
                                 </div>
-                                <div className="truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">
+                                <div className="min-w-0 truncate text-[11px] font-black uppercase tracking-widest text-zinc-950">
                                   {s.title}
                                 </div>
                               </div>
-                              <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <div className="mt-2 flex flex-wrap items-center gap-2 min-w-0">
                                 {isFolderLesson ? (
                                   <div className="inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest border-zinc-200 bg-zinc-50 text-zinc-700">
                                     ПАПКА
@@ -379,14 +379,14 @@ export function ModulesTab(props: ModulesTabProps) {
                             </button>
 
                             {isFileLesson ? null : moduleRegenRunning || subRegenRunning ? (
-                              <div className="h-9 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-3 flex items-center justify-center text-[9px] font-black uppercase tracking-widest text-[#fe9900]">
+                              <div className="h-9 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-3 flex items-center justify-center text-[9px] font-black uppercase tracking-widest text-[#fe9900] whitespace-nowrap">
                                 {moduleRegenRunning ? "РЕГЕН МОДУЛЯ" : "РЕГЕН УРОКА"}
                                 {subJob?.job_id ? ` · ${String(subJob.job_id).slice(0, 6)}` : ""}
                               </div>
                             ) : (
                               <Button
                                 variant="outline"
-                                className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
                                 disabled={!s.id || moduleRegenRunning || subRegenRunning}
                                 onClick={() => void regenerateSubmoduleQuiz(String(s.id))}
                               >
