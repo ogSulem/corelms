@@ -89,8 +89,10 @@ from app.services.storage import (
     multipart_upload_exists,
     presign_get,
     presign_put,
+    s3_list_common_prefixes,
+    s3_list_objects,
+    s3_prefix_has_objects,
 )
-from app.services.storage import s3_list_objects, s3_prefix_has_objects
 from app.services.openrouter_health import openrouter_healthcheck
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -3434,6 +3436,14 @@ def list_modules_admin(
 ):
     mods = db.scalars(select(Module).order_by(Module.title)).all()
 
+    # Performance: do NOT call S3 per module. List direct prefixes once and check membership.
+    # This makes admin UI fast even with hundreds of modules.
+    storage_prefixes: set[str] = set()
+    try:
+        storage_prefixes = set(s3_list_common_prefixes(prefix="modules/", delimiter="/"))
+    except Exception:
+        storage_prefixes = set()
+
     stats_by_module: dict[str, dict[str, int]] = {}
     needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
     ok_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("ok:%"))
@@ -3506,9 +3516,14 @@ def list_modules_admin(
         if pfx and (not pfx.endswith("/")):
             pfx = pfx + "/"
         try:
-            # Do NOT bypass cache here: this endpoint is called frequently by admin UI.
-            # Bypassing cache causes an S3 list call per module and makes UI feel slow.
-            storage_ok = bool(s3_prefix_has_objects(prefix=pfx, bypass_cache=False))
+            # Fast-path: for default convention modules/<id>/ we can use the single listing.
+            # Fallback to cached per-prefix check for custom storage_prefix.
+            storage_ok = False
+            default_pfx = f"modules/{mid}/"
+            if pfx == default_pfx and storage_prefixes:
+                storage_ok = default_pfx in storage_prefixes
+            else:
+                storage_ok = bool(s3_prefix_has_objects(prefix=pfx, bypass_cache=False))
         except Exception:
             storage_ok = False
 

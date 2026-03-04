@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import boto3
+import json
 import logging
 from botocore.client import Config
 from botocore.exceptions import ClientError
@@ -233,7 +234,7 @@ def ensure_bucket_exists() -> None:
             pass
 
 
-def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 60, bypass_cache: bool = False) -> bool:
+def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 600, bypass_cache: bool = False) -> bool:
     pfx = str(prefix or "").strip().lstrip("/")
     if not pfx:
         return False
@@ -264,14 +265,84 @@ def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 60, bypass_cache:
     if not bypass_cache:
         try:
             r = get_redis()
-            ttl = int(max(5, min(int(cache_seconds or 60), 3600)))
+            ttl = int(max(10, min(int(cache_seconds or 600), 3600)))
             if not ok:
-                ttl = min(ttl, 5)
+                ttl = min(ttl, 30)
             r.setex(cache_key, ttl, "1" if ok else "0")
         except Exception:
             pass
 
     return ok
+
+
+def s3_list_common_prefixes(
+    *,
+    prefix: str,
+    delimiter: str = "/",
+    cache_seconds: int = 300,
+    bypass_cache: bool = False,
+) -> set[str]:
+    """List direct child prefixes under a prefix.
+
+    Intended for fast module storage checks without N calls.
+    """
+
+    pfx = str(prefix or "").strip().lstrip("/")
+    if pfx and (not pfx.endswith(delimiter)):
+        pfx = pfx + delimiter
+
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
+
+    cache_key = f"s3:common_prefixes:{bucket}:{pfx}:{delimiter}"
+    if not bypass_cache:
+        try:
+            r = get_redis()
+            raw = r.get(cache_key)
+            if raw:
+                obj = json.loads(str(raw))
+                if isinstance(obj, list):
+                    return {str(x) for x in obj if str(x).strip()}
+        except Exception:
+            pass
+
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+
+    out: set[str] = set()
+    token: str | None = None
+    while True:
+        kwargs: dict[str, object] = {
+            "Bucket": bucket,
+            "Prefix": pfx,
+            "Delimiter": delimiter,
+            "MaxKeys": 1000,
+        }
+        if token:
+            kwargs["ContinuationToken"] = token
+        resp = s3.list_objects_v2(**kwargs)
+        for cp in (resp.get("CommonPrefixes") or []):
+            try:
+                key = str((cp or {}).get("Prefix") or "").strip()
+                if key:
+                    out.add(key)
+            except Exception:
+                continue
+        if not resp.get("IsTruncated"):
+            break
+        token = resp.get("NextContinuationToken")
+        if not token:
+            break
+
+    if not bypass_cache:
+        try:
+            r = get_redis()
+            ttl = int(max(10, min(int(cache_seconds or 300), 3600)))
+            r.setex(cache_key, ttl, json.dumps(sorted(out)))
+        except Exception:
+            pass
+
+    return out
 
 
 def s3_list_objects(

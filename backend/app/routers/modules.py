@@ -15,7 +15,7 @@ from app.models.user import User
 from app.schemas.modules_overview import ModulesOverviewResponse
 from app.schemas.module import ModulePublic, SubmoduleAssetsResponse, SubmodulePublic
 from app.services.modules import ModuleService
-from app.services.storage import s3_prefix_has_objects
+from app.services.storage import s3_list_common_prefixes, s3_prefix_has_objects
 
 router = APIRouter(prefix="/modules", tags=["modules"])
 
@@ -30,11 +30,35 @@ def modules_overview(db: Session = Depends(get_db), user: User = Depends(get_cur
 @router.get("", response_model=list[ModulePublic])
 def list_modules(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     modules = db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()  # noqa: E712
-    modules = [
-        m
-        for m in modules
-        if s3_prefix_has_objects(prefix=str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{m.id}/")
-    ]
+
+    # Performance: avoid per-module S3 checks.
+    # List direct prefixes once (cached) and filter by membership.
+    storage_prefixes: set[str] = set()
+    try:
+        storage_prefixes = set(s3_list_common_prefixes(prefix="modules/", delimiter="/"))
+    except Exception:
+        storage_prefixes = set()
+
+    filtered: list[Module] = []
+    for m in modules:
+        mid = str(getattr(m, "id", "") or "")
+        pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{mid}/"
+        if pfx and (not pfx.endswith("/")):
+            pfx = pfx + "/"
+
+        default_pfx = f"modules/{mid}/"
+        ok = False
+        try:
+            if pfx == default_pfx and storage_prefixes:
+                ok = default_pfx in storage_prefixes
+            else:
+                ok = bool(s3_prefix_has_objects(prefix=pfx, bypass_cache=False))
+        except Exception:
+            ok = False
+        if ok:
+            filtered.append(m)
+
+    modules = filtered
     return [
         {
             "id": str(m.id),

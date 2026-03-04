@@ -307,6 +307,24 @@ def stream_asset(
 
     content_type = str(asset.mime_type or "").strip() or "application/octet-stream"
     filename = str(asset.original_filename or "").strip() or "file"
+    # Hardening: Edge/PDF viewer may block if Content-Disposition filename* contains path separators.
+    # Use basename only.
+    try:
+        filename = filename.replace("\\", "/")
+        if "/" in filename:
+            filename = filename.split("/")[-1].strip() or "file"
+    except Exception:
+        pass
+    # Best-effort: ensure correct PDF Content-Type.
+    try:
+        ext = ""
+        original_name_l = str(asset.original_filename or "").strip().lower()
+        if "." in original_name_l:
+            ext = original_name_l.rsplit(".", 1)[-1].strip()
+        if ext == "pdf" and content_type.lower() in {"application/octet-stream", "binary/octet-stream"}:
+            content_type = "application/pdf"
+    except Exception:
+        pass
     quoted = urllib.parse.quote(filename, safe="")
     disposition = f"inline; filename*=UTF-8''{quoted}"
 

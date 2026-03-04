@@ -1030,21 +1030,43 @@ export default function ModulePage() {
                                 <audio src={inlineUrl} controls className="w-full" preload="metadata" />
                               </div>
                             ) : inlineKind === "pdf" ? (
-                              <iframe
-                                src={inlineUrl}
-                                className="w-full h-[420px]"
-                                sandbox="allow-same-origin allow-scripts allow-forms"
-                                title={String(inlineName || "PDF")}
-                              />
+                              <div>
+                                <div className="flex items-center justify-end gap-2 px-4 pt-4">
+                                  <Button
+                                    variant="outline"
+                                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                    onClick={() => window.open(inlineUrl, "_blank", "noopener,noreferrer")}
+                                  >
+                                    ОТКРЫТЬ В НОВОЙ ВКЛАДКЕ
+                                  </Button>
+                                </div>
+                                <iframe
+                                  src={inlineUrl}
+                                  className="w-full h-[420px]"
+                                  referrerPolicy="no-referrer"
+                                  title={String(inlineName || "PDF")}
+                                />
+                              </div>
                             ) : inlineKind === "image" ? (
                               <img src={inlineUrl} alt="" className="w-full h-auto" />
                             ) : inlineKind === "office" ? (
-                              <iframe
-                                src={inlineUrl}
-                                className="w-full h-[520px]"
-                                sandbox="allow-same-origin allow-scripts allow-forms"
-                                title={String(inlineName || "Office")}
-                              />
+                              <div>
+                                <div className="flex items-center justify-end gap-2 px-4 pt-4">
+                                  <Button
+                                    variant="outline"
+                                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                    onClick={() => window.open(inlineUrl, "_blank", "noopener,noreferrer")}
+                                  >
+                                    ОТКРЫТЬ В НОВОЙ ВКЛАДКЕ
+                                  </Button>
+                                </div>
+                                <iframe
+                                  src={inlineUrl}
+                                  className="w-full h-[520px]"
+                                  referrerPolicy="no-referrer"
+                                  title={String(inlineName || "Office")}
+                                />
+                              </div>
                             ) : inlineKind === "text" ? (
                               <div className="p-4">
                                 <pre className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-800">{inlineText || ""}</pre>
@@ -1478,13 +1500,28 @@ export default function ModulePage() {
             <div className="p-6">
               <pre className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-800">{inlineText || ""}</pre>
             </div>
+          ) : ["pdf", "office"].includes(String(inlineKind || "")) ? (
+            <div>
+              <div className="flex items-center justify-end gap-2 p-4">
+                <Button
+                  variant="outline"
+                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                  onClick={() => window.open(inlineUrl, "_blank", "noopener,noreferrer")}
+                >
+                  ОТКРЫТЬ В НОВОЙ ВКЛАДКЕ
+                </Button>
+              </div>
+              <iframe
+                src={inlineUrl}
+                className={inlineKind === "office" ? "w-full h-[520px]" : "w-full h-[520px]"}
+                referrerPolicy="no-referrer"
+                title={String(inlineName || (inlineKind === "office" ? "Office" : "PDF"))}
+              />
+            </div>
           ) : (
-            <iframe
-              src={inlineUrl}
-              className="w-full h-[75vh]"
-              sandbox="allow-same-origin allow-scripts allow-forms"
-              title={String(inlineName || "Viewer")}
-            />
+            <div className="p-10 text-[11px] font-bold text-zinc-700">
+              Предпросмотр недоступен.
+            </div>
           )}
         </div>
       </Modal>

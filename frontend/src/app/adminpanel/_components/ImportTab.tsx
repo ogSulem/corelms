@@ -360,6 +360,9 @@ export default function ImportTab(props: ImportTabProps) {
   };
 
   const storageRows = useMemo(() => {
+    const adminReady = Array.isArray(adminModules) && adminModules.length > 0;
+    if (!adminReady) return [];
+
     const hideKeys = new Set<string>();
     try {
       const shouldHide = (it: any): boolean => {
@@ -369,7 +372,6 @@ export default function ImportTab(props: ImportTabProps) {
       };
 
       for (const it of importQueue || []) {
-        if (!shouldHide(it)) continue;
         const k = String((it as any)?.object_key || "").trim();
         if (k) hideKeys.add(k);
       }
@@ -857,6 +859,8 @@ export default function ImportTab(props: ImportTabProps) {
         <div className="mt-3">
           {storageUploadsLoading ? (
             <div className="text-[11px] font-bold text-zinc-600">ЗАГРУЖАЮ СПИСОК…</div>
+          ) : !(Array.isArray(adminModules) && adminModules.length > 0) ? (
+            <div className="text-[11px] font-bold text-zinc-600">ЗАГРУЖАЮ СПИСОК МОДУЛЕЙ…</div>
           ) : !storageRows.length ? (
             <div className="space-y-2">
               <div className="text-[11px] font-bold text-zinc-600">НЕТ ZIP В ЭТОМ ПРЕФИКСЕ</div>
