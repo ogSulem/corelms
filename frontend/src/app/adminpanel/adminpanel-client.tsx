@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
@@ -31,9 +31,13 @@ import ImportTab from "./_components/ImportTab";
 export default function AdminPanelClient() {
   const { user, loading: authLoading } = useAuth();
   const pathname = usePathname();
+  const router = useRouter();
 
   const IMPORT_STATE_KEY = "corelms:admin_import_state:v4";
   const STORAGE_UPLOADS_PREFIX_KEY = "corelms:admin_storage_uploads_prefix:v1";
+  const ADMIN_UI_STATE_KEY = "corelms:admin_ui_state:v1";
+
+  const ADMIN_CACHE_TTL_MS = 30_000;
 
   // --- Refs ---
   const importQueueSigRef = useRef<string>("");
@@ -64,6 +68,12 @@ export default function AdminPanelClient() {
   const optimisticActiveModuleRegenRef = useRef<Record<string, any>>({});
   const optimisticActiveSubmoduleRegenRef = useRef<Record<string, any>>({});
 
+  const adminModulesLoadedAtRef = useRef<number>(0);
+  const usersLoadedAtRef = useRef<number>(0);
+  const systemStatusLoadedAtRef = useRef<number>(0);
+  const runtimeLlmLoadedAtRef = useRef<number>(0);
+  const runtimeS3LoadedAtRef = useRef<number>(0);
+
   const jobsDebugEnabled = useMemo(() => {
     try {
       return String(window.localStorage.getItem("corelms:admin_jobs_debug") || "").trim() === "1";
@@ -71,6 +81,26 @@ export default function AdminPanelClient() {
       return false;
     }
   }, []);
+
+  const tabFromPath = (p: string): TabKey => {
+    const path = String(p || "");
+    if (path.startsWith("/admin/")) {
+      const seg = path.split("/").filter(Boolean)[1] || "modules";
+      if (seg === "modules" || seg === "import" || seg === "analytics" || seg === "users" || seg === "diagnostics") return seg;
+      return "modules";
+    }
+    // Backwards compatibility (old route)
+    if (path.startsWith("/adminpanel")) return "modules";
+    return "modules";
+  };
+
+  const pathForTab = (t: TabKey): string => `/admin/${t}`;
+
+  const goTab = (next: TabKey) => {
+    const desired = pathForTab(next);
+    if (pathname !== desired) router.push(desired);
+    if (tab !== next) setTab(next);
+  };
 
   const jobsLog = (label: string, data: any) => {
     if (!jobsDebugEnabled) return;
@@ -83,15 +113,13 @@ export default function AdminPanelClient() {
   };
 
   // --- Utilities ---
-  function readAdminQuery(): { tab?: TabKey; mid?: string; sid?: string; qid?: string } {
+  function readAdminQuery(): { mid?: string; sid?: string; qid?: string } {
     try {
       const sp = new URLSearchParams(window.location.search || "");
-      const tab = String(sp.get("tab") || "").trim() as TabKey;
       const mid = String(sp.get("mid") || "").trim();
       const sid = String(sp.get("sid") || "").trim();
       const qid = String(sp.get("qid") || "").trim();
       return {
-        tab: (tab === "modules" || tab === "import" || tab === "analytics" || tab === "users" || tab === "diagnostics") ? tab : undefined,
         mid: mid || undefined,
         sid: sid || undefined,
         qid: qid || undefined,
@@ -101,19 +129,21 @@ export default function AdminPanelClient() {
     }
   }
 
-  function writeAdminQuery(args: { pathname: string; tab: TabKey; mid?: string; sid?: string; qid?: string }) {
+  function loadAdminUiState(): any {
     try {
-      const sp = new URLSearchParams(window.location.search || "");
-      sp.set("tab", String(args.tab));
-      if (args.mid) sp.set("mid", String(args.mid));
-      else sp.delete("mid");
-      if (args.sid) sp.set("sid", String(args.sid));
-      else sp.delete("sid");
-      if (args.qid) sp.set("qid", String(args.qid));
-      else sp.delete("qid");
-      const qs = sp.toString();
-      const next = qs ? `${args.pathname}?${qs}` : args.pathname;
-      window.history.replaceState(null, "", next);
+      const raw = window.sessionStorage.getItem(ADMIN_UI_STATE_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  function saveAdminUiState(patch: any) {
+    try {
+      const prev = loadAdminUiState() || {};
+      const next = { ...prev, ...patch, _ts: Date.now() };
+      window.sessionStorage.setItem(ADMIN_UI_STATE_KEY, JSON.stringify(next));
     } catch {
       // ignore
     }
@@ -784,7 +814,7 @@ export default function AdminPanelClient() {
     setImportPendingCount(batch.length);
     setImportPendingNames(batch.map((f) => String((f as any)?.name || "").trim()).filter(Boolean));
     setImportEnqueueProgress({ total: batch.length, done: 0 });
-    setTab("import");
+    goTab("import");
     setJobPanelOpen(true);
     setImportBusy(true);
 
@@ -825,7 +855,7 @@ export default function AdminPanelClient() {
 
         // Product UX: newly imported module should appear immediately (stub module is created in backend).
         // Keep UI stable: do not reload public modules list automatically; rely on SSE + admin modules refresh.
-        void loadAdminModules();
+        void loadAdminModulesForce();
 
         setImportEnqueueProgress({ total: batch.length, done: i + 1 });
         setImportPendingCount(Math.max(0, batch.length - (i + 1)));
@@ -947,7 +977,7 @@ export default function AdminPanelClient() {
   function openModuleFromImport(it: ImportJobItem) {
     if (it.module_id) {
       setSelectedAdminModuleId(it.module_id);
-      setTab("modules");
+      goTab("modules");
     }
   }
 
@@ -956,11 +986,14 @@ export default function AdminPanelClient() {
   }
 
   async function loadUsers() {
+    const now = Date.now();
+    if (now - Number(usersLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
     try {
       setUsersLoading(true);
       const res = await apiFetch<{ items: UserItem[] }>(`/admin/users`);
       const items = Array.isArray(res?.items) ? res.items : [];
       setUsers(items);
+      usersLoadedAtRef.current = Date.now();
       if (items.length && (!selectedUserId || !items.some((u) => String(u.id) === String(selectedUserId)))) {
         setSelectedUserId(String(items[0].id));
       }
@@ -969,6 +1002,11 @@ export default function AdminPanelClient() {
     } finally {
       setUsersLoading(false);
     }
+  }
+
+  async function loadUsersForce() {
+    usersLoadedAtRef.current = 0;
+    await loadUsers();
   }
 
   async function loadUserDetail(userId: string) {
@@ -1028,12 +1066,13 @@ export default function AdminPanelClient() {
       setTempPasswordModalOpen(true);
       setNewUserName("");
       setNewUserEmail("");
+      usersLoadedAtRef.current = 0;
       await loadUsers();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       const m = String(msg || "").toLowerCase();
-      if (m.includes("invalid email")) {
-        setError("НЕВЕРНЫЙ ФОРМАТ EMAIL");
+      if (m.includes("duplicate") || m.includes("already") || m.includes("exists")) {
+        setError("ПОЛЬЗОВАТЕЛЬ С ТАКИМ EMAIL УЖЕ ЕСТЬ");
       } else if (m.includes("user email already exists")) {
         setError("EMAIL УЖЕ ЗАНЯТ");
       } else if (m.includes("user already exists")) {
@@ -1081,7 +1120,7 @@ export default function AdminPanelClient() {
       window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ПОЛЬЗОВАТЕЛЬ УДАЛЁН", description: "" } }));
       setSelectedUserId("");
       setUserDetail(null);
-      await loadUsers();
+      await loadUsersForce();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg || "НЕ УДАЛОСЬ УДАЛИТЬ ПОЛЬЗОВАТЕЛЯ");
@@ -1095,7 +1134,7 @@ export default function AdminPanelClient() {
     try {
       setError(null);
       await apiFetch<any>(`/admin/users/${encodeURIComponent(selectedUserId)}`, { method: "PATCH", body: JSON.stringify(patch || {}) });
-      await Promise.all([loadUsers(), loadUserDetail(selectedUserId)]);
+      await Promise.all([loadUsersForce(), loadUserDetail(selectedUserId)]);
       window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ПОЛЬЗОВАТЕЛЬ ОБНОВЛЁН", description: "" } }));
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -1118,10 +1157,13 @@ export default function AdminPanelClient() {
   }
 
   async function loadSystemStatus() {
+    const now = Date.now();
+    if (now - Number(systemStatusLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
     try {
       setSysLoading(true);
       const res = await apiFetch<any>(`/admin/system/status`);
       setSys(res || null);
+      systemStatusLoadedAtRef.current = Date.now();
     } catch {
       setSys(null);
     } finally {
@@ -1129,7 +1171,14 @@ export default function AdminPanelClient() {
     }
   }
 
+  async function loadSystemStatusForce() {
+    systemStatusLoadedAtRef.current = 0;
+    await loadSystemStatus();
+  }
+
   async function loadAdminModules() {
+    const now = Date.now();
+    if (now - Number(adminModulesLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
     try {
       setAdminModulesLoading(true);
       const res = await apiFetch<{ items: AdminModuleItem[] }>(`/admin/modules`);
@@ -1155,6 +1204,7 @@ export default function AdminPanelClient() {
         return String(a.title || "").localeCompare(String(b.title || ""));
       });
       setAdminModules(items);
+      adminModulesLoadedAtRef.current = Date.now();
       void loadStorageOrphansCount();
       if (items.length && (!selectedAdminModuleId || !items.some(x => x.id === selectedAdminModuleId))) {
         setSelectedAdminModuleId(items[0].id);
@@ -1162,6 +1212,11 @@ export default function AdminPanelClient() {
     } finally {
       setAdminModulesLoading(false);
     }
+  }
+
+  async function loadAdminModulesForce() {
+    adminModulesLoadedAtRef.current = 0;
+    await loadAdminModules();
   }
 
   async function loadSelectedAdminModule() {
@@ -1256,6 +1311,8 @@ export default function AdminPanelClient() {
   }
 
   async function loadRuntimeLlmSettings() {
+    const now = Date.now();
+    if (now - Number(runtimeLlmLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
     try {
       const data = await apiFetch<any>("/admin/runtime/llm");
       setOpenrouterEnabledDraft(!!data?.openrouter_enabled);
@@ -1265,9 +1322,15 @@ export default function AdminPanelClient() {
       setOpenrouterHttpRefererDraft(data?.openrouter_http_referer || "");
       setOpenrouterAppTitleDraft(data?.openrouter_app_title || "");
       setLlmEffective(data?.effective || null);
+      runtimeLlmLoadedAtRef.current = Date.now();
     } catch {
       // ignore
     }
+  }
+
+  async function loadRuntimeLlmSettingsForce() {
+    runtimeLlmLoadedAtRef.current = 0;
+    await loadRuntimeLlmSettings();
   }
 
   async function saveRuntimeLlmSettings() {
@@ -1282,7 +1345,7 @@ export default function AdminPanelClient() {
       };
       if (openrouterApiKeyDraft) body.openrouter_api_key = openrouterApiKeyDraft;
       await apiFetch("/admin/runtime/llm", { method: "POST", body: JSON.stringify(body) });
-      await Promise.all([loadSystemStatus(), loadRuntimeLlmSettings()]);
+      await Promise.all([loadSystemStatusForce(), loadRuntimeLlmSettingsForce()]);
       window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "НАСТРОЙКИ СОХРАНЕНЫ", description: "" } }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СОХРАНИТЬ НАСТРОЙКИ");
@@ -1295,7 +1358,7 @@ export default function AdminPanelClient() {
     try {
       setDiagSaving(true);
       await apiFetch("/admin/runtime/llm/reset", { method: "POST" });
-      await Promise.all([loadSystemStatus(), loadRuntimeLlmSettings()]);
+      await Promise.all([loadSystemStatusForce(), loadRuntimeLlmSettingsForce()]);
       window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "RUNTIME LLM СБРОШЕН", description: "" } }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СБРОСИТЬ RUNTIME LLM");
@@ -1305,6 +1368,8 @@ export default function AdminPanelClient() {
   }
 
   async function loadRuntimeS3Settings() {
+    const now = Date.now();
+    if (now - Number(runtimeS3LoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
     try {
       const data = await apiFetch<any>("/admin/runtime/s3");
       setS3Draft({
@@ -1318,9 +1383,15 @@ export default function AdminPanelClient() {
         s3_access_key_id_masked: data?.s3_access_key_id_masked || "",
         s3_secret_access_key_masked: data?.s3_secret_access_key_masked || "",
       });
+      runtimeS3LoadedAtRef.current = Date.now();
     } catch {
       // ignore
     }
+  }
+
+  async function loadRuntimeS3SettingsForce() {
+    runtimeS3LoadedAtRef.current = 0;
+    await loadRuntimeS3Settings();
   }
 
   async function saveRuntimeS3Settings() {
@@ -1336,7 +1407,7 @@ export default function AdminPanelClient() {
       if (String(s3Draft?.s3_access_key_id || "").trim()) body.s3_access_key_id = String(s3Draft.s3_access_key_id).trim();
       if (String(s3Draft?.s3_secret_access_key || "").trim()) body.s3_secret_access_key = String(s3Draft.s3_secret_access_key).trim();
       await apiFetch("/admin/runtime/s3", { method: "POST", body: JSON.stringify(body) });
-      await Promise.all([loadRuntimeS3Settings(), loadSystemStatus()]);
+      await Promise.all([loadRuntimeS3SettingsForce(), loadSystemStatusForce()]);
       window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "S3 НАСТРОЙКИ СОХРАНЕНЫ", description: "" } }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СОХРАНИТЬ S3 НАСТРОЙКИ");
@@ -1349,7 +1420,7 @@ export default function AdminPanelClient() {
     try {
       setDiagSaving(true);
       await apiFetch("/admin/runtime/s3/reset", { method: "POST" });
-      await Promise.all([loadRuntimeS3Settings(), loadSystemStatus()]);
+      await Promise.all([loadRuntimeS3SettingsForce(), loadSystemStatusForce()]);
       window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "RUNTIME S3 СБРОШЕН", description: "" } }));
     } catch (e) {
       setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СБРОСИТЬ RUNTIME S3");
@@ -1384,7 +1455,7 @@ export default function AdminPanelClient() {
     try {
       setBrokenModulesBusy(true);
       await apiFetch(`/admin/maintenance/modules/purge-missing-storage?dry_run=false`, { method: "POST" });
-      await Promise.all([scanBrokenModules(), loadAdminModules()]);
+      await Promise.all([scanBrokenModules(), loadAdminModulesForce()]);
     } finally {
       setBrokenModulesBusy(false);
     }
@@ -1394,7 +1465,7 @@ export default function AdminPanelClient() {
     if (!selectedAdminModuleId) return;
     try {
       await apiFetch(`/admin/modules/${encodeURIComponent(selectedAdminModuleId)}/visibility`, { method: "POST", body: JSON.stringify({ is_active: nextActive }) });
-      await loadAdminModules();
+      await loadAdminModulesForce();
       void loadSelectedAdminModule();
     } catch (e) {
       setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ИЗМЕНИТЬ ВИДИМОСТЬ");
@@ -1412,7 +1483,29 @@ export default function AdminPanelClient() {
       );
       if (res?.job_id) {
         setSelectedJobId(String(res.job_id));
-        setTab("import");
+        goTab("import");
+        setJobPanelOpen(true);
+      }
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "РЕГЕН ЗАПУЩЕН", description: "" } }));
+      void loadRegenHistory(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ЗАПУСТИТЬ РЕГЕН");
+    }
+  }
+
+  async function regenerateSubmoduleQuiz(submoduleId: string) {
+    const sid = String(submoduleId || "").trim();
+    if (!sid) return;
+    if (!window.confirm("Запустить реген теста для выбранного урока?")) return;
+    try {
+      setError(null);
+      const res = await apiFetch<{ job_id: string }>(
+        `/admin/submodules/${encodeURIComponent(sid)}/regenerate-quiz`,
+        { method: "POST" }
+      );
+      if (res?.job_id) {
+        setSelectedJobId(String(res.job_id));
+        goTab("import");
         setJobPanelOpen(true);
       }
       window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "РЕГЕН ЗАПУЩЕН", description: "" } }));
@@ -1440,7 +1533,7 @@ export default function AdminPanelClient() {
       setSelectedQuizId("");
       await apiFetch(`/admin/modules/${encodeURIComponent(selectedAdminModuleId)}`, { method: "DELETE" });
       window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "МОДУЛЬ УДАЛЁН", description: "" } }));
-      await loadAdminModules();
+      await loadAdminModulesForce();
     } catch (e) {
       setAdminModules(prevModules);
       setSelectedAdminModuleId(prevSelectedModuleId);
@@ -1457,19 +1550,6 @@ export default function AdminPanelClient() {
       setModules(mapped);
       if (mapped.length && !moduleId) setModuleId(mapped[0].id);
     } catch { /* ignore */ }
-  }
-
-  async function regenerateSubmoduleQuiz(submoduleId: string) {
-    try {
-      const res = await apiFetch<{ job_id: string }>(`/admin/submodules/${encodeURIComponent(submoduleId)}/regenerate-quiz`, { method: "POST" });
-      if (res?.job_id) {
-        setSelectedJobId(res.job_id);
-        setTab("import");
-        setJobPanelOpen(true);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ЗАПУСТИТЬ РЕГЕН");
-    }
   }
 
   async function createQuestionAdmin(quizId: string) {
@@ -1542,6 +1622,34 @@ export default function AdminPanelClient() {
 
     let es: EventSource | null = null;
     let stopped = false;
+    let reconnectTimer: number | null = null;
+    let openedOnce = false;
+
+    let backoffMs = 1000;
+    const backoffMaxMs = 30_000;
+
+    const isPageActive = () => {
+      try {
+        return document.visibilityState === "visible";
+      } catch {
+        return true;
+      }
+    };
+
+    const isOnline = () => {
+      try {
+        return navigator.onLine !== false;
+      } catch {
+        return true;
+      }
+    };
+
+    const clearReconnect = () => {
+      if (reconnectTimer) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+    };
 
     const tryRefreshSession = async (): Promise<boolean> => {
       try {
@@ -1556,35 +1664,82 @@ export default function AdminPanelClient() {
       }
     };
 
-    const open = () => {
+    const scheduleReconnect = (reason: string) => {
       if (stopped) return;
+      clearReconnect();
+      if (!isOnline()) return;
+      // If the tab is hidden, don't burn reconnect attempts.
+      if (!isPageActive()) return;
+
+      const jitter = Math.floor(Math.random() * 250);
+      const delay = Math.min(backoffMaxMs, Math.max(250, backoffMs + jitter));
+      backoffMs = Math.min(backoffMaxMs, Math.floor(backoffMs * 1.7));
+
+      reconnectTimer = window.setTimeout(() => {
+        if (stopped) return;
+        open("reconnect:" + reason);
+      }, delay);
+    };
+
+    const closeSse = (why: string) => {
+      try {
+        jobsLog("sse.close", { why });
+      } catch {
+        // ignore
+      }
+      try {
+        es?.close();
+      } catch {
+        // ignore
+      }
+      es = null;
+      setJobsSseConnected(false);
+    };
+
+    const open = (reason: string) => {
+      if (stopped) return;
+      clearReconnect();
+
+      if (!isOnline()) {
+        setJobsSseConnected(false);
+        scheduleReconnect("offline");
+        return;
+      }
+
+      if (!isPageActive()) {
+        setJobsSseConnected(false);
+        scheduleReconnect("hidden");
+        return;
+      }
+
+      // Always close previous instance before opening a new one.
+      if (es) closeSse("reopen");
+
       try {
         es = new EventSource("/api/backend/admin/jobs/events");
       } catch {
         es = null;
         setJobsSseConnected(false);
+        scheduleReconnect("ctor_fail");
         return;
       }
 
-      setJobsSseConnected(true);
+      openedOnce = true;
+      setJobsSseConnected(false);
 
       es.addEventListener("open", () => {
         jobsSseLastOkAtRef.current = Date.now();
+        jobsSseLastRevRef.current = jobsSseLastRevRef.current || 0;
+        backoffMs = 1000;
         setJobsSseConnected(true);
+        jobsLog("sse.open", { reason });
       });
 
       es.addEventListener("error", () => {
-        setJobsSseConnected(false);
-        try {
-          es?.close();
-        } catch {
-          // ignore
-        }
-        es = null;
-
+        closeSse("error");
         // Best-effort: SSE cannot auto-refresh tokens like apiFetch does.
-        // Try to refresh the session using refresh cookie, then let watchdog/poll reopen.
-        void tryRefreshSession();
+        // Try to refresh the session using refresh cookie, then reconnect with backoff.
+        void tryRefreshSession().finally(() => scheduleReconnect("error"));
       });
 
       es.addEventListener("jobs", (ev: MessageEvent) => {
@@ -1622,34 +1777,33 @@ export default function AdminPanelClient() {
       });
     };
 
-    open();
-
-    const watchdog = window.setInterval(() => {
+    const onVisibility = () => {
       if (stopped) return;
-      const lastOk = jobsSseLastOkAtRef.current || 0;
-      // If SSE is stale for too long, force reconnect.
-      if (lastOk && Date.now() - lastOk > 35_000) {
-        try {
-          es?.close();
-        } catch {
-          // ignore
-        }
-        es = null;
-        setJobsSseConnected(false);
-        open();
+      if (!isPageActive()) {
+        // Close to reduce server load; we'll reconnect on visible.
+        if (es) closeSse("hidden");
+        return;
       }
-    }, 5000);
+      // When coming back, reconnect if needed.
+      if (!es) open("visible");
+    };
+
+    const onOnline = () => {
+      if (stopped) return;
+      if (!es) open("online");
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", onOnline);
+
+    open("mount");
 
     return () => {
       stopped = true;
-      window.clearInterval(watchdog);
-      try {
-        es?.close();
-      } catch {
-        // ignore
-      }
-      es = null;
-      setJobsSseConnected(false);
+      clearReconnect();
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", onOnline);
+      closeSse("unmount");
     };
   }, [authLoading, user]);
 
@@ -1659,32 +1813,47 @@ export default function AdminPanelClient() {
 
     let stopped = false;
 
-    const tick = async () => {
-      if (stopped) return;
-      // Poll only when SSE is disconnected or stale.
+    const shouldPollJobs = (): boolean => {
+      // Only poll jobs when the UI actually needs them.
+      // - modules: to keep regen queue markers authoritative
+      // - import: to keep import queue + job panel consistent
+      const needs = tab === "modules" || tab === "import";
+      if (!needs) return false;
+
       const lastOk = Number(jobsSseLastOkAtRef.current || 0);
       const connected = Boolean(jobsSseConnected);
       const stale = !lastOk || Date.now() - lastOk > 20_000;
-      if (connected && !stale) return;
+      // If SSE is connected and fresh, polling is unnecessary.
+      if (connected && !stale) return false;
+      return true;
+    };
 
+    const pollOnce = async (reason: string) => {
+      if (stopped) return;
+      if (!shouldPollJobs()) return;
+      if (jobsPollInFlightRef.current) return;
+      jobsPollInFlightRef.current = true;
       try {
         await loadJobsModel(true);
       } catch {
         // ignore
+      } finally {
+        jobsPollInFlightRef.current = false;
       }
     };
 
-    // Fast first tick so UI heals quickly after reload.
-    void tick();
+    // Fast first poll so UI heals quickly after reload.
+    void pollOnce("mount");
+
     const id = window.setInterval(() => {
-      void tick();
-    }, 7000);
+      void pollOnce("interval");
+    }, 10_000);
 
     return () => {
       stopped = true;
       window.clearInterval(id);
     };
-  }, [authLoading, user, jobsSseConnected]);
+  }, [authLoading, user, jobsSseConnected, tab]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -1723,18 +1892,47 @@ export default function AdminPanelClient() {
   useEffect(() => {
     if (didInitFromQueryRef.current) return;
     didInitFromQueryRef.current = true;
+
+    const st = loadAdminUiState();
     const q = readAdminQuery();
-    if (q.tab) setTab(q.tab);
-    if (q.mid) setSelectedAdminModuleId(q.mid);
-    if (q.sid) setSelectedSubmoduleId(q.sid);
-    if (q.qid) setSelectedQuizId(q.qid);
+
+    const mid = q.mid || String(st?.selectedAdminModuleId || "").trim() || "";
+    const sid = q.sid || String(st?.selectedSubmoduleId || "").trim() || "";
+    const qid = q.qid || String(st?.selectedQuizId || "").trim() || "";
+    const uid = String(st?.selectedUserId || "").trim() || "";
+    const uq = String(st?.userQuery || "").trim() || "";
+    const iqv = String(st?.importQueueView || "").trim() as any;
+    const jpOpen = Boolean(st?.jobPanelOpen);
+    const sjid = String(st?.selectedJobId || "").trim() || "";
+
+    if (mid) setSelectedAdminModuleId(mid);
+    if (sid) setSelectedSubmoduleId(sid);
+    if (qid) setSelectedQuizId(qid);
+    if (uid) setSelectedUserId(uid);
+    if (uq) setUserQuery(uq);
+    if (iqv === "active" || iqv === "history") setImportQueueView(iqv);
+    if (sjid) setSelectedJobId(sjid);
+    if (jpOpen) setJobPanelOpen(true);
   }, []);
 
   useEffect(() => {
     if (!didInitFromQueryRef.current) return;
-    const mid = tab === "modules" ? (String(selectedAdminModuleId || "").trim() || undefined) : undefined;
-    writeAdminQuery({ pathname, tab, mid });
-  }, [pathname, tab, selectedAdminModuleId, selectedSubmoduleId, selectedQuizId]);
+    saveAdminUiState({
+      selectedAdminModuleId: String(selectedAdminModuleId || "").trim(),
+      selectedSubmoduleId: String(selectedSubmoduleId || "").trim(),
+      selectedQuizId: String(selectedQuizId || "").trim(),
+      selectedUserId: String(selectedUserId || "").trim(),
+      userQuery: String(userQuery || "").trim(),
+      importQueueView: String(importQueueView || "").trim(),
+      jobPanelOpen: Boolean(jobPanelOpen),
+      selectedJobId: String(selectedJobId || "").trim(),
+    });
+  }, [selectedAdminModuleId, selectedSubmoduleId, selectedQuizId, selectedUserId, userQuery, importQueueView, jobPanelOpen, selectedJobId]);
+
+  useEffect(() => {
+    const t = tabFromPath(pathname);
+    if (t !== tab) setTab(t);
+  }, [pathname]);
 
   useEffect(() => {
     if (tab === "users") void loadUsers();
@@ -1745,38 +1943,6 @@ export default function AdminPanelClient() {
       void loadJobsModel(true);
     }
   }, [tab]);
-
-  useEffect(() => {
-    // Keep regen queue authoritative even when the user stays on "modules" tab.
-    // Otherwise optimistic/stale queued markers can stick on module cards.
-    if (tab !== "modules") return;
-    void loadJobsModel(true);
-    const t = window.setInterval(() => {
-      void loadJobsModel(true);
-    }, 15_000);
-    return () => window.clearInterval(t);
-  }, [tab]);
-
-  useEffect(() => {
-    if (tab !== "import") return;
-    const t = window.setInterval(() => {
-      if (jobsPollInFlightRef.current) return;
-
-      const lastOk = jobsSseLastOkAtRef.current || 0;
-      const sseFresh = lastOk && Date.now() - lastOk < 60_000;
-      if (sseFresh) return;
-
-      jobsPollInFlightRef.current = true;
-      Promise.resolve(loadJobsModel(true))
-        .catch(() => {
-          // ignore
-        })
-        .finally(() => {
-          jobsPollInFlightRef.current = false;
-        });
-    }, 15_000);
-    return () => window.clearInterval(t);
-  }, [tab, jobsSseConnected]);
 
   useEffect(() => {
     if (selectedAdminModuleId) void loadSelectedAdminModule();
@@ -1863,7 +2029,10 @@ export default function AdminPanelClient() {
     };
   }, [users, adminModules]);
 
-  const switchTabGuarded = (next: TabKey) => { if (next !== tab) setTab(next); };
+  const switchTabGuarded = (next: TabKey) => {
+    if (next === tab) return;
+    goTab(next);
+  };
 
   const tabLabelRu: Record<TabKey, string> = {
     modules: "МОДУЛИ",
@@ -1872,6 +2041,27 @@ export default function AdminPanelClient() {
     users: "ПОЛЬЗОВАТЕЛИ",
     diagnostics: "ДИАГНОСТИКА",
   };
+
+  const shareUrl = useMemo(() => {
+    try {
+      const base = window.location.origin;
+      const sp = new URLSearchParams();
+
+      if (tab === "modules") {
+        const mid = String(selectedAdminModuleId || "").trim();
+        const sid = String(selectedSubmoduleId || "").trim();
+        const qid = String(selectedQuizId || "").trim();
+        if (mid) sp.set("mid", mid);
+        if (sid) sp.set("sid", sid);
+        if (qid) sp.set("qid", qid);
+      }
+
+      const qs = sp.toString();
+      return qs ? `${base}${pathForTab(tab)}?${qs}` : `${base}${pathForTab(tab)}`;
+    } catch {
+      return "";
+    }
+  }, [tab, selectedAdminModuleId, selectedSubmoduleId, selectedQuizId]);
 
   if (authLoading) return <div className="flex min-h-screen items-center justify-center"><div className="h-12 w-12 rounded-full border-2 border-[#fe9900]/30 border-t-[#fe9900] animate-spin" /></div>;
 
@@ -1883,12 +2073,33 @@ export default function AdminPanelClient() {
             <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Каркас Тайги</div>
             <h1 className="mt-2 text-3xl font-black tracking-tighter text-zinc-950 uppercase">Админ-панель</h1>
           </div>
-          <div className="flex items-center gap-2 rounded-2xl border border-zinc-200 bg-white p-2">
-            {(["modules", "import", "analytics", "users", "diagnostics"] as TabKey[]).map((t) => (
-              <button key={t} type="button" onClick={() => switchTabGuarded(t)} className={"h-10 rounded-xl px-4 text-[10px] font-black uppercase tracking-widest transition " + (tab === t ? "bg-[#fe9900]/15 text-zinc-950 border border-[#fe9900]/25" : "text-zinc-600 hover:text-zinc-950 hover:bg-zinc-50 border border-transparent")}>
-                {tabLabelRu[t] || t.toUpperCase()}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="h-10 rounded-xl border border-zinc-200 bg-white px-4 text-[10px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+              onClick={() => void copy(shareUrl)}
+              disabled={!shareUrl}
+              title="Скопировать ссылку на текущий раздел"
+            >
+              ССЫЛКА
+            </button>
+            <div className="flex items-center gap-2 rounded-2xl border border-zinc-200 bg-white p-2">
+              {(["modules", "import", "analytics", "users", "diagnostics"] as TabKey[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => switchTabGuarded(t)}
+                  className={
+                    "h-10 rounded-xl px-4 text-[10px] font-black uppercase tracking-widest transition " +
+                    (tab === t
+                      ? "bg-[#fe9900]/15 text-zinc-950 border border-[#fe9900]/25"
+                      : "text-zinc-600 hover:text-zinc-950 hover:bg-zinc-50 border border-transparent")
+                  }
+                >
+                  {tabLabelRu[t] || t.toUpperCase()}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -1989,7 +2200,7 @@ export default function AdminPanelClient() {
                     variant="ghost"
                     className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
                     disabled={usersLoading || adminModulesLoading}
-                    onClick={() => void Promise.all([loadUsers(), loadAdminModules()])}
+                    onClick={() => void Promise.all([loadUsersForce(), loadAdminModulesForce()])}
                   >
                     {usersLoading || adminModulesLoading ? "ОБНОВЛЕНИЕ..." : "ОБНОВИТЬ"}
                   </Button>

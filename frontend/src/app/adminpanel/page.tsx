@@ -1,5 +1,5 @@
-import AdminPanelClient from "./adminpanel-client";
+import { redirect } from "next/navigation";
 
 export default function AdminPanelPage() {
-  return <AdminPanelClient />;
+  redirect("/admin/modules");
 }

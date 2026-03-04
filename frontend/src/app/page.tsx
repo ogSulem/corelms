@@ -24,11 +24,11 @@ export default function HomePage() {
   if (checking) return <main className="min-h-screen bg-white" />;
 
   return (
-    <main className="min-h-screen overflow-hidden">
+    <main className="min-h-screen overflow-hidden bg-[#070707] text-zinc-50">
       <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-[-18%] left-[-12%] w-[62%] h-[62%] rounded-full bg-[#fe9900]/12 blur-[160px]" />
-        <div className="absolute top-[18%] right-[-18%] w-[56%] h-[56%] rounded-full bg-[#284e13]/10 blur-[160px]" />
-        <div className="absolute bottom-[-20%] left-[10%] w-[64%] h-[64%] rounded-full bg-[#fe9900]/8 blur-[170px]" />
+        <div className="absolute top-[-18%] left-[-12%] w-[62%] h-[62%] rounded-full bg-[#fe9900]/10 blur-[180px]" />
+        <div className="absolute top-[18%] right-[-18%] w-[56%] h-[56%] rounded-full bg-[#284e13]/10 blur-[180px]" />
+        <div className="absolute bottom-[-20%] left-[10%] w-[64%] h-[64%] rounded-full bg-[#fe9900]/6 blur-[190px]" />
       </div>
 
       <nav className="relative z-50 flex items-center justify-between px-6 py-6 max-w-6xl mx-auto">
@@ -52,209 +52,181 @@ export default function HomePage() {
               opacity="0.55"
             />
           </svg>
-          <span className="text-xl font-black uppercase tracking-tight text-[#284e13]">КАРКАС</span>
-          <span className="text-xl font-black uppercase tracking-tight text-[#fe9900] transition-colors duration-200 group-hover:text-[#284e13]">
+          <span className="text-xl font-black uppercase tracking-tight text-zinc-50">КАРКАС</span>
+          <span className="text-xl font-black uppercase tracking-tight text-[#fe9900] transition-colors duration-200 group-hover:text-zinc-50">
             ТАЙГИ
           </span>
         </Link>
 
         <Link href="/login">
-          <Button className="h-11 rounded-xl">Войти</Button>
+          <Button className="h-11 rounded-xl bg-white text-zinc-950 hover:bg-white/90">Войти</Button>
         </Link>
       </nav>
 
       <section className="relative z-10 max-w-6xl mx-auto px-6 pb-10 pt-2">
-        <div className="relative overflow-hidden rounded-[34px] border border-zinc-200 bg-white/70 backdrop-blur-2xl shadow-2xl shadow-zinc-950/10">
+        <div className="relative overflow-hidden rounded-[40px] border border-white/10 bg-white/5 backdrop-blur-2xl shadow-2xl shadow-black/30">
           <div className="absolute inset-0">
-            <div className="absolute -top-24 -left-24 h-64 w-64 rounded-full bg-[#fe9900]/14 blur-[70px]" />
-            <div className="absolute -bottom-28 -right-24 h-72 w-72 rounded-full bg-[#284e13]/12 blur-[70px]" />
+            <div className="absolute -top-28 -left-28 h-72 w-72 rounded-full bg-[#fe9900]/10 blur-[100px]" />
+            <div className="absolute -bottom-32 -right-28 h-80 w-80 rounded-full bg-[#284e13]/10 blur-[100px]" />
           </div>
+
           <div className="relative p-8 sm:p-12">
-            <div className="flex flex-col gap-10 lg:flex-row lg:items-end lg:justify-between">
-              <div className="max-w-2xl">
-                <div className="inline-flex items-center gap-2 rounded-full border border-zinc-200 bg-white/70 px-4 py-2 text-[10px] font-black uppercase tracking-[0.32em] text-zinc-700">
+            <div className="grid gap-10 lg:grid-cols-12 lg:items-end">
+              <div className="lg:col-span-7">
+                <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-[10px] font-black uppercase tracking-[0.32em] text-zinc-200">
                   <Sparkles className="h-4 w-4 text-[#fe9900]" />
-                  Корпоративное обучение и аттестация
+                  Система управления знаниями
                 </div>
-                <h1 className="mt-5 text-4xl sm:text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-[0.95]">
-                  КАРКАС ТАЙГИ
+                <h1 className="mt-5 text-4xl sm:text-5xl font-black tracking-tighter text-zinc-50 uppercase leading-[0.95]">
+                  Каркас Тайги
                   <br />
-                  <span className="text-[#284e13]">LMS</span> для стройки
+                  <span className="bg-gradient-to-r from-[#fe9900] to-[#284e13] bg-clip-text text-transparent">единый стандарт</span>
+                  <br />
+                  обучения и аттестации
                 </h1>
-                <p className="mt-5 text-base sm:text-lg font-medium text-zinc-700 leading-relaxed">
-                  Стандартизируй ввод в должность, закрепляй знания тестами и держи под контролем качество обучения.
-                  Быстро. Прозрачно. С отчётами.
+                <p className="mt-5 text-base sm:text-lg font-medium text-zinc-200 leading-relaxed">
+                  Когда знания в компании оформлены как продукт — обучение становится быстрым,
+                  контроль качества прозрачным, а ввод в должность — предсказуемым.
                 </p>
 
                 <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center">
                   <Link href="/login" className="sm:w-auto">
-                    <Button className="h-14 rounded-2xl px-8 w-full sm:w-auto">
-                      Войти и начать <ArrowRight className="ml-3 h-4 w-4" />
+                    <Button className="h-14 rounded-2xl px-8 w-full sm:w-auto bg-white text-zinc-950 hover:bg-white/90">
+                      Войти <ArrowRight className="ml-3 h-4 w-4" />
                     </Button>
                   </Link>
                 </div>
-              </div>
-            </div>
 
-            <div className="mt-10 grid gap-4 sm:grid-cols-3">
-              <div className="rounded-[24px] border border-zinc-200 bg-white/60 p-5 backdrop-blur">
-                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Стандарты</div>
-                <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-950">Единые правила знаний</div>
+                <div className="mt-10 grid gap-4 sm:grid-cols-3">
+                  <div className="rounded-[26px] border border-white/10 bg-white/5 p-5 backdrop-blur transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
+                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-300">Результат</div>
+                    <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-50">Меньше ошибок на объектах</div>
+                  </div>
+                  <div className="rounded-[26px] border border-white/10 bg-white/5 p-5 backdrop-blur transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
+                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-300">Контроль</div>
+                    <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-50">Прогресс и аудит</div>
+                  </div>
+                  <div className="rounded-[26px] border border-white/10 bg-white/5 p-5 backdrop-blur transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
+                    <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-300">Скорость</div>
+                    <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-50">Импорт и обновления</div>
+                  </div>
+                </div>
               </div>
-              <div className="rounded-[24px] border border-zinc-200 bg-white/60 p-5 backdrop-blur">
-                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Прозрачность</div>
-                <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-950">Прогресс виден сразу</div>
-              </div>
-              <div className="rounded-[24px] border border-zinc-200 bg-white/60 p-5 backdrop-blur">
-                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Скорость</div>
-                <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-950">Импорт и обновления</div>
+
+              <div className="lg:col-span-5">
+                <div className="rounded-[34px] border border-white/10 bg-white/5 backdrop-blur p-7 shadow-2xl shadow-black/30">
+                  <div className="text-[10px] font-black uppercase tracking-[0.32em] text-zinc-300">Как это ощущается</div>
+                  <div className="mt-4 grid gap-3">
+                    <div className="rounded-3xl border border-white/10 bg-white/5 p-5 transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
+                      <div className="flex items-center gap-3">
+                        <BookOpen className="h-5 w-5 text-[#fe9900]" />
+                        <div className="text-[11px] font-black uppercase tracking-widest text-zinc-50">Обучение без путаницы</div>
+                      </div>
+                      <div className="mt-2 text-sm font-medium text-zinc-200">
+                        Модуль → урок → тест. Один путь. Один экран.
+                      </div>
+                    </div>
+                    <div className="rounded-3xl border border-white/10 bg-white/5 p-5 transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
+                      <div className="flex items-center gap-3">
+                        <ShieldCheck className="h-5 w-5 text-[#284e13] drop-shadow-[0_0_10px_rgba(40,78,19,0.55)]" />
+                        <div className="text-[11px] font-black uppercase tracking-widest text-zinc-50">Качество подтверждается</div>
+                      </div>
+                      <div className="mt-2 text-sm font-medium text-zinc-200">
+                        Вопросы и экзамен фиксируют знания, а не "просмотр".
+                      </div>
+                    </div>
+                    <div className="rounded-3xl border border-white/10 bg-white/5 p-5 transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
+                      <div className="flex items-center gap-3">
+                        <LineChart className="h-5 w-5 text-[#284e13] drop-shadow-[0_0_10px_rgba(40,78,19,0.55)]" />
+                        <div className="text-[11px] font-black uppercase tracking-widest text-zinc-50">Руководитель видит картину</div>
+                      </div>
+                      <div className="mt-2 text-sm font-medium text-zinc-200">
+                        Без ручных отчётов и переписок.
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        <section className="mt-12">
-          <div className="flex items-end justify-between gap-6">
-            <div>
-              <div className="text-[10px] font-black uppercase tracking-[0.32em] text-[#fe9900]">Для сотрудников</div>
-              <h2 className="mt-3 text-3xl sm:text-4xl font-black tracking-tighter text-zinc-950 uppercase">
-                Быстрое обучение
+        <div className="mt-14 h-px w-full bg-gradient-to-r from-transparent via-[#fe9900]/60 to-[#284e13]/60" />
+
+        <section className="mt-14">
+          <div className="grid gap-6 lg:grid-cols-12 items-start">
+            <div className="lg:col-span-5">
+              <div className="text-[10px] font-black uppercase tracking-[0.32em] text-[#284e13] drop-shadow-[0_0_10px_rgba(40,78,19,0.45)]">Для руководства</div>
+              <h2 className="mt-3 text-3xl sm:text-4xl font-black tracking-tighter text-zinc-50 uppercase">
+                Знания —
                 <br />
-                без лишних действий
+                управляемый актив
               </h2>
-              <p className="mt-4 max-w-2xl text-base font-medium text-zinc-700 leading-relaxed">
-                Открываешь модуль — проходишь уроки — сдаёшь тесты. Всё на одном экране, без путаницы.
+              <p className="mt-4 text-base font-medium text-zinc-200 leading-relaxed">
+                Система строится вокруг результата: понятные правила, контроль прохождения,
+                прозрачность качества и быстрые изменения без «ручной магии».
               </p>
             </div>
-          </div>
-
-          <div className="mt-8 grid gap-6 lg:grid-cols-12">
-            <div className="lg:col-span-7">
-              <div className="rounded-[34px] border border-zinc-200 bg-white/75 backdrop-blur-2xl p-8 sm:p-10 shadow-2xl shadow-zinc-950/10">
+            <div className="lg:col-span-7 grid gap-4 sm:grid-cols-2">
+              <div className="rounded-[34px] border border-white/10 bg-white/5 backdrop-blur-2xl p-8 shadow-2xl shadow-black/30 transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
                 <div className="flex items-center gap-3">
-                  <BookOpen className="h-6 w-6 text-[#284e13]" />
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Сценарий</div>
+                  <Settings2 className="h-6 w-6 text-[#fe9900]" />
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-300">Управляемость</div>
                 </div>
-                <div className="mt-4 text-2xl sm:text-3xl font-black tracking-tighter text-zinc-950 uppercase">
-                  «Открыл → изучил → проверил»
-                </div>
-
-                <div className="mt-8 grid gap-4">
-                  <div className="flex items-start gap-4 rounded-3xl border border-zinc-200 bg-white/70 p-6">
-                    <div className="mt-0.5 h-10 w-10 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/15 grid place-items-center text-zinc-950 font-black">
-                      1
-                    </div>
-                    <div>
-                      <div className="text-sm font-black uppercase tracking-tight text-zinc-950">Выбери модуль</div>
-                      <div className="mt-1 text-sm font-medium text-zinc-700">Один список, понятные статусы, мгновенный доступ к урокам.</div>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-4 rounded-3xl border border-zinc-200 bg-white/70 p-6">
-                    <div className="mt-0.5 h-10 w-10 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/15 grid place-items-center text-zinc-950 font-black">
-                      2
-                    </div>
-                    <div>
-                      <div className="text-sm font-black uppercase tracking-tight text-zinc-950">Пройди урок</div>
-                      <div className="mt-1 text-sm font-medium text-zinc-700">Материалы + контрольные вопросы, всё рядом.</div>
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-4 rounded-3xl border border-zinc-200 bg-white/70 p-6">
-                    <div className="mt-0.5 h-10 w-10 rounded-2xl border border-[#284e13]/25 bg-[#284e13]/10 grid place-items-center text-[#284e13] font-black">
-                      3
-                    </div>
-                    <div>
-                      <div className="text-sm font-black uppercase tracking-tight text-zinc-950">Сдай тест/экзамен</div>
-                      <div className="mt-1 text-sm font-medium text-zinc-700">Результат сохраняется и виден руководителю.</div>
-                    </div>
-                  </div>
+                <div className="mt-4 text-xl font-black tracking-tighter text-zinc-50 uppercase">Контент как продукт</div>
+                <div className="mt-3 text-sm font-medium text-zinc-200 leading-relaxed">
+                  Импорт, контроль качества вопросов, публикация — с предсказуемыми стадиями и историей.
                 </div>
               </div>
-            </div>
-
-            <div className="lg:col-span-5 grid gap-6">
-              <div className="rounded-[34px] border border-zinc-200 bg-white/65 backdrop-blur-2xl p-8 shadow-2xl shadow-zinc-950/10">
+              <div className="rounded-[34px] border border-white/10 bg-white/5 backdrop-blur-2xl p-8 shadow-2xl shadow-black/30 transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
                 <div className="flex items-center gap-3">
-                  <LineChart className="h-6 w-6 text-[#284e13]" />
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Прогресс</div>
+                  <ShieldCheck className="h-6 w-6 text-[#284e13] drop-shadow-[0_0_12px_rgba(40,78,19,0.55)]" />
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-300">Доверие</div>
                 </div>
-                <div className="mt-4 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Всегда видно, где ты</div>
-                <div className="mt-4 text-sm font-medium text-zinc-700 leading-relaxed">
-                  Статусы уроков и тестов, движение по модулю, и финальный экзамен — без “угадайки”.
+                <div className="mt-4 text-xl font-black tracking-tighter text-zinc-50 uppercase">Аттестация подтверждает</div>
+                <div className="mt-3 text-sm font-medium text-zinc-200 leading-relaxed">
+                  На урок — вопросы. На модуль — экзамен. Результат фиксируется и доступен для аудита.
                 </div>
-                <div className="mt-6 rounded-3xl border border-zinc-200 bg-white/70 p-5">
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Ритм</div>
-                  <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-950">Понятные шаги без лишнего</div>
-                </div>
-              </div>
-
-              <div className="rounded-[34px] border border-zinc-200 bg-white/65 backdrop-blur-2xl p-8 shadow-2xl shadow-zinc-950/10">
-                <div className="text-[10px] font-black uppercase tracking-[0.32em] text-zinc-600">Формат</div>
-                <div className="mt-3 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Теория → тест → экзамен → отчёт</div>
-                <div className="mt-4 text-sm font-medium text-zinc-700">Идеально для стандарта знаний на объектах.</div>
               </div>
             </div>
           </div>
         </section>
 
+        <div className="mt-14 h-px w-full bg-gradient-to-r from-transparent via-[#fe9900]/45 to-[#284e13]/45" />
+
         <section className="mt-14">
-          <div className="flex items-end justify-between gap-6">
-            <div>
-              <div className="text-[10px] font-black uppercase tracking-[0.32em] text-[#284e13]">Для админов</div>
-              <h2 className="mt-3 text-3xl sm:text-4xl font-black tracking-tighter text-zinc-950 uppercase">
-                Управление обучением
-                <br />
-                как продукт
-              </h2>
-              <p className="mt-4 max-w-2xl text-base font-medium text-zinc-700 leading-relaxed">
-                Импортируй модули пакетно, контролируй генерацию тестов, и держи качество обучения на уровне —
-                без ручной рутины и без хаоса.
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-8 grid gap-6 lg:grid-cols-12">
+          <div className="grid gap-6 lg:grid-cols-12 items-start">
             <div className="lg:col-span-7">
-              <div className="rounded-[34px] border border-zinc-200 bg-white/75 backdrop-blur-2xl p-8 sm:p-10 shadow-2xl shadow-zinc-950/10">
+              <div className="rounded-[40px] border border-white/10 bg-white/5 backdrop-blur-2xl p-8 sm:p-10 shadow-2xl shadow-black/30 transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
                 <div className="flex items-center gap-3">
-                  <Settings2 className="h-6 w-6 text-[#284e13]" />
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Панель администратора</div>
+                  <BookOpen className="h-6 w-6 text-[#fe9900]" />
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-300">Для сотрудников</div>
                 </div>
-                <div className="mt-4 text-2xl sm:text-3xl font-black tracking-tighter text-zinc-950 uppercase">
-                  «Импорт → проверка → публикация»
+                <div className="mt-4 text-2xl sm:text-3xl font-black tracking-tighter text-zinc-50 uppercase">
+                  «Открыл → прошёл → подтвердил»
                 </div>
-
-                <div className="mt-8 grid gap-4">
-                  <div className="flex items-start gap-4 rounded-3xl border border-zinc-200 bg-white/70 p-6">
-                    <div className="mt-0.5 h-10 w-10 rounded-2xl border border-[#284e13]/25 bg-[#284e13]/10 grid place-items-center text-[#284e13] font-black">
-                      1
-                    </div>
+                <div className="mt-5 grid gap-4">
+                  <div className="flex items-start gap-4 rounded-3xl border border-white/10 bg-white/5 p-6 transition-all duration-200 hover:bg-white/7 hover:border-white/20">
+                    <div className="mt-0.5 h-10 w-10 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/15 grid place-items-center text-zinc-950 font-black">1</div>
                     <div>
-                      <div className="text-sm font-black uppercase tracking-tight text-zinc-950">Загрузи модули пачкой</div>
-                      <div className="mt-1 text-sm font-medium text-zinc-700">
-                        Несколько ZIP = несколько модулей. Сразу видно статус, этапы и историю.
-                      </div>
+                      <div className="text-sm font-black uppercase tracking-tight text-zinc-50">Учишься по шагам</div>
+                      <div className="mt-1 text-sm font-medium text-zinc-200">Без лишних экранов и контекстов.</div>
                     </div>
                   </div>
-                  <div className="flex items-start gap-4 rounded-3xl border border-zinc-200 bg-white/70 p-6">
-                    <div className="mt-0.5 h-10 w-10 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/15 grid place-items-center text-zinc-950 font-black">
-                      2
-                    </div>
+                  <div className="flex items-start gap-4 rounded-3xl border border-white/10 bg-white/5 p-6 transition-all duration-200 hover:bg-white/7 hover:border-white/20">
+                    <div className="mt-0.5 h-10 w-10 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/15 grid place-items-center text-zinc-950 font-black">2</div>
                     <div>
-                      <div className="text-sm font-black uppercase tracking-tight text-zinc-950">Проверь тесты и вопросы</div>
-                      <div className="mt-1 text-sm font-medium text-zinc-700">
-                        Редактор вопросов прямо в карточке модуля. Можно быстро поправить качество.
-                      </div>
+                      <div className="text-sm font-black uppercase tracking-tight text-zinc-50">Сдаёшь тесты</div>
+                      <div className="mt-1 text-sm font-medium text-zinc-200">Система фиксирует результат, а не «просмотр».</div>
                     </div>
                   </div>
-                  <div className="flex items-start gap-4 rounded-3xl border border-zinc-200 bg-white/70 p-6">
-                    <div className="mt-0.5 h-10 w-10 rounded-2xl border border-[#284e13]/25 bg-[#284e13]/10 grid place-items-center text-[#284e13] font-black">
+                  <div className="flex items-start gap-4 rounded-3xl border border-white/10 bg-white/5 p-6 transition-all duration-200 hover:bg-white/7 hover:border-white/20">
+                    <div className="mt-0.5 h-10 w-10 rounded-2xl border border-[#284e13]/35 bg-[#284e13]/12 grid place-items-center text-[#284e13] font-black drop-shadow-[0_0_10px_rgba(40,78,19,0.45)]">
                       3
                     </div>
                     <div>
-                      <div className="text-sm font-black uppercase tracking-tight text-zinc-950">Публикуй только готовое</div>
-                      <div className="mt-1 text-sm font-medium text-zinc-700">
-                        Модуль скрыт от сотрудников, пока тесты не готовы. Если нужен реген — помечается автоматически.
-                      </div>
+                      <div className="text-sm font-black uppercase tracking-tight text-zinc-50">Понимаешь, что дальше</div>
+                      <div className="mt-1 text-sm font-medium text-zinc-200">Прогресс прозрачен: что пройдено, что впереди.</div>
                     </div>
                   </div>
                 </div>
@@ -262,28 +234,50 @@ export default function HomePage() {
             </div>
 
             <div className="lg:col-span-5 grid gap-6">
-              <div className="rounded-[34px] border border-zinc-200 bg-white/65 backdrop-blur-2xl p-8 shadow-2xl shadow-zinc-950/10">
-                <div className="flex items-center gap-3">
-                  <ShieldCheck className="h-6 w-6 text-[#284e13]" />
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Контроль качества</div>
-                </div>
-                <div className="mt-4 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Тесты под стандарты компании</div>
-                <div className="mt-4 text-sm font-medium text-zinc-700 leading-relaxed">
-                  На каждом уроке — 5 вопросов. Финальный экзамен автоматически собирается из уроков:
-                  по 2 вопроса с каждого, каждый раз случайно.
-                </div>
-                <div className="mt-6 rounded-3xl border border-zinc-200 bg-white/70 p-5">
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-600">Операционка</div>
-                  <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-950">От импорта до отчёта — в одном месте</div>
+              <div className="rounded-[40px] border border-white/10 bg-white/5 backdrop-blur-2xl p-8 shadow-2xl shadow-black/30 transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
+                <div className="text-[10px] font-black uppercase tracking-[0.32em] text-zinc-300">UX принципы</div>
+                <div className="mt-3 text-2xl font-black tracking-tighter text-zinc-50 uppercase">Быстро и актуально</div>
+                <div className="mt-4 text-sm font-medium text-zinc-200 leading-relaxed">
+                  Данные обновляются «умно»: в фоне и по событиям, без лишней нагрузки.
+                  Там, где важно — всегда свежо.
                 </div>
               </div>
 
-              <div className="rounded-[34px] border border-zinc-200 bg-white/65 backdrop-blur-2xl p-8 shadow-2xl shadow-zinc-950/10">
-                <div className="text-[10px] font-black uppercase tracking-[0.32em] text-zinc-600">Готово к внедрению</div>
-                <div className="mt-3 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Одна команда — одна система знаний</div>
-                <div className="mt-4 text-sm font-medium text-zinc-700">
-                  Админ управляет контентом, сотрудник учится, руководитель видит прогресс.
+              <div className="rounded-[40px] border border-white/10 bg-white/5 backdrop-blur-2xl p-8 shadow-2xl shadow-black/30 transition-all duration-200 hover:bg-white/7 hover:border-white/20 hover:-translate-y-0.5">
+                <div className="text-[10px] font-black uppercase tracking-[0.32em] text-zinc-300">Вход</div>
+                <div className="mt-3 text-2xl font-black tracking-tighter text-zinc-50 uppercase">Готово к работе</div>
+                <div className="mt-4 text-sm font-medium text-zinc-200">
+                  Достаточно аккаунта. Дальше — система ведёт по сценарию.
                 </div>
+                <div className="mt-6">
+                  <Link href="/login">
+                    <Button className="h-12 rounded-2xl px-6 bg-white text-zinc-950 hover:bg-white/90">
+                      Войти <ArrowRight className="ml-3 h-4 w-4" />
+                    </Button>
+                  </Link>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="mt-16">
+          <div className="rounded-[44px] border border-white/10 bg-white/5 backdrop-blur-2xl p-10 sm:p-12 shadow-2xl shadow-black/30">
+            <div className="flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
+              <div className="max-w-2xl">
+                <div className="text-[10px] font-black uppercase tracking-[0.32em] text-[#fe9900]">КАРКАС ТАЙГИ</div>
+                <div className="mt-3 text-3xl sm:text-4xl font-black tracking-tighter text-zinc-50 uppercase leading-tight">
+                  Единая система знаний.
+                  <br />
+                  Единая картина по людям.
+                </div>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <Link href="/login">
+                  <Button className="h-14 rounded-2xl px-8 w-full sm:w-auto bg-white text-zinc-950 hover:bg-white/90">
+                    Войти в систему <ArrowRight className="ml-3 h-4 w-4" />
+                  </Button>
+                </Link>
               </div>
             </div>
           </div>
