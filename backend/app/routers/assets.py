@@ -156,6 +156,15 @@ def presign_download(
         raise HTTPException(status_code=403, detail="forbidden")
 
     filename = str(asset.original_filename or "").strip() or "file"
+    # Hardening: browsers/PDF viewers may mis-handle Content-Disposition filename* values
+    # that contain path separators (e.g. "a/b/c.pdf" -> "%2F" in filename*).
+    # Use basename only.
+    try:
+        filename = filename.replace("\\", "/")
+        if "/" in filename:
+            filename = filename.split("/")[-1].strip() or "file"
+    except Exception:
+        pass
     quoted = urllib.parse.quote(filename, safe="")
     disp_kind = "inline" if act == "view" else "attachment"
     disposition = f"{disp_kind}; filename*=UTF-8''{quoted}"

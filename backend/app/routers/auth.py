@@ -1054,4 +1054,49 @@ def change_password(
     db.add(user)
     audit_log(db=db, request=request, event_type="auth_change_password_success", actor_user_id=user.id, target_user_id=user.id)
     db.commit()
+
+    # Security hardening: after password change, revoke all other device sessions.
+    # Keep current session alive to avoid forcing immediate re-login on the same device.
+    try:
+        r = get_redis()
+        key = _user_sessions_key(str(user.id))
+        hashes = [str(x) for x in (r.smembers(key) or set())]
+
+        current_h = ""
+        try:
+            tok = str(request.cookies.get("core_refresh") or "").strip()
+            if not tok:
+                auth = str(request.headers.get("authorization") or "")
+                if auth.lower().startswith("bearer "):
+                    tok = auth.split(" ", 1)[1].strip()
+            if tok:
+                current_h = _refresh_token_hash(tok)
+        except Exception:
+            current_h = ""
+
+        revoked: list[str] = []
+        for h in hashes:
+            if current_h and h == current_h:
+                continue
+            r.delete(f"auth:refresh:{h}")
+            revoked.append(h)
+        if revoked:
+            try:
+                r.srem(key, *revoked)
+            except Exception:
+                pass
+            try:
+                audit_log(
+                    db=db,
+                    request=request,
+                    event_type="auth_session_revoked_others",
+                    actor_user_id=user.id,
+                    target_user_id=user.id,
+                    meta={"count": len(revoked), "reason": "password_change"},
+                )
+                db.commit()
+            except Exception:
+                pass
+    except Exception:
+        pass
     return {"ok": True}

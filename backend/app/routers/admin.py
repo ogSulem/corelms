@@ -3729,6 +3729,19 @@ def regenerate_submodule_quiz(
     if sub is None:
         raise HTTPException(status_code=404, detail="submodule not found")
 
+    # Hard rule: do not regenerate quizzes for folder lessons or file-only lessons.
+    # Folder lessons represent a catalog of assets; file lessons have no meaningful theory text.
+    try:
+        if bool(getattr(sub, "is_folder", False)):
+            return {"ok": True, "skipped": True, "skip_reason": "folder_lesson", "submodule_id": str(sub.id), "module_id": str(sub.module_id)}
+    except Exception:
+        pass
+    try:
+        if str(getattr(sub, "content_object_key", None) or "").strip():
+            return {"ok": True, "skipped": True, "skip_reason": "file_lesson", "submodule_id": str(sub.id), "module_id": str(sub.module_id)}
+    except Exception:
+        pass
+
     m = db.scalar(select(Module).where(Module.id == sub.module_id))
     if m is None:
         raise HTTPException(status_code=404, detail="module not found")
