@@ -11,12 +11,14 @@ import re
 import shutil
 import tempfile
 import time
+import unicodedata
 import uuid
 import zipfile
 import unicodedata
 from datetime import datetime
 
 from botocore.exceptions import ClientError
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ResponseStreamingError
 from rq import get_current_job
 
@@ -495,22 +497,33 @@ def import_module_zip_job(
                     pass
 
                 with dest_path.open("wb") as f:
-                    resp = s3.get_object(Bucket=settings.s3_bucket, Key=object_key)
-                    body = resp.get("Body")
+                    _cancel_checkpoint(s3_object_key=object_key, stage="download")
+                    _job_heartbeat(detail=f"download: {object_key}")
+                    config = TransferConfig(
+                        multipart_threshold=8 * 1024 * 1024,
+                        multipart_chunksize=8 * 1024 * 1024,
+                        max_concurrency=6,
+                        use_threads=True,
+                    )
                     try:
-                        while True:
-                            _cancel_checkpoint(s3_object_key=object_key, stage="download")
-                            _job_heartbeat(detail=f"download: {object_key}")
-                            chunk = body.read(1024 * 1024) if body is not None else b""
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                    finally:
+                        s3.download_fileobj(settings.s3_bucket, object_key, f, Config=config)
+                    except Exception:
+                        resp = s3.get_object(Bucket=settings.s3_bucket, Key=object_key)
+                        body = resp.get("Body")
                         try:
-                            if body is not None:
-                                body.close()
-                        except Exception:
-                            pass
+                            while True:
+                                _cancel_checkpoint(s3_object_key=object_key, stage="download")
+                                _job_heartbeat(detail=f"download: {object_key}")
+                                chunk = body.read(8 * 1024 * 1024) if body is not None else b""
+                                if not chunk:
+                                    break
+                                f.write(chunk)
+                        finally:
+                            try:
+                                if body is not None:
+                                    body.close()
+                            except Exception:
+                                pass
 
                 return
             except ImportCanceledError:

@@ -34,7 +34,7 @@ services:
       - backend_data:/data
     restart: unless-stopped
     env_file:
-      - ./.env
+      - ${ENV_FILE:-./.env}
     environment:
       - AUTO_MIGRATE_ON_START=true
       - BOOTSTRAP_ADMIN_NAME=${BOOTSTRAP_ADMIN_NAME:-admin}
@@ -62,7 +62,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     env_file:
-      - ./.env
+      - ${ENV_FILE:-./.env}
     environment:
       - AUTO_MIGRATE_ON_START=false
       - RQ_WORKER_QUEUES=${RQ_WORKER_IMPORT_QUEUES:-corelms_import}
@@ -80,7 +80,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     env_file:
-      - ./.env
+      - ${ENV_FILE:-./.env}
     environment:
       - AUTO_MIGRATE_ON_START=false
       - RQ_WORKER_QUEUES=${RQ_WORKER_REGEN_QUEUES:-corelms_regen}
@@ -98,7 +98,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     env_file:
-      - ./.env
+      - ${ENV_FILE:-./.env}
     environment:
       - AUTO_MIGRATE_ON_START=false
       - RQ_WORKER_QUEUES=${RQ_WORKER_DEFAULT_QUEUES:-corelms_cleanup,corelms}
@@ -114,10 +114,14 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    env_file:
+      - ${ENV_FILE:-./.env}
     environment:
       - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://localhost}
       - CORE_INTERNAL_API_BASE_URL=${CORE_INTERNAL_API_BASE_URL:-http://backend:8000}
       - JWT_ACCESS_TOKEN_MINUTES=${JWT_ACCESS_TOKEN_MINUTES:-60}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
+      - COOKIE_DOMAIN=${COOKIE_DOMAIN:-}
 
   caddy:
     image: caddy:2

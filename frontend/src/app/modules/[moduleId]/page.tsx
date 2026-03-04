@@ -209,34 +209,43 @@ export default function ModulePage() {
   }, [moduleId]);
 
   async function openFolderCatalog(nextPath: string[]) {
-    const key = nextPath.join("/");
     const title = nextPath[nextPath.length - 1] || "Каталог";
+    const parentKey = nextPath.slice(0, -1).join("/");
     setFolderModalTitle(title);
     setFolderModalOpen(true);
     setFolderModalNavPath([]);
     setFolderModalLoading(true);
     try {
-      const children = (submodules || []).filter((s: Submodule) => String((s as any)?.outline_path || "") === key);
+      // Folder lessons are represented as a single submodule with is_folder=true.
+      // Its assets contain the whole folder contents (including nested paths).
+      const folder = (submodules || []).find((s: Submodule) => {
+        const isFolder = Boolean((s as any)?.is_folder);
+        if (!isFolder) return false;
+        if (String(s.title || "").trim() !== String(title || "").trim()) return false;
+        const p = String((s as any)?.outline_path || "").trim();
+        if (!parentKey) return !p;
+        return p === parentKey;
+      });
+
       const fileRows: Array<{ full: string[]; asset: SubmoduleAsset }> = [];
-      await Promise.all(
-        children.map(async (s: Submodule) => {
-          try {
-            const resp = await apiFetch<{ assets: SubmoduleAsset[] }>(
-              `/modules/submodules/${encodeURIComponent(String(s.id))}/assets`
-            );
-            const assets = (resp?.assets || []).slice();
-            assets.sort((a, b) => Number(a?.order || 0) - Number(b?.order || 0));
-            for (const a of assets) {
-              const name = String(a?.original_filename || "").replaceAll("\\", "/");
-              const segs = name.split("/").filter(Boolean);
-              const full = [String(s.title || "Урок"), ...segs];
-              fileRows.push({ full, asset: a });
-            }
-          } catch {
-            // ignore
+
+      if (folder) {
+        try {
+          const resp = await apiFetch<{ assets: SubmoduleAsset[] }>(
+            `/modules/submodules/${encodeURIComponent(String(folder.id))}/assets`
+          );
+          const assets = (resp?.assets || []).slice();
+          assets.sort((a, b) => Number(a?.order || 0) - Number(b?.order || 0));
+          for (const a of assets) {
+            const name = String(a?.original_filename || "").replaceAll("\\", "/");
+            const segs = name.split("/").filter(Boolean);
+            const full = segs.length ? segs : [String(a?.original_filename || "Файл")];
+            fileRows.push({ full, asset: a });
           }
-        })
-      );
+        } catch {
+          // ignore
+        }
+      }
       fileRows.sort((a, b) => a.full.join("/").localeCompare(b.full.join("/"), undefined, { sensitivity: "base" }));
       setFolderModalFiles(fileRows);
     } finally {
@@ -664,6 +673,15 @@ export default function ModulePage() {
     });
   }, [outlinePath, submodules]);
 
+  const rootFolderSubmodules = useMemo(() => {
+    return (submodules || []).filter((s) => {
+      const isFolder = Boolean((s as any)?.is_folder);
+      if (!isFolder) return false;
+      const p = String((s as any)?.outline_path || "").trim();
+      return !p;
+    });
+  }, [submodules]);
+
   const outlineFolders = useMemo(() => {
     const baseKey = outlinePath.join("/");
     const out = new Set<string>();
@@ -806,12 +824,49 @@ export default function ModulePage() {
                     <Skeleton className="h-16 w-full rounded-2xl bg-zinc-100" />
                     <Skeleton className="h-16 w-full rounded-2xl bg-zinc-100" />
                   </div>
-                ) : !assetBrowser.hasAny ? (
+                ) : !assetBrowser.hasAny && !(outlinePath.length ? folderSubmodules.length : rootFolderSubmodules.length) ? (
                   <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600 py-12 text-center border border-dashed border-zinc-200 rounded-2xl">
                     Нет файлов
                   </div>
                 ) : (
                   <div>
+                    {(outlinePath.length ? folderSubmodules : rootFolderSubmodules).length ? (
+                      <div className="mb-6">
+                        <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Каталоги</div>
+                        <div className="mt-3 grid gap-3">
+                          {(outlinePath.length ? folderSubmodules : rootFolderSubmodules).map((s: Submodule) => {
+                            const folderName = String(s.title || "").trim() || "Папка";
+                            const nextPath = outlinePath.concat([folderName]);
+                            return (
+                              <button
+                                key={`folder-material:${String(s.id)}`}
+                                type="button"
+                                onClick={() => {
+                                  void openFolderCatalog(nextPath);
+                                }}
+                                className="group flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white/70 p-4 transition-all duration-300 hover:bg-white text-left"
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-700">
+                                    <Folder className="h-4 w-4" />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Папка</div>
+                                    <div className="mt-1 truncate text-sm font-bold text-zinc-950 transition-colors">
+                                      {folderName}
+                                    </div>
+                                  </div>
+                                </div>
+                                <span className="shrink-0 rounded-xl bg-zinc-50 border border-zinc-200 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-600 transition-all active:scale-95">
+                                  открыть
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ) : null}
+
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-600">
                         <button
@@ -1048,54 +1103,6 @@ export default function ModulePage() {
                   <div className="relative">
                     <div className="absolute left-[15px] top-2 bottom-2 w-px bg-zinc-200" />
                     <div className="grid gap-4">
-                      {folderSubmodules.map((s: Submodule) => {
-                        const folderName = String(s.title || "").trim() || "Папка";
-                        const nextPath = outlinePath.concat([folderName]);
-                        const dotClass = "bg-zinc-300";
-                        const dot = (
-                          <div className="relative z-10 flex justify-center w-8">
-                            <div className={`mt-6 h-2.5 w-2.5 rounded-full border border-white transition-all duration-700 ${dotClass}`} />
-                          </div>
-                        );
-
-                        return (
-                          <button
-                            key={`folder:${String(s.id)}`}
-                            type="button"
-                            onClick={() => {
-                              setOutlinePath(nextPath);
-                              void openFolderCatalog(nextPath);
-                            }}
-                            className="flex gap-2 group outline-none text-left"
-                          >
-                            {dot}
-                            <div className="relative rounded-[24px] border px-6 py-5 transition-all duration-300 border-zinc-200 bg-white/70 hover:bg-white flex-1 group-hover:scale-[1.01] active:scale-[0.99]">
-                              <div className="flex items-start justify-between gap-6">
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-center gap-3">
-                                    <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-700">
-                                      <Folder className="h-4 w-4" />
-                                    </div>
-                                    <span className="text-sm font-black text-zinc-600 tabular-nums uppercase">—</span>
-                                    <h4 className="text-base font-black text-zinc-950 uppercase tracking-tighter break-words leading-snug">
-                                      {folderName}
-                                    </h4>
-                                  </div>
-                                  <div className="mt-4 flex flex-wrap items-center gap-3">
-                                    <div className="rounded-lg px-3 py-1 text-[9px] font-black uppercase tracking-widest border bg-zinc-100 border-zinc-200 text-zinc-600">
-                                      ПАПКА
-                                    </div>
-                                  </div>
-                                </div>
-                                <div className="shrink-0 pt-1">
-                                  <div className="flex items-center justify-center w-8 h-8 rounded-full bg-zinc-50 border border-zinc-200 text-zinc-400 text-sm font-black">→</div>
-                                </div>
-                              </div>
-                            </div>
-                          </button>
-                        );
-                      })}
-
                       {outlineFolders.map((name: string) => {
                         const nextPath = outlinePath.concat([name]);
                         const dotClass = "bg-zinc-300";
@@ -1111,7 +1118,6 @@ export default function ModulePage() {
                             type="button"
                             onClick={() => {
                               setOutlinePath(nextPath);
-                              void openFolderCatalog(nextPath);
                             }}
                             className="flex gap-2 group outline-none text-left"
                           >

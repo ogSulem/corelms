@@ -281,7 +281,8 @@ export function ModulesTab(props: ModulesTabProps) {
                     {selectedAdminModuleSubs.map((s: AdminSubmoduleItem) => {
                       const active = String(s.id) === String(selectedSubmoduleId);
                       const isQuizLesson = Boolean((s as any)?.requires_quiz ?? true);
-                      const isFileLesson = !isQuizLesson;
+                      const isFolderLesson = Boolean((s as any)?.is_folder);
+                      const isFileLesson = !isQuizLesson && (!isFolderLesson);
                       const q = qualityBySubId[String(s.id)] as any;
                       const ok = q ? !!q.ok : false;
                       const needs = q ? Number(q.needs_regen || 0) : 0;
@@ -344,12 +345,17 @@ export function ModulesTab(props: ModulesTabProps) {
                                 </div>
                               </div>
                               <div className="mt-2 flex flex-wrap items-center gap-2">
+                                {isFolderLesson ? (
+                                  <div className="inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest border-zinc-200 bg-zinc-50 text-zinc-700">
+                                    ПАПКА
+                                  </div>
+                                ) : null}
                                 {isFileLesson ? (
                                   <div className="inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest border-zinc-200 bg-zinc-50 text-zinc-700">
                                     ФАЙЛОВЫЙ
                                   </div>
                                 ) : null}
-                                {!isFileLesson ? (
+                                {!isFileLesson && (!isFolderLesson) ? (
                                   <div
                                     className={
                                       "inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
@@ -359,7 +365,7 @@ export function ModulesTab(props: ModulesTabProps) {
                                     {badgeText}
                                   </div>
                                 ) : null}
-                                {!isFileLesson && q ? (
+                                {!isFileLesson && (!isFolderLesson) && q ? (
                                   <>
                                     <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-700">
                                       {total}/5

@@ -116,12 +116,15 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
 
   if (res.status === 401 && !isSse) {
     const isProd = process.env.NODE_ENV === "production";
+    const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
+      ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
+      : isProd;
     out.cookies.set({
       name: "core_token",
       value: "",
       httpOnly: true,
       sameSite: "lax",
-      secure: isProd,
+      secure: cookieSecure,
       path: "/",
       maxAge: 0,
       expires: new Date(0),

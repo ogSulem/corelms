@@ -1,15 +1,8 @@
-{
-  auto_https off
-}
-
-:80 {
+{$CADDY_DOMAIN} {
   encode zstd gzip
 
-  handle_path /api/* {
-    reverse_proxy backend:8000
-  }
-
-  handle_path /health/* {
+  @api path /api/* /health/*
+  handle @api {
     reverse_proxy backend:8000
   }
 

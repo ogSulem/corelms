@@ -90,6 +90,21 @@ def upload_fileobj_with_retry(
     rt = _runtime_s3()
     bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
 
+    # Some S3-compatible providers may close connections on large multipart uploads.
+    # Allow tuning without code changes.
+    try:
+        multipart_chunksize_bytes = int(_rt_str(rt, "s3_multipart_chunksize_bytes") or multipart_chunksize_bytes)
+    except Exception:
+        pass
+    try:
+        multipart_threshold_bytes = int(_rt_str(rt, "s3_multipart_threshold_bytes") or multipart_threshold_bytes)
+    except Exception:
+        pass
+    try:
+        max_concurrency = int(_rt_str(rt, "s3_multipart_max_concurrency") or max_concurrency)
+    except Exception:
+        pass
+
     threshold = int(multipart_threshold_bytes)
     chunksize = int(multipart_chunksize_bytes)
     use_multipart = (size_bytes is None) or (int(size_bytes) >= threshold)
@@ -105,8 +120,9 @@ def upload_fileobj_with_retry(
         else None
     )
 
-    tries = 4
-    base = 0.6
+    # More retries + slower backoff to survive transient network/S3 hiccups.
+    tries = 7
+    base = 1.0
     last: Exception | None = None
     for attempt in range(1, tries + 1):
         try:
@@ -127,7 +143,7 @@ def upload_fileobj_with_retry(
             try:
                 import time, random
 
-                time.sleep(base * (2 ** (attempt - 1)) + random.random() * 0.25)
+                time.sleep(base * (2 ** (attempt - 1)) + random.random() * 0.5)
             except Exception:
                 pass
     if last is not None:

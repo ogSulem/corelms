@@ -101,6 +101,18 @@ def _guess_title(name: str) -> str:
     return s.strip() or name
 
 
+def _outline_segments(parts: list[str]) -> list[str]:
+    # Keep folder navigation stable by applying the same title normalization
+    # that we apply to lesson/folder titles.
+    out: list[str] = []
+    for p in parts or []:
+        seg = _guess_title(str(p or "").strip())
+        seg = seg.strip().strip("/")
+        if seg:
+            out.append(seg)
+    return out
+
+
 def _parse_order(name: str, fallback: int) -> int:
     m = re.match(r"^\s*(\d{1,3})", (name or "").strip())
     if not m:
@@ -556,8 +568,6 @@ def import_module_from_dir(
     except Exception:
         module_dir_abs = module_dir
 
-    folder_placeholder_dirs: set[pathlib.Path] = set()
-
     root_as_lesson = False
     if not lesson_dirs:
         # Some ZIPs come as a flat folder: theory files are placed directly in module root.
@@ -606,45 +616,19 @@ def import_module_from_dir(
                 lesson_specs.append((_parse_order(module_dir.name, 0), title0, root_files, module_dir))
 
         for i, ld in enumerate(lesson_dirs, start=1):
-            direct_files = [p for p in ld.iterdir() if p.is_file() and not _should_ignore_file(p)]
-            direct_dirs = [p for p in ld.iterdir() if p.is_dir() and p.name not in {"_module", "__MACOSX"}]
+            # Product rule:
+            # - Any directory under module root is imported as a SINGLE folder lesson (catalog).
+            # - Files inside are assets of that folder (including nested folders), not separate submodules.
+            if ld.is_dir():
+                files2 = _list_files_recursive(ld)
+                files2 = [p for p in files2 if not _should_ignore_file(p)]
+                if not files2:
+                    continue
 
-            if direct_files:
-                lesson_specs.append((_parse_order(ld.name, i), _guess_title(ld.name), direct_files, ld))
+                lesson_specs.append((_parse_order(ld.name, i), _guess_title(ld.name), files2, ld, None, True))
                 continue
 
-            # Folder container: represent folders in outline and import leaf lesson dirs as real lessons.
-            if direct_dirs:
-                try:
-                    folder_placeholder_dirs.add(ld.resolve())
-                except Exception:
-                    pass
-
-                leaf_dirs = _collect_leaf_lesson_dirs(ld)
-                base = _parse_order(ld.name, i) * 1000
-                for j, leaf in enumerate(leaf_dirs, start=1):
-                    files2 = _list_files_recursive(leaf)
-                    files2 = [p for p in files2 if not _should_ignore_file(p)]
-                    if not files2:
-                        continue
-
-                    lesson_specs.append((base + j, _guess_title(leaf.name), files2, leaf))
-
-                    # Also add intermediate container folders to placeholders.
-                    try:
-                        rel = leaf.relative_to(module_dir_abs)
-                        parts = [p for p in rel.parts if p and p not in {"_module", "__MACOSX"}]
-                        if len(parts) > 1:
-                            acc = module_dir_abs
-                            for seg in parts[:-1]:
-                                acc = acc / seg
-                                try:
-                                    folder_placeholder_dirs.add(acc.resolve())
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
-                continue
+            direct_files = []
 
             # No direct files and no subdirs: ignore.
             files2 = _list_files_recursive(ld)
@@ -663,41 +647,54 @@ def import_module_from_dir(
 
     total_lessons = len(lesson_specs)
 
-    normalized_specs: list[tuple[int, str, list[pathlib.Path], pathlib.Path]] = []
+    # lesson_specs item formats:
+    # - (order, title, files)
+    # - (order, title, files, lesson_root)
+    # - (order, title, files, lesson_root, outline_path_override)
+    # - (order, title, files, lesson_root, outline_path_override, is_folder)
+    normalized_specs: list[tuple[int, str, list[pathlib.Path], pathlib.Path, str | None, bool]] = []
     for spec in lesson_specs:
         if len(spec) == 3:
             o, t, f = spec  # type: ignore[misc]
-            normalized_specs.append((int(o), str(t), list(f), module_dir))
-        else:
+            normalized_specs.append((int(o), str(t), list(f), module_dir, None, False))
+        elif len(spec) == 4:
             o, t, f, root = spec  # type: ignore[misc]
-            normalized_specs.append((int(o), str(t), list(f), pathlib.Path(root)))
+            normalized_specs.append((int(o), str(t), list(f), pathlib.Path(root), None, False))
+        elif len(spec) == 5:
+            o, t, f, root, outline_override = spec  # type: ignore[misc]
+            normalized_specs.append((int(o), str(t), list(f), pathlib.Path(root), str(outline_override) if outline_override else None, False))
+        else:
+            o, t, f, root, outline_override, is_folder = spec  # type: ignore[misc]
+            normalized_specs.append(
+                (int(o), str(t), list(f), pathlib.Path(root), str(outline_override) if outline_override else None, bool(is_folder))
+            )
 
     normalized_specs.sort(key=lambda x: (x[0], x[1].lower()))
-    renum: list[tuple[int, str, list[pathlib.Path], pathlib.Path]] = []
-    for idx, (_, t, f, root) in enumerate(normalized_specs, start=1):
-        renum.append((idx, t, f, root))
+    renum: list[tuple[int, str, list[pathlib.Path], pathlib.Path, str | None, bool]] = []
+    for idx, (_, t, f, root, outline_override, is_folder) in enumerate(normalized_specs, start=1):
+        renum.append((idx, t, f, root, outline_override, is_folder))
 
     # If this module is flat (no lesson folders) and has multiple files in root,
     # all lessons are treated as materials-only (requires_quiz=false).
     flat_multi_root_files = bool(root_as_lesson and len([p for p in module_dir.iterdir() if p.is_file() and not _should_ignore_file(p)]) > 1)
     material_roots = {module_material_dir.resolve()} if module_material_dir.exists() else set()
-    folder_container_roots: set[pathlib.Path] = set()
-    try:
-        folder_container_roots = set(folder_placeholder_dirs or set())
-    except Exception:
-        folder_container_roots = set()
-
-    for i, (order, title, files, lesson_root) in enumerate(renum, start=1):
+    for i, (order, title, files, lesson_root, outline_override, is_folder) in enumerate(renum, start=1):
         _set_job_detail(f"lesson {i}/{total_lessons}: {title}")
 
-        outline_path: str | None = None
-        try:
-            rel = lesson_root.relative_to(module_dir)
-            parts = [p for p in rel.parts if p and p not in {"_module", "__MACOSX"}]
-            if len(parts) > 1:
-                outline_path = "/".join(parts[:-1])
-        except Exception:
-            outline_path = None
+        outline_path: str | None = outline_override
+        if outline_path is None:
+            try:
+                try:
+                    lesson_root_abs = lesson_root.resolve()
+                except Exception:
+                    lesson_root_abs = lesson_root
+
+                rel = lesson_root_abs.relative_to(module_dir_abs)
+                parts = [p for p in rel.parts if p and p not in {"_module", "__MACOSX"}]
+                if len(parts) > 1:
+                    outline_path = "/".join(_outline_segments([str(x) for x in parts[:-1]]))
+            except Exception:
+                outline_path = None
 
         extracted_theory = _theory_from_files(files)
         extracted_theory_clean = str(extracted_theory or "").strip()
@@ -718,22 +715,24 @@ def import_module_from_dir(
                 materials_only = (not extracted_ok)
             elif lesson_root and lesson_root.exists() and lesson_root.is_dir() and lesson_root.resolve() in material_roots:
                 materials_only = True
-            elif lesson_root and lesson_root.exists() and lesson_root.is_dir() and lesson_root.resolve() in folder_container_roots:
+            elif is_folder:
                 extracted_ok = False
                 materials_only = True
+                outline_path = None
             elif outline_path:
-                # Product rule for nested folders: view-only content. No quizzes/regens.
+                # Product rule for nested outline folders: view-only content. No quizzes/regens.
                 extracted_ok = False
                 materials_only = True
         except Exception:
             pass
 
         theory = extracted_theory_clean
-        if not theory:
-            theory = _lesson_markdown_fallback(module_title=module_title, lesson_title=title, files=files)
-
-        content_key = f"{pfx}{order:02d}/theory.md"
-        _upload_markdown_text(s3=s3, object_key=content_key, text_value=theory)
+        content_key = None
+        if not is_folder:
+            if not theory:
+                theory = _lesson_markdown_fallback(module_title=module_title, lesson_title=title, files=files)
+            content_key = f"{pfx}{order:02d}/theory.md"
+            _upload_markdown_text(s3=s3, object_key=content_key, text_value=theory)
 
         qz = Quiz(type=QuizType.submodule, pass_threshold=70, time_limit=None, attempts_limit=None)
         db.add(qz)
@@ -747,7 +746,7 @@ def import_module_from_dir(
             order=order,
             quiz_id=qz.id,
             requires_quiz=bool(extracted_ok),
-            is_folder=False,
+            is_folder=bool(is_folder),
             outline_path=outline_path,
         )
         db.add(s)
@@ -893,56 +892,6 @@ def import_module_from_dir(
 
             if report is not None:
                 report["lesson_assets"] = int(report.get("lesson_assets") or 0) + 1
-
-    # Create explicit folder placeholders so frontend renders nested folders as folders (not lessons).
-    try:
-        existing_max_order = int(db.execute(select(func.max(Submodule.order)).where(Submodule.module_id == m.id)).scalar() or 0)
-    except Exception:
-        existing_max_order = total_lessons
-
-    try:
-        folders_sorted = sorted(
-            [p for p in (folder_container_roots or set()) if isinstance(p, pathlib.Path)],
-            key=lambda x: (len(x.parts), str(x).lower()),
-        )
-    except Exception:
-        folders_sorted = []
-
-    folder_seen: set[str] = set()
-    for idx, fd in enumerate(folders_sorted, start=1):
-        try:
-            rel = fd.relative_to(module_dir_abs)
-            parts = [p for p in rel.parts if p and p not in {"_module", "__MACOSX"}]
-            if not parts:
-                continue
-
-            title = _guess_title(parts[-1])
-            outline_path = "/".join(parts[:-1]) if len(parts) > 1 else None
-
-            key = f"{outline_path or ''}:{title}".lower()
-            if key in folder_seen:
-                continue
-            folder_seen.add(key)
-
-            qz = Quiz(type=QuizType.submodule, pass_threshold=70, time_limit=None, attempts_limit=None)
-            db.add(qz)
-            db.flush()
-
-            s = Submodule(
-                module_id=m.id,
-                title=title,
-                content="",
-                content_object_key=None,
-                order=existing_max_order + idx,
-                quiz_id=qz.id,
-                requires_quiz=False,
-                is_folder=True,
-                outline_path=outline_path,
-            )
-            db.add(s)
-            db.flush()
-        except Exception:
-            continue
 
     try:
         any_quiz_required = bool(

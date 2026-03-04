@@ -3509,7 +3509,9 @@ def list_modules_admin(
         if pfx and (not pfx.endswith("/")):
             pfx = pfx + "/"
         try:
-            storage_ok = bool(s3_prefix_has_objects(prefix=pfx, bypass_cache=True))
+            # Do NOT bypass cache here: this endpoint is called frequently by admin UI.
+            # Bypassing cache causes an S3 list call per module and makes UI feel slow.
+            storage_ok = bool(s3_prefix_has_objects(prefix=pfx, bypass_cache=False))
         except Exception:
             storage_ok = False
 
@@ -5823,7 +5825,10 @@ def create_user(
     if not name:
         raise HTTPException(status_code=400, detail="invalid name")
 
-    if not email or "@" not in str(email):
+    if not email:
+        raise HTTPException(status_code=400, detail="invalid email")
+    # Basic safe validation (not fully RFC-complete, but blocks obvious garbage).
+    if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$", str(email)):
         raise HTTPException(status_code=400, detail="invalid email")
 
     existing = db.scalar(select(User).where(User.name == name))

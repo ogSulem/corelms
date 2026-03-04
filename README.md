@@ -12,6 +12,15 @@ CoreLMS — система обучения и контроля квалифик
 - админ-панель: импорт контента, регенерация квизов, управление пользователями
 - аудит безопасности (security audit log)
 
+## Состав репозитория
+
+- **`frontend/`** — Next.js приложение (UI + server routes `/api/*`)
+- **`backend/`** — FastAPI приложение (API, воркеры RQ, миграции Alembic)
+- **`nginx/`** — локальный ingress (reverse proxy в docker-compose)
+- **`docker-compose.yml`** — локальный запуск (nginx -> frontend -> backend)
+- **`docker-compose.vps.yml`** — запуск на VPS (Caddy -> frontend/backend)
+- **`.env.example`** — шаблон переменных окружения
+
 ## Архитектура
 
 - **Frontend**: Next.js + TypeScript
@@ -20,7 +29,17 @@ CoreLMS — система обучения и контроля квалифик
 - **Queue**: Redis + RQ (импорт/реген/cleanup очереди)
 - **Storage**: S3-compatible
 
+### Потоки запросов (вкратце)
+
+- Браузер открывает UI по одному публичному origin (например `http://127.0.0.1:8080`).
+- UI делает запросы к API по same-origin путям:
+  - `GET /api/auth/*` — Next.js server routes (ставят httpOnly cookies)
+  - `GET/POST /api/backend/*` — прокси в backend (cookies приклеиваются автоматически)
+- Backend не публикуется наружу в локальном compose (доступен только внутри docker-сети).
+
 ## Быстрый старт (локально, Docker Compose)
+
+Локальный запуск рассчитан на работу через **nginx** как единую точку входа.
 
 1) Создай `.env` из шаблона:
 
@@ -28,7 +47,27 @@ CoreLMS — система обучения и контроля квалифик
 cp .env.example .env
 ```
 
-2) Запусти:
+2) Выбери **один** origin и используй его всегда (это важно для cookie-сессии):
+
+- `http://localhost:<PORT>` и `http://127.0.0.1:<PORT>` считаются **разными хостами**.
+- Если залогинился на `localhost`, а потом открыл `127.0.0.1`, браузер **не отправит** host-only cookies (`core_token/core_refresh`) и будет выглядеть как “разлогин”.
+
+Это нормальное поведение браузера: cookies привязаны к домену.
+
+Рекомендуем для локалки:
+
+- `NGINX_HTTP_PORT=8080`
+- `PUBLIC_APP_URL=http://127.0.0.1:8080`
+- `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8080`
+- `CORS_ALLOW_ORIGINS=http://127.0.0.1:8080`
+
+Если хочешь **поддерживать оба** (`localhost` и `127.0.0.1`), это возможно для CORS:
+
+- `CORS_ALLOW_ORIGINS=http://localhost:8080,http://127.0.0.1:8080`
+
+Но cookies всё равно будут отдельные для каждого хоста.
+
+3) Запусти:
 
 ```bash
 docker compose up --build
@@ -36,8 +75,32 @@ docker compose up --build
 
 Открыть:
 
-- UI: `http://localhost:3000`
-- API: `http://localhost:8000`
+- UI (через nginx): `http://127.0.0.1:${NGINX_HTTP_PORT:-80}`
+- API из браузера: `http://127.0.0.1:${NGINX_HTTP_PORT:-80}/api/*`
+
+По умолчанию `backend` и `frontend` не публикуют 8000/3000 на хост (они доступны внутри docker-сети). Наружу публикуется только `nginx`.
+
+### Полезные команды
+
+- Остановить:
+
+```bash
+docker compose down
+```
+
+- Пересобрать и поднять:
+
+```bash
+docker compose up -d --build
+```
+
+- Посмотреть логи:
+
+```bash
+docker compose logs -f --tail=200 nginx
+docker compose logs -f --tail=200 backend
+docker compose logs -f --tail=200 worker_import
+```
 
 ### Первый вход / админ
 
@@ -74,6 +137,19 @@ docker compose up --build
 ## Переменные окружения (.env)
 
 Шаблон: `.env.example`.
+
+### Самые важные переменные
+
+- **`APP_ENV`**
+  - `development` — более мягкие defaults для локалки
+  - `production` — строгие проверки (секреты/URL'ы), лучше для VPS
+- **`PUBLIC_APP_URL`** — публичный origin фронта (то, что вводится в браузере)
+- **`CORS_ALLOW_ORIGINS`** — список origin'ов для CORS (должен совпадать с тем, где открывают UI)
+- **`NEXT_PUBLIC_API_BASE_URL`** — публичный origin для фронта (обычно равен `PUBLIC_APP_URL`)
+- **`CORE_INTERNAL_API_BASE_URL`** — внутренний URL backend в docker-сети (обычно `http://backend:8000`)
+- **`COOKIE_SECURE`**
+  - `false` для HTTP (локалка, IP-only)
+  - `true` для HTTPS (домен + TLS)
 
 Минимальный набор для production:
 
@@ -157,3 +233,33 @@ cat backup.dump | docker compose -f docker-compose.vps.yml exec -T postgres pg_r
 - **Очередь “не исполняется”**: проверь workers для нужной очереди (`WORKERS: 0` в UI) и что контейнеры `worker_import`/`worker_regen` запущены.
 - **CORS ошибки**: выставь `CORS_ALLOW_ORIGINS` ровно на URL фронта.
 - **Force password change**: убедись, что пользователь реально имеет `must_change_password=true` и что фронт редиректит на `/force-password-change`.
+
+### Частый случай: “после перезагрузки выкинуло”
+
+Проверь:
+
+- что ты не сменил `localhost` на `127.0.0.1` (или наоборот)
+- что `COOKIE_SECURE=false` при HTTP
+- что refresh не инвалидируется (после `down -v` он станет невалидным)
+
+### Важно про `docker compose down -v`
+
+`docker compose down -v` удаляет volumes Postgres/Redis.
+
+- Данные БД удалятся.
+- Все refresh-сессии в Redis потеряются.
+
+После этого нужно:
+
+- заново поднять compose
+- заново залогиниться (старые cookies станут невалидными)
+
+---
+
+## Примечания по безопасности
+
+- Никогда не коммить `.env` с реальными ключами.
+- В production обязательно замени:
+  - `JWT_SECRET_KEY`
+  - `BOOTSTRAP_ADMIN_PASSWORD`
+  - ключи S3

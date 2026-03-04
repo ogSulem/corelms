@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { sharedRefresh } from "../_refresh_shared";
 
 const API_BASE_URL =
   process.env.CORE_INTERNAL_API_BASE_URL ||
@@ -14,18 +15,13 @@ export async function POST() {
     return NextResponse.json({ ok: false, error_code: "not_authenticated" }, { status: 401 });
   }
 
-  let res: Response;
-  try {
-    res = await fetch(`${API_BASE_URL}/auth/refresh`, {
-      method: "POST",
-      cache: "no-store",
-      headers: { Authorization: `Bearer ${refresh}` },
-    });
-  } catch {
-    return NextResponse.json({ ok: false, error_code: "upstream_unavailable" }, { status: 502 });
-  }
+  const result = await sharedRefresh({ apiBaseUrl: API_BASE_URL, refreshToken: String(refresh || "") });
 
-  if (!res.ok) {
+  if (!result.ok) {
+    if (result.status === 502) {
+      return NextResponse.json({ ok: false, error_code: "upstream_unavailable" }, { status: 502 });
+    }
+
     const out = NextResponse.json({ ok: false, error_code: "refresh_failed" }, { status: 401 });
     const isProd = process.env.NODE_ENV === "production";
     const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
@@ -56,14 +52,10 @@ export async function POST() {
     return out;
   }
 
-  const data = (await res.json()) as { access_token: string; refresh_token?: string | null; expires_in?: number | null; refresh_expires_in?: number | null };
-  const access = String(data?.access_token || "").trim();
-  if (!access) {
-    return NextResponse.json({ ok: false, error_code: "refresh_failed" }, { status: 401 });
-  }
+  const access = String(result.access || "").trim();
 
   const configuredMaxAge = Number.parseInt(process.env.CORE_TOKEN_MAX_AGE_SECONDS || "3600", 10) || 3600;
-  const upstreamExpiresIn = Number.isFinite(Number(data.expires_in)) ? Number(data.expires_in) : null;
+  const upstreamExpiresIn = Number.isFinite(Number(result.expiresIn)) ? Number(result.expiresIn) : null;
   const maxAge = upstreamExpiresIn ? Math.min(configuredMaxAge, upstreamExpiresIn) : configuredMaxAge;
   const expires = new Date(Date.now() + maxAge * 1000);
 
@@ -84,9 +76,9 @@ export async function POST() {
     priority: "high",
   });
 
-  const nextRefresh = String(data.refresh_token || "").trim();
+  const nextRefresh = String(result.nextRefresh || "").trim();
   if (nextRefresh) {
-    const refreshMaxAge = Number.isFinite(Number(data.refresh_expires_in)) ? Number(data.refresh_expires_in) : 30 * 24 * 60 * 60;
+    const refreshMaxAge = Number.isFinite(Number(result.refreshExpiresIn)) ? Number(result.refreshExpiresIn) : 30 * 24 * 60 * 60;
     const refreshExpires = new Date(Date.now() + refreshMaxAge * 1000);
     response.cookies.set({
       name: "core_refresh",

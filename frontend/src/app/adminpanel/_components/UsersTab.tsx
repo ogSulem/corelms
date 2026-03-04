@@ -41,7 +41,6 @@ interface UsersTabProps {
   deleteSelectedUser: () => Promise<void>;
   userHistoryLoading: boolean;
   userHistoryDetailed: UserHistoryDetailedItem[];
-  setHistoryModalOpen: (open: boolean) => void;
   resetTempPassword: string;
   tempPasswordModalOpen: boolean;
   setTempPasswordModalOpen: (open: boolean) => void;
@@ -78,7 +77,6 @@ export function UsersTab(props: UsersTabProps) {
     deleteSelectedUser,
     userHistoryLoading,
     userHistoryDetailed,
-    setHistoryModalOpen,
     resetTempPassword,
     tempPasswordModalOpen,
     setTempPasswordModalOpen,
@@ -89,6 +87,7 @@ export function UsersTab(props: UsersTabProps) {
   const [draftName, setDraftName] = useState<string>("");
   const [draftPosition, setDraftPosition] = useState<string>("");
   const [draftRole, setDraftRole] = useState<"employee" | "admin">("employee");
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const hasDraft = useMemo(() => {
     if (!userDetail) return false;
@@ -462,7 +461,7 @@ export function UsersTab(props: UsersTabProps) {
                     <div className="flex items-center justify-between mb-4">
                       <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Последняя активность</div>
                       <button 
-                        onClick={() => setHistoryModalOpen(true)}
+                        onClick={() => setHistoryOpen(true)}
                         className="text-[9px] font-black uppercase tracking-widest text-[#fe9900] hover:underline"
                       >
                         ВСЯ ИСТОРИЯ
@@ -537,6 +536,47 @@ export function UsersTab(props: UsersTabProps) {
           </div>
         </div>
       </div>
+
+      <Modal
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        title="История пользователя"
+        className="max-w-[min(92vw,860px)]"
+      >
+        <div className="space-y-4">
+          {userHistoryLoading ? (
+            <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Загрузка…</div>
+          ) : !userHistoryDetailed || userHistoryDetailed.length === 0 ? (
+            <div className="py-10 text-center text-[10px] font-black uppercase tracking-widest text-zinc-600 border border-dashed border-zinc-200 rounded-[28px]">
+              История пуста
+            </div>
+          ) : (
+            <div className="max-h-[70vh] overflow-auto pr-1 space-y-2">
+              {(userHistoryDetailed || []).map((h) => (
+                <div key={h.id} className="rounded-2xl border border-zinc-100 bg-zinc-50/50 p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-black text-zinc-950 uppercase tracking-tight truncate">{h.title}</div>
+                      {h.subtitle ? (
+                        <div className="mt-1 text-[10px] font-bold text-zinc-500 uppercase tracking-tight truncate">{h.subtitle}</div>
+                      ) : null}
+                    </div>
+                    <div className="text-[10px] text-zinc-500 tabular-nums shrink-0">
+                      {new Date(h.created_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <Button variant="outline" className="rounded-2xl" onClick={() => setHistoryOpen(false)}>
+              Закрыть
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

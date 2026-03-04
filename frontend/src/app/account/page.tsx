@@ -199,6 +199,23 @@ export default function AccountPage() {
     }
   };
 
+  const revokeAllSessions = async () => {
+    try {
+      setSessionsLoading(true);
+      await apiFetch(`/auth/sessions/revoke-all`, { method: "POST" });
+    } catch {
+      // ignore
+    } finally {
+      try {
+        const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
+        setSessions(Array.isArray(sess?.items) ? sess.items : []);
+      } catch {
+        // ignore
+      }
+      setSessionsLoading(false);
+    }
+  };
+
   const ipWidget = useMemo(() => {
     const sec = (historyAll || []).filter((x: HistoryItem) => x.kind === "security");
     const seen: Array<{ key: string; ip: string; ip_fp: string; at: string }> = [];
@@ -449,6 +466,16 @@ export default function AccountPage() {
                     disabled={sessionsLoading || sessions.length <= 1}
                   >
                     Завершить остальные
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={() => void revokeAllSessions()}
+                    disabled={sessionsLoading || sessions.length === 0}
+                  >
+                    Выйти везде
                   </Button>
                 </div>
               </div>

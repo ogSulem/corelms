@@ -182,8 +182,6 @@ export default function AdminPanelClient() {
       // ignore
     }
   }
-  const [historyModalOpen, setHistoryModalOpen] = useState(false);
-
   const closeTempPasswordModal = () => {
     setTempPasswordModalOpen(false);
     setNewUserTempPassword("");
@@ -993,7 +991,7 @@ export default function AdminPanelClient() {
     try {
       setUserHistoryLoading(true);
       const hist = await apiFetch<{ items: UserHistoryDetailedItem[] }>(
-        `/admin/users/${encodeURIComponent(id)}/history?limit=200`
+        `/admin/users/${encodeURIComponent(id)}/history?limit=500`
       );
       setUserHistoryDetailed(Array.isArray(hist?.items) ? hist.items : []);
     } catch {
@@ -1542,6 +1540,19 @@ export default function AdminPanelClient() {
     let es: EventSource | null = null;
     let stopped = false;
 
+    const tryRefreshSession = async (): Promise<boolean> => {
+      try {
+        const res = await fetch("/api/auth/refresh", {
+          method: "POST",
+          cache: "no-store",
+          credentials: "include",
+        });
+        return !!res.ok;
+      } catch {
+        return false;
+      }
+    };
+
     const open = () => {
       if (stopped) return;
       try {
@@ -1567,6 +1578,10 @@ export default function AdminPanelClient() {
           // ignore
         }
         es = null;
+
+        // Best-effort: SSE cannot auto-refresh tokens like apiFetch does.
+        // Try to refresh the session using refresh cookie, then let watchdog/poll reopen.
+        void tryRefreshSession();
       });
 
       es.addEventListener("jobs", (ev: MessageEvent) => {
@@ -1714,7 +1729,8 @@ export default function AdminPanelClient() {
 
   useEffect(() => {
     if (!didInitFromQueryRef.current) return;
-    writeAdminQuery({ pathname, tab, mid: selectedAdminModuleId, sid: selectedSubmoduleId, qid: selectedQuizId });
+    const mid = tab === "modules" ? (String(selectedAdminModuleId || "").trim() || undefined) : undefined;
+    writeAdminQuery({ pathname, tab, mid });
   }, [pathname, tab, selectedAdminModuleId, selectedSubmoduleId, selectedQuizId]);
 
   useEffect(() => {
@@ -1903,7 +1919,6 @@ export default function AdminPanelClient() {
               deleteSelectedUser={deleteSelectedUser}
               userHistoryLoading={userHistoryLoading}
               userHistoryDetailed={userHistoryDetailed}
-              setHistoryModalOpen={setHistoryModalOpen}
               resetTempPassword={resetTempPassword}
               tempPasswordModalOpen={tempPasswordModalOpen}
               setTempPasswordModalOpen={(open) => {
