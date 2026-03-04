@@ -6,13 +6,67 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 import json
 
+from app.core.redis_client import get_redis
 from app.models.module import Module, Submodule
 from app.models.attempt import QuizAttempt
 from app.models.audit import LearningEvent, LearningEventType
 from app.models.user import User
 
 from app.services.learning import LearningService
-from app.services.storage import s3_list_common_prefixes, s3_prefix_has_objects
+from app.services.storage import (
+    s3_invalidate_common_prefixes,
+    s3_invalidate_prefix_has_objects,
+    s3_list_common_prefixes,
+    s3_prefix_has_objects,
+)
+
+
+def modules_get_rev() -> int:
+    try:
+        r = get_redis()
+        raw = r.get("modules:rev")
+        if raw is None:
+            return 0
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="ignore")
+        return int(str(raw or "0").strip() or "0")
+    except Exception:
+        return 0
+
+
+def modules_bump_rev(*, reason: str | None = None) -> int:
+    try:
+        r = get_redis()
+        v = int(r.incr("modules:rev"))
+        try:
+            r.expire("modules:rev", 60 * 60 * 24 * 30)
+        except Exception:
+            pass
+        try:
+            r.publish("modules:changed", str(reason or ""))
+        except Exception:
+            pass
+        return v
+    except Exception:
+        return modules_get_rev()
+
+
+def modules_invalidate_storage_cache(*, module_storage_prefix: str | None = None) -> None:
+    # Invalidate the cached listing of module prefixes.
+    try:
+        s3_invalidate_common_prefixes(prefix="modules/", delimiter="/")
+    except Exception:
+        pass
+
+    # Invalidate the specific module prefix check if known.
+    try:
+        pfx = str(module_storage_prefix or "").strip()
+        if pfx and (not pfx.endswith("/")):
+            pfx = pfx + "/"
+        if pfx:
+            s3_invalidate_prefix_has_objects(prefix=pfx)
+    except Exception:
+        pass
 
 class ModuleService:
     def __init__(self, db: Session):
@@ -60,20 +114,21 @@ class ModuleService:
 
         module_ids = [m.id for m in modules]
         
-        # Батч-расчет прогресса через новый метод в LearningService
-        progress_map = self.learning_service.get_modules_progress(user, module_ids)
+        # Fast path: compact progress for list views (cached briefly).
+        progress_map = self.learning_service.get_modules_progress_compact(user, module_ids)
 
         items = []
         for m in modules:
-            prog = progress_map.get(m.id, {
-                "total": 0,
-                "passed": 0,
-                "completed": False,
-                "submodules": []
-            })
-            
-            # Считаем количество прочитанных из данных батча
-            read_count = sum(1 for s in prog.get("submodules", []) if s.get("read"))
+            prog = progress_map.get(
+                m.id,
+                {
+                    "total_lessons": 0,
+                    "passed_count": 0,
+                    "read_count": 0,
+                    "final_passed": False,
+                    "completed": False,
+                },
+            )
             
             items.append({
                 "id": str(m.id),
@@ -83,11 +138,11 @@ class ModuleService:
                 "category": m.category,
                 "is_active": m.is_active,
                 "progress": {
-                    "read_count": read_count,
-                    "total_lessons": prog.get("total", 0),
-                    "passed_count": prog.get("passed", 0),
-                    "final_passed": prog.get("final_passed", False),
-                    "completed": prog.get("completed", False)
+                    "read_count": int(prog.get("read_count", 0) or 0),
+                    "total_lessons": int(prog.get("total_lessons", 0) or 0),
+                    "passed_count": int(prog.get("passed_count", 0) or 0),
+                    "final_passed": bool(prog.get("final_passed", False)),
+                    "completed": bool(prog.get("completed", False)),
                 }
             })
             

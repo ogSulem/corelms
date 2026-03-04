@@ -6,6 +6,7 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.orm import Session
 import json
 
+from app.core.redis_client import get_redis
 from app.models.module import Module, ModuleSkillMap, Submodule
 from app.models.attempt import QuizAttempt
 from app.models.audit import LearningEvent, LearningEventType
@@ -14,6 +15,175 @@ from app.models.user import User
 class LearningService:
     def __init__(self, db: Session):
         self.db = db
+
+    def get_modules_progress_compact(self, user: User, module_ids: List[uuid.UUID]) -> Dict[uuid.UUID, Dict[str, Any]]:
+        """Fast progress aggregation for modules list.
+
+        Unlike get_modules_progress(), this method does NOT return per-submodule items.
+        It is intended for /modules/overview to keep first-load latency low.
+        """
+
+        if not module_ids:
+            return {}
+
+        # Short cache to speed up cold loads, while still staying near-real-time.
+        cache_key = None
+        try:
+            mids = ",".join(sorted(str(x) for x in module_ids))
+            cache_key = f"progress:modules_compact:v1:{str(user.id)}:{mids}"
+            r = get_redis()
+            cached = r.get(cache_key)
+            if cached:
+                obj = json.loads(cached)
+                if isinstance(obj, dict):
+                    out: dict[uuid.UUID, dict[str, Any]] = {}
+                    for k, v in obj.items():
+                        try:
+                            mid = uuid.UUID(str(k))
+                        except Exception:
+                            continue
+                        if isinstance(v, dict):
+                            out[mid] = v
+                    return out
+        except Exception:
+            cache_key = None
+
+        def _meta_action_is_read(meta: str | None) -> bool:
+            if not meta:
+                return False
+            if str(meta).strip().lower() == "read":
+                return True
+            try:
+                obj = json.loads(str(meta))
+                if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
+                    return True
+            except Exception:
+                return False
+            return False
+
+        # Fetch only fields needed.
+        module_rows = self.db.execute(
+            select(Module.id, Module.final_quiz_id).where(Module.id.in_(module_ids))
+        ).all()
+        final_quiz_by_module: dict[uuid.UUID, uuid.UUID | None] = {mid: fq for (mid, fq) in (module_rows or [])}
+
+        sub_rows = self.db.execute(
+            select(
+                Submodule.module_id,
+                Submodule.id,
+                Submodule.quiz_id,
+                Submodule.requires_quiz,
+                Submodule.is_folder,
+            )
+            .where(Submodule.module_id.in_(module_ids))
+            .order_by(Submodule.module_id, Submodule.order)
+        ).all()
+
+        subs_by_module: dict[uuid.UUID, list[tuple[uuid.UUID, uuid.UUID | None, bool]]] = {}
+        all_quiz_ids: set[uuid.UUID] = set()
+        all_sub_ids: list[uuid.UUID] = []
+
+        for mid, sid, qid, requires_quiz, is_folder in (sub_rows or []):
+            if bool(is_folder):
+                continue
+            rq = bool(requires_quiz) if requires_quiz is not None else True
+            subs_by_module.setdefault(mid, []).append((sid, qid, rq))
+            all_sub_ids.append(sid)
+            if rq and qid is not None:
+                all_quiz_ids.add(qid)
+
+        # Final quiz participates only if the module has at least one quiz-required lesson.
+        for mid, subs in subs_by_module.items():
+            any_quiz_required = any(rq for (_sid, _qid, rq) in subs)
+            fq = final_quiz_by_module.get(mid)
+            if any_quiz_required and fq is not None:
+                all_quiz_ids.add(fq)
+
+        passed_quiz_ids: set[uuid.UUID] = set()
+        if all_quiz_ids:
+            rows = self.db.execute(
+                select(QuizAttempt.quiz_id)
+                .where(
+                    QuizAttempt.user_id == user.id,
+                    QuizAttempt.quiz_id.in_(list(all_quiz_ids)),
+                    QuizAttempt.passed == True,  # noqa: E712
+                )
+                .group_by(QuizAttempt.quiz_id)
+            ).all()
+            passed_quiz_ids = {qid for (qid,) in (rows or []) if qid is not None}
+
+        read_ids: set[uuid.UUID] = set()
+        if all_sub_ids:
+            read_rows = self.db.execute(
+                select(LearningEvent.ref_id, LearningEvent.meta).where(
+                    LearningEvent.user_id == user.id,
+                    LearningEvent.type == LearningEventType.submodule_opened,
+                    LearningEvent.meta.is_not(None),
+                    LearningEvent.ref_id.in_(all_sub_ids),
+                )
+            ).all()
+            read_ids = {ref_id for (ref_id, meta) in (read_rows or []) if ref_id is not None and _meta_action_is_read(meta)}
+
+        results: dict[uuid.UUID, dict[str, Any]] = {}
+        for mid in module_ids:
+            subs = subs_by_module.get(mid, [])
+            if not subs:
+                results[mid] = {
+                    "total_lessons": 0,
+                    "passed_count": 0,
+                    "read_count": 0,
+                    "final_passed": False,
+                    "completed": False,
+                }
+                continue
+
+            any_quiz_required = any(rq for (_sid, _qid, rq) in subs)
+            fq = final_quiz_by_module.get(mid) if any_quiz_required else None
+            final_passed = bool(fq is not None and fq in passed_quiz_ids)
+
+            read_count = 0
+            passed_lessons = 0
+            all_regular_passed = True
+
+            for sid, qid, rq in subs:
+                is_read = sid in read_ids
+                if is_read:
+                    read_count += 1
+
+                if rq:
+                    is_passed = bool(qid is not None and qid in passed_quiz_ids)
+                    if is_passed:
+                        passed_lessons += 1
+                    else:
+                        all_regular_passed = False
+                else:
+                    # materials-only lesson
+                    if is_read:
+                        passed_lessons += 1
+                    else:
+                        all_regular_passed = False
+
+            total_steps = len(subs) + (1 if fq is not None else 0)
+            passed_total = passed_lessons + (1 if final_passed else 0)
+            completed = bool(all_regular_passed and (fq is None or final_passed))
+
+            results[mid] = {
+                "total_lessons": int(total_steps),
+                "passed_count": int(passed_total),
+                "read_count": int(read_count),
+                "final_passed": bool(final_passed),
+                "completed": bool(completed),
+            }
+
+        if cache_key:
+            try:
+                r = get_redis()
+                payload = {str(k): v for k, v in results.items()}
+                r.setex(cache_key, 45, json.dumps(payload, ensure_ascii=False))
+            except Exception:
+                pass
+
+        return results
 
     def get_modules_progress(self, user: User, module_ids: List[uuid.UUID]) -> Dict[uuid.UUID, Dict[str, Any]]:
         """

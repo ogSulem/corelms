@@ -65,6 +65,75 @@ export default function ModulesPage() {
   }, []);
 
   useEffect(() => {
+    let es: EventSource | null = null;
+    let stopped = false;
+    let backoffMs = 800;
+    const backoffMaxMs = 15_000;
+    let reconnectTimer: number | null = null;
+    let lastRev = 0;
+
+    const clearReconnect = () => {
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    };
+
+    const scheduleReconnect = (why: string) => {
+      if (stopped) return;
+      clearReconnect();
+      const jitter = Math.floor(Math.random() * 250);
+      const delay = Math.min(backoffMaxMs, Math.max(250, backoffMs + jitter));
+      backoffMs = Math.min(backoffMaxMs, Math.floor(backoffMs * 1.6));
+      reconnectTimer = window.setTimeout(() => open("reconnect:" + why), delay);
+    };
+
+    const close = (why: string) => {
+      try {
+        es?.close();
+      } catch {
+        // ignore
+      }
+      es = null;
+    };
+
+    const open = (why: string) => {
+      if (stopped) return;
+      clearReconnect();
+      close("reopen");
+      try {
+        es = new EventSource("/api/backend/modules/events");
+      } catch {
+        es = null;
+        scheduleReconnect("ctor_fail");
+        return;
+      }
+
+      es.addEventListener("error", () => {
+        close("error");
+        scheduleReconnect("error");
+      });
+
+      es.addEventListener("modules", (ev: MessageEvent) => {
+        try {
+          const payload = JSON.parse(String((ev as any)?.data || "{}")) as any;
+          const rev = Number(payload?.rev || 0);
+          if (rev && rev <= lastRev) return;
+          if (rev) lastRev = rev;
+        } catch {
+          // ignore
+        }
+        void reload({ force: true });
+      });
+    };
+
+    open("mount");
+    return () => {
+      stopped = true;
+      clearReconnect();
+      close("unmount");
+    };
+  }, []);
+
+  useEffect(() => {
     const onUpdated = () => {
       void reload();
     };

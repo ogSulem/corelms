@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
 import uuid
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.redis_client import get_redis
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.asset import ContentAsset
@@ -18,6 +24,19 @@ from app.services.modules import ModuleService
 from app.services.storage import s3_list_common_prefixes, s3_prefix_has_objects
 
 router = APIRouter(prefix="/modules", tags=["modules"])
+
+
+def _modules_get_rev() -> int:
+    try:
+        r = get_redis()
+        raw = r.get("modules:rev")
+        if raw is None:
+            return 0
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="ignore")
+        return int(str(raw or "0").strip() or "0")
+    except Exception:
+        return 0
 
 
 @router.get("/overview", response_model=ModulesOverviewResponse)
@@ -137,6 +156,125 @@ def submodule_assets(submodule_id: str, db: Session = Depends(get_db), _: User =
             for order, asset in rows
         ],
     }
+
+
+@router.get("/events")
+async def modules_events(request: Request, _: User = Depends(get_current_user)):
+    async def gen():
+        loop = asyncio.get_running_loop()
+        q: asyncio.Queue[object] = asyncio.Queue()
+        stop = threading.Event()
+        pubsub_ref: dict[str, object] = {}
+
+        def _push(msg: object) -> None:
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, msg)
+            except Exception:
+                pass
+
+        def _listen() -> None:
+            pubsub = None
+            try:
+                r = get_redis()
+                pubsub = r.pubsub(ignore_subscribe_messages=True)
+                pubsub_ref["pubsub"] = pubsub
+                pubsub.subscribe("modules:changed")
+                while not stop.is_set():
+                    try:
+                        m = pubsub.get_message(timeout=1.0)
+                    except Exception:
+                        m = None
+                    if m:
+                        _push(m)
+            except Exception:
+                while not stop.is_set():
+                    stop.wait(2.0)
+                    _push({"type": "tick"})
+            finally:
+                try:
+                    ps = pubsub if pubsub is not None else pubsub_ref.get("pubsub")
+                    if ps is not None:
+                        try:
+                            ps.unsubscribe("modules:changed")
+                        except Exception:
+                            pass
+                        try:
+                            ps.close()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_listen, name="modules_sse_pubsub", daemon=True)
+        t.start()
+
+        last_rev = 0
+        last_ping_ms = 0
+        last_sent_sig = ""
+
+        try:
+            _push({"type": "init"})
+        except Exception:
+            pass
+
+        try:
+            while True:
+                try:
+                    if await request.is_disconnected():
+                        break
+                except Exception:
+                    pass
+
+                now_ms = int(datetime.utcnow().timestamp() * 1000)
+                timeout_s = max(0.25, (15000 - (now_ms - last_ping_ms)) / 1000.0) if last_ping_ms else 2.0
+
+                msg = None
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=timeout_s)
+                except asyncio.TimeoutError:
+                    msg = None
+                except Exception:
+                    msg = None
+
+                # Authoritative: always read current rev from Redis.
+                try:
+                    rev = _modules_get_rev()
+                except Exception:
+                    rev = 0
+
+                if rev and rev > last_rev:
+                    last_rev = rev
+                    payload = {"rev": int(rev), "ts": datetime.utcnow().isoformat()}
+                    sig = ""
+                    try:
+                        sig = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                    except Exception:
+                        sig = str(payload.get("ts") or "")
+                    if sig and sig != last_sent_sig:
+                        last_sent_sig = sig
+                        data = json.dumps(payload, ensure_ascii=False)
+                        yield f"event: modules\ndata: {data}\n\n"
+
+                now_ms = int(datetime.utcnow().timestamp() * 1000)
+                if (not last_ping_ms) or (now_ms - last_ping_ms >= 15000):
+                    last_ping_ms = now_ms
+                    yield ": ping\n\n"
+        finally:
+            stop.set()
+            try:
+                _push({"type": "stop"})
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/{module_id}/assets")

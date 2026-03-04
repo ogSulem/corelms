@@ -29,6 +29,7 @@ from app.db.session import SessionLocal
 from app.models.module import Module
 from app.models.quiz import Quiz
 from app.services.module_importer import import_module_from_dir
+from app.services.modules import modules_bump_rev, modules_invalidate_storage_cache
 from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job
 from app.services.storage import ensure_bucket_exists, get_s3_client
 
@@ -713,6 +714,16 @@ def import_module_zip_job(
 
                 _set_job_stage(stage="done", detail=f"reused: {existing_mid}")
                 _release_enqueue_locks()
+
+                # Event-driven refresh: module is effectively available (reused).
+                try:
+                    modules_invalidate_storage_cache(module_storage_prefix=f"modules/{str(existing_mid)}/")
+                except Exception:
+                    pass
+                try:
+                    modules_bump_rev(reason="import_reused")
+                except Exception:
+                    pass
                 return {
                     "ok": True,
                     "module_id": str(existing_mid),
@@ -846,6 +857,16 @@ def import_module_zip_job(
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="commit")
             db.commit()
             log.info("import_module_zip_job: commit done module_id=%s", str(mid))
+
+            # Event-driven refresh: storage + DB changed, invalidate caches and bump rev.
+            try:
+                modules_invalidate_storage_cache(module_storage_prefix=str(getattr(m, "storage_prefix", "") or "") or None)
+            except Exception:
+                pass
+            try:
+                modules_bump_rev(reason="import_done")
+            except Exception:
+                pass
 
             # Persist ZIP-content idempotency mapping.
             if sha256:

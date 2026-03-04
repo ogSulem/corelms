@@ -74,6 +74,7 @@ from app.schemas.me import HistoryResponse
 from app.services.learning import LearningService
 from app.core.queue import fetch_job, get_queue
 from app.services.module_import_jobs import import_module_zip_job
+from app.services.modules import modules_bump_rev, modules_invalidate_storage_cache
 from app.services.content_migration_jobs import migrate_legacy_submodule_content_job
 from app.services.module_storage_prefix_jobs import backfill_module_storage_prefix_job
 from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job, regenerate_submodule_quiz_job
@@ -1497,6 +1498,16 @@ async def import_module_zip(
         db.add(stub_module)
         db.flush()
         db.commit()
+
+        # Event-driven refresh: make admin + learners see the stub immediately.
+        try:
+            modules_invalidate_storage_cache(module_storage_prefix=str(getattr(stub_module, "storage_prefix", "") or "") or None)
+        except Exception:
+            pass
+        try:
+            modules_bump_rev(reason="stub_created")
+        except Exception:
+            pass
     except Exception:
         try:
             db.rollback()
@@ -3624,6 +3635,12 @@ def set_module_visibility(
         meta={"module_id": str(m.id), "is_active": bool(target)},
     )
     db.commit()
+
+    # Event-driven refresh for admin + learners.
+    try:
+        modules_bump_rev(reason="visibility")
+    except Exception:
+        pass
     return {"ok": True, "module_id": str(m.id), "is_active": bool(m.is_active)}
 
 

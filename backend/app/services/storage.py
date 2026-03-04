@@ -37,6 +37,36 @@ def _runtime_s3() -> dict[str, str]:
     return out
 
 
+def s3_invalidate_common_prefixes(*, prefix: str, delimiter: str = "/") -> None:
+    pfx = str(prefix or "").strip().lstrip("/")
+    if pfx and (not pfx.endswith(delimiter)):
+        pfx = pfx + delimiter
+
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
+    cache_key = f"s3:common_prefixes:{bucket}:{pfx}:{delimiter}"
+    try:
+        r = get_redis()
+        r.delete(cache_key)
+    except Exception:
+        pass
+
+
+def s3_invalidate_prefix_has_objects(*, prefix: str) -> None:
+    pfx = str(prefix or "").strip().lstrip("/")
+    if not pfx:
+        return
+
+    rt = _runtime_s3()
+    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
+    cache_key = f"s3:prefix_has_objects:{bucket}:{pfx}"
+    try:
+        r = get_redis()
+        r.delete(cache_key)
+    except Exception:
+        pass
+
+
 def _rt_str(rt: dict[str, str], key: str) -> str:
     return str(rt.get(key) or "").strip()
 
