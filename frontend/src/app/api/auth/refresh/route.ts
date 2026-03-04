@@ -7,7 +7,7 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ||
   "http://backend:8000";
 
-export async function POST() {
+export async function POST(req: Request) {
   const cookieStore = await cookies();
   const refresh = cookieStore.get("core_refresh")?.value;
 
@@ -15,7 +15,15 @@ export async function POST() {
     return NextResponse.json({ ok: false, error_code: "not_authenticated" }, { status: 401 });
   }
 
-  const result = await sharedRefresh({ apiBaseUrl: API_BASE_URL, refreshToken: String(refresh || "") });
+  const result = await sharedRefresh({
+    apiBaseUrl: API_BASE_URL,
+    refreshToken: String(refresh || ""),
+    proxyHeaders: {
+      xRealIp: req.headers.get("x-real-ip"),
+      xForwardedFor: req.headers.get("x-forwarded-for"),
+      forwarded: req.headers.get("forwarded"),
+    },
+  });
 
   if (!result.ok) {
     if (result.status === 502) {

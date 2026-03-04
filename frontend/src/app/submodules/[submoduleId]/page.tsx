@@ -447,10 +447,21 @@ export default function SubmodulePage() {
         const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(viewUrl)}`;
         setInlineUrl(officeViewerUrl);
       } else {
-        // Hardening: detect deleted objects in storage before showing broken iframe/video/etc.
-        const pre = await fetch(stream, {
+        // Best practice: use presigned S3 URL (direct browser fetch) to avoid proxying bytes through backend.
+        // Fallback to backend streaming if presign fails.
+        let viewUrl = "";
+        try {
+          viewUrl = await presignViewUrl(a.asset_id);
+        } catch {
+          viewUrl = "";
+        }
+
+        const targetUrl = viewUrl || stream;
+
+        // Hardening: detect missing object before showing broken iframe/video/etc.
+        const pre = await fetch(targetUrl, {
           method: "GET",
-          credentials: "include",
+          credentials: viewUrl ? "omit" : "include",
           headers: { Range: "bytes=0-0" },
         });
         try {
@@ -464,12 +475,14 @@ export default function SubmodulePage() {
           }
           throw new Error(`Не удалось получить файл (код ${pre.status}).`);
         }
-        setInlineUrl(stream);
+
+        setInlineUrl(targetUrl);
       }
 
       if (kind === "text") {
         try {
-          const resp = await fetch(stream, { method: "GET", credentials: "include" });
+          const viewUrl = await presignViewUrl(a.asset_id);
+          const resp = await fetch(viewUrl, { method: "GET", credentials: "omit" });
           if (!resp.ok) {
             if (resp.status === 404) {
               throw new Error("Файл удалён из хранилища (404). Переимпортируйте модуль или загрузите файл заново.");

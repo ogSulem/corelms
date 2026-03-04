@@ -14,6 +14,7 @@ export async function sharedRefresh(
   args: {
     apiBaseUrl: string;
     refreshToken: string;
+    proxyHeaders?: { xRealIp?: string | null; xForwardedFor?: string | null; forwarded?: string | null };
   },
 ): Promise<RefreshOk | RefreshFail> {
   const rt = String(args.refreshToken || "").trim();
@@ -22,10 +23,17 @@ export async function sharedRefresh(
   const run = async (): Promise<RefreshOk | RefreshFail> => {
     let res: Response;
     try {
+      const headers = new Headers({ Authorization: `Bearer ${rt}` });
+      const xri = args.proxyHeaders?.xRealIp;
+      const xff = args.proxyHeaders?.xForwardedFor;
+      const fwd = args.proxyHeaders?.forwarded;
+      if (xri) headers.set("x-real-ip", xri);
+      if (xff) headers.set("x-forwarded-for", xff);
+      if (fwd) headers.set("forwarded", fwd);
       res = await fetch(`${args.apiBaseUrl}/auth/refresh`, {
         method: "POST",
         cache: "no-store",
-        headers: { Authorization: `Bearer ${rt}` },
+        headers,
       });
     } catch {
       return { ok: false, status: 502 };

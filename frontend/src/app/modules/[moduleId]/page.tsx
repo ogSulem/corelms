@@ -439,11 +439,22 @@ export default function ModulePage() {
       return;
     }
 
+    // Best practice: use presigned S3 URL (direct browser fetch) to avoid proxying bytes through backend.
+    // Fallback to backend streaming if presign fails.
+    let viewUrl = "";
+    try {
+      viewUrl = await presignViewUrl(a.asset_id);
+    } catch {
+      viewUrl = "";
+    }
+
+    const targetUrl = viewUrl || stream;
+
     // Hardening: detect deleted objects in storage before showing broken iframe/video/etc.
     try {
-      const pre = await fetch(stream, {
+      const pre = await fetch(targetUrl, {
         method: "GET",
-        credentials: "include",
+        credentials: viewUrl ? "omit" : "include",
         headers: { Range: "bytes=0-0" },
       });
       try {
@@ -462,7 +473,7 @@ export default function ModulePage() {
     }
 
     if (kind === "text") {
-      const res = await fetch(stream, { credentials: "include" });
+      const res = await fetch(targetUrl, { credentials: viewUrl ? "omit" : "include" });
       if (!res.ok) {
         if (res.status === 404) {
           throw new Error("Файл удалён из хранилища (404). Переимпортируйте модуль или загрузите файл заново.");
@@ -475,7 +486,7 @@ export default function ModulePage() {
       setInlineText(null);
     }
 
-    setInlineUrl(stream);
+    setInlineUrl(targetUrl);
 
     // Auto-scroll to preview for non-media files to keep focus on content
     if (!isMedia && typeof window !== "undefined") {

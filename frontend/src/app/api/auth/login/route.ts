@@ -23,10 +23,17 @@ export async function POST(req: Request) {
 
   let res: Response;
   try {
+    const headers = new Headers({ "Content-Type": "application/x-www-form-urlencoded" });
+    const xri = req.headers.get("x-real-ip");
+    const xff = req.headers.get("x-forwarded-for");
+    const fwd = req.headers.get("forwarded");
+    if (xri) headers.set("x-real-ip", xri);
+    if (xff) headers.set("x-forwarded-for", xff);
+    if (fwd) headers.set("forwarded", fwd);
     res = await fetch(`${API_BASE_URL}/auth/token`, {
       method: "POST",
       body: form,
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers,
       cache: "no-store",
     });
   } catch {

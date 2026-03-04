@@ -17,8 +17,7 @@ CoreLMS — система обучения и контроля квалифик
 - **`frontend/`** — Next.js приложение (UI + server routes `/api/*`)
 - **`backend/`** — FastAPI приложение (API, воркеры RQ, миграции Alembic)
 - **`nginx/`** — локальный ingress (reverse proxy в docker-compose)
-- **`docker-compose.yml`** — локальный запуск (nginx -> frontend -> backend)
-- **`docker-compose.vps.yml`** — запуск на VPS (Caddy -> frontend/backend)
+- **`docker-compose.yml`** — запуск (локально/VPS) + profiles (`dev`, `tls`)
 - **`.env.example`** — шаблон переменных окружения
 
 ## Архитектура
@@ -79,6 +78,12 @@ docker compose up --build
 - API из браузера: `http://127.0.0.1:${NGINX_HTTP_PORT:-80}/api/*`
 
 По умолчанию `backend` и `frontend` не публикуют 8000/3000 на хост (они доступны внутри docker-сети). Наружу публикуется только `nginx`.
+
+Если нужно открыть прямой доступ к сервисам для отладки (локально), используй профиль `dev`:
+
+```bash
+docker compose --profile dev up -d --build
+```
 
 ### Полезные команды
 
@@ -177,14 +182,9 @@ python -m pytest -q
 
 ## Деплой на VPS (как сайт)
 
-В репозитории есть отдельная схема для VPS:
-
-- `docker-compose.vps.yml`
-- `Caddyfile`
-
 Принцип:
 
-- наружу открыты только **80/443** (reverse proxy)
+- наружу открыт только ingress (nginx по `NGINX_HTTP_PORT`, либо Caddy на **80/443**)
 - Postgres/Redis/backend/frontend/workers работают внутри docker-сети
 
 ### Запуск
@@ -194,7 +194,7 @@ python -m pytest -q
 2) Запусти:
 
 ```bash
-docker compose -f docker-compose.vps.yml up --build -d
+docker compose up -d --build
 ```
 
 Открыть:
@@ -204,8 +204,17 @@ docker compose -f docker-compose.vps.yml up --build -d
 
 ### HTTPS
 
-Сейчас `Caddyfile` настроен для работы по IP (HTTP на 80).
-Когда появится домен — включи HTTPS в Caddy и укажи домен в `PUBLIC_APP_URL`/`CORS_ALLOW_ORIGINS`.
+Для HTTPS (Caddy) используй профиль `tls`:
+
+```bash
+docker compose --profile tls up -d --build
+```
+
+И укажи:
+
+- `CADDY_DOMAIN`
+- `CADDY_EMAIL`
+- `PUBLIC_APP_URL` / `CORS_ALLOW_ORIGINS` (должны совпадать с доменом)
 
 ## Перенос данных (локально -> VPS)
 
@@ -220,7 +229,7 @@ docker compose exec -T postgres pg_dump -U sdlp -d sdlp -Fc > backup.dump
 На VPS:
 
 ```bash
-cat backup.dump | docker compose -f docker-compose.vps.yml exec -T postgres pg_restore -U sdlp -d sdlp --clean --if-exists
+cat backup.dump | docker compose exec -T postgres pg_restore -U sdlp -d sdlp --clean --if-exists
 ```
 
 ### Контент (S3)

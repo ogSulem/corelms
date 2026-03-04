@@ -7,7 +7,7 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ||
   "http://backend:8000";
 
-export async function GET() {
+export async function GET(req: Request) {
   const cookieStore = await cookies();
   const token = cookieStore.get("core_token")?.value;
   const refresh = cookieStore.get("core_refresh")?.value;
@@ -28,7 +28,15 @@ export async function GET() {
   > {
     const rt = String(refresh || "").trim();
     if (!rt) return null;
-    const r = await sharedRefresh({ apiBaseUrl: API_BASE_URL, refreshToken: rt });
+    const r = await sharedRefresh({
+      apiBaseUrl: API_BASE_URL,
+      refreshToken: rt,
+      proxyHeaders: {
+        xRealIp: req.headers.get("x-real-ip"),
+        xForwardedFor: req.headers.get("x-forwarded-for"),
+        forwarded: req.headers.get("forwarded"),
+      },
+    });
     if (!r.ok) return null;
     const expiresIn = Number.isFinite(Number(r.expiresIn)) ? Number(r.expiresIn) : undefined;
     const refreshExpiresIn = Number.isFinite(Number(r.refreshExpiresIn)) ? Number(r.refreshExpiresIn) : undefined;
@@ -82,9 +90,16 @@ export async function GET() {
     const at = String(accessToken || "").trim();
     if (!at) return null;
     try {
+      const headers = new Headers({ Authorization: `Bearer ${at}` });
+      const xri = req.headers.get("x-real-ip");
+      const xff = req.headers.get("x-forwarded-for");
+      const fwd = req.headers.get("forwarded");
+      if (xri) headers.set("x-real-ip", xri);
+      if (xff) headers.set("x-forwarded-for", xff);
+      if (fwd) headers.set("forwarded", fwd);
       return await fetch(`${API_BASE_URL}/auth/me`, {
         cache: "no-store",
-        headers: { Authorization: `Bearer ${at}` },
+        headers,
       });
     } catch {
       return null;

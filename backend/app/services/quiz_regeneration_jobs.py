@@ -24,6 +24,29 @@ from app.core.redis_client import get_redis
 log = logging.getLogger(__name__)
 
 
+def _skip_reason_for_submodule(*, sub: Submodule, text: str) -> str | None:
+    try:
+        if bool(getattr(sub, "is_folder", False)):
+            return "folder_lesson"
+    except Exception:
+        pass
+
+    try:
+        obj_key = str(getattr(sub, "content_object_key", None) or "").strip()
+    except Exception:
+        obj_key = ""
+
+    useful_text = bool(is_useful_quiz_text(str(text or "")))
+    if not useful_text:
+        # If the lesson points to a file in storage, it's usually a file-only lesson.
+        # Those should be skipped deterministically (otherwise regen tries to generate from empty placeholders).
+        if obj_key:
+            return "file_lesson"
+        return "no_text"
+
+    return None
+
+
 def _regen_ckpt_key(*, module_id: str) -> str:
     mid = str(module_id or "").strip()
     return f"admin:regen_checkpoint:module:{mid}" if mid else "admin:regen_checkpoint:module:"
@@ -479,10 +502,10 @@ def regenerate_submodule_quiz_job(
             # Keep prompts small for speed and to reduce LLM latency.
             text = text[:8000]
 
-            useful_text = bool(is_useful_quiz_text(text))
-            if not useful_text:
-                _set_job_stage(stage="skip", detail=f"SKIP: {title} · no_text")
-                _job_heartbeat(detail=f"SKIP: {title} · no_text")
+            skip_reason = _skip_reason_for_submodule(sub=sub, text=text)
+            if skip_reason:
+                _set_job_stage(stage="skip", detail=f"SKIP: {title} · {skip_reason}")
+                _job_heartbeat(detail=f"SKIP: {title} · {skip_reason}")
                 try:
                     _persist_llm_debug(
                         entry={
@@ -492,17 +515,17 @@ def regenerate_submodule_quiz_job(
                             "submodule_id": str(sub.id),
                             "submodule_title": str(title),
                             "provider": "skip",
-                            "skip_reason": "no_text",
+                            "skip_reason": str(skip_reason),
                             "target_questions": int(tq),
                         }
                     )
                 except Exception:
                     pass
-                _set_job_stage(stage="done", detail="skipped:no_text")
+                _set_job_stage(stage="done", detail=f"skipped:{skip_reason}")
                 return {
                     "ok": True,
                     "skipped": True,
-                    "skip_reason": "no_text",
+                    "skip_reason": str(skip_reason),
                     "module_id": str(m.id),
                     "submodule_id": str(sub.id),
                 }
@@ -833,10 +856,9 @@ def regenerate_module_quizzes_job(
             for _sub in list(subs_all or []):
                 try:
                     _text = str(getattr(_sub, "content", "") or "")
-                    _useful = bool(is_useful_quiz_text(_text))
-                    # If there is no meaningful text, we cannot generate a quiz (even if requires_quiz is True).
-                    # Count only lessons with useful text for progress and UX consistency.
-                    if _useful:
+                    _skip_reason = _skip_reason_for_submodule(sub=_sub, text=_text)
+                    # Count only lessons that we will actually process.
+                    if not _skip_reason:
                         effective_total += 1
                 except Exception:
                     effective_total += 1
@@ -911,12 +933,10 @@ def regenerate_module_quizzes_job(
             requires_quiz = bool(getattr(sub, "requires_quiz", True))
             useful_text = bool(is_useful_quiz_text(text))
 
-            # Hard rule: no text => no quiz generation.
-            # Some imports mark file-only lessons as requires_quiz=True by default.
-            # We must skip them, otherwise regen burns time on empty prompts and looks "stuck".
-            if not useful_text:
-                _set_job_stage(stage="skip", detail=f"SKIP: {title} · no_text")
-                _job_heartbeat(detail=f"SKIP: {title} · no_text")
+            skip_reason = _skip_reason_for_submodule(sub=sub, text=text)
+            if skip_reason:
+                _set_job_stage(stage="skip", detail=f"SKIP: {title} · {skip_reason}")
+                _job_heartbeat(detail=f"SKIP: {title} · {skip_reason}")
                 try:
                     _persist_llm_debug(
                         entry={
@@ -926,7 +946,7 @@ def regenerate_module_quizzes_job(
                             "submodule_id": str(sub.id),
                             "submodule_title": str(title),
                             "provider": "skip",
-                            "skip_reason": "no_text",
+                            "skip_reason": str(skip_reason),
                         }
                     )
                 except Exception:

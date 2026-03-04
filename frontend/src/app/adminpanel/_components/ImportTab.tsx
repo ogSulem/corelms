@@ -387,6 +387,32 @@ export default function ImportTab(props: ImportTabProps) {
       // ignore
     }
 
+    const normalizeTitle = (v: string): string => {
+      let s = String(v || "").trim().toLowerCase();
+      if (!s) return "";
+      s = s.replace(/\.zip$/i, "");
+      s = s.replace(/\s+/g, " ");
+      // Strip typical hash-like suffixes in filenames:
+      // - "module-<hash>", "module_<hash>", "module (<hash>)", "module__<hash>"
+      s = s.replace(/\s*\(?[0-9a-f]{6,64}\)?\s*$/i, "");
+      s = s.replace(/[-_]+[0-9a-f]{6,64}$/i, "");
+      s = s.replace(/\s*__\s*[0-9a-f]{6,64}$/i, "");
+      s = s.replace(/[\[\]().,]+/g, " ");
+      s = s.replace(/[-_]+/g, " ");
+      s = s.replace(/\s+/g, " ").trim();
+      return s;
+    };
+
+    const existingTitles = new Set<string>();
+    try {
+      for (const m of adminModules || []) {
+        const t = normalizeTitle(String((m as any)?.title || ""));
+        if (t) existingTitles.add(t);
+      }
+    } catch {
+      // ignore
+    }
+
     const items = storageUploads || [];
 
     const naturalParts = (s: string): (string | number)[] => {
@@ -441,6 +467,8 @@ export default function ImportTab(props: ImportTabProps) {
         if (!lower.includes(".zip")) return null;
 
         const name = displayNameForKey(key) || key;
+        const inferredTitle = normalizeTitle(name);
+        if (inferredTitle && existingTitles.has(inferredTitle)) return null;
         const size = typeof it.size === "number" ? Number(it.size) : Number(it.size || 0);
         const lmRaw = (it as any)?.last_modified;
         const lm = lmRaw ? String(lmRaw) : "";
