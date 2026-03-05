@@ -143,6 +143,7 @@ services:
       context: ./frontend
       args:
         NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://backend:8000}
+        NEXT_PUBLIC_QUICKSTART_ASSET_ID: ${NEXT_PUBLIC_QUICKSTART_ASSET_ID:-}
     depends_on:
       backend:
         condition: service_healthy
@@ -151,6 +152,7 @@ services:
       - ./.env
     environment:
       - NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL:-http://backend:8000}
+      - NEXT_PUBLIC_QUICKSTART_ASSET_ID=${NEXT_PUBLIC_QUICKSTART_ASSET_ID:-}
       - CORE_INTERNAL_API_BASE_URL=${CORE_INTERNAL_API_BASE_URL:-http://backend:8000}
       - JWT_ACCESS_TOKEN_MINUTES=${JWT_ACCESS_TOKEN_MINUTES:-60}
       - COOKIE_SECURE=${COOKIE_SECURE:-false}

@@ -12,6 +12,7 @@ interface ModulesTabProps {
   adminModules: AdminModuleItem[];
   adminModulesLoading: boolean;
   loadAdminModules: () => Promise<void>;
+  reconcileModulesStorage: () => Promise<void>;
   selectedAdminModuleId: string;
   setSelectedAdminModuleId: (id: string) => void;
   selectedAdminModule: AdminModuleItem | null;
@@ -51,6 +52,7 @@ export function ModulesTab(props: ModulesTabProps) {
     adminModules,
     adminModulesLoading,
     loadAdminModules,
+    reconcileModulesStorage,
     selectedAdminModuleId,
     setSelectedAdminModuleId,
     selectedAdminModule,
@@ -119,33 +121,54 @@ export function ModulesTab(props: ModulesTabProps) {
     <div className="mt-8 space-y-6">
       <div className="grid gap-6 lg:grid-cols-12 items-start min-w-0">
         <div className="lg:col-span-4 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10 min-w-0">
-          <div className="flex items-end justify-between gap-6">
-            <div>
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0">
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">МОДУЛИ</div>
               <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">СПИСОК</div>
             </div>
-            <Button
-              variant="ghost"
-              className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-              disabled={adminModulesLoading}
-              onClick={() => void loadAdminModules()}
-            >
-              {adminModulesLoading ? "..." : "ОБНОВИТЬ"}
-            </Button>
-            {storageOrphansCount > 0 && (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button
+                variant="ghost"
+                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
+                disabled={adminModulesLoading}
+                onClick={() => void loadAdminModules()}
+              >
+                {adminModulesLoading ? "..." : "ОБНОВИТЬ"}
+              </Button>
+              <Button
+                variant="secondary"
+                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
+                disabled={adminModulesLoading}
+                onClick={() => void reconcileModulesStorage()}
+              >
+                СИНХРОН
+              </Button>
+              {storageOrphansCount > 0 && (
               <Button
                 variant="destructive"
-                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px] ml-2"
+                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
                 disabled={isStorageScanning}
                 onClick={() => void purgeOrphanStorage()}
               >
                 {isStorageScanning ? "..." : `ОЧИСТИТЬ МУСОР (${storageOrphansCount})`}
               </Button>
             )}
+            </div>
           </div>
 
           <div className="mt-5 grid gap-1.5 max-h-[520px] overflow-y-auto overflow-x-hidden pr-1 min-w-0">
-            {(adminModules || []).map((m: AdminModuleItem) => {
+            {adminModulesLoading && (!adminModules || adminModules.length === 0) ? (
+              Array.from({ length: 8 }).map((_, idx) => (
+                <div
+                  key={`sk_${idx}`}
+                  className="w-full rounded-2xl border border-zinc-200 bg-white px-3 py-2 animate-pulse"
+                >
+                  <div className="h-3 w-3/4 rounded bg-zinc-200" />
+                  <div className="mt-2 h-2 w-1/3 rounded bg-zinc-100" />
+                </div>
+              ))
+            ) : (
+              (adminModules || []).map((m: AdminModuleItem) => {
               const active = String(m.id) === String(selectedAdminModuleId);
               const subtitle = m.is_active ? "АКТИВЕН" : "СКРЫТ";
               return (
@@ -180,7 +203,8 @@ export function ModulesTab(props: ModulesTabProps) {
                   </div>
                 </button>
               );
-            })}
+              })
+            )}
           </div>
         </div>
 

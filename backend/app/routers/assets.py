@@ -35,6 +35,9 @@ def _asset_access_guard(*, db: Session, user: User, aid: uuid.UUID, asset: Conte
     if user.role != UserRole.admin and object_key.startswith("uploads/admin/"):
         raise HTTPException(status_code=403, detail="forbidden")
 
+    if user.role != UserRole.admin and object_key.startswith("uploads/quickstart/"):
+        return None, None
+
     if user.role != UserRole.admin:
         linked_to_active = (
             db.scalar(

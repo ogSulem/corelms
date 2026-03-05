@@ -56,6 +56,11 @@ export default function ForcePasswordChangePage() {
           detail: { title: "Пароль обновлён", description: "Теперь можно продолжить обучение." },
         })
       );
+      try {
+        localStorage.setItem("corelms:quickstart_pending", String(Date.now()));
+      } catch {
+        // ignore
+      }
       router.replace("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Не удалось сменить пароль");

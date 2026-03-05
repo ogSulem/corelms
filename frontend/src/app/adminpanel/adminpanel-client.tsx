@@ -1219,6 +1219,31 @@ export default function AdminPanelClient() {
     await loadAdminModules();
   }
 
+  async function reconcileModulesStorage() {
+    try {
+      setError(null);
+      const res = await apiFetch<any>(`/admin/modules/reconcile`, {
+        method: "POST",
+        body: JSON.stringify({ apply: true }),
+      });
+      const dbCount = Number((res as any)?.db_modules || 0);
+      const s3Count = Number((res as any)?.s3_prefixes || 0);
+      const created = Number((res as any)?.created || 0);
+      const missing = Array.isArray((res as any)?.missing_in_storage) ? (res as any).missing_in_storage.length : 0;
+      const orphan = Array.isArray((res as any)?.orphan_in_storage) ? (res as any).orphan_in_storage.length : 0;
+      setError(`SYNC: DB=${dbCount}, S3=${s3Count}, created=${created}, missing=${missing}, orphan=${orphan}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "SYNC FAILED");
+    } finally {
+      void loadAdminModulesForce();
+      try {
+        void loadStorageUploads(storageUploadsPrefix);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   async function loadSelectedAdminModule() {
     if (!selectedAdminModuleId) {
       setSelectedAdminModuleSubs([]);
@@ -2188,6 +2213,7 @@ export default function AdminPanelClient() {
               adminModules={adminModules}
               adminModulesLoading={adminModulesLoading}
               loadAdminModules={loadAdminModules}
+              reconcileModulesStorage={reconcileModulesStorage}
               selectedAdminModuleId={selectedAdminModuleId}
               setSelectedAdminModuleId={setSelectedAdminModuleId}
               selectedAdminModule={selectedAdminModule}

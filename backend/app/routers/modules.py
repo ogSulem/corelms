@@ -21,7 +21,6 @@ from app.models.user import User
 from app.schemas.modules_overview import ModulesOverviewResponse
 from app.schemas.module import ModulePublic, SubmoduleAssetsResponse, SubmodulePublic
 from app.services.modules import ModuleService
-from app.services.storage import s3_list_common_prefixes, s3_prefix_has_objects
 
 router = APIRouter(prefix="/modules", tags=["modules"])
 
@@ -49,35 +48,6 @@ def modules_overview(db: Session = Depends(get_db), user: User = Depends(get_cur
 @router.get("", response_model=list[ModulePublic])
 def list_modules(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     modules = db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()  # noqa: E712
-
-    # Performance: avoid per-module S3 checks.
-    # List direct prefixes once (cached) and filter by membership.
-    storage_prefixes: set[str] = set()
-    try:
-        storage_prefixes = set(s3_list_common_prefixes(prefix="modules/", delimiter="/"))
-    except Exception:
-        storage_prefixes = set()
-
-    filtered: list[Module] = []
-    for m in modules:
-        mid = str(getattr(m, "id", "") or "")
-        pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{mid}/"
-        if pfx and (not pfx.endswith("/")):
-            pfx = pfx + "/"
-
-        default_pfx = f"modules/{mid}/"
-        ok = False
-        try:
-            if pfx == default_pfx and storage_prefixes:
-                ok = default_pfx in storage_prefixes
-            else:
-                ok = bool(s3_prefix_has_objects(prefix=pfx, bypass_cache=False))
-        except Exception:
-            ok = False
-        if ok:
-            filtered.append(m)
-
-    modules = filtered
     return [
         {
             "id": str(m.id),
@@ -89,73 +59,6 @@ def list_modules(db: Session = Depends(get_db), _: User = Depends(get_current_us
         }
         for m in modules
     ]
-
-
-@router.get("/{module_id}", response_model=ModulePublic)
-def get_module(module_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    m = db.scalar(select(Module).where(Module.id == module_id))
-    if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
-
-    pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{m.id}/"
-    if not s3_prefix_has_objects(prefix=pfx):
-        raise HTTPException(status_code=404, detail="module not found")
-
-    return {
-        "id": str(m.id),
-        "title": m.title,
-        "description": m.description,
-        "difficulty": m.difficulty,
-        "category": m.category,
-        "is_active": m.is_active,
-    }
-
-
-@router.get("/{module_id}/submodules", response_model=list[SubmodulePublic])
-def list_submodules(module_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    rows = db.scalars(select(Submodule).where(Submodule.module_id == module_id).order_by(Submodule.order)).all()
-    return [
-        {
-            "id": str(s.id),
-            "module_id": str(s.module_id),
-            "title": s.title,
-            "order": s.order,
-            "quiz_id": str(s.quiz_id),
-            "requires_quiz": bool(getattr(s, "requires_quiz", True)),
-            "is_folder": bool(getattr(s, "is_folder", False)),
-            "outline_path": str(getattr(s, "outline_path", None)) if getattr(s, "outline_path", None) else None,
-        }
-        for s in rows
-    ]
-
-
-@router.get("/submodules/{submodule_id}/assets", response_model=SubmoduleAssetsResponse)
-def submodule_assets(submodule_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    sub = db.scalar(select(Submodule).where(Submodule.id == submodule_id))
-    if sub is None:
-        raise HTTPException(status_code=404, detail="submodule not found")
-
-    stmt = (
-        select(SubmoduleAssetMap.order, ContentAsset)
-        .join(ContentAsset, ContentAsset.id == SubmoduleAssetMap.asset_id)
-        .where(SubmoduleAssetMap.submodule_id == sub.id)
-        .order_by(SubmoduleAssetMap.order)
-    )
-    rows = db.execute(stmt).all()
-
-    return {
-        "submodule_id": str(sub.id),
-        "assets": [
-            {
-                "asset_id": str(asset.id),
-                "object_key": asset.object_key,
-                "original_filename": asset.original_filename,
-                "mime_type": asset.mime_type,
-                "order": int(order),
-            }
-            for order, asset in rows
-        ],
-    }
 
 
 @router.get("/events")
@@ -275,6 +178,69 @@ async def modules_events(request: Request, _: User = Depends(get_current_user)):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get("/{module_id}", response_model=ModulePublic)
+def get_module(module_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    m = db.scalar(select(Module).where(Module.id == module_id))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    return {
+        "id": str(m.id),
+        "title": m.title,
+        "description": m.description,
+        "difficulty": m.difficulty,
+        "category": m.category,
+        "is_active": m.is_active,
+    }
+
+
+@router.get("/{module_id}/submodules", response_model=list[SubmodulePublic])
+def list_submodules(module_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    rows = db.scalars(select(Submodule).where(Submodule.module_id == module_id).order_by(Submodule.order)).all()
+    return [
+        {
+            "id": str(s.id),
+            "module_id": str(s.module_id),
+            "title": s.title,
+            "order": s.order,
+            "quiz_id": str(s.quiz_id),
+            "requires_quiz": bool(getattr(s, "requires_quiz", True)),
+            "is_folder": bool(getattr(s, "is_folder", False)),
+            "outline_path": str(getattr(s, "outline_path", None)) if getattr(s, "outline_path", None) else None,
+        }
+        for s in rows
+    ]
+
+
+@router.get("/submodules/{submodule_id}/assets", response_model=SubmoduleAssetsResponse)
+def submodule_assets(submodule_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    sub = db.scalar(select(Submodule).where(Submodule.id == submodule_id))
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submodule not found")
+
+    stmt = (
+        select(SubmoduleAssetMap.order, ContentAsset)
+        .join(ContentAsset, ContentAsset.id == SubmoduleAssetMap.asset_id)
+        .where(SubmoduleAssetMap.submodule_id == sub.id)
+        .order_by(SubmoduleAssetMap.order)
+    )
+    rows = db.execute(stmt).all()
+
+    return {
+        "submodule_id": str(sub.id),
+        "assets": [
+            {
+                "asset_id": str(asset.id),
+                "object_key": asset.object_key,
+                "original_filename": asset.original_filename,
+                "mime_type": asset.mime_type,
+                "order": int(order),
+            }
+            for order, asset in rows
+        ],
+    }
 
 
 @router.get("/{module_id}/assets")

@@ -913,6 +913,15 @@ def purge_modules_missing_storage(
             continue
 
     db.commit()
+    # Event-driven refresh: modules list changed.
+    try:
+        modules_invalidate_storage_cache()
+    except Exception:
+        pass
+    try:
+        modules_bump_rev(reason="purge_missing_storage")
+    except Exception:
+        pass
     return {
         "ok": True,
         "dry_run": False,
@@ -1178,6 +1187,15 @@ def maintenance_storage_purge_orphan_module_prefixes(
         meta={"deleted": int(deleted), "scanned": int(len(prefixes))},
     )
     db.commit()
+    # Event-driven refresh: storage changed; make lists refresh.
+    try:
+        modules_invalidate_storage_cache()
+    except Exception:
+        pass
+    try:
+        modules_bump_rev(reason="purge_orphan_storage")
+    except Exception:
+        pass
     return {"ok": True, "dry_run": False, "deleted": int(deleted), "scanned": int(len(prefixes))}
 
 
@@ -1196,6 +1214,7 @@ def maintenance_purge_module_db_only(
         raise HTTPException(status_code=404, detail="module not found")
 
     title = m.title
+    module_storage_prefix = str(getattr(m, "storage_prefix", "") or "").strip() or None
     # We use the same logic but ignore storage errors or just don't care about prefix
     _delete_module_logic(db, m)
 
@@ -1207,6 +1226,16 @@ def maintenance_purge_module_db_only(
         meta={"module_id": str(mid), "module_title": title},
     )
     db.commit()
+
+    # Event-driven refresh: make admin + learners update immediately.
+    try:
+        modules_invalidate_storage_cache(module_storage_prefix=module_storage_prefix)
+    except Exception:
+        pass
+    try:
+        modules_bump_rev(reason="module_deleted")
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -1445,7 +1474,14 @@ async def import_module_zip(
             or 0
         )
         if int(exists) > 0:
-            raise HTTPException(status_code=409, detail="module title already exists")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "MODULE_TITLE_EXISTS",
+                    "error_message": "module title already exists",
+                    "error_hint": "Модуль с таким названием уже есть в платформе.",
+                },
+            )
 
     # Canonical storage key: stable by title/filename (no UUID spam in storage).
     base_for_key = _normalize_import_text(str(effective_title or "").strip() or str(file.filename or "").strip())
@@ -1456,25 +1492,55 @@ async def import_module_zip(
     ensure_bucket_exists()
     s3 = get_s3_client()
 
-    # If the canonical ZIP already exists in storage (e.g., previous upload) and module is absent,
-    # reuse it and just enqueue import+regen.
+    # Hard dedupe: if storage already has module content for this title slug, block import.
+    try:
+        pfxs = s3_list_common_prefixes(prefix="modules/", delimiter="/", bypass_cache=False)
+        for pfx in (pfxs or []):
+            sp = str(pfx or "").strip()
+            if not sp:
+                continue
+            if not sp.endswith("/"):
+                sp = sp + "/"
+            if sp.startswith(f"modules/{safe}__"):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error_code": "MODULE_STORAGE_EXISTS",
+                        "error_message": "module content with same title already exists in storage",
+                        "error_hint": "В хранилище уже есть импортированный модуль с таким названием. Переименуйте модуль и попробуйте снова.",
+                    },
+                )
+    except HTTPException:
+        raise
+    except Exception:
+        # best-effort
+        pass
+
+    # Hard dedupe: if the canonical ZIP already exists, block re-upload/import.
     object_key = canonical_object_key
-    already_in_s3 = False
     try:
         s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
-        already_in_s3 = True
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "IMPORT_ZIP_ALREADY_UPLOADED",
+                "error_message": "zip already uploaded for this module title",
+                "error_hint": "ZIP с таким названием уже загружен. Переименуйте модуль/файл и попробуйте снова.",
+            },
+        )
+    except HTTPException:
+        raise
     except Exception:
-        already_in_s3 = False
+        pass
 
-    if not already_in_s3:
+    try:
         try:
-            try:
-                file.file.seek(0)
-            except Exception:
-                pass
-            s3.put_object(Bucket=settings.s3_bucket, Key=object_key, Body=file.file, ContentType="application/zip")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail="failed to upload zip") from e
+            file.file.seek(0)
+        except Exception:
+            pass
+        s3.put_object(Bucket=settings.s3_bucket, Key=object_key, Body=file.file, ContentType="application/zip")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="failed to upload zip") from e
 
     # Product rule: module should appear immediately in list as hidden while import/regen runs.
     stub_module = None
@@ -3272,6 +3338,11 @@ def create_module(
         actor_user_id=current.id,
         meta={"module_id": str(m.id), "title": m.title},
     )
+    # Event-driven refresh: module exists now.
+    try:
+        modules_bump_rev(reason="module_created")
+    except Exception:
+        pass
     return ModuleCreateResponse(
         id=str(m.id),
         title=str(m.title),
@@ -3426,6 +3497,7 @@ def delete_module(
         raise HTTPException(status_code=404, detail="module not found")
 
     module_title = m.title
+    module_storage_prefix = str(getattr(m, "storage_prefix", "") or "").strip() or None
     _delete_module_logic(db, m)
 
     audit_log(
@@ -3436,6 +3508,15 @@ def delete_module(
         meta={"module_id": str(mid), "module_title": module_title},
     )
     db.commit()
+    # Event-driven refresh: module removed.
+    try:
+        modules_invalidate_storage_cache(module_storage_prefix=module_storage_prefix)
+    except Exception:
+        pass
+    try:
+        modules_bump_rev(reason="module_deleted")
+    except Exception:
+        pass
     return {"ok": True}
 
 
@@ -3446,14 +3527,6 @@ def list_modules_admin(
     _: User = Depends(require_roles(UserRole.admin)),
 ):
     mods = db.scalars(select(Module).order_by(Module.title)).all()
-
-    # Performance: do NOT call S3 per module. List direct prefixes once and check membership.
-    # This makes admin UI fast even with hundreds of modules.
-    storage_prefixes: set[str] = set()
-    try:
-        storage_prefixes = set(s3_list_common_prefixes(prefix="modules/", delimiter="/"))
-    except Exception:
-        storage_prefixes = set()
 
     stats_by_module: dict[str, dict[str, int]] = {}
     needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
@@ -3526,17 +3599,6 @@ def list_modules_admin(
         pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{mid}/"
         if pfx and (not pfx.endswith("/")):
             pfx = pfx + "/"
-        try:
-            # Fast-path: for default convention modules/<id>/ we can use the single listing.
-            # Fallback to cached per-prefix check for custom storage_prefix.
-            storage_ok = False
-            default_pfx = f"modules/{mid}/"
-            if pfx == default_pfx and storage_prefixes:
-                storage_ok = default_pfx in storage_prefixes
-            else:
-                storage_ok = bool(s3_prefix_has_objects(prefix=pfx, bypass_cache=False))
-        except Exception:
-            storage_ok = False
 
         items.append(
             {
@@ -3548,7 +3610,7 @@ def list_modules_admin(
                 "final_quiz_id": str(m.final_quiz_id) if getattr(m, "final_quiz_id", None) else None,
                 "import_object_key": str(getattr(m, "import_object_key", "") or "").strip() or None,
                 "storage_prefix": pfx,
-                "storage_ok": bool(storage_ok),
+                "storage_ok": True,
                 "question_quality": stats_by_module.get(
                     mid,
                     {
@@ -3563,6 +3625,179 @@ def list_modules_admin(
         )
 
     return {"items": items}
+
+
+class ModulesReconcileRequest(BaseModel):
+    apply: bool = False
+
+
+@router.post("/modules/reconcile")
+def reconcile_modules_storage(
+    request: Request,
+    body: ModulesReconcileRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_modules_reconcile", limit=15, window_seconds=60),
+):
+    # DB is authoritative for module presence. Storage reconcile is diagnostic + cache refresh.
+    mods = db.execute(select(Module.id, Module.title, Module.storage_prefix)).all()
+    db_ids: set[str] = set()
+    db_default_prefixes: dict[str, str] = {}
+    db_storage_prefixes: set[str] = set()
+    for mid, title, storage_prefix in (mods or []):
+        sid = str(mid)
+        db_ids.add(sid)
+        pfx = str(storage_prefix or "").strip() or f"modules/{sid}/"
+        if pfx and (not pfx.endswith("/")):
+            pfx = pfx + "/"
+        if pfx:
+            db_storage_prefixes.add(pfx)
+        # Only default convention can be checked via common_prefixes membership.
+        if pfx == f"modules/{sid}/":
+            db_default_prefixes[sid] = pfx
+
+    s3_prefixes: set[str] = set()
+    try:
+        s3_prefixes = set(s3_list_common_prefixes(prefix="modules/", delimiter="/", bypass_cache=True))
+    except Exception:
+        s3_prefixes = set()
+
+    missing_in_storage: list[dict[str, str]] = []
+    try:
+        title_by_id = {str(mid): str(title or "") for mid, title, _ in (mods or [])}
+        for sid, pfx in (db_default_prefixes or {}).items():
+            if pfx not in s3_prefixes:
+                missing_in_storage.append({"module_id": sid, "title": title_by_id.get(sid, ""), "expected_prefix": pfx})
+    except Exception:
+        missing_in_storage = []
+
+    orphan_in_storage: list[dict[str, str]] = []
+    try:
+        known = set(db_storage_prefixes or set())
+        for sid in (db_ids or set()):
+            known.add(f"modules/{sid}/")
+
+        for pfx in sorted(s3_prefixes or set()):
+            sp = str(pfx or "").strip()
+            if not sp:
+                continue
+            if not sp.endswith("/"):
+                sp = sp + "/"
+
+            if sp in known:
+                continue
+
+            module_id = ""
+            kind = "prefix"
+            try:
+                raw = sp.rstrip("/")
+                parts = raw.split("/")
+                if len(parts) >= 2:
+                    cand = parts[-1]
+                    try_id = ""
+                    try:
+                        uuid.UUID(str(cand))
+                        try_id = str(cand)
+                    except Exception:
+                        # Compatibility: some prefixes use slug__<uuid>
+                        if "__" in str(cand):
+                            tail = str(cand).split("__")[-1].strip()
+                            uuid.UUID(str(tail))
+                            try_id = str(tail)
+                    if try_id:
+                        module_id = str(try_id)
+                        kind = "uuid"
+            except Exception:
+                pass
+
+            payload: dict[str, str] = {"storage_prefix": sp, "kind": kind}
+            if module_id:
+                payload["module_id"] = module_id
+            orphan_in_storage.append(payload)
+    except Exception:
+        orphan_in_storage = []
+
+    created: list[dict[str, str]] = []
+    if bool(getattr(body, "apply", False)):
+        try:
+            created_ids: set[str] = set()
+            for it in (orphan_in_storage or []):
+                if str(it.get("kind") or "").strip().lower() != "uuid":
+                    continue
+                sid = str(it.get("module_id") or "").strip()
+                if not sid:
+                    continue
+                if sid in db_ids:
+                    continue
+                if sid in created_ids:
+                    continue
+
+                try:
+                    mid = uuid.UUID(sid)
+                except Exception:
+                    continue
+
+                final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
+                db.add(final_quiz)
+                db.flush()
+
+                m = Module(
+                    id=mid,
+                    title=f"ВОССТАНОВЛЕННЫЙ МОДУЛЬ {sid}",
+                    description=None,
+                    difficulty=1,
+                    category="Обучение",
+                    is_active=False,
+                    storage_prefix=f"modules/{sid}/",
+                    final_quiz_id=final_quiz.id,
+                )
+                db.add(m)
+                db.flush()
+                created_ids.add(sid)
+                created.append({"module_id": sid, "storage_prefix": f"modules/{sid}/"})
+
+            if created_ids:
+                db.commit()
+                db_ids.update(created_ids)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+
+    try:
+        modules_invalidate_storage_cache()
+    except Exception:
+        pass
+    try:
+        modules_bump_rev(reason="reconcile")
+    except Exception:
+        pass
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_modules_reconcile",
+        actor_user_id=current.id,
+        meta={
+            "db_modules": int(len(db_ids)),
+            "s3_prefixes": int(len(s3_prefixes)),
+            "created": int(len(created)),
+            "missing_in_storage": int(len(missing_in_storage)),
+            "orphan_in_storage": int(len(orphan_in_storage)),
+        },
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "db_modules": int(len(db_ids)),
+        "s3_prefixes": int(len(s3_prefixes)),
+        "created": int(len(created)),
+        "created_items": created[:200],
+        "missing_in_storage": missing_in_storage[:200],
+        "orphan_in_storage": orphan_in_storage[:200],
+    }
 
 
 class ModuleVisibilityRequest(BaseModel):

@@ -494,10 +494,14 @@ def presign_get(
     bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = _get_presign_client()
     try:
+        caller_provided_expires = expires_seconds is not None
         cfg = int(getattr(settings, "s3_presign_download_expires_seconds", 0) or 0)
         if cfg > 0:
             expires_seconds = cfg
-        if (getattr(settings, "app_env", "") or "").strip().lower() in {"prod", "production"}:
+        if (
+            not caller_provided_expires
+            and (getattr(settings, "app_env", "") or "").strip().lower() in {"prod", "production"}
+        ):
             expires_seconds = max(60, min(int(expires_seconds), 300))
     except Exception:
         pass

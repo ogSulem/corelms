@@ -13,12 +13,6 @@ from app.models.audit import LearningEvent, LearningEventType
 from app.models.user import User
 
 from app.services.learning import LearningService
-from app.services.storage import (
-    s3_invalidate_common_prefixes,
-    s3_invalidate_prefix_has_objects,
-    s3_list_common_prefixes,
-    s3_prefix_has_objects,
-)
 
 
 def modules_get_rev() -> int:
@@ -79,35 +73,6 @@ class ModuleService:
         Оптимизировано для исключения N+1 запросов.
         """
         modules = self.db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()  # noqa: E712
-
-        # Performance: avoid per-module S3 checks.
-        # We list "modules/<id>/" prefixes once and filter by membership.
-        storage_prefixes: set[str] = set()
-        try:
-            storage_prefixes = set(s3_list_common_prefixes(prefix="modules/", delimiter="/"))
-        except Exception:
-            storage_prefixes = set()
-
-        filtered: list[Module] = []
-        for m in modules:
-            mid = str(getattr(m, "id", "") or "")
-            pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{mid}/"
-            if pfx and (not pfx.endswith("/")):
-                pfx = pfx + "/"
-
-            default_pfx = f"modules/{mid}/"
-            ok = False
-            try:
-                if pfx == default_pfx and storage_prefixes:
-                    ok = default_pfx in storage_prefixes
-                else:
-                    ok = bool(s3_prefix_has_objects(prefix=pfx, bypass_cache=False))
-            except Exception:
-                ok = False
-            if ok:
-                filtered.append(m)
-
-        modules = filtered
         
         if not modules:
             return []

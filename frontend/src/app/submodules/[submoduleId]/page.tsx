@@ -177,6 +177,9 @@ export default function SubmodulePage() {
   const [inlineText, setInlineText] = useState<string | null>(null);
   const [inlineKind, setInlineKind] = useState<InlineKind>("iframe");
 
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const speakActiveRef = useRef(false);
+
   const resultRef = useRef<HTMLDivElement | null>(null);
   const inlineRef = useRef<HTMLDivElement | null>(null);
 
@@ -202,6 +205,156 @@ export default function SubmodulePage() {
   const isFileLesson = useMemo(() => {
     return !requiresQuiz;
   }, [requiresQuiz]);
+
+  const normalizeTheoryText = (raw: string): string => {
+    try {
+      let s = String(raw || "").replace(/\r\n/g, "\n");
+      // If the content is pasted as a single paragraph with inline numbering,
+      // convert common patterns into line breaks so list parsing becomes consistent.
+      // Examples:
+      // ". 1 - item 2 - item" -> ".\n1 - item\n2 - item"
+      s = s.replace(/([.!?])\s+(\d{1,3})\s*[-—]\s+/g, "$1\n$2 - ");
+      s = s.replace(/([.!?])\s+(\d{1,3})\s*[.)]\s+/g, "$1\n$2) ");
+      s = s.replace(/\n\s*(\d{1,3})\s*[-—]\s+/g, "\n$1 - ");
+      s = s.replace(/\n\s*(\d{1,3})\s*[.)]\s+/g, "\n$1) ");
+      s = s.replace(/\s{2,}(\d{1,3})\s*[-—]\s+/g, "\n$1 - ");
+      s = s.replace(/\s{2,}(\d{1,3})\s*[.)]\s+/g, "\n$1) ");
+      return s;
+    } catch {
+      return String(raw || "");
+    }
+  };
+
+  const getSpeakText = (): string => {
+    try {
+      const raw = normalizeTheoryText(String(submodule?.content || ""));
+      const t = raw
+        .replace(/\s+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      return t.length > 12000 ? t.slice(0, 12000) + "…" : t;
+    } catch {
+      return "";
+    }
+  };
+
+  const stopSpeaking = () => {
+    try {
+      speakActiveRef.current = false;
+      if (typeof window !== "undefined" && (window as any).speechSynthesis) {
+        window.speechSynthesis.cancel();
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsSpeaking(false);
+    }
+  };
+
+  const startSpeaking = () => {
+    try {
+      if (typeof window === "undefined") return;
+      const synth = (window as any).speechSynthesis as SpeechSynthesis | undefined;
+      if (!synth) return;
+
+      const text = getSpeakText();
+      if (!text) return;
+
+      synth.cancel();
+      speakActiveRef.current = true;
+      setIsSpeaking(true);
+
+      const pickVoice = (): SpeechSynthesisVoice | null => {
+        try {
+          const voices = synth.getVoices() || [];
+          const ru = voices.filter((v) => String(v.lang || "").toLowerCase().startsWith("ru"));
+          return (ru[0] || voices[0] || null) as any;
+        } catch {
+          return null;
+        }
+      };
+
+      const voice = pickVoice();
+      const parts = text
+        .split(/(?<=[.!?])\s+/)
+        .map((x) => String(x || "").trim())
+        .filter(Boolean);
+
+      const queue: string[] = [];
+      let buf = "";
+      for (const p of parts) {
+        if (!buf) {
+          buf = p;
+          continue;
+        }
+        if ((buf + " " + p).length <= 380) {
+          buf = buf + " " + p;
+        } else {
+          queue.push(buf);
+          buf = p;
+        }
+      }
+      if (buf) queue.push(buf);
+
+      let idx = 0;
+      const speakNext = () => {
+        if (!speakActiveRef.current) return;
+        if (idx >= queue.length) {
+          speakActiveRef.current = false;
+          setIsSpeaking(false);
+          return;
+        }
+        const u = new SpeechSynthesisUtterance(queue[idx]);
+        if (voice) u.voice = voice;
+        u.rate = 1.02;
+        u.pitch = 1;
+        u.onend = () => {
+          idx += 1;
+          speakNext();
+        };
+        u.onerror = () => {
+          speakActiveRef.current = false;
+          setIsSpeaking(false);
+        };
+        try {
+          synth.speak(u);
+        } catch {
+          speakActiveRef.current = false;
+          setIsSpeaking(false);
+        }
+      };
+
+      // Some browsers populate voices asynchronously.
+      try {
+        if (!synth.getVoices().length) {
+          const onVoices = () => {
+            try {
+              (synth as any).removeEventListener?.("voiceschanged", onVoices);
+            } catch {
+              // ignore
+            }
+            speakNext();
+          };
+          (synth as any).addEventListener?.("voiceschanged", onVoices);
+          window.setTimeout(() => speakNext(), 150);
+          return;
+        }
+      } catch {
+        // ignore
+      }
+      speakNext();
+    } catch {
+      stopSpeaking();
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopSpeaking();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function closeInline() {
     setInlineUrl(null);
@@ -743,7 +896,7 @@ export default function SubmodulePage() {
   };
 
   const theoryBlocks = useMemo(() => {
-    const raw = String(submodule?.content || "").replace(/\r\n/g, "\n").trim();
+    const raw = normalizeTheoryText(String(submodule?.content || "")).replace(/\r\n/g, "\n").trim();
     if (!raw) return [] as Array<{ kind: "h" | "p" | "ul"; text?: string; items?: string[] }>;
 
     const lines = raw.split("\n");
@@ -1180,12 +1333,27 @@ export default function SubmodulePage() {
 
 
                 
-                <div className="prose max-w-none">
+                <div className="prose prose-zinc prose-lg max-w-none">
+                  {isFileLesson ? null : (
+                    <div className="not-prose mb-6 flex items-center gap-2">
+                      <Button
+                        variant={isSpeaking ? "secondary" : "outline"}
+                        className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                        onClick={() => (isSpeaking ? stopSpeaking() : startSpeaking())}
+                        disabled={!String(submodule?.content || "").trim()}
+                      >
+                        {isSpeaking ? "СТОП" : "СЛУШАТЬ"}
+                      </Button>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                        {isSpeaking ? "Озвучка" : "Озвучить урок"}
+                      </div>
+                    </div>
+                  )}
                   {isFileLesson ? null : theoryBlocks.length === 0 ? (
                     moduleAssets.length > 0 ? (
                       <div className="space-y-6">
                         {!lessonContentBlocks.length ? (
-                          <div className="whitespace-pre-wrap leading-relaxed text-zinc-700 text-base font-medium selection:bg-[#fe9900]/25">
+                          <div className="whitespace-pre-wrap leading-relaxed text-zinc-700 text-lg font-medium selection:bg-[#fe9900]/25">
                             {submodule?.content || "Загрузка контента..."}
                           </div>
                         ) : (
@@ -1201,7 +1369,7 @@ export default function SubmodulePage() {
                                   {(b.items || []).map((it, i) => (
                                     <div key={i} className="flex items-start gap-3">
                                       <div className="mt-1.5 h-2 w-2 rounded-full bg-[#fe9900]/70 shadow-[0_0_10px_rgba(254,153,0,0.18)]" />
-                                      <div className="min-w-0 text-zinc-700 text-base leading-relaxed">{it}</div>
+                                      <div className="min-w-0 text-zinc-700 text-lg leading-relaxed">{it}</div>
                                     </div>
                                   ))}
                                 </div>
@@ -1211,7 +1379,7 @@ export default function SubmodulePage() {
                                 {b.text}
                               </pre>
                             ) : (
-                              <div key={idx} className="text-zinc-700 text-base leading-relaxed">
+                              <div key={idx} className="text-zinc-700 text-lg leading-relaxed">
                                 {b.text}
                               </div>
                             )
@@ -1221,7 +1389,7 @@ export default function SubmodulePage() {
                     ) : (
                       <div className="space-y-6">
                         {!lessonContentBlocks.length ? (
-                          <div className="whitespace-pre-wrap leading-relaxed text-zinc-700 text-base font-medium selection:bg-[#fe9900]/25">
+                          <div className="whitespace-pre-wrap leading-relaxed text-zinc-700 text-lg font-medium selection:bg-[#fe9900]/25">
                             {submodule?.content || "Загрузка контента..."}
                           </div>
                         ) : (
@@ -1237,7 +1405,7 @@ export default function SubmodulePage() {
                                   {(b.items || []).map((it, i) => (
                                     <div key={i} className="flex items-start gap-3">
                                       <div className="mt-1.5 h-2 w-2 rounded-full bg-[#fe9900]/70 shadow-[0_0_10px_rgba(254,153,0,0.18)]" />
-                                      <div className="min-w-0 text-zinc-700 text-base leading-relaxed">{it}</div>
+                                      <div className="min-w-0 text-zinc-700 text-lg leading-relaxed">{it}</div>
                                     </div>
                                   ))}
                                 </div>
@@ -1247,7 +1415,7 @@ export default function SubmodulePage() {
                                 {b.text}
                               </pre>
                             ) : (
-                              <div key={idx} className="text-zinc-700 text-base leading-relaxed">
+                              <div key={idx} className="text-zinc-700 text-lg leading-relaxed">
                                 {b.text}
                               </div>
                             )
@@ -1269,13 +1437,13 @@ export default function SubmodulePage() {
                               {(b.items || []).map((it, i) => (
                                 <div key={i} className="flex items-start gap-3">
                                   <div className="mt-1.5 h-2 w-2 rounded-full bg-[#fe9900]/70 shadow-[0_0_10px_rgba(254,153,0,0.18)]" />
-                                  <div className="min-w-0 text-zinc-700 text-base leading-relaxed">{it}</div>
+                                  <div className="min-w-0 text-zinc-700 text-lg leading-relaxed">{it}</div>
                                 </div>
                               ))}
                             </div>
                           </div>
                         ) : (
-                          <div key={idx} className="text-zinc-700 text-base leading-relaxed">
+                          <div key={idx} className="text-zinc-700 text-lg leading-relaxed">
                             {b.text}
                           </div>
                         )

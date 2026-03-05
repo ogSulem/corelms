@@ -15,6 +15,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
+  const [quickStartOpen, setQuickStartOpen] = React.useState(false);
+
   const keepAliveInFlightRef = React.useRef(false);
   const lastKeepAliveAtRef = React.useRef(0);
   const keepAliveTimerRef = React.useRef<any>(null);
@@ -114,8 +116,102 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     router.replace("/force-password-change");
   }, [loading, user, pathname, router]);
 
+  React.useEffect(() => {
+    if (loading) return;
+    if (!authenticated) return;
+    if (!user) return;
+    if (user.must_change_password) return;
+    if (pathname === "/force-password-change") return;
+
+    try {
+      const pending = String(localStorage.getItem("corelms:quickstart_pending") || "").trim();
+      if (!pending) return;
+      const dismissed = String(localStorage.getItem("corelms:quickstart_dismissed_v1") || "").trim();
+      if (dismissed) {
+        try {
+          localStorage.removeItem("corelms:quickstart_pending");
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      setQuickStartOpen(true);
+    } catch {
+      // ignore
+    }
+  }, [loading, authenticated, user, pathname]);
+
+  const closeQuickStart = () => {
+    try {
+      localStorage.setItem("corelms:quickstart_dismissed_v1", String(Date.now()));
+      localStorage.removeItem("corelms:quickstart_pending");
+    } catch {
+      // ignore
+    }
+    setQuickStartOpen(false);
+  };
+
+  const quickStartAssetId = String(process.env.NEXT_PUBLIC_QUICKSTART_ASSET_ID || "").trim();
+  const quickStartVideoUrlRaw = (process.env.NEXT_PUBLIC_QUICKSTART_VIDEO_URL || "").trim();
+  const quickStartVideoUrl = quickStartAssetId ? `/api/backend/assets/${encodeURIComponent(quickStartAssetId)}/stream` : quickStartVideoUrlRaw;
+  const isYouTube = !quickStartAssetId && /youtube\.com|youtu\.be/i.test(quickStartVideoUrl);
+
   return (
     <div className="min-h-screen">
+      {quickStartOpen ? (
+        <div className="fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm" onClick={closeQuickStart} />
+          <div className="absolute inset-0 flex items-center justify-center p-6">
+            <div className="w-full max-w-3xl overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-2xl shadow-zinc-950/30">
+              <div className="flex items-center justify-between gap-4 border-b border-zinc-200 px-6 py-4">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Быстрый старт</div>
+                  <div className="mt-1 text-xl font-black tracking-tight text-zinc-950">Как начать обучение</div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  onClick={closeQuickStart}
+                >
+                  Пропустить
+                </Button>
+              </div>
+
+              <div className="bg-zinc-950">
+                {quickStartVideoUrl ? (
+                  isYouTube ? (
+                    <iframe
+                      className="block aspect-video w-full"
+                      src={quickStartVideoUrl}
+                      title="Быстрый старт"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    />
+                  ) : (
+                    <video className="block aspect-video w-full" src={quickStartVideoUrl} controls autoPlay playsInline />
+                  )
+                ) : (
+                  <div className="flex aspect-video w-full items-center justify-center p-10 text-center">
+                    <div className="max-w-md text-sm font-bold text-white/80">
+                      Добавь видео в переменную окружения
+                      <div className="mt-2 text-xs font-mono text-white/70">NEXT_PUBLIC_QUICKSTART_VIDEO_URL</div>
+                      <div className="mt-2 text-xs font-mono text-white/70">NEXT_PUBLIC_QUICKSTART_ASSET_ID</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-3 px-6 py-4">
+                <Button className="rounded-xl font-black uppercase tracking-widest text-[10px]" onClick={closeQuickStart}>
+                  Понятно
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <header className="sticky top-0 z-20 border-b border-zinc-200/80 bg-white/80 backdrop-blur-xl shadow-sm shadow-zinc-950/5">
         <div className="mx-auto grid max-w-6xl grid-cols-3 items-center px-6 py-4">
           <div className="flex items-center justify-start gap-8">
