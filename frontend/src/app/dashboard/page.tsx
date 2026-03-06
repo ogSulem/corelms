@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AppShell } from "@/components/app/shell";
 import { InsightCard } from "@/components/app/insight-card";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ContinueCard } from "@/app/dashboard/continue-card";
 import { apiFetch } from "@/lib/api";
@@ -116,7 +117,33 @@ export default function DashboardPage() {
         {/* Top Section: Profile & Quote */}
         <div className="grid lg:grid-cols-12 gap-6 items-end mb-8">
           <div className="lg:col-span-7">
-            
+            <div className="mb-4">
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-2xl border-[#fe9900]/35 bg-[#fe9900]/10 hover:bg-[#fe9900]/15 hover:border-[#fe9900]/45 text-zinc-950 gap-2"
+                onClick={() => window.dispatchEvent(new CustomEvent("corelms:open-quickstart"))}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path
+                    d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10Z"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path
+                    d="M9.3 9.4a2.8 2.8 0 1 1 4.3 2.4c-.9.6-1.6 1.3-1.6 2.2v.3"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M12 17.8h.01" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                </svg>
+                <span>Быстрый старт</span>
+              </Button>
+            </div>
             <h1 className="text-6xl font-black tracking-tighter text-zinc-950 leading-none uppercase">
               {user?.name ? user.name.split(' ')[0] : "TEAM"}
             </h1>

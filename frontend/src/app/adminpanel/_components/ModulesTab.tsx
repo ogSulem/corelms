@@ -126,33 +126,17 @@ export function ModulesTab(props: ModulesTabProps) {
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">МОДУЛИ</div>
               <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">СПИСОК</div>
             </div>
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="mt-3 w-full overflow-x-auto">
+              <div className="flex flex-nowrap items-center justify-start gap-2">
               <Button
                 variant="ghost"
-                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
+                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
                 disabled={adminModulesLoading}
                 onClick={() => void loadAdminModules()}
               >
                 {adminModulesLoading ? "..." : "ОБНОВИТЬ"}
               </Button>
-              <Button
-                variant="secondary"
-                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                disabled={adminModulesLoading}
-                onClick={() => void reconcileModulesStorage()}
-              >
-                СИНХРОН
-              </Button>
-              {storageOrphansCount > 0 && (
-              <Button
-                variant="destructive"
-                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                disabled={isStorageScanning}
-                onClick={() => void purgeOrphanStorage()}
-              >
-                {isStorageScanning ? "..." : `ОЧИСТИТЬ МУСОР (${storageOrphansCount})`}
-              </Button>
-            )}
+              </div>
             </div>
           </div>
 

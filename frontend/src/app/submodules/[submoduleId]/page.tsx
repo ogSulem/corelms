@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { ChevronLeft, File, FileImage, FileSpreadsheet, FileText, FileVideo } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
@@ -175,9 +177,15 @@ export default function SubmodulePage() {
   const [inlineMime, setInlineMime] = useState<string | null>(null);
   const [inlineName, setInlineName] = useState<string | null>(null);
   const [inlineText, setInlineText] = useState<string | null>(null);
+  const [inlineAssetId, setInlineAssetId] = useState<string | null>(null);
   const [inlineKind, setInlineKind] = useState<InlineKind>("iframe");
 
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isSpeakPaused, setIsSpeakPaused] = useState(false);
+  const [speakRate, setSpeakRate] = useState(1.02);
+  const [speakPitch, setSpeakPitch] = useState(1);
+  const [speakVoiceUri, setSpeakVoiceUri] = useState<string>("");
+  const [availableVoices, setAvailableVoices] = useState<Array<{ voiceURI: string; name: string; lang: string }>>([]);
   const speakActiveRef = useRef(false);
 
   const resultRef = useRef<HTMLDivElement | null>(null);
@@ -225,9 +233,31 @@ export default function SubmodulePage() {
     }
   };
 
+  const stripMarkdownForSpeech = (input: string): string => {
+    try {
+      let s = String(input || "");
+      s = s.replace(/```[\s\S]*?```/g, " ");
+      s = s.replace(/`([^`]+)`/g, "$1");
+      s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "$1");
+      s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1");
+      s = s.replace(/^\s{0,3}#{1,6}\s+/gm, "");
+      s = s.replace(/\*\*([^*]+)\*\*/g, "$1");
+      s = s.replace(/__([^_]+)__/g, "$1");
+      s = s.replace(/\*([^*]+)\*/g, "$1");
+      s = s.replace(/_([^_]+)_/g, "$1");
+      s = s.replace(/^\s*>\s?/gm, "");
+      s = s.replace(/^\s*[-*+]\s+/gm, "");
+      s = s.replace(/^\s*\d+\.?\)\s+/gm, "");
+      s = s.replace(/\|/g, " ");
+      return s;
+    } catch {
+      return String(input || "");
+    }
+  };
+
   const getSpeakText = (): string => {
     try {
-      const raw = normalizeTheoryText(String(submodule?.content || ""));
+      const raw = normalizeTheoryText(stripMarkdownForSpeech(String(submodule?.content || "")));
       const t = raw
         .replace(/\s+\n/g, "\n")
         .replace(/\n{3,}/g, "\n\n")
@@ -239,9 +269,56 @@ export default function SubmodulePage() {
     }
   };
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const synth = (window as any).speechSynthesis as SpeechSynthesis | undefined;
+    if (!synth) return;
+
+    const readVoices = () => {
+      try {
+        const voices = synth.getVoices() || [];
+        const mapped = voices
+          .map((v) => ({ voiceURI: String(v.voiceURI || ""), name: String(v.name || ""), lang: String(v.lang || "") }))
+          .filter((v) => v.voiceURI);
+
+        const allow = ["microsoft dmitry", "microsoft svetlana"];
+        const onlyTwo = mapped.filter((v) => allow.some((a) => v.name.toLowerCase().includes(a)));
+        const finalList = onlyTwo.length ? onlyTwo : mapped;
+        setAvailableVoices(finalList);
+
+        if (!speakVoiceUri && finalList.length) {
+          const preferred =
+            finalList.find((v) => v.name.toLowerCase().includes("microsoft dmitry")) ||
+            finalList.find((v) => v.name.toLowerCase().includes("microsoft svetlana")) ||
+            finalList.find((v) => v.lang.toLowerCase().startsWith("ru")) ||
+            finalList[0] ||
+            { voiceURI: "" };
+          setSpeakVoiceUri(preferred.voiceURI);
+        }
+      } catch {
+        // ignore
+      }
+    };
+
+    readVoices();
+    try {
+      (synth as any).addEventListener?.("voiceschanged", readVoices);
+    } catch {
+      // ignore
+    }
+    return () => {
+      try {
+        (synth as any).removeEventListener?.("voiceschanged", readVoices);
+      } catch {
+        // ignore
+      }
+    };
+  }, [speakVoiceUri]);
+
   const stopSpeaking = () => {
     try {
       speakActiveRef.current = false;
+      setIsSpeakPaused(false);
       if (typeof window !== "undefined" && (window as any).speechSynthesis) {
         window.speechSynthesis.cancel();
       }
@@ -249,6 +326,32 @@ export default function SubmodulePage() {
       // ignore
     } finally {
       setIsSpeaking(false);
+    }
+  };
+
+  const pauseSpeaking = () => {
+    try {
+      if (typeof window === "undefined") return;
+      const synth = (window as any).speechSynthesis as SpeechSynthesis | undefined;
+      if (!synth) return;
+      if (!speakActiveRef.current) return;
+      synth.pause();
+      setIsSpeakPaused(true);
+    } catch {
+      // ignore
+    }
+  };
+
+  const resumeSpeaking = () => {
+    try {
+      if (typeof window === "undefined") return;
+      const synth = (window as any).speechSynthesis as SpeechSynthesis | undefined;
+      if (!synth) return;
+      if (!speakActiveRef.current) return;
+      synth.resume();
+      setIsSpeakPaused(false);
+    } catch {
+      // ignore
     }
   };
 
@@ -264,10 +367,19 @@ export default function SubmodulePage() {
       synth.cancel();
       speakActiveRef.current = true;
       setIsSpeaking(true);
+      setIsSpeakPaused(false);
 
       const pickVoice = (): SpeechSynthesisVoice | null => {
         try {
           const voices = synth.getVoices() || [];
+          const wantedUri = String(speakVoiceUri || "").trim();
+          if (wantedUri) {
+            const exact = voices.find((v) => String(v.voiceURI || "").trim() === wantedUri);
+            if (exact) return exact;
+          }
+          const allow = ["microsoft dmitry", "microsoft svetlana"];
+          const preferred = voices.find((v) => allow.some((a) => String(v.name || "").toLowerCase().includes(a)));
+          if (preferred) return preferred;
           const ru = voices.filter((v) => String(v.lang || "").toLowerCase().startsWith("ru"));
           return (ru[0] || voices[0] || null) as any;
         } catch {
@@ -307,20 +419,22 @@ export default function SubmodulePage() {
         }
         const u = new SpeechSynthesisUtterance(queue[idx]);
         if (voice) u.voice = voice;
-        u.rate = 1.02;
-        u.pitch = 1;
+        u.rate = Math.max(0.7, Math.min(1.3, Number(speakRate || 1)));
+        u.pitch = Math.max(0.7, Math.min(1.3, Number(speakPitch || 1)));
         u.onend = () => {
           idx += 1;
           speakNext();
         };
         u.onerror = () => {
           speakActiveRef.current = false;
+          setIsSpeakPaused(false);
           setIsSpeaking(false);
         };
         try {
           synth.speak(u);
         } catch {
           speakActiveRef.current = false;
+          setIsSpeakPaused(false);
           setIsSpeaking(false);
         }
       };
@@ -361,6 +475,7 @@ export default function SubmodulePage() {
     setInlineMime(null);
     setInlineName(null);
     setInlineText(null);
+    setInlineAssetId(null);
     setInlineKind("iframe");
   }
 
@@ -565,6 +680,13 @@ export default function SubmodulePage() {
     return String((data as any)?.download_url || "").trim();
   }
 
+  async function presignDownloadUrl(assetId: string): Promise<string> {
+    const data = await apiFetch<{ asset_id: string; download_url: string }>(
+      `/assets/${encodeURIComponent(String(assetId || "").trim())}/presign-download?action=download`
+    );
+    return String((data as any)?.download_url || "").trim();
+  }
+
   async function onOpenInline(a: AssetLike) {
     try {
       const stream = streamUrl(a.asset_id);
@@ -572,6 +694,7 @@ export default function SubmodulePage() {
       const anyA = a as any;
       const nm = String(anyA?.original_filename || anyA?.name || "").trim();
       setInlineName(nm || null);
+      setInlineAssetId(String(a.asset_id || "").trim() || null);
 
       const mime = String(a.mime_type || "").toLowerCase();
       const ext = getExtFromName(nm);
@@ -775,6 +898,7 @@ export default function SubmodulePage() {
     setInlineMime(null);
     setInlineName(null);
     setInlineText(null);
+    setInlineAssetId(null);
     setInlineKind("iframe");
     setAssetNavPath([]);
   }, [submoduleId]);
@@ -1259,6 +1383,28 @@ export default function SubmodulePage() {
                   <div ref={inlineRef} className="mb-10 overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-sm">
                     {canInlinePreview ? (
                       <div className="overflow-hidden rounded-2xl bg-white">
+                        {["pdf", "office"].includes(String(inlineKind || "")) ? (
+                          <div className="flex items-center justify-end gap-2 border-b border-zinc-200 bg-white p-4">
+                            <Button
+                              variant="outline"
+                              className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                              onClick={async () => {
+                                const url = await presignDownloadUrl(String(inlineAssetId || "")).catch(() => "");
+                                if (url) window.open(url, "_blank", "noopener,noreferrer");
+                              }}
+                              disabled={!String(inlineAssetId || "").trim()}
+                            >
+                              СКАЧАТЬ
+                            </Button>
+                            <Button
+                              variant="outline"
+                              className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                              onClick={() => window.open(inlineUrl, "_blank", "noopener,noreferrer")}
+                            >
+                              ОТКРЫТЬ В НОВОЙ ВКЛАДКЕ
+                            </Button>
+                          </div>
+                        ) : null}
                         {inlineKind === "video" ? (
                           <video src={inlineUrl} controls className="w-full h-auto bg-black" preload="metadata" />
                         ) : inlineKind === "audio" ? (
@@ -1287,14 +1433,14 @@ export default function SubmodulePage() {
                               <div className="text-xs text-zinc-600 font-medium">Не удалось загрузить текст для предпросмотра.</div>
                             ) : (
                               <div className="space-y-4">
-                                {inlineTextBlocks.map((b, idx) =>
+                                {inlineTextBlocks.map((b: InlineTextBlock, idx: number) =>
                                   b.kind === "h" ? (
                                     <div key={idx} className="text-sm font-black uppercase tracking-widest text-zinc-900">
                                       {b.text}
                                     </div>
                                   ) : b.kind === "ul" ? (
                                     <ul key={idx} className="list-disc pl-5 text-sm text-zinc-800 font-medium space-y-1">
-                                      {(b.items || []).map((it, j) => (
+                                      {(b.items || []).map((it: string, j: number) => (
                                         <li key={j}>{it}</li>
                                       ))}
                                     </ul>
@@ -1333,122 +1479,160 @@ export default function SubmodulePage() {
 
 
                 
-                <div className="prose prose-zinc prose-lg max-w-none">
+                <div className="max-w-none break-words hyphens-auto text-zinc-700 text-[17px] leading-relaxed">
                   {isFileLesson ? null : (
-                    <div className="not-prose mb-6 flex items-center gap-2">
-                      <Button
-                        variant={isSpeaking ? "secondary" : "outline"}
-                        className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                        onClick={() => (isSpeaking ? stopSpeaking() : startSpeaking())}
-                        disabled={!String(submodule?.content || "").trim()}
-                      >
-                        {isSpeaking ? "СТОП" : "СЛУШАТЬ"}
-                      </Button>
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                        {isSpeaking ? "Озвучка" : "Озвучить урок"}
+                    <div className="not-prose mb-6 rounded-2xl border border-zinc-200 bg-white p-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          variant={isSpeaking ? "secondary" : "outline"}
+                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                          onClick={() => (isSpeaking ? stopSpeaking() : startSpeaking())}
+                          disabled={!String(submodule?.content || "").trim()}
+                        >
+                          {isSpeaking ? "СТОП" : "СЛУШАТЬ"}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                          onClick={() => (isSpeakPaused ? resumeSpeaking() : pauseSpeaking())}
+                          disabled={!isSpeaking}
+                        >
+                          {isSpeakPaused ? "ПРОДОЛЖИТЬ" : "ПАУЗА"}
+                        </Button>
+                        <div className="ml-auto text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                          {isSpeaking ? (isSpeakPaused ? "Озвучка (пауза)" : "Озвучка" ) : "Озвучить урок"}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 grid gap-3 md:grid-cols-3">
+                        <div>
+                          <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Голос</div>
+                          {(() => {
+                            const male = availableVoices.find((v: { voiceURI: string; name: string; lang: string }) => v.name.toLowerCase().includes("microsoft dmitry"));
+                            const female = availableVoices.find((v: { voiceURI: string; name: string; lang: string }) => v.name.toLowerCase().includes("microsoft svetlana"));
+                            const hasTwo = Boolean(male?.voiceURI) && Boolean(female?.voiceURI);
+
+                            if (hasTwo) {
+                              return (
+                                <div className="mt-2 grid gap-2">
+                                  <label className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                                    <input
+                                      type="radio"
+                                      name="tts-voice"
+                                      value={male!.voiceURI}
+                                      checked={speakVoiceUri === male!.voiceURI}
+                                      onChange={(e: ChangeEvent<HTMLInputElement>) => setSpeakVoiceUri(String(e.target.value || ""))}
+                                    />
+                                    <div className="text-xs font-black text-zinc-900">Мужской</div>
+                                    <div className="ml-auto text-[11px] font-bold text-zinc-500">Dmitry</div>
+                                  </label>
+
+                                  <label className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                                    <input
+                                      type="radio"
+                                      name="tts-voice"
+                                      value={female!.voiceURI}
+                                      checked={speakVoiceUri === female!.voiceURI}
+                                      onChange={(e: ChangeEvent<HTMLInputElement>) => setSpeakVoiceUri(String(e.target.value || ""))}
+                                    />
+                                    <div className="text-xs font-black text-zinc-900">Женский</div>
+                                    <div className="ml-auto text-[11px] font-bold text-zinc-500">Svetlana</div>
+                                  </label>
+                                </div>
+                              );
+                            }
+
+                            return (
+                              <select
+                                className="mt-1 h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-xs font-bold text-zinc-900"
+                                value={speakVoiceUri}
+                                onChange={(e: ChangeEvent<HTMLSelectElement>) => setSpeakVoiceUri(String(e.target.value || ""))}
+                                disabled={!availableVoices.length}
+                              >
+                                {(availableVoices.length ? availableVoices : [{ voiceURI: "", name: "Системный", lang: "" }]).map((v: { voiceURI: string; name: string; lang: string }) => (
+                                  <option key={v.voiceURI || "sys"} value={v.voiceURI}>
+                                    {v.name}{v.lang ? ` (${v.lang})` : ""}
+                                  </option>
+                                ))}
+                              </select>
+                            );
+                          })()}
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                            <span>Скорость</span>
+                            <span className="text-zinc-700">{Number(speakRate || 1).toFixed(2)}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.7}
+                            max={1.3}
+                            step={0.01}
+                            value={speakRate}
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => setSpeakRate(Number(e.target.value))}
+                            className="mt-2 w-full"
+                          />
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                            <span>Тон</span>
+                            <span className="text-zinc-700">{Number(speakPitch || 1).toFixed(2)}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.7}
+                            max={1.3}
+                            step={0.01}
+                            value={speakPitch}
+                            onChange={(e: ChangeEvent<HTMLInputElement>) => setSpeakPitch(Number(e.target.value))}
+                            className="mt-2 w-full"
+                          />
+                        </div>
                       </div>
                     </div>
                   )}
-                  {isFileLesson ? null : theoryBlocks.length === 0 ? (
-                    moduleAssets.length > 0 ? (
-                      <div className="space-y-6">
-                        {!lessonContentBlocks.length ? (
-                          <div className="whitespace-pre-wrap leading-relaxed text-zinc-700 text-lg font-medium selection:bg-[#fe9900]/25">
-                            {submodule?.content || "Загрузка контента..."}
-                          </div>
-                        ) : (
-                          lessonContentBlocks.map((b, idx) =>
-                            b.kind === "h" ? (
-                              <div key={idx} className="pt-2">
-                                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Раздел</div>
-                                <div className="mt-2 text-2xl font-black tracking-tight text-zinc-950">{b.text}</div>
-                              </div>
-                            ) : b.kind === "ul" ? (
-                              <div key={idx} className="rounded-[24px] border border-zinc-200 bg-white p-6">
-                                <div className="grid gap-3">
-                                  {(b.items || []).map((it, i) => (
-                                    <div key={i} className="flex items-start gap-3">
-                                      <div className="mt-1.5 h-2 w-2 rounded-full bg-[#fe9900]/70 shadow-[0_0_10px_rgba(254,153,0,0.18)]" />
-                                      <div className="min-w-0 text-zinc-700 text-lg leading-relaxed">{it}</div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : b.kind === "pre" ? (
-                              <pre key={idx} className="whitespace-pre-wrap text-xs text-zinc-800 font-mono">
-                                {b.text}
-                              </pre>
-                            ) : (
-                              <div key={idx} className="text-zinc-700 text-lg leading-relaxed">
-                                {b.text}
-                              </div>
-                            )
-                          )
-                        )}
-                      </div>
-                    ) : (
-                      <div className="space-y-6">
-                        {!lessonContentBlocks.length ? (
-                          <div className="whitespace-pre-wrap leading-relaxed text-zinc-700 text-lg font-medium selection:bg-[#fe9900]/25">
-                            {submodule?.content || "Загрузка контента..."}
-                          </div>
-                        ) : (
-                          lessonContentBlocks.map((b, idx) =>
-                            b.kind === "h" ? (
-                              <div key={idx} className="pt-2">
-                                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Раздел</div>
-                                <div className="mt-2 text-2xl font-black tracking-tight text-zinc-950">{b.text}</div>
-                              </div>
-                            ) : b.kind === "ul" ? (
-                              <div key={idx} className="rounded-[24px] border border-zinc-200 bg-white p-6">
-                                <div className="grid gap-3">
-                                  {(b.items || []).map((it, i) => (
-                                    <div key={i} className="flex items-start gap-3">
-                                      <div className="mt-1.5 h-2 w-2 rounded-full bg-[#fe9900]/70 shadow-[0_0_10px_rgba(254,153,0,0.18)]" />
-                                      <div className="min-w-0 text-zinc-700 text-lg leading-relaxed">{it}</div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : b.kind === "pre" ? (
-                              <pre key={idx} className="whitespace-pre-wrap text-xs text-zinc-800 font-mono">
-                                {b.text}
-                              </pre>
-                            ) : (
-                              <div key={idx} className="text-zinc-700 text-lg leading-relaxed">
-                                {b.text}
-                              </div>
-                            )
-                          )
-                        )}
-                      </div>
-                    )
-                  ) : (
-                    <div className="space-y-6">
-                      {theoryBlocks.map((b, idx) =>
-                        b.kind === "h" ? (
-                          <div key={idx} className="pt-2">
-                            <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Раздел</div>
-                            <div className="mt-2 text-2xl font-black tracking-tight text-zinc-950">{b.text}</div>
-                          </div>
-                        ) : b.kind === "ul" ? (
-                          <div key={idx} className="rounded-[24px] border border-zinc-200 bg-white p-6">
-                            <div className="grid gap-3">
-                              {(b.items || []).map((it, i) => (
-                                <div key={i} className="flex items-start gap-3">
-                                  <div className="mt-1.5 h-2 w-2 rounded-full bg-[#fe9900]/70 shadow-[0_0_10px_rgba(254,153,0,0.18)]" />
-                                  <div className="min-w-0 text-zinc-700 text-lg leading-relaxed">{it}</div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          <div key={idx} className="text-zinc-700 text-lg leading-relaxed">
-                            {b.text}
-                          </div>
-                        )
-                      )}
-                    </div>
+                  {isFileLesson ? null : (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        h1: ({ children }: { children?: ReactNode }) => (
+                          <h1 className="mt-8 mb-3 text-2xl font-black tracking-tight text-zinc-950">{children}</h1>
+                        ),
+                        h2: ({ children }: { children?: ReactNode }) => (
+                          <h2 className="mt-7 mb-3 text-xl font-black tracking-tight text-zinc-950">{children}</h2>
+                        ),
+                        h3: ({ children }: { children?: ReactNode }) => (
+                          <h3 className="mt-6 mb-2 text-lg font-black tracking-tight text-zinc-950">{children}</h3>
+                        ),
+                        p: ({ children }: { children?: ReactNode }) => (
+                          <p className="my-3 whitespace-pre-line break-words leading-7">{children}</p>
+                        ),
+                        ul: ({ children }: { children?: ReactNode }) => <ul className="my-3 list-disc pl-6 space-y-2">{children}</ul>,
+                        ol: ({ children }: { children?: ReactNode }) => <ol className="my-3 list-decimal pl-6 space-y-2">{children}</ol>,
+                        li: ({ children }: { children?: ReactNode }) => (
+                          <li className="pl-1 whitespace-pre-line break-words leading-7">{children}</li>
+                        ),
+                        a: ({ children, href }: { children?: ReactNode; href?: string }) => (
+                          <a className="text-[#fe9900] font-bold underline underline-offset-4" href={href} target="_blank" rel="noopener noreferrer">
+                            {children}
+                          </a>
+                        ),
+                        code: ({ children }: { children?: ReactNode }) => (
+                          <code className="rounded-md bg-zinc-100 px-1.5 py-0.5 font-mono text-[0.92em] text-zinc-900">{children}</code>
+                        ),
+                        pre: ({ children }: { children?: ReactNode }) => (
+                          <pre className="my-4 overflow-auto rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-xs leading-relaxed text-zinc-900">{children}</pre>
+                        ),
+                        hr: () => <hr className="my-6 border-zinc-200" />,
+                        blockquote: ({ children }: { children?: ReactNode }) => (
+                          <blockquote className="my-4 rounded-2xl border border-zinc-200 bg-white p-4 text-zinc-800">{children}</blockquote>
+                        ),
+                      }}
+                    >
+                      {String(submodule?.content || "").trim() || "Загрузка контента..."}
+                    </ReactMarkdown>
                   )}
                 </div>
               </div>

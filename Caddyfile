@@ -1,12 +1,31 @@
 {$CADDY_DOMAIN} {
   encode zstd gzip
 
-  @api path /api/* /health/*
-  handle @api {
-    reverse_proxy backend:8000
+  # Next.js API routes must be handled by the frontend container.
+  @next_api path /api/backend/* /api/auth/*
+  handle @next_api {
+    reverse_proxy frontend:3000 {
+      header_up X-Real-IP {remote_host}
+      header_up X-Forwarded-For {remote_host}
+      header_up Forwarded "for={remote_host};proto={scheme};host={host}"
+    }
+  }
+
+  # Backend health endpoints can be proxied directly.
+  @health path /health/*
+  handle @health {
+    reverse_proxy backend:8000 {
+      header_up X-Real-IP {remote_host}
+      header_up X-Forwarded-For {remote_host}
+      header_up Forwarded "for={remote_host};proto={scheme};host={host}"
+    }
   }
 
   handle {
-    reverse_proxy frontend:3000
+    reverse_proxy frontend:3000 {
+      header_up X-Real-IP {remote_host}
+      header_up X-Forwarded-For {remote_host}
+      header_up Forwarded "for={remote_host};proto={scheme};host={host}"
+    }
   }
 }

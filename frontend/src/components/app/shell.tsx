@@ -141,6 +141,12 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     }
   }, [loading, authenticated, user, pathname]);
 
+  React.useEffect(() => {
+    const onOpen = () => setQuickStartOpen(true);
+    window.addEventListener("corelms:open-quickstart", onOpen as EventListener);
+    return () => window.removeEventListener("corelms:open-quickstart", onOpen as EventListener);
+  }, []);
+
   const closeQuickStart = () => {
     try {
       localStorage.setItem("corelms:quickstart_dismissed_v1", String(Date.now()));

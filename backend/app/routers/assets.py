@@ -155,9 +155,6 @@ def presign_download(
     if act not in {"view", "download"}:
         act = "view" if user.role != UserRole.admin else "download"
 
-    if user.role != UserRole.admin and act == "download":
-        raise HTTPException(status_code=403, detail="forbidden")
-
     filename = str(asset.original_filename or "").strip() or "file"
     # Hardening: browsers/PDF viewers may mis-handle Content-Disposition filename* values
     # that contain path separators (e.g. "a/b/c.pdf" -> "%2F" in filename*).

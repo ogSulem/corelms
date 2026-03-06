@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     bootstrap_admin_name: str | None = Field(default=None, validation_alias="BOOTSTRAP_ADMIN_NAME")
     bootstrap_admin_password: str | None = Field(default=None, validation_alias="BOOTSTRAP_ADMIN_PASSWORD")
 
+    quickstart_object_key: str | None = Field(default=None, validation_alias="QUICKSTART_OBJECT_KEY")
+    quickstart_mime_type: str | None = Field(default="video/mp4", validation_alias="QUICKSTART_MIME_TYPE")
+
     database_url: str = Field(validation_alias="DATABASE_URL")
     redis_url: str = Field(validation_alias="REDIS_URL")
 

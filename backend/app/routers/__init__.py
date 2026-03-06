@@ -1,4 +1,4 @@
-from app.routers import admin, assets, auth, health, me, modules, progress, quizzes, submodules
+from app.routers import admin, assets, auth, health, me, modules, progress, quickstart, quizzes, submodules
 
 __all__ = [
     "admin",
@@ -8,6 +8,7 @@ __all__ = [
     "me",
     "modules",
     "progress",
+    "quickstart",
     "quizzes",
     "submodules",
 ]

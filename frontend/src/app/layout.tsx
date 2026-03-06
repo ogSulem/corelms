@@ -1,6 +1,7 @@
 import "./globals.css";
 
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 
 import { ToastHost } from "@/components/ui/toast-host";
 
@@ -8,7 +9,10 @@ export const metadata: Metadata = {
   title: "Каркас Тайги — Контроль квалификации",
   description: "Корпоративная система контроля квалификации сотрудников: обучение, тестирование, прогресс и аудит.",
   icons: {
-    icon: "/icon.png",
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+      { url: "/icon.png", type: "image/png" },
+    ],
     apple: "/icon.png",
   },
 };
@@ -16,7 +20,7 @@ export const metadata: Metadata = {
 export default function RootLayout({
   children,
 }: Readonly<{
-  children: React.ReactNode;
+  children: ReactNode;
 }>) {
   return (
     <html lang="ru">

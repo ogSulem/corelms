@@ -106,6 +106,7 @@ export default function ModulePage() {
   const [inlineMime, setInlineMime] = useState<string | null>(null);
   const [inlineName, setInlineName] = useState<string | null>(null);
   const [inlineText, setInlineText] = useState<string | null>(null);
+  const [inlineAssetId, setInlineAssetId] = useState<string | null>(null);
   const [inlineKind, setInlineKind] = useState<InlineKind>("iframe");
 
   const [submodulePrimaryAssetById, setSubmodulePrimaryAssetById] = useState<Record<string, { original_filename: string; mime_type: string | null } | null>>({});
@@ -206,6 +207,7 @@ export default function ModulePage() {
     setInlineMime(null);
     setInlineName(null);
     setInlineText(null);
+    setInlineAssetId(null);
     setInlineKind("iframe");
     setOutlinePath([]);
     setFolderModalOpen(false);
@@ -379,7 +381,7 @@ export default function ModulePage() {
     setInlineMime(null);
     setInlineName(null);
     setInlineText(null);
-    setInlineKind("iframe");
+    setInlineAssetId(null);
   }
 
   function closeFileModal() {
@@ -398,6 +400,13 @@ export default function ModulePage() {
     return String((data as any)?.download_url || "").trim();
   }
 
+  async function presignDownloadUrl(assetId: string): Promise<string> {
+    const data = await apiFetch<{ asset_id: string; download_url: string }>(
+      `/assets/${encodeURIComponent(String(assetId || "").trim())}/presign-download?action=download`
+    );
+    return String((data as any)?.download_url || "").trim();
+  }
+
   async function onOpenInline(a: AssetLike) {
     try {
       const stream = streamUrl(a.asset_id);
@@ -410,6 +419,7 @@ export default function ModulePage() {
 
       setInlineMime(a.mime_type || null);
       setInlineName(rawName || null);
+      setInlineAssetId(String(a.asset_id || "").trim() || null);
 
     const isOffice = ["doc", "docx", "ppt", "pptx", "xls", "xlsx"].includes(ext);
     const isTextLike = ["csv", "json"].includes(ext);
@@ -1503,6 +1513,16 @@ export default function ModulePage() {
           ) : ["pdf", "office"].includes(String(inlineKind || "")) ? (
             <div>
               <div className="flex items-center justify-end gap-2 p-4">
+                <Button
+                  variant="outline"
+                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                  onClick={async () => {
+                    const url = await presignDownloadUrl(String(inlineAssetId || "")).catch(() => "");
+                    if (url) window.open(url, "_blank", "noopener,noreferrer");
+                  }}
+                >
+                  СКАЧАТЬ
+                </Button>
                 <Button
                   variant="outline"
                   className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
