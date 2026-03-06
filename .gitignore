@@ -66,3 +66,6 @@ frontend/.turbo/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local assets
+quickstart.mp4
