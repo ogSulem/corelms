@@ -552,8 +552,10 @@ export default function SubmodulePage() {
     let paragraph: string[] = [];
     let list: string[] = [];
 
+    const isNumberOnlyLine = (ln: string) => /^\d{1,3}\.$/.test(ln.trim());
     const isListLine = (ln: string) =>
       /^(-|•|\*)\s+/.test(ln) ||
+      /^\d{1,3}\.\s+/.test(ln) ||
       /^\d{1,3}[.)]\s+/.test(ln) ||
       /^\d{1,3}\s*[-—]\s+/.test(ln);
 
@@ -581,6 +583,37 @@ export default function SubmodulePage() {
       if (!ln) {
         flushList();
         flushParagraph();
+        continue;
+      }
+
+      if (isNumberOnlyLine(ln)) {
+        flushParagraph();
+        let j = i + 1;
+        while (j < lines.length && !String(lines[j] || "").trim()) j += 1;
+
+        if (j >= lines.length) {
+          flushList();
+          paragraph.push(ln);
+          continue;
+        }
+
+        const parts: string[] = [];
+        while (j < lines.length) {
+          const t = String(lines[j] || "").trim();
+          if (!t) break;
+          if (isNumberOnlyLine(t) || isListLine(t)) break;
+          parts.push(t);
+          j += 1;
+        }
+
+        if (!parts.length) {
+          flushList();
+          paragraph.push(ln);
+          continue;
+        }
+
+        list.push(parts.join(" ").replace(/\s+/g, " ").trim());
+        i = j - 1;
         continue;
       }
 
@@ -1499,23 +1532,22 @@ export default function SubmodulePage() {
                         >
                           {isSpeakPaused ? "ПРОДОЛЖИТЬ" : "ПАУЗА"}
                         </Button>
-                        <div className="ml-auto text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                          {isSpeaking ? (isSpeakPaused ? "Озвучка (пауза)" : "Озвучка" ) : "Озвучить урок"}
-                        </div>
-                      </div>
 
-                      <div className="mt-3 grid gap-3 md:grid-cols-3">
-                        <div>
-                          <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Голос</div>
-                          {(() => {
-                            const male = availableVoices.find((v: { voiceURI: string; name: string; lang: string }) => v.name.toLowerCase().includes("microsoft dmitry"));
-                            const female = availableVoices.find((v: { voiceURI: string; name: string; lang: string }) => v.name.toLowerCase().includes("microsoft svetlana"));
-                            const hasTwo = Boolean(male?.voiceURI) && Boolean(female?.voiceURI);
+                        {(() => {
+                          const male = availableVoices.find((v: { voiceURI: string; name: string; lang: string }) =>
+                            v.name.toLowerCase().includes("microsoft dmitry"),
+                          );
+                          const female = availableVoices.find((v: { voiceURI: string; name: string; lang: string }) =>
+                            v.name.toLowerCase().includes("microsoft svetlana"),
+                          );
+                          const hasTwo = Boolean(male?.voiceURI) && Boolean(female?.voiceURI);
 
-                            if (hasTwo) {
-                              return (
-                                <div className="mt-2 grid gap-2">
-                                  <label className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                          if (hasTwo) {
+                            return (
+                              <div className="ml-auto flex flex-wrap items-center gap-2">
+                                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Голос</div>
+                                <div className="flex items-center gap-2">
+                                  <label className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2">
                                     <input
                                       type="radio"
                                       name="tts-voice"
@@ -1524,10 +1556,8 @@ export default function SubmodulePage() {
                                       onChange={(e: ChangeEvent<HTMLInputElement>) => setSpeakVoiceUri(String(e.target.value || ""))}
                                     />
                                     <div className="text-xs font-black text-zinc-900">Мужской</div>
-                                    <div className="ml-auto text-[11px] font-bold text-zinc-500">Dmitry</div>
                                   </label>
-
-                                  <label className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                                  <label className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2">
                                     <input
                                       type="radio"
                                       name="tts-voice"
@@ -1536,29 +1566,42 @@ export default function SubmodulePage() {
                                       onChange={(e: ChangeEvent<HTMLInputElement>) => setSpeakVoiceUri(String(e.target.value || ""))}
                                     />
                                     <div className="text-xs font-black text-zinc-900">Женский</div>
-                                    <div className="ml-auto text-[11px] font-bold text-zinc-500">Svetlana</div>
                                   </label>
                                 </div>
-                              );
-                            }
+                                <div className="ml-3 text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                                  {isSpeaking ? (isSpeakPaused ? "Озвучка (пауза)" : "Озвучка") : "Озвучить урок"}
+                                </div>
+                              </div>
+                            );
+                          }
 
-                            return (
+                          return (
+                            <div className="ml-auto flex flex-wrap items-center gap-2">
+                              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Голос</div>
                               <select
-                                className="mt-1 h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-xs font-bold text-zinc-900"
+                                className="h-10 w-[220px] max-w-full rounded-xl border border-zinc-200 bg-white px-3 text-xs font-bold text-zinc-900"
                                 value={speakVoiceUri}
                                 onChange={(e: ChangeEvent<HTMLSelectElement>) => setSpeakVoiceUri(String(e.target.value || ""))}
                                 disabled={!availableVoices.length}
                               >
-                                {(availableVoices.length ? availableVoices : [{ voiceURI: "", name: "Системный", lang: "" }]).map((v: { voiceURI: string; name: string; lang: string }) => (
-                                  <option key={v.voiceURI || "sys"} value={v.voiceURI}>
-                                    {v.name}{v.lang ? ` (${v.lang})` : ""}
-                                  </option>
-                                ))}
+                                {(availableVoices.length ? availableVoices : [{ voiceURI: "", name: "Системный", lang: "" }]).map(
+                                  (v: { voiceURI: string; name: string; lang: string }) => (
+                                    <option key={v.voiceURI || "sys"} value={v.voiceURI}>
+                                      {v.name}
+                                      {v.lang ? ` (${v.lang})` : ""}
+                                    </option>
+                                  ),
+                                )}
                               </select>
-                            );
-                          })()}
-                        </div>
+                              <div className="ml-3 text-[9px] font-black uppercase tracking-widest text-zinc-500">
+                                {isSpeaking ? (isSpeakPaused ? "Озвучка (пауза)" : "Озвучка") : "Озвучить урок"}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
 
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
                         <div>
                           <div className="flex items-center justify-between text-[9px] font-black uppercase tracking-widest text-zinc-500">
                             <span>Скорость</span>
