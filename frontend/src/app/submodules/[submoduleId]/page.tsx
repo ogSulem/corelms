@@ -233,6 +233,64 @@ export default function SubmodulePage() {
     }
   };
 
+  const lessonMarkdownForDisplay = useMemo(() => {
+    try {
+      const raw = String(submodule?.content || "");
+      if (!raw.trim()) return raw;
+
+      const src = normalizeTheoryText(raw)
+        .replace(/\r\n/g, "\n")
+        .replace(/\s+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n");
+
+      const lines = src.split("\n");
+      const out: string[] = [];
+
+      const isNumberOnly = (ln: string) => /^\s*\d{1,3}\.\s*$/.test(String(ln || ""));
+
+      for (let i = 0; i < lines.length; i++) {
+        const ln = String(lines[i] || "");
+        if (!isNumberOnly(ln)) {
+          out.push(ln);
+          continue;
+        }
+
+        const num = String(ln).trim().replace(/\.$/, "");
+
+        let j = i + 1;
+        while (j < lines.length && !String(lines[j] || "").trim()) j += 1;
+
+        const chunk: string[] = [];
+        while (j < lines.length) {
+          const t = String(lines[j] || "");
+          if (!t.trim()) break;
+          if (isNumberOnly(t)) break;
+          chunk.push(t.trim());
+          j += 1;
+        }
+
+        if (!chunk.length) {
+          out.push(`${num}.`);
+          i = j - 1;
+          continue;
+        }
+
+        const title = chunk[0];
+        out.push(`${num}. ${title}`);
+        for (const bodyLine of chunk.slice(1)) {
+          out.push(`   ${bodyLine}`);
+        }
+
+        out.push("");
+        i = j - 1;
+      }
+
+      return out.join("\n").replace(/\n{3,}/g, "\n\n");
+    } catch {
+      return String(submodule?.content || "");
+    }
+  }, [submodule?.content]);
+
   const stripMarkdownForSpeech = (input: string): string => {
     try {
       let s = String(input || "");
@@ -1653,9 +1711,9 @@ export default function SubmodulePage() {
                           <p className="my-3 whitespace-pre-line break-words leading-7">{children}</p>
                         ),
                         ul: ({ children }: { children?: ReactNode }) => <ul className="my-3 list-disc pl-6 space-y-2">{children}</ul>,
-                        ol: ({ children }: { children?: ReactNode }) => <ol className="my-3 list-decimal pl-6 space-y-2">{children}</ol>,
+                        ol: ({ children }: { children?: ReactNode }) => <ol className="my-4 list-decimal pl-8 space-y-4">{children}</ol>,
                         li: ({ children }: { children?: ReactNode }) => (
-                          <li className="pl-1 whitespace-pre-line break-words leading-7">{children}</li>
+                          <li className="pl-1 whitespace-pre-line break-words leading-7 marker:font-black marker:text-zinc-400">{children}</li>
                         ),
                         a: ({ children, href }: { children?: ReactNode; href?: string }) => (
                           <a className="text-[#fe9900] font-bold underline underline-offset-4" href={href} target="_blank" rel="noopener noreferrer">
@@ -1674,7 +1732,7 @@ export default function SubmodulePage() {
                         ),
                       }}
                     >
-                      {String(submodule?.content || "").trim() || "Загрузка контента..."}
+                      {lessonMarkdownForDisplay.trim() || "Загрузка контента..."}
                     </ReactMarkdown>
                   )}
                 </div>
