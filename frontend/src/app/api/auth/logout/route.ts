@@ -12,6 +12,7 @@ export async function POST() {
   const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
     ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
     : isProd;
+  const cookieDomain = String(process.env.COOKIE_DOMAIN || "").trim() || undefined;
   const cookieStore = await cookies();
   const refresh = cookieStore.get("core_refresh")?.value;
   if (refresh) {
@@ -31,6 +32,7 @@ export async function POST() {
     httpOnly: true,
     sameSite: "lax",
     secure: cookieSecure,
+    domain: cookieDomain,
     path: "/",
     maxAge: 0,
     expires: new Date(0),
@@ -42,6 +44,7 @@ export async function POST() {
     httpOnly: true,
     sameSite: "lax",
     secure: cookieSecure,
+    domain: cookieDomain,
     path: "/",
     maxAge: 0,
     expires: new Date(0),

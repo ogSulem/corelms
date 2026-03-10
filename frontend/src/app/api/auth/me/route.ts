@@ -16,6 +16,7 @@ export async function GET(req: Request) {
   const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
     ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
     : isProd;
+  const cookieDomain = String(process.env.COOKIE_DOMAIN || "").trim() || undefined;
 
   async function tryRefresh(): Promise<
     | {
@@ -60,6 +61,7 @@ export async function GET(req: Request) {
       httpOnly: true,
       sameSite: "lax",
       secure: cookieSecure,
+      domain: cookieDomain,
       path: "/",
       maxAge,
       expires,
@@ -78,6 +80,7 @@ export async function GET(req: Request) {
         httpOnly: true,
         sameSite: "lax",
         secure: cookieSecure,
+        domain: cookieDomain,
         path: "/",
         maxAge: refreshMaxAge,
         expires: refreshExpires,
@@ -163,6 +166,7 @@ export async function GET(req: Request) {
       httpOnly: true,
       sameSite: "lax",
       secure: cookieSecure,
+      domain: cookieDomain,
       path: "/",
       maxAge: 0,
       expires: new Date(0),

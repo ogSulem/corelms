@@ -183,7 +183,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
       });
     }
 
-    if (requestId && typeof console !== "undefined") {
+    if (requestId && typeof console !== "undefined" && process.env.NODE_ENV !== "production") {
       console.error(`[corelms] api error request_id=${requestId} status=${res.status} code=${errorCode || ""} path=${clean}`);
     }
 

@@ -59,6 +59,7 @@ export async function POST(req: Request) {
   const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
     ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
     : isProd;
+  const cookieDomain = String(process.env.COOKIE_DOMAIN || "").trim() || undefined;
   const configuredMaxAge = Number.parseInt(process.env.CORE_TOKEN_MAX_AGE_SECONDS || "3600", 10) || 3600;
   const upstreamExpiresIn = Number.isFinite(Number(data.expires_in)) ? Number(data.expires_in) : null;
   const maxAge = upstreamExpiresIn ? Math.min(configuredMaxAge, upstreamExpiresIn) : configuredMaxAge;
@@ -69,6 +70,7 @@ export async function POST(req: Request) {
     httpOnly: true,
     sameSite: "lax",
     secure: cookieSecure,
+    domain: cookieDomain,
     path: "/",
     maxAge,
     expires,
@@ -85,6 +87,7 @@ export async function POST(req: Request) {
       httpOnly: true,
       sameSite: "lax",
       secure: cookieSecure,
+      domain: cookieDomain,
       path: "/",
       maxAge: refreshMaxAge,
       expires: refreshExpires,

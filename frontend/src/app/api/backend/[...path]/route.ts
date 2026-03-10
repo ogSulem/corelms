@@ -7,6 +7,30 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ||
   "http://backend:8000";
 
+function parseAllowedOrigins(): string[] {
+  const out = new Set<string>();
+  const raw = String(process.env.CORS_ALLOW_ORIGINS || "");
+  for (const part of raw.split(",")) {
+    const v = String(part || "").trim();
+    if (v) out.add(v);
+  }
+  const publicUrl = String(process.env.PUBLIC_APP_URL || "").trim();
+  if (publicUrl) {
+    try {
+      out.add(new URL(publicUrl).origin);
+    } catch {
+      // ignore
+    }
+  }
+  return Array.from(out);
+}
+
+function isAllowedOrigin(origin: string, allowed: string[]): boolean {
+  const o = String(origin || "").trim();
+  if (!o) return false;
+  return allowed.includes(o);
+}
+
 function getCookieValue(cookieHeader: string, name: string): string {
   const raw = String(cookieHeader || "");
   if (!raw) return "";
@@ -119,12 +143,14 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
       ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
       : isProd;
+    const cookieDomain = String(process.env.COOKIE_DOMAIN || "").trim() || undefined;
     out.cookies.set({
       name: "core_token",
       value: "",
       httpOnly: true,
       sameSite: "lax",
       secure: cookieSecure,
+      domain: cookieDomain,
       path: "/",
       maxAge: 0,
       expires: new Date(0),
@@ -158,14 +184,20 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ path?: strin
 export async function OPTIONS(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
   // Some environments/browsers may send a preflight even for same-origin requests.
   // Do not forward it to FastAPI (which may return 405 for OPTIONS).
-  const origin = req.headers.get("origin") || "*";
-  const reqHeaders = req.headers.get("access-control-request-headers") || "*";
-  const reqMethod = req.headers.get("access-control-request-method") || "*";
+  const origin = String(req.headers.get("origin") || "").trim();
+  const reqHeaders = String(req.headers.get("access-control-request-headers") || "").trim() || "authorization,content-type";
+  const reqMethod = String(req.headers.get("access-control-request-method") || "").trim() || "GET";
+  const allowedOrigins = parseAllowedOrigins();
+  const allowOrigin = isAllowedOrigin(origin, allowedOrigins) ? origin : "";
   return new NextResponse(null, {
     status: 204,
     headers: {
-      "Access-Control-Allow-Origin": origin,
-      "Access-Control-Allow-Credentials": "true",
+      ...(allowOrigin
+        ? {
+            "Access-Control-Allow-Origin": allowOrigin,
+            "Access-Control-Allow-Credentials": "true",
+          }
+        : {}),
       "Access-Control-Allow-Methods": reqMethod === "*" ? "GET,POST,PUT,PATCH,DELETE,OPTIONS" : reqMethod,
       "Access-Control-Allow-Headers": reqHeaders,
       "Access-Control-Max-Age": "86400",
