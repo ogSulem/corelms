@@ -12,7 +12,9 @@ export function cookieSecure(): boolean {
 
 export function cookieDomain(): string | undefined {
   const v = String(process.env.COOKIE_DOMAIN || "").trim();
-  return v || undefined;
+  if (!v) return undefined;
+  const isAscii = /^[\x00-\x7F]+$/.test(v);
+  return isAscii ? v : undefined;
 }
 
 export function tokenConfiguredMaxAgeSeconds(): number {
