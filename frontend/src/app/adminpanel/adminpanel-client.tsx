@@ -687,6 +687,26 @@ export default function AdminPanelClient() {
       const items = (res?.items || []).map((x) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
       const hist = (res?.history || []).map((x) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
 
+      // If a job is already terminal in history, it must not remain in the active snapshot
+      // (otherwise mergeImportSnapshots may retain an outdated 'started' entry and the UI looks stale).
+      const terminalIds = new Set<string>();
+      try {
+        for (const h of hist) {
+          const jid = String((h as any)?.job_id || (h as any)?.id || "").trim();
+          if (!jid) continue;
+          if (isTerminalJobLike(h)) terminalIds.add(jid);
+        }
+      } catch {
+        // ignore
+      }
+      const filteredItems = terminalIds.size
+        ? items.filter((it) => {
+            const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
+            if (!jid) return true;
+            return !terminalIds.has(jid);
+          })
+        : items;
+
       jobsLog("poll.import", {
         items: items.length,
         history: hist.length,
@@ -695,11 +715,11 @@ export default function AdminPanelClient() {
         workers: Number((res as any)?.workers || 0),
       });
 
-      if (JSON.stringify(items) !== importQueueSigRef.current) {
+      if (JSON.stringify(filteredItems) !== importQueueSigRef.current) {
         setImportQueue((prev: any[]) => {
-          if (shouldIgnoreEmptySnapshot(prev, items, "import", "poll.items")) return prev;
-          importQueueSigRef.current = JSON.stringify(items);
-          return mergeImportSnapshots(prev, items);
+          if (shouldIgnoreEmptySnapshot(prev, filteredItems, "import", "poll.items")) return prev;
+          importQueueSigRef.current = JSON.stringify(filteredItems);
+          return mergeImportSnapshots(prev, filteredItems);
         });
       }
       if (JSON.stringify(hist) !== importQueueHistorySigRef.current) {
@@ -729,6 +749,25 @@ export default function AdminPanelClient() {
       const impItems = (impCurrent ? [impCurrent] : []).concat(impQueue).map((x: any) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
       const impHistory = impHist.map((x: any) => ({ _client_seen_at: now, job_id: String((x as any)?.job_id || (x as any)?.id || ""), ...x }));
 
+      // Prevent stale 'started' import job from being retained in active queue when it is already terminal in history.
+      const importTerminalIds = new Set<string>();
+      try {
+        for (const h of impHistory) {
+          const jid = String((h as any)?.job_id || (h as any)?.id || "").trim();
+          if (!jid) continue;
+          if (isTerminalJobLike(h)) importTerminalIds.add(jid);
+        }
+      } catch {
+        // ignore
+      }
+      const impItemsFiltered = importTerminalIds.size
+        ? impItems.filter((it: any) => {
+            const jid = String((it as any)?.job_id || (it as any)?.id || "").trim();
+            if (!jid) return true;
+            return !importTerminalIds.has(jid);
+          })
+        : impItems;
+
       try {
         setImportQueueWorkers(Number((impLane as any)?.workers || 0));
       } catch {
@@ -746,11 +785,11 @@ export default function AdminPanelClient() {
         regen_history: Array.isArray((rgLane as any)?.history) ? (rgLane as any).history.length : 0,
       });
 
-      if (JSON.stringify(impItems) !== importQueueSigRef.current) {
+      if (JSON.stringify(impItemsFiltered) !== importQueueSigRef.current) {
         setImportQueue((prev: any[]) => {
-          if (shouldIgnoreEmptySnapshot(prev, impItems, "import", `${source}.import.queue_current`)) return prev;
-          importQueueSigRef.current = JSON.stringify(impItems);
-          return mergeImportSnapshots(prev, impItems);
+          if (shouldIgnoreEmptySnapshot(prev, impItemsFiltered, "import", `${source}.import.queue_current`)) return prev;
+          importQueueSigRef.current = JSON.stringify(impItemsFiltered);
+          return mergeImportSnapshots(prev, impItemsFiltered);
         });
       }
       if (JSON.stringify(impHistory) !== importQueueHistorySigRef.current) {
