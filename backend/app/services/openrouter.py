@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -9,6 +10,9 @@ from pydantic import BaseModel, ValidationError
 
 from app.core.config import settings
 from app.core.redis_client import get_redis
+
+
+log = logging.getLogger(__name__)
 
 
 class OpenRouterQuestion(BaseModel):
@@ -110,6 +114,8 @@ def _correct_letter_from_index(idx: object) -> str:
     try:
         i = int(idx)
     except Exception:
+        if bool(getattr(settings, "llm_debug_log", False)) or bool(getattr(settings, "llm_debug_save", False)):
+            log.debug("openrouter: invalid correct_index", exc_info=True)
         return ""
     if i == 0:
         return "A"
@@ -166,12 +172,15 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     if not s:
         return None
 
+    dbg = bool(getattr(settings, "llm_debug_log", False)) or bool(getattr(settings, "llm_debug_save", False))
+
     # Strip common Markdown wrappers.
     try:
         s = re.sub(r"^```(?:json)?\s*", "", s.strip(), flags=re.IGNORECASE)
         s = re.sub(r"\s*```$", "", s.strip())
     except Exception:
-        pass
+        if dbg:
+            log.debug("openrouter: failed to strip markdown wrappers", exc_info=True)
 
     # Fast path: parse if the whole payload is a JSON object/array.
     try:
@@ -182,7 +191,8 @@ def _extract_json(text: str) -> dict[str, Any] | None:
             if isinstance(obj_any, list):
                 return {"questions": obj_any}
     except Exception:
-        pass
+        if dbg:
+            log.debug("openrouter: json fast-parse failed", exc_info=True)
 
     # Robust path: find the first JSON object/array inside arbitrary text.
     dec = json.JSONDecoder()
@@ -197,7 +207,8 @@ def _extract_json(text: str) -> dict[str, Any] | None:
             if isinstance(obj_any, list):
                 return {"questions": obj_any}
         except Exception:
-            pass
+            if dbg:
+                log.debug("openrouter: json raw_decode failed", exc_info=True)
 
     # Last resort: greedy brace capture.
     try:
@@ -207,7 +218,8 @@ def _extract_json(text: str) -> dict[str, Any] | None:
             if isinstance(obj_any, dict):
                 return obj_any
     except Exception:
-        pass
+        if dbg:
+            log.debug("openrouter: greedy json parse failed", exc_info=True)
 
     return None
 
@@ -228,9 +240,16 @@ def generate_quiz_questions_openrouter(
     if debug_out is not None:
         debug_out.setdefault("provider", "openrouter")
 
+    env = (getattr(settings, "app_env", "") or "").strip().lower()
+    allow_runtime = bool(getattr(settings, "allow_runtime_llm_overrides", False))
+
     if not settings.openrouter_enabled:
         # Allow runtime enabling via Redis.
         try:
+            if env in {"prod", "production"} and not allow_runtime:
+                if debug_out is not None:
+                    debug_out.setdefault("error", "disabled")
+                return []
             r = get_redis()
             enabled_raw = (r.hget("runtime:llm", "openrouter_enabled") or b"").decode("utf-8", errors="ignore")
             if enabled_raw.strip().lower() not in {"1", "true", "yes", "on"}:
@@ -238,6 +257,7 @@ def generate_quiz_questions_openrouter(
                     debug_out.setdefault("error", "disabled")
                 return []
         except Exception:
+            log.debug("generate_quiz_questions_openrouter: runtime enable check failed", exc_info=True)
             if debug_out is not None:
                 debug_out.setdefault("error", "disabled")
             return []
@@ -250,6 +270,8 @@ def generate_quiz_questions_openrouter(
     runtime_ref: str | None = None
     runtime_title: str | None = None
     try:
+        if env in {"prod", "production"} and not allow_runtime:
+            raise RuntimeError("runtime_overrides_disabled")
         r = get_redis()
         rt = r.hget("runtime:llm", "openrouter_api_key")
         if rt is not None:
@@ -271,7 +293,7 @@ def generate_quiz_questions_openrouter(
         if rtt is not None:
             runtime_title = (rtt.decode("utf-8") if isinstance(rtt, (bytes, bytearray)) else str(rtt)).strip() or None
     except Exception:
-        pass
+        log.debug("generate_quiz_questions_openrouter: runtime overrides read failed", exc_info=True)
 
     if not token:
         if debug_out is not None:
@@ -357,13 +379,17 @@ def generate_quiz_questions_openrouter(
                     "model": str(use_model),
                     "temperature": float(use_temp),
                     "timeout_read_seconds": float(timeout_read_seconds) if timeout_read_seconds is not None else None,
-                    "system_prompt_snip": str(sys_prompt or "")[:1200],
-                    "user_prompt_snip": str(user_msg or "")[:2400],
+                    "system_prompt_snip": str(sys_prompt or "")[:1200]
+                    if (bool(getattr(settings, "llm_debug_log", False)) or bool(getattr(settings, "llm_debug_save", False)))
+                    else "",
+                    "user_prompt_snip": str(user_msg or "")[:2400]
+                    if (bool(getattr(settings, "llm_debug_log", False)) or bool(getattr(settings, "llm_debug_save", False)))
+                    else "",
                     "repair": bool(repair_text and str(repair_text).strip()),
                 },
             )
         except Exception:
-            pass
+            log.debug("generate_quiz_questions_openrouter: debug_out request metadata build failed", exc_info=True)
 
     base = (
         (str(base_url).strip() if base_url is not None else "")
@@ -443,7 +469,7 @@ def generate_quiz_questions_openrouter(
         if debug_out is not None:
             if status is not None:
                 debug_out["http_status"] = int(status)
-            if body_snip:
+            if body_snip and (bool(getattr(settings, "llm_debug_log", False)) or bool(getattr(settings, "llm_debug_save", False))):
                 debug_out["http_body"] = body_snip
         _set_debug(f"request_failed:{type(e).__name__}{(':HTTP_' + str(status)) if status else ''}")
         return []
@@ -459,18 +485,20 @@ def generate_quiz_questions_openrouter(
     raw = content if isinstance(content, str) else ""
     if debug_out is not None:
         # Keep a bounded raw snippet to aid diagnostics and repair.
-        debug_out["raw"] = raw[:6000]
+        if bool(getattr(settings, "llm_debug_log", False)) or bool(getattr(settings, "llm_debug_save", False)):
+            debug_out["raw"] = raw[:6000]
     obj = _extract_json(raw)
     if not obj:
         _set_debug("invalid_json")
         return []
 
     if debug_out is not None:
-        debug_out.setdefault("raw_snip", raw[:600])
+        if bool(getattr(settings, "llm_debug_log", False)) or bool(getattr(settings, "llm_debug_save", False)):
+            debug_out.setdefault("raw_snip", raw[:600])
         try:
             debug_out.setdefault("json_keys", list(obj.keys()))
         except Exception:
-            pass
+            log.debug("generate_quiz_questions_openrouter: debug_out json_keys failed", exc_info=True)
 
     try:
         parsed = OpenRouterQuizResponse.model_validate(obj)
@@ -491,6 +519,7 @@ def generate_quiz_questions_openrouter(
                     raw_items = [obj]
 
             normalized: list[OpenRouterQuestion] = []
+            failed = 0
             for it in raw_items or []:
                 if not isinstance(it, dict):
                     continue
@@ -535,8 +564,12 @@ def generate_quiz_questions_openrouter(
                 try:
                     q = OpenRouterQuestion.model_validate(cand)
                 except Exception:
+                    failed += 1
                     continue
                 normalized.append(q)
+
+            if failed and (bool(getattr(settings, "llm_debug_log", False)) or bool(getattr(settings, "llm_debug_save", False))):
+                log.debug("openrouter: normalized question validation failures: %s", int(failed))
 
             if normalized:
                 parsed = OpenRouterQuizResponse(questions=normalized)

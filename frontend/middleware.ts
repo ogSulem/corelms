@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
-const INTERNAL_API_URL = process.env.CORE_INTERNAL_API_BASE_URL || "http://backend:8000";
-
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 

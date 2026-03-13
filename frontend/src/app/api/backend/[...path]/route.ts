@@ -1,5 +1,7 @@
-import { cookies } from "next/headers";
+import * as nextHeaders from "next/headers";
 import { NextResponse } from "next/server";
+
+import { clearAuthCookies } from "../../auth/_cookies";
 
 const API_BASE_URL =
   process.env.CORE_INTERNAL_API_BASE_URL ||
@@ -54,7 +56,8 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
 
   const cookieHeader = String(req.headers.get("cookie") || "");
   const tokenFromHeader = getCookieValue(cookieHeader, "core_token");
-  const token = tokenFromHeader || (await cookies()).get("core_token")?.value;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const token = tokenFromHeader || (await (nextHeaders as any).cookies()).get("core_token")?.value;
 
   const accept = String(req.headers.get("accept") || "");
   const isSse = accept.includes("text/event-stream") || path[path.length - 1] === "events";
@@ -139,23 +142,7 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   });
 
   if (res.status === 401 && !isSse) {
-    const isProd = process.env.NODE_ENV === "production";
-    const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
-      ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
-      : isProd;
-    const cookieDomain = String(process.env.COOKIE_DOMAIN || "").trim() || undefined;
-    out.cookies.set({
-      name: "core_token",
-      value: "",
-      httpOnly: true,
-      sameSite: "lax",
-      secure: cookieSecure,
-      domain: cookieDomain,
-      path: "/",
-      maxAge: 0,
-      expires: new Date(0),
-      priority: "high",
-    });
+    clearAuthCookies(out);
   }
 
   return out;
@@ -185,21 +172,31 @@ export async function OPTIONS(req: Request, ctx: { params: Promise<{ path?: stri
   // Some environments/browsers may send a preflight even for same-origin requests.
   // Do not forward it to FastAPI (which may return 405 for OPTIONS).
   const origin = String(req.headers.get("origin") || "").trim();
-  const reqHeaders = String(req.headers.get("access-control-request-headers") || "").trim() || "authorization,content-type";
-  const reqMethod = String(req.headers.get("access-control-request-method") || "").trim() || "GET";
   const allowedOrigins = parseAllowedOrigins();
   const allowOrigin = isAllowedOrigin(origin, allowedOrigins) ? origin : "";
+  if (!allowOrigin) {
+    return new NextResponse(null, { status: 204 });
+  }
+
+  const requestedHeadersRaw = String(req.headers.get("access-control-request-headers") || "").trim();
+  const requestedHeaders = requestedHeadersRaw
+    ? requestedHeadersRaw
+        .split(",")
+        .map((h) => String(h || "").trim().toLowerCase())
+        .filter(Boolean)
+    : [];
+  const allowedHeaders = new Set(["authorization", "content-type", "x-request-id"]);
+  const allowHeaders = requestedHeaders.length
+    ? requestedHeaders.filter((h) => allowedHeaders.has(h)).join(", ")
+    : "authorization, content-type";
+
   return new NextResponse(null, {
     status: 204,
     headers: {
-      ...(allowOrigin
-        ? {
-            "Access-Control-Allow-Origin": allowOrigin,
-            "Access-Control-Allow-Credentials": "true",
-          }
-        : {}),
-      "Access-Control-Allow-Methods": reqMethod === "*" ? "GET,POST,PUT,PATCH,DELETE,OPTIONS" : reqMethod,
-      "Access-Control-Allow-Headers": reqHeaders,
+      "Access-Control-Allow-Origin": allowOrigin,
+      "Access-Control-Allow-Credentials": "true",
+      "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+      "Access-Control-Allow-Headers": allowHeaders,
       "Access-Control-Max-Age": "86400",
       Vary: "Origin, Access-Control-Request-Headers, Access-Control-Request-Method",
     },

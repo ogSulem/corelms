@@ -22,10 +22,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app
+
 COPY --from=builder /install /usr/local
 COPY . .
 
-RUN chmod +x /app/scripts/entrypoint.sh
+RUN chmod +x /app/scripts/entrypoint.sh \
+    && mkdir -p /data \
+    && chown -R app:app /app /data
+
+USER app
 
 # Default to API mode, but can be overridden for worker
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]

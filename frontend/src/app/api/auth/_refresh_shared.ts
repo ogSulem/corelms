@@ -10,6 +10,13 @@ type RefreshFail = { ok: false; status: number };
 
 let refreshInFlight: Promise<RefreshOk | RefreshFail> | null = null;
 
+function _timeoutMs(): number {
+  const raw = Number.parseInt(process.env.BACKEND_PROXY_TIMEOUT_MS || "25000", 10);
+  // Keep it bounded: avoid accidental "0" or a huge value that would stall requests forever.
+  if (!Number.isFinite(raw) || raw <= 0) return 25_000;
+  return Math.min(Math.max(1_000, raw), 180_000);
+}
+
 export async function sharedRefresh(
   args: {
     apiBaseUrl: string;
@@ -30,12 +37,22 @@ export async function sharedRefresh(
       if (xri) headers.set("x-real-ip", xri);
       if (xff) headers.set("x-forwarded-for", xff);
       if (fwd) headers.set("forwarded", fwd);
-      res = await fetch(`${args.apiBaseUrl}/auth/refresh`, {
-        method: "POST",
-        cache: "no-store",
-        headers,
-      });
-    } catch {
+      const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const t = ac ? setTimeout(() => ac.abort(), _timeoutMs()) : null;
+      try {
+        res = await fetch(`${args.apiBaseUrl}/auth/refresh`, {
+          method: "POST",
+          cache: "no-store",
+          headers,
+          signal: ac?.signal,
+        });
+      } finally {
+        if (t) clearTimeout(t);
+      }
+    } catch (e) {
+      if ((e as any)?.name === "AbortError") {
+        return { ok: false, status: 504 };
+      }
       return { ok: false, status: 502 };
     }
 

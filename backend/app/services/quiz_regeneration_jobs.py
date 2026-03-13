@@ -140,7 +140,7 @@ def _bump_admin_jobs_rev() -> None:
         try:
             r.expire("admin:jobs:rev", 60 * 60 * 24 * 30)
         except Exception:
-            pass
+            log.debug("_bump_admin_jobs_rev: expire failed", exc_info=True)
     except Exception:
         return
 
@@ -184,30 +184,37 @@ def _snip(v: object, *, limit: int) -> str | None:
 
 
 def _persist_llm_debug(*, entry: dict[str, object]) -> None:
-    try:
-        job = get_current_job()
-    except Exception:
-        job = None
-    if job is None:
-        return
-    try:
-        meta = dict(job.meta or {})
-        items = list(meta.get("llm_debug") or [])
-        items.append(entry)
-        # Keep only the last N entries to avoid unbounded growth.
-        meta["llm_debug"] = items[-50:]
-        _publish_admin_jobs_changed_throttled(job=job, meta=meta, force=False)
-        job.meta = meta
-        job.save_meta()
-        _persist_job_snapshot(job=job, meta=meta)
-    except Exception:
+    allow_save = bool(getattr(settings, "llm_debug_save", False))
+    allow_log = bool(getattr(settings, "llm_debug_log", False))
+
+    if not allow_save and not allow_log:
         return
 
-    # Always mirror debug into logs (truncated by _snip upstream).
-    try:
-        log.info("LLM_DEBUG %s", entry)
-    except Exception:
-        pass
+    if allow_save:
+        try:
+            job = get_current_job()
+        except Exception:
+            job = None
+        if job is not None:
+            try:
+                meta = dict(job.meta or {})
+                items = list(meta.get("llm_debug") or [])
+                items.append(entry)
+                # Keep only the last N entries to avoid unbounded growth.
+                meta["llm_debug"] = items[-50:]
+                _publish_admin_jobs_changed_throttled(job=job, meta=meta, force=False)
+                job.meta = meta
+                job.save_meta()
+                _persist_job_snapshot(job=job, meta=meta)
+            except Exception:
+                pass
+
+    if allow_log:
+        # Always mirror debug into logs (truncated by _snip upstream).
+        try:
+            log.info("LLM_DEBUG %s", entry)
+        except Exception:
+            pass
 
 
 def _ai_generate_questions_best_effort(
@@ -575,10 +582,8 @@ def regenerate_submodule_quiz_job(
                     "questions_count": int(len(qs or [])),
                 }
                 _persist_llm_debug(entry=entry)
-                if bool(getattr(settings, "llm_debug_log", False)):
-                    log.info("LLM_DEBUG %s", entry)
             except Exception:
-                pass
+                log.debug("regenerate_submodule_quiz_job: failed to persist llm debug", exc_info=True)
 
             try:
                 provider_used = str(llm_debug.get("provider") or "").strip() or "unknown"
@@ -680,7 +685,7 @@ def regenerate_submodule_quiz_job(
                     job.meta = meta
                     job.save_meta()
             except Exception:
-                pass
+                log.debug("regenerate_submodule_quiz_job: failed to save job meta", exc_info=True)
 
             if qs:
                 for qi, q in enumerate(qs, start=1):
@@ -773,13 +778,13 @@ def regenerate_submodule_quiz_job(
         try:
             db.rollback()
         except Exception:
-            pass
+            log.debug("regenerate_submodule_quiz_job: db rollback failed on cancel", exc_info=True)
         return {"ok": False, "canceled": True, "submodule_id": str(submodule_id)}
     except Exception as e:
         try:
             db.rollback()
         except Exception:
-            pass
+            log.debug("regenerate_submodule_quiz_job: db rollback failed", exc_info=True)
         _set_job_stage(stage="failed", detail=str(e))
         _set_job_error(error=e)
         raise
@@ -835,7 +840,7 @@ def regenerate_module_quizzes_job(
             try:
                 _clear_regen_checkpoint(module_id=str(m.id))
             except Exception:
-                pass
+                log.debug("regenerate_module_quizzes_job: failed to clear regen checkpoint", exc_info=True)
 
         subs_all = db.scalars(select(Submodule).where(Submodule.module_id == m.id).order_by(Submodule.order)).all()
 

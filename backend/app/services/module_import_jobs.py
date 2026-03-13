@@ -14,7 +14,6 @@ import time
 import unicodedata
 import uuid
 import zipfile
-import unicodedata
 from datetime import datetime
 
 from botocore.exceptions import ClientError
@@ -115,7 +114,7 @@ def _bump_admin_jobs_rev() -> None:
         try:
             r.expire("admin:jobs:rev", 60 * 60 * 24 * 30)
         except Exception:
-            pass
+            log.debug("_bump_admin_jobs_rev: expire failed", exc_info=True)
     except Exception:
         return
 
@@ -677,7 +676,7 @@ def import_module_zip_job(
                             regen_job.meta = meta
                             regen_job.save_meta()
                         except Exception:
-                            pass
+                            log.debug("import_module_zip_job: failed to save regen job meta", exc_info=True)
 
                         try:
                             job = get_current_job()
@@ -708,7 +707,7 @@ def import_module_zip_job(
                             r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
                             r.publish("admin:jobs:changed", str(regen_job_id))
                         except Exception:
-                            pass
+                            log.debug("import_module_zip_job: failed to publish regen job to admin feed", exc_info=True)
                     except Exception:
                         regen_job_id = None
 
@@ -830,7 +829,7 @@ def import_module_zip_job(
                     db.add(m)
                     db.flush()
                 except Exception:
-                    pass
+                    log.debug("import_module_zip_job: failed to set module import_object_key/storage_prefix", exc_info=True)
 
             module_title_for_meta = ""
             try:
@@ -850,7 +849,7 @@ def import_module_zip_job(
                     job.meta = jm
                     job.save_meta()
                 except Exception:
-                    pass
+                    log.debug("import_module_zip_job: failed to save job meta (module_id)", exc_info=True)
             _job_heartbeat(detail="import: done")
 
             _set_job_stage(stage="commit")
@@ -862,11 +861,11 @@ def import_module_zip_job(
             try:
                 modules_invalidate_storage_cache(module_storage_prefix=str(getattr(m, "storage_prefix", "") or "") or None)
             except Exception:
-                pass
+                log.debug("import_module_zip_job: modules_invalidate_storage_cache failed", exc_info=True)
             try:
                 modules_bump_rev(reason="import_done")
             except Exception:
-                pass
+                log.debug("import_module_zip_job: modules_bump_rev failed", exc_info=True)
 
             # Persist ZIP-content idempotency mapping.
             if sha256:
@@ -877,7 +876,7 @@ def import_module_zip_job(
                     r.set(f"admin:import_zip_sha256_by_module_id:{str(mid)}", sha256)
                     r.expire(f"admin:import_zip_sha256_by_module_id:{str(mid)}", 60 * 60 * 24 * 30)
                 except Exception:
-                    pass
+                    log.debug("import_module_zip_job: failed to persist zip sha256 idempotency mapping", exc_info=True)
 
             # If cancellation was requested right after commit, stop before any follow-up actions.
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="post_commit")
@@ -935,7 +934,7 @@ def import_module_zip_job(
                                 regen_job.meta = meta
                                 regen_job.save_meta()
                             except Exception:
-                                pass
+                                log.debug("import_module_zip_job: failed to save regen job meta", exc_info=True)
 
                             # Store regen_job_id in import job meta for easier UI linking.
                             try:
@@ -949,7 +948,7 @@ def import_module_zip_job(
                                     job.meta = jm
                                     job.save_meta()
                                 except Exception:
-                                    pass
+                                    log.debug("import_module_zip_job: failed to save import job meta (regen_job_id)", exc_info=True)
 
                             try:
                                 r = get_redis()
@@ -967,7 +966,7 @@ def import_module_zip_job(
                                 r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
                                 r.publish("admin:jobs:changed", str(regen_job_id))
                             except Exception:
-                                pass
+                                log.debug("import_module_zip_job: failed to publish regen job to admin feed", exc_info=True)
 
                             last_err = None
                             break
@@ -976,7 +975,7 @@ def import_module_zip_job(
                             try:
                                 time.sleep(0.5)
                             except Exception:
-                                pass
+                                log.debug("import_module_zip_job: regen enqueue backoff sleep failed", exc_info=True)
 
                     if last_err is not None or not regen_job_id:
                         report["regen_enqueue_error"] = str(last_err)
@@ -1000,12 +999,12 @@ def import_module_zip_job(
             try:
                 db.rollback()
             except Exception:
-                pass
+                log.debug("import_module_zip_job: db rollback failed on cancel", exc_info=True)
             try:
                 if not cleanup_done:
                     _cleanup_uploaded_keys_best_effort()
             except Exception:
-                pass
+                log.debug("import_module_zip_job: cleanup uploaded keys failed on cancel", exc_info=True)
             _release_enqueue_locks()
             return {"ok": False, "canceled": True}
         except Exception as e:
@@ -1017,7 +1016,7 @@ def import_module_zip_job(
                 if not cleanup_done:
                     _cleanup_uploaded_keys_best_effort()
             except Exception:
-                pass
+                log.debug("import_module_zip_job: cleanup uploaded keys failed", exc_info=True)
             _release_enqueue_locks()
             raise
         finally:

@@ -14,6 +14,7 @@ import string
 import time
 from collections import defaultdict
 import unicodedata
+import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
@@ -69,6 +70,8 @@ from app.schemas.admin import (
 )
 from app.services.quiz_text import is_useful_quiz_text
 
+log = logging.getLogger(__name__)
+
 from app.schemas.me import HistoryResponse
 
 from app.services.learning import LearningService
@@ -111,6 +114,7 @@ def _admin_jobs_get_rev() -> int:
             raw = raw.decode("utf-8", errors="ignore")
         return int(str(raw or "0").strip() or "0")
     except Exception:
+        log.debug("admin_jobs: failed to get rev", exc_info=True)
         return 0
 
 
@@ -121,9 +125,10 @@ def _admin_jobs_bump_rev() -> int:
         try:
             r.expire("admin:jobs:rev", 60 * 60 * 24 * 30)
         except Exception:
-            pass
+            log.debug("admin_jobs: failed to set rev expiry", exc_info=True)
         return v
     except Exception:
+        log.debug("admin_jobs: failed to bump rev", exc_info=True)
         return _admin_jobs_get_rev()
 
 
@@ -140,19 +145,19 @@ def _admin_jobs_pick_current(*, items: list[dict], history: list[dict]) -> dict 
                         try:
                             return int(datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp() * 1000)
                         except Exception:
-                            pass
+                            continue
                 return 0
 
             started.sort(key=_t, reverse=True)
             return started[0]
     except Exception:
-        pass
+        log.debug("admin_jobs: failed to pick current started job", exc_info=True)
 
     try:
         if history:
             return history[0]
     except Exception:
-        pass
+        log.debug("admin_jobs: failed to pick current history job", exc_info=True)
     return None
 
 
@@ -339,16 +344,21 @@ def system_status(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
+    env = (getattr(settings, "app_env", "") or "").strip().lower()
+    allow_llm_rt = bool(getattr(settings, "allow_runtime_llm_overrides", False))
+    allow_s3_rt = bool(getattr(settings, "allow_runtime_s3_overrides", False))
+
     runtime: dict[str, str] = {}
-    try:
-        r = get_redis()
-        raw = r.hgetall("runtime:llm") or {}
-        for k, v in (raw or {}).items():
-            kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-            vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-            runtime[kk] = vv
-    except Exception:
-        runtime = {}
+    if not (env in {"prod", "production"} and not allow_llm_rt):
+        try:
+            r = get_redis()
+            raw = r.hgetall("runtime:llm") or {}
+            for k, v in (raw or {}).items():
+                kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+                runtime[kk] = vv
+        except Exception:
+            runtime = {}
 
     def _rt_bool(key: str) -> bool | None:
         v = (runtime.get(key) or "").strip().lower()
@@ -477,22 +487,24 @@ def system_status(
     except Exception:
         out["rq"] = {"ok": False, "workers": 0, "queued": 0, "started": 0, "failed": 0, "deferred": 0, "scheduled": 0}
 
-    # S3 (honor runtime overrides stored in Redis; do not expose secrets)
+    # S3 (do not expose secrets)
     try:
-        rt_s3: dict[str, str] = {}
-        try:
-            r = get_redis()
-            raw2 = r.hgetall("runtime:s3") or {}
-            for k, v in (raw2 or {}).items():
-                kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-                rt_s3[str(kk)] = str(vv)
-        except Exception:
-            rt_s3 = {}
+        eff_bucket = str(getattr(settings, "s3_bucket", "") or "")
+        eff_ep = str(getattr(settings, "s3_endpoint_url", "") or "")
+        if not (env in {"prod", "production"} and not allow_s3_rt):
+            try:
+                r = get_redis()
+                raw2 = r.hgetall("runtime:s3") or {}
+                rt_s3: dict[str, str] = {}
+                for k, v in (raw2 or {}).items():
+                    kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                    vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+                    rt_s3[str(kk)] = str(vv)
+                eff_bucket = str(rt_s3.get("s3_bucket") or eff_bucket)
+                eff_ep = str(rt_s3.get("s3_endpoint_url") or eff_ep)
+            except Exception:
+                pass
 
-        eff_bucket = str(rt_s3.get("s3_bucket") or settings.s3_bucket)
-        eff_ep = str(rt_s3.get("s3_endpoint_url") or settings.s3_endpoint_url)
-        ensure_bucket_exists()
         s3 = get_s3_client()
         s3.head_bucket(Bucket=eff_bucket)
         out["s3"] = {"ok": True, "bucket": eff_bucket, "endpoint": eff_ep}
@@ -536,6 +548,9 @@ class RuntimeS3SettingsRequest(BaseModel):
 def get_runtime_llm_settings(
     _: User = Depends(require_roles(UserRole.admin)),
 ):
+    env = (getattr(settings, "app_env", "") or "").strip().lower()
+    if env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)):
+        raise HTTPException(status_code=403, detail="runtime LLM overrides are disabled in production")
     try:
         r = get_redis()
         data = r.hgetall("runtime:llm") or {}
@@ -601,6 +616,9 @@ def set_runtime_llm_settings(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
+    env = (getattr(settings, "app_env", "") or "").strip().lower()
+    if env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)):
+        raise HTTPException(status_code=403, detail="runtime LLM overrides are disabled in production")
     try:
         r = get_redis()
     except Exception:
@@ -641,7 +659,8 @@ def set_runtime_llm_settings(
         try:
             db.rollback()
         except Exception:
-            pass
+            log.debug("admin_set_runtime_llm_settings: db rollback failed", exc_info=True)
+        log.warning("admin_set_runtime_llm_settings: audit_log failed")
     return {"ok": True}
 
 
@@ -651,6 +670,9 @@ def reset_runtime_llm_settings(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
+    env = (getattr(settings, "app_env", "") or "").strip().lower()
+    if env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)):
+        raise HTTPException(status_code=403, detail="runtime LLM overrides are disabled in production")
     try:
         r = get_redis()
     except Exception:
@@ -671,7 +693,8 @@ def reset_runtime_llm_settings(
         try:
             db.rollback()
         except Exception:
-            pass
+            log.debug("admin_reset_runtime_llm_settings: db rollback failed", exc_info=True)
+        log.warning("admin_reset_runtime_llm_settings: audit_log failed")
     return {"ok": True}
 
 
@@ -736,6 +759,16 @@ def set_runtime_s3_settings(
     _: User = Depends(require_roles(UserRole.admin)),
 ):
     try:
+        env = (getattr(settings, "app_env", "") or "").strip().lower()
+    except Exception:
+        env = ""
+    if env in {"prod", "production"}:
+        import os
+
+        allow = str(os.getenv("ALLOW_RUNTIME_S3_OVERRIDES") or "").strip().lower() == "true"
+        if not allow:
+            raise HTTPException(status_code=403, detail="runtime overrides disabled")
+    try:
         r = get_redis()
     except Exception:
         raise HTTPException(status_code=500, detail="redis unavailable")
@@ -775,7 +808,8 @@ def set_runtime_s3_settings(
         try:
             db.rollback()
         except Exception:
-            pass
+            log.debug("admin_set_runtime_s3_settings: db rollback failed", exc_info=True)
+        log.warning("admin_set_runtime_s3_settings: audit_log failed")
     return {"ok": True}
 
 
@@ -785,6 +819,16 @@ def reset_runtime_s3_settings(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
+    try:
+        env = (getattr(settings, "app_env", "") or "").strip().lower()
+    except Exception:
+        env = ""
+    if env in {"prod", "production"}:
+        import os
+
+        allow = str(os.getenv("ALLOW_RUNTIME_S3_OVERRIDES") or "").strip().lower() == "true"
+        if not allow:
+            raise HTTPException(status_code=403, detail="runtime overrides disabled")
     try:
         r = get_redis()
     except Exception:
@@ -805,7 +849,8 @@ def reset_runtime_s3_settings(
         try:
             db.rollback()
         except Exception:
-            pass
+            log.debug("admin_reset_runtime_s3_settings: db rollback failed", exc_info=True)
+        log.warning("admin_reset_runtime_s3_settings: audit_log failed")
     return {"ok": True}
 
 
@@ -917,11 +962,11 @@ def purge_modules_missing_storage(
     try:
         modules_invalidate_storage_cache()
     except Exception:
-        pass
+        log.debug("maintenance: modules_invalidate_storage_cache failed (purge_missing_storage)", exc_info=True)
     try:
         modules_bump_rev(reason="purge_missing_storage")
     except Exception:
-        pass
+        log.debug("maintenance: modules_bump_rev failed (purge_missing_storage)", exc_info=True)
     return {
         "ok": True,
         "dry_run": False,
@@ -1253,12 +1298,28 @@ def admin_update_user(
     if u is None:
         raise HTTPException(status_code=404, detail="user not found")
 
+    # Permission: admins may edit employees and their own account, but must not edit other admins.
+    if getattr(u, "role", None) == UserRole.admin and u.id != current.id:
+        raise HTTPException(status_code=403, detail="cannot modify admin user")
+
     name = body.name
     if name is not None:
         name = str(name).strip()
         if not name:
             raise HTTPException(status_code=400, detail="invalid name")
         u.name = name
+
+    if body.email is not None:
+        email = str(body.email).strip().lower()
+        if not email:
+            u.email = None
+        else:
+            if not re.fullmatch(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", email, re.IGNORECASE):
+                raise HTTPException(status_code=400, detail="invalid email")
+            existing_email = db.scalar(select(User).where(func.lower(User.email) == email).where(User.id != uid))
+            if existing_email is not None:
+                raise HTTPException(status_code=409, detail="email already exists")
+            u.email = email
 
     if body.position is not None:
         pos = str(body.position).strip()
@@ -1290,6 +1351,7 @@ def admin_update_user(
         target_user_id=u.id,
         meta={
             "name": body.name,
+            "email": body.email,
             "position": body.position,
             "role": body.role,
             "must_change_password": body.must_change_password,
@@ -1311,6 +1373,9 @@ def admin_force_password_change(
     u = db.scalar(select(User).where(User.id == uid))
     if u is None:
         raise HTTPException(status_code=404, detail="user not found")
+
+    if getattr(u, "role", None) == UserRole.admin and u.id != current.id:
+        raise HTTPException(status_code=403, detail="cannot modify admin user")
 
     u.must_change_password = True
     u.password_changed_at = None
@@ -1514,7 +1579,7 @@ async def import_module_zip(
         raise
     except Exception:
         # best-effort
-        pass
+        log.debug("admin import zip: storage prefix precheck failed", exc_info=True)
 
     # Hard dedupe: if the canonical ZIP already exists, block re-upload/import.
     object_key = canonical_object_key
@@ -1531,13 +1596,13 @@ async def import_module_zip(
     except HTTPException:
         raise
     except Exception:
-        pass
+        log.debug("admin import zip: head_object precheck failed", exc_info=True)
 
     try:
         try:
             file.file.seek(0)
         except Exception:
-            pass
+            log.debug("admin import zip: failed to seek upload file", exc_info=True)
         s3.put_object(Bucket=settings.s3_bucket, Key=object_key, Body=file.file, ContentType="application/zip")
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to upload zip") from e
@@ -1569,16 +1634,16 @@ async def import_module_zip(
         try:
             modules_invalidate_storage_cache(module_storage_prefix=str(getattr(stub_module, "storage_prefix", "") or "") or None)
         except Exception:
-            pass
+            log.debug("admin import zip: modules_invalidate_storage_cache failed (stub_created)", exc_info=True)
         try:
             modules_bump_rev(reason="stub_created")
         except Exception:
-            pass
+            log.debug("admin import zip: modules_bump_rev failed (stub_created)", exc_info=True)
     except Exception:
         try:
             db.rollback()
         except Exception:
-            pass
+            log.debug("admin import zip: rollback failed after stub create error", exc_info=True)
         stub_module = None
 
     try:
@@ -1598,7 +1663,7 @@ async def import_module_zip(
         try:
             s3.delete_object(Bucket=settings.s3_bucket, Key=object_key)
         except Exception:
-            pass
+            log.debug("admin import zip: cleanup delete_object failed after enqueue error", exc_info=True)
         raise HTTPException(status_code=500, detail="failed to enqueue import job") from e
 
     try:
@@ -1623,7 +1688,7 @@ async def import_module_zip(
         job.meta = jm
         job.save_meta()
     except Exception:
-        pass
+        log.debug("admin import zip: failed to save import job meta", exc_info=True)
 
     # Best-effort: establish dedupe keys for the retried job.
     if fingerprint:
@@ -1635,7 +1700,7 @@ async def import_module_zip(
                 r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint)
                 r.expire(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
         except Exception:
-            pass
+            log.debug("admin import zip: failed to persist fingerprint dedupe keys", exc_info=True)
 
     try:
         r = get_redis()
@@ -1643,7 +1708,7 @@ async def import_module_zip(
             r.sadd("admin:import_used_object_keys", object_key)
             r.expire("admin:import_used_object_keys", 60 * 60 * 24 * 30)
         except Exception:
-            pass
+            log.debug("admin import zip: failed to record used object key", exc_info=True)
         meta = {
             "job_id": job.id,
             "object_key": object_key,
@@ -1664,9 +1729,9 @@ async def import_module_zip(
                 r.set(f"admin:import_object_key_by_module_id:{str(stub_module.id)}", object_key)
                 r.expire(f"admin:import_object_key_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
         except Exception:
-            pass
+            log.debug("admin import zip: failed to persist object_key_by_module_id", exc_info=True)
     except Exception:
-        pass
+        log.debug("admin import zip: failed to publish import job to admin feed", exc_info=True)
 
     audit_log(
         db=db,
@@ -3763,7 +3828,8 @@ def reconcile_modules_storage(
             try:
                 db.rollback()
             except Exception:
-                pass
+                log.debug("admin_modules_reconcile: db rollback failed", exc_info=True)
+            log.warning("admin_modules_reconcile: failed to create missing DB modules")
 
     try:
         modules_invalidate_storage_cache()
@@ -5693,7 +5759,7 @@ def admin_user_history(
     sec_events = db.scalars(
         select(SecurityAuditEvent)
         .where(SecurityAuditEvent.target_user_id == uid)
-        .where(SecurityAuditEvent.event_type.in_(["auth_login_new_context", "auth_login_success"]))
+        .where(SecurityAuditEvent.event_type.in_(["auth_login_new_context", "auth_login_success", "admin_update_user"]))
         .order_by(SecurityAuditEvent.created_at.desc())
         .limit(take)
     ).all()
@@ -5849,6 +5915,28 @@ def admin_user_history(
 
     def _sec_event_display(e: SecurityAuditEvent) -> tuple[str, str | None]:
         meta = _try_parse_meta(e.meta)
+        et = str(getattr(e, "event_type", "") or "").strip()
+
+        if et == "admin_update_user":
+            title = "Профиль изменён админом"
+            changed: list[str] = []
+            try:
+                if isinstance(meta, dict):
+                    if meta.get("name") is not None:
+                        changed.append("name")
+                    if meta.get("email") is not None:
+                        changed.append("email")
+                    if meta.get("position") is not None:
+                        changed.append("position")
+                    if meta.get("role") is not None:
+                        changed.append("role")
+                    if meta.get("must_change_password") is not None:
+                        changed.append("must_change_password")
+            except Exception:
+                changed = []
+            subtitle = ("Изменено: " + ", ".join(changed)) if changed else None
+            return title, subtitle
+
         new_device = bool((meta or {}).get("new_device"))
         new_ip = bool((meta or {}).get("new_ip"))
         ip = str(e.ip or (meta or {}).get("ip") or "").strip()
@@ -6035,6 +6123,9 @@ def delete_user(
     if u is None:
         raise HTTPException(status_code=404, detail="user not found")
 
+    if getattr(u, "role", None) == UserRole.admin:
+        raise HTTPException(status_code=403, detail="cannot delete admin user")
+
     try:
         attempt_ids = db.scalars(select(QuizAttempt.id).where(QuizAttempt.user_id == uid)).all()
         if attempt_ids:
@@ -6150,6 +6241,9 @@ def reset_user_password(
     user = db.scalar(select(User).where(User.id == uid))
     if user is None:
         raise HTTPException(status_code=404, detail="user not found")
+
+    if getattr(user, "role", None) == UserRole.admin and user.id != current.id:
+        raise HTTPException(status_code=403, detail="cannot reset password for admin user")
 
     # Issue a temporary password (must be changed on first login).
     temp_password = str(body.password or "").strip() or _random_password(14)
@@ -6286,6 +6380,16 @@ def quiz_answer_key(
         "type": getattr(quiz.type, "value", str(quiz.type)),
         "pass_threshold": int(quiz.pass_threshold or 0),
         "questions": [
+            {
+                "id": str(q.id),
+                "type": getattr(q.type, "value", str(q.type)),
+                "prompt": q.prompt,
+                "correct_answer": q.correct_answer,
+                "concept_tag": q.concept_tag,
+            }
+            for q in questions
+        ],
+    }
             {
                 "id": str(q.id),
                 "type": getattr(q.type, "value", str(q.type)),

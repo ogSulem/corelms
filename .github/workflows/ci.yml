@@ -5,7 +5,48 @@ on:
   pull_request:
 
 jobs:
+  guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+
+      - name: Block large tracked files (>20MB)
+        run: |
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+
+          LIMIT = 20 * 1024 * 1024
+
+          out = subprocess.check_output(["git", "ls-files", "-z"])
+          files = [p.decode("utf-8") for p in out.split(b"\x00") if p]
+
+          bad = []
+          for f in files:
+            try:
+              st = os.stat(f)
+            except FileNotFoundError:
+              continue
+            if st.st_size > LIMIT:
+              bad.append((f, st.st_size))
+
+          if bad:
+            bad.sort(key=lambda x: x[1], reverse=True)
+            print("Large tracked files detected (limit: 20MB):")
+            for f, sz in bad:
+              print(f"- {f}: {sz/1024/1024:.2f} MB")
+            print("\nFix: remove from git history or use external storage; add to .gitignore.")
+            sys.exit(1)
+
+          print("OK: no tracked files > 20MB")
+          PY
+
   backend:
+    needs: guardrails
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,6 +73,7 @@ jobs:
           pytest -q
 
   frontend:
+    needs: guardrails
     runs-on: ubuntu-latest
     defaults:
       run:

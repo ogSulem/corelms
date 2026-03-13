@@ -49,11 +49,12 @@ def ready():
     except Exception as e:
         raise HTTPException(status_code=503, detail="redis not ready") from e
 
-    try:
-        s3 = get_s3_client()
-        s3.head_bucket(Bucket=settings.s3_bucket)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail="s3 not ready") from e
+    if bool(getattr(settings, "health_ready_check_s3", True)):
+        try:
+            s3 = get_s3_client()
+            s3.head_bucket(Bucket=settings.s3_bucket)
+        except Exception as e:
+            raise HTTPException(status_code=503, detail="s3 not ready") from e
 
     return {"status": "ready"}
 

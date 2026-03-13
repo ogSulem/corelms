@@ -29,20 +29,26 @@ from passlib.context import CryptContext
 
 def create_app() -> FastAPI:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    app = FastAPI(title="CoreLMS API", version="1.0.0")
+    is_prod = (settings.app_env or "").strip().lower() in {"prod", "production"}
+    api_docs_enabled = bool(getattr(settings, "enable_api_docs", False)) or (not is_prod)
+    app = FastAPI(
+        title="CoreLMS API",
+        version="1.0.0",
+        docs_url="/docs" if api_docs_enabled else None,
+        redoc_url="/redoc" if api_docs_enabled else None,
+        openapi_url="/openapi.json" if api_docs_enabled else None,
+    )
 
     logger = logging.getLogger("corelms")
 
     try:
         logging.getLogger("httpx").setLevel(logging.WARNING)
     except Exception:
-        pass
+        logger.debug("failed to set httpx log level", exc_info=True)
 
     allow_origins = [o.strip() for o in str(settings.cors_allow_origins or "").split(",") if o.strip()]
     if "*" in allow_origins:
         raise RuntimeError("CORS_ALLOW_ORIGINS must not include '*' when allow_credentials=true")
-
-    is_prod = (settings.app_env or "").strip().lower() in {"prod", "production"}
 
     def _client_ip_for_log(request: Request) -> str | None:
         return client_ip_from_request(request)
@@ -110,7 +116,7 @@ def create_app() -> FastAPI:
                         )
                     )
             except Exception:
-                pass
+                logger.debug("request log emit failed", exc_info=True)
         response.headers["X-Request-ID"] = rid
 
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -196,21 +202,15 @@ def create_app() -> FastAPI:
 
                 q = get_queue(str(settings.rq_queue_cleanup))
                 q.enqueue(
-                    cleanup_admin_uploads_job,
-                    ttl_hours=int(settings.uploads_admin_ttl_hours),
-                    job_timeout=60 * 10,
-                    result_ttl=60 * 60,
-                    failure_ttl=60 * 60,
-                )
-
-                q.enqueue(
                     cleanup_admin_multipart_uploads_job,
+                    prefix="uploads/",
                     ttl_hours=int(getattr(settings, "uploads_admin_multipart_ttl_hours", 12)),
                     job_timeout=60 * 10,
                     result_ttl=60 * 60,
                     failure_ttl=60 * 60,
                 )
             except Exception:
+                logger.debug("admin uploads cleanup scheduler tick failed", exc_info=True)
                 return
             finally:
                 t = threading.Timer(interval_seconds, _tick)
@@ -258,13 +258,13 @@ def create_app() -> FastAPI:
             try:
                 db.rollback()
             except Exception:
-                pass
+                logger.debug("bootstrap admin rollback failed", exc_info=True)
             logger.exception("bootstrap admin failed")
         finally:
             try:
                 db.close()
             except Exception:
-                pass
+                logger.debug("bootstrap admin db close failed", exc_info=True)
 
     @app.on_event("startup")
     async def _startup_tasks() -> None:

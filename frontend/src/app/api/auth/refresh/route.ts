@@ -1,6 +1,7 @@
-import { cookies } from "next/headers";
+import * as nextHeaders from "next/headers";
 import { NextResponse } from "next/server";
 import { sharedRefresh } from "../_refresh_shared";
+import { clearAuthCookies, setAccessCookie, setRefreshCookie } from "../_cookies";
 
 const API_BASE_URL =
   process.env.CORE_INTERNAL_API_BASE_URL ||
@@ -8,7 +9,8 @@ const API_BASE_URL =
   "http://backend:8000";
 
 export async function POST(req: Request) {
-  const cookieStore = await cookies();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cookieStore = await (nextHeaders as any).cookies();
   const refresh = cookieStore.get("core_refresh")?.value;
 
   if (!refresh) {
@@ -31,81 +33,20 @@ export async function POST(req: Request) {
     }
 
     const out = NextResponse.json({ ok: false, error_code: "refresh_failed" }, { status: 401 });
-    const isProd = process.env.NODE_ENV === "production";
-    const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
-      ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
-      : isProd;
-    const cookieDomain = String(process.env.COOKIE_DOMAIN || "").trim() || undefined;
-    out.cookies.set({
-      name: "core_token",
-      value: "",
-      httpOnly: true,
-      sameSite: "lax",
-      secure: cookieSecure,
-      domain: cookieDomain,
-      path: "/",
-      maxAge: 0,
-      expires: new Date(0),
-      priority: "high",
-    });
-    out.cookies.set({
-      name: "core_refresh",
-      value: "",
-      httpOnly: true,
-      sameSite: "lax",
-      secure: cookieSecure,
-      domain: cookieDomain,
-      path: "/",
-      maxAge: 0,
-      expires: new Date(0),
-      priority: "high",
-    });
+    clearAuthCookies(out);
     return out;
   }
 
   const access = String(result.access || "").trim();
 
-  const configuredMaxAge = Number.parseInt(process.env.CORE_TOKEN_MAX_AGE_SECONDS || "3600", 10) || 3600;
-  const upstreamExpiresIn = Number.isFinite(Number(result.expiresIn)) ? Number(result.expiresIn) : null;
-  const maxAge = upstreamExpiresIn ? Math.min(configuredMaxAge, upstreamExpiresIn) : configuredMaxAge;
-  const expires = new Date(Date.now() + maxAge * 1000);
-
   const response = NextResponse.json({ ok: true });
-  const isProd = process.env.NODE_ENV === "production";
-  const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
-    ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
-    : isProd;
-  const cookieDomain = String(process.env.COOKIE_DOMAIN || "").trim() || undefined;
-  response.cookies.set({
-    name: "core_token",
-    value: access,
-    httpOnly: true,
-    sameSite: "lax",
-    secure: cookieSecure,
-    domain: cookieDomain,
-    path: "/",
-    maxAge,
-    expires,
-    priority: "high",
+  setAccessCookie(response, access, {
+    upstreamExpiresIn: Number.isFinite(Number(result.expiresIn)) ? Number(result.expiresIn) : null,
   });
 
-  const nextRefresh = String(result.nextRefresh || "").trim();
-  if (nextRefresh) {
-    const refreshMaxAge = Number.isFinite(Number(result.refreshExpiresIn)) ? Number(result.refreshExpiresIn) : 30 * 24 * 60 * 60;
-    const refreshExpires = new Date(Date.now() + refreshMaxAge * 1000);
-    response.cookies.set({
-      name: "core_refresh",
-      value: nextRefresh,
-      httpOnly: true,
-      sameSite: "lax",
-      secure: cookieSecure,
-      domain: cookieDomain,
-      path: "/",
-      maxAge: refreshMaxAge,
-      expires: refreshExpires,
-      priority: "high",
-    });
-  }
+  setRefreshCookie(response, String(result.nextRefresh || ""), {
+    refreshExpiresIn: Number.isFinite(Number(result.refreshExpiresIn)) ? Number(result.refreshExpiresIn) : null,
+  });
 
   return response;
 }

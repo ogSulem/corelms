@@ -121,7 +121,7 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int 
             job.meta = meta
             job.save_meta()
         except Exception:
-            pass
+            log.debug("cleanup_admin_uploads_job: failed to save job meta", exc_info=True)
 
     log.info(
         "cleanup_admin_uploads_job: prefix=%s ttl_hours=%s deleted_objects=%s deleted_bytes=%s deleted_asset_rows=%s",
@@ -137,7 +137,7 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int 
 
 def cleanup_admin_multipart_uploads_job(
     *,
-    prefix: str = "uploads/admin/",
+    prefix: str = "uploads/",
     ttl_hours: int | None = None,
     max_to_abort: int | None = None,
 ) -> dict:
@@ -156,6 +156,8 @@ def cleanup_admin_multipart_uploads_job(
 
     aborted = 0
     scanned = 0
+    hb_check_errors = 0
+    hb_delete_errors = 0
 
     r = None
     try:
@@ -215,7 +217,7 @@ def cleanup_admin_multipart_uploads_job(
                                 if last_seen > cutoff:
                                     continue
                     except Exception:
-                        pass
+                        hb_check_errors += 1
 
                 try:
                     s3.abort_multipart_upload(Bucket=settings.s3_bucket, Key=key, UploadId=upload_id)
@@ -224,7 +226,7 @@ def cleanup_admin_multipart_uploads_job(
                         try:
                             r.delete(f"admin:multipart:last_seen:{key}:{upload_id}")
                         except Exception:
-                            pass
+                            hb_delete_errors += 1
                 except Exception:
                     log.warning(
                         "cleanup_admin_multipart_uploads_job: abort failed bucket=%s key=%s upload_id=%s",
@@ -260,7 +262,14 @@ def cleanup_admin_multipart_uploads_job(
             job.meta = meta
             job.save_meta()
         except Exception:
-            pass
+            log.debug("cleanup_admin_multipart_uploads_job: failed to save job meta", exc_info=True)
+
+    if (hb_check_errors or hb_delete_errors) and log.isEnabledFor(logging.DEBUG):
+        log.debug(
+            "cleanup_admin_multipart_uploads_job: redis heartbeat issues hb_check_errors=%s hb_delete_errors=%s",
+            int(hb_check_errors),
+            int(hb_delete_errors),
+        )
 
     log.info(
         "cleanup_admin_multipart_uploads_job: prefix=%s ttl_hours=%s scanned=%s aborted=%s",

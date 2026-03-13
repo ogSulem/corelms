@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 import re
 from typing import Any
@@ -8,6 +9,9 @@ from app.core.config import settings
 from app.core.redis_client import get_redis
 from app.services.openrouter import generate_quiz_questions_openrouter
 from app.services.openrouter_health import openrouter_healthcheck
+
+
+log = logging.getLogger(__name__)
 
 
 def generate_quiz_questions_ai(
@@ -154,15 +158,21 @@ def generate_quiz_questions_ai(
 
     # Runtime overrides (admin diagnostics tab) stored in Redis.
     runtime: dict[str, str] = {}
-    try:
-        r = get_redis()
-        raw = r.hgetall("runtime:llm") or {}
-        for k, v in (raw or {}).items():
-            kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-            vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-            runtime[kk] = vv
-    except Exception:
+    env = (getattr(settings, "app_env", "") or "").strip().lower()
+    allow_runtime = bool(getattr(settings, "allow_runtime_llm_overrides", False))
+    if env in {"prod", "production"} and not allow_runtime:
         runtime = {}
+    else:
+        try:
+            r = get_redis()
+            raw = r.hgetall("runtime:llm") or {}
+            for k, v in (raw or {}).items():
+                kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+                vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+                runtime[kk] = vv
+        except Exception:
+            log.debug("generate_quiz_questions_ai: failed to load runtime:llm overrides", exc_info=True)
+            runtime = {}
 
     runtime_or_enabled = (runtime.get("openrouter_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
     runtime_or_base_url = (runtime.get("openrouter_base_url") or "").strip() or None
@@ -214,6 +224,7 @@ def generate_quiz_questions_ai(
                 try:
                     ok_or, _meta = openrouter_healthcheck()
                 except Exception:
+                    log.debug("generate_quiz_questions_ai: openrouter_healthcheck failed", exc_info=True)
                     ok_or = False
 
                 if not ok_or:

@@ -169,11 +169,13 @@ def _collect_used_object_keys(*, include_enqueued: bool = True) -> tuple[set[str
 def main() -> int:
     ap = argparse.ArgumentParser(description="Cleanup orphan uploads/*.zip objects in S3 (dry-run by default).")
     ap.add_argument("--prefix", default="uploads/", help="S3 prefix to scan (default: uploads/)")
-    ap.add_argument("--dry-run", action="store_true", help="Only print what would be deleted")
-    ap.add_argument("--delete", action="store_true", help="Actually delete orphan zip objects")
+    mode = ap.add_mutually_exclusive_group(required=False)
+    mode.add_argument("--dry-run", action="store_true", help="Only print what would be deleted")
+    mode.add_argument("--delete", action="store_true", help="Actually delete orphan zip objects")
+    ap.add_argument("--yes", action="store_true", help="Confirm deletion (required with --delete)")
     ap.add_argument(
         "--include-enqueued",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
         help="Treat admin:import_enqueued_by_object_key:* as used (default: true)",
     )
@@ -189,6 +191,10 @@ def main() -> int:
     # Default behavior: dry-run unless --delete was passed.
     if not args.delete:
         args.dry_run = True
+
+    if bool(args.delete) and not bool(args.yes):
+        print("Refusing to delete without --yes (safety guard).")
+        return 2
 
     used, dbg = _collect_used_object_keys(include_enqueued=bool(args.include_enqueued))
     objs = _iter_upload_zip_objects(prefix=str(args.prefix or "uploads/").strip().lstrip("/"))
@@ -236,6 +242,7 @@ def main() -> int:
     s3 = get_s3_client()
 
     deleted = 0
+    failed_batches = 0
     for i in range(0, len(orphans), 1000):
         batch = orphans[i : i + 1000]
         to_delete = [{"Key": str(x.get("key") or "").strip()} for x in batch if str(x.get("key") or "").strip()]
@@ -246,9 +253,10 @@ def main() -> int:
             deleted += len(to_delete)
         except Exception:
             print(f"FAILED_DELETE_BATCH size={len(to_delete)}")
+            failed_batches += 1
 
     print(f"deleted={deleted}")
-    return 0
+    return 1 if failed_batches else 0
 
 
 if __name__ == "__main__":

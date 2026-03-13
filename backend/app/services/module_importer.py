@@ -71,6 +71,7 @@ def _set_job_detail(detail: str) -> None:
         job.meta = meta
         job.save_meta()
     except Exception:
+        log.debug("module_importer: failed to save job meta detail", exc_info=True)
         return
 
 
@@ -92,6 +93,7 @@ def _track_uploaded_key(object_key: str) -> None:
             job.meta = meta
             job.save_meta()
     except Exception:
+        log.debug("module_importer: failed to save job meta uploaded_keys", exc_info=True)
         return
 
 
@@ -724,7 +726,7 @@ def import_module_from_dir(
                 extracted_ok = False
                 materials_only = True
         except Exception:
-            pass
+            log.debug("module_importer: materials_only rule evaluation failed", exc_info=True)
 
         theory = extracted_theory_clean
         content_key = None
@@ -902,7 +904,7 @@ def import_module_from_dir(
             m.final_quiz_id = None
             db.add(m)
     except Exception:
-        pass
+        log.debug("module_importer: failed to update final_quiz_id", exc_info=True)
 
     db.commit()
     return m.id

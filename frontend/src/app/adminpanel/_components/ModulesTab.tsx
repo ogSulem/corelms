@@ -124,18 +124,16 @@ export function ModulesTab(props: ModulesTabProps) {
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="min-w-0">
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">МОДУЛИ</div>
-              <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">СПИСОК</div>
-            </div>
-            <div className="mt-3 w-full overflow-x-auto">
-              <div className="flex flex-nowrap items-center justify-start gap-2">
-              <Button
-                variant="ghost"
-                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
-                disabled={adminModulesLoading}
-                onClick={() => void loadAdminModules()}
-              >
-                {adminModulesLoading ? "..." : "ОБНОВИТЬ"}
-              </Button>
+              <div className="mt-2 flex items-center gap-3">
+                <div className="text-xl font-black tracking-tighter text-zinc-950 uppercase">СПИСОК</div>
+                <Button
+                  variant="ghost"
+                  className="h-10 rounded-2xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
+                  disabled={adminModulesLoading}
+                  onClick={() => void loadAdminModules()}
+                >
+                  {adminModulesLoading ? "..." : "ОБНОВИТЬ"}
+                </Button>
               </div>
             </div>
           </div>

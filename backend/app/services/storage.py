@@ -3,6 +3,7 @@ from __future__ import annotations
 import boto3
 import json
 import logging
+import os
 from botocore.client import Config
 from botocore.exceptions import ClientError
 from boto3.s3.transfer import TransferConfig
@@ -20,6 +21,14 @@ def _runtime_s3() -> dict[str, str]:
     IMPORTANT: this is used for admin diagnostics and emergency operations.
     It intentionally does not persist into git/files.
     """
+    try:
+        env = (getattr(settings, "app_env", "") or "").strip().lower()
+    except Exception:
+        env = ""
+    if env in {"prod", "production"}:
+        allow = str(os.getenv("ALLOW_RUNTIME_S3_OVERRIDES") or "").strip().lower() == "true"
+        if not allow:
+            return {}
     try:
         r = get_redis()
         raw = r.hgetall("runtime:s3") or {}
@@ -49,7 +58,7 @@ def s3_invalidate_common_prefixes(*, prefix: str, delimiter: str = "/") -> None:
         r = get_redis()
         r.delete(cache_key)
     except Exception:
-        pass
+        log.debug("s3_invalidate_common_prefixes: redis delete failed", exc_info=True)
 
 
 def s3_invalidate_prefix_has_objects(*, prefix: str) -> None:
@@ -64,7 +73,7 @@ def s3_invalidate_prefix_has_objects(*, prefix: str) -> None:
         r = get_redis()
         r.delete(cache_key)
     except Exception:
-        pass
+        log.debug("s3_invalidate_prefix_has_objects: redis delete failed", exc_info=True)
 
 
 def _rt_str(rt: dict[str, str], key: str) -> str:
@@ -126,15 +135,15 @@ def upload_fileobj_with_retry(
     try:
         multipart_chunksize_bytes = int(_rt_str(rt, "s3_multipart_chunksize_bytes") or multipart_chunksize_bytes)
     except Exception:
-        pass
+        log.debug("upload_fileobj_with_retry: invalid s3_multipart_chunksize_bytes runtime override", exc_info=True)
     try:
         multipart_threshold_bytes = int(_rt_str(rt, "s3_multipart_threshold_bytes") or multipart_threshold_bytes)
     except Exception:
-        pass
+        log.debug("upload_fileobj_with_retry: invalid s3_multipart_threshold_bytes runtime override", exc_info=True)
     try:
         max_concurrency = int(_rt_str(rt, "s3_multipart_max_concurrency") or max_concurrency)
     except Exception:
-        pass
+        log.debug("upload_fileobj_with_retry: invalid s3_multipart_max_concurrency runtime override", exc_info=True)
 
     threshold = int(multipart_threshold_bytes)
     chunksize = int(multipart_chunksize_bytes)
@@ -160,7 +169,7 @@ def upload_fileobj_with_retry(
             try:
                 fileobj.seek(0)
             except Exception:
-                pass
+                log.debug("upload_fileobj_with_retry: failed to seek fileobj", exc_info=True)
             extra_args = {"ContentType": str(content_type or "application/octet-stream")}
             if config is not None:
                 s3.upload_fileobj(fileobj, bucket, object_key, ExtraArgs=extra_args, Config=config)
@@ -176,7 +185,7 @@ def upload_fileobj_with_retry(
 
                 time.sleep(base * (2 ** (attempt - 1)) + random.random() * 0.5)
             except Exception:
-                pass
+                log.debug("upload_fileobj_with_retry: backoff sleep failed", exc_info=True)
     if last is not None:
         raise last
 
@@ -194,7 +203,7 @@ def _get_presign_client():
                 "S3_PUBLIC_ENDPOINT_URL is empty in production; presigned URLs may use internal endpoint and fail in browser"
             )
         except Exception:
-            pass
+            log.debug("_get_presign_client: failed to log missing public endpoint warning", exc_info=True)
     # Presign client does not contact S3; endpoint_url affects only the signed host.
     ep = pub or _rt_str(rt, "s3_endpoint_url") or settings.s3_endpoint_url
     return get_s3_client(endpoint_url=ep)
@@ -207,6 +216,15 @@ def ensure_bucket_cors() -> None:
     origins = [o.strip() for o in str(getattr(settings, "cors_allow_origins", "") or "").split(",") if o.strip()]
     if not origins:
         origins = ["*"]
+        try:
+            env = (getattr(settings, "app_env", "") or "").strip().lower()
+        except Exception:
+            env = ""
+        if env in {"prod", "production"}:
+            try:
+                log.warning("ensure_bucket_cors: CORS_ALLOW_ORIGINS is empty; applying AllowedOrigins=['*'] to bucket=%s", str(bucket))
+            except Exception:
+                log.debug("ensure_bucket_cors: failed to log empty CORS_ALLOW_ORIGINS warning", exc_info=True)
     try:
         s3.put_bucket_cors(
             Bucket=bucket,
@@ -258,10 +276,7 @@ def ensure_bucket_exists() -> None:
     try:
         ensure_bucket_cors()
     except Exception:
-        if env in {"prod", "production"}:
-            pass
-        else:
-            pass
+        log.debug("ensure_bucket_exists: ensure_bucket_cors failed", exc_info=True)
 
 
 def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 600, bypass_cache: bool = False) -> bool:
@@ -280,7 +295,7 @@ def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 600, bypass_cache
             if cached is not None:
                 return str(cached).strip() == "1"
         except Exception:
-            pass
+            log.debug("s3_prefix_has_objects: redis get failed", exc_info=True)
 
     ok = False
     try:
@@ -300,7 +315,7 @@ def s3_prefix_has_objects(*, prefix: str, cache_seconds: int = 600, bypass_cache
                 ttl = min(ttl, 30)
             r.setex(cache_key, ttl, "1" if ok else "0")
         except Exception:
-            pass
+            log.debug("s3_prefix_has_objects: redis setex failed", exc_info=True)
 
     return ok
 
@@ -334,7 +349,7 @@ def s3_list_common_prefixes(
                 if isinstance(obj, list):
                     return {str(x) for x in obj if str(x).strip()}
         except Exception:
-            pass
+            log.debug("s3_list_common_prefixes: redis read cache failed", exc_info=True)
 
     ensure_bucket_exists()
     s3 = get_s3_client()
@@ -370,7 +385,7 @@ def s3_list_common_prefixes(
             ttl = int(max(10, min(int(cache_seconds or 300), 3600)))
             r.setex(cache_key, ttl, json.dumps(sorted(out)))
         except Exception:
-            pass
+            log.debug("s3_list_common_prefixes: redis write cache failed", exc_info=True)
 
     return out
 
@@ -453,7 +468,7 @@ def s3_list_objects(
     try:
         out.sort(key=lambda x: str(x.get("last_modified") or ""), reverse=True)
     except Exception:
-        pass
+        log.debug("s3_list_objects: sort failed", exc_info=True)
     return out
 
 
@@ -504,7 +519,7 @@ def presign_get(
         ):
             expires_seconds = max(60, min(int(expires_seconds), 300))
     except Exception:
-        pass
+        log.debug("presign_get: expires_seconds adjustment failed", exc_info=True)
     params: dict[str, object] = {"Bucket": bucket, "Key": object_key}
     if response_content_type:
         params["ResponseContentType"] = str(response_content_type)

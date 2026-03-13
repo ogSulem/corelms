@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+import logging
+
 import multiprocessing
 
 import psycopg
@@ -14,6 +16,9 @@ from alembic import command
 from alembic.config import Config
 from rq import Connection, Worker
 from sqlalchemy import create_engine, text
+
+
+log = logging.getLogger(__name__)
 
 
 def _require_env(name: str) -> str:
@@ -97,11 +102,13 @@ def _start_worker(*, redis_url: str, queues: list[str]) -> None:
                 if p.is_alive():
                     p.terminate()
             except Exception:
-                pass
+                log.debug("failed to terminate worker process", exc_info=True)
 
 
 def main(argv: list[str] | None = None) -> None:
     from app.core.config import settings
+
+    logger = logging.getLogger("corelms.launcher")
     p = argparse.ArgumentParser(prog="corelms")
     p.add_argument("mode", choices=["api", "worker"], help="api or worker")
     args = p.parse_args(argv)
@@ -119,14 +126,25 @@ def main(argv: list[str] | None = None) -> None:
         try:
             _ensure_bucket()
         except Exception:
-            pass
+            logger.warning("S3 bucket ensure failed during startup; continuing")
 
     if args.mode == "api":
         import uvicorn
 
         host = str(os.getenv("HOST") or "0.0.0.0")
         port = int(os.getenv("PORT") or "8000")
-        uvicorn.run("app.main:app", host=host, port=port, log_level=str(os.getenv("LOG_LEVEL") or "info"))
+        try:
+            workers = int(os.getenv("UVICORN_WORKERS") or "1")
+        except Exception:
+            workers = 1
+        workers = max(1, min(workers, 16))
+        uvicorn.run(
+            "app.main:app",
+            host=host,
+            port=port,
+            log_level=str(os.getenv("LOG_LEVEL") or "info"),
+            workers=workers,
+        )
         return
 
     raw = str(os.getenv("RQ_WORKER_QUEUES") or "").strip()

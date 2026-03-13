@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 import urllib.parse
+import logging
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -25,6 +26,9 @@ from app.services.skills import record_activity_and_award_xp
 from app.services.storage import get_s3_client, presign_get, presign_put
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+
+log = logging.getLogger(__name__)
 
 
 def _asset_access_guard(*, db: Session, user: User, aid: uuid.UUID, asset: ContentAsset) -> tuple[str | None, str | None]:
@@ -85,6 +89,7 @@ def _asset_access_guard(*, db: Session, user: User, aid: uuid.UUID, asset: Conte
             submodule_id = str(row[0]) if row[0] else None
             module_id = str(row[1]) if row[1] else None
     except Exception:
+        log.debug("assets: failed to resolve module/submodule ids for asset", exc_info=True)
         module_id = None
         submodule_id = None
     return module_id, submodule_id
@@ -164,7 +169,7 @@ def presign_download(
         if "/" in filename:
             filename = filename.split("/")[-1].strip() or "file"
     except Exception:
-        pass
+        log.debug("assets: filename normalization failed", exc_info=True)
     quoted = urllib.parse.quote(filename, safe="")
     disp_kind = "inline" if act == "view" else "attachment"
     disposition = f"{disp_kind}; filename*=UTF-8''{quoted}"

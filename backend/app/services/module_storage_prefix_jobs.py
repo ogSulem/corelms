@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 
@@ -7,6 +8,9 @@ from sqlalchemy import func, select
 
 from app.db.session import SessionLocal
 from app.models.module import Module
+
+
+log = logging.getLogger(__name__)
 
 
 def _slugify_s3_segment(v: str) -> str:
@@ -63,6 +67,7 @@ def backfill_module_storage_prefix_job(*, limit: int = 2000) -> dict:
                 updated += 1
             except Exception:
                 errors += 1
+                log.debug("backfill_module_storage_prefix_job: failed to update module storage_prefix", exc_info=True)
                 continue
 
         db.commit()

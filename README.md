@@ -2,69 +2,69 @@
 
 [![CI](https://github.com/ogSulem/corelms/actions/workflows/ci.yml/badge.svg)](https://github.com/ogSulem/corelms/actions/workflows/ci.yml)
 
-> License: **Proprietary**. This repository is provided for evaluation/demo purposes. For commercial use, a separate license agreement is required.
+CoreLMS — внутренняя LMS для обучения и контроля квалификации сотрудников.
 
-CoreLMS — система обучения и контроля квалификации сотрудников:
+Основные возможности:
 
 - обучение по модулям/урокам
-- материалы уроков (S3-compatible storage)
+- материалы уроков в S3-совместимом хранилище
 - тестирование (квизы), прогресс, XP
 - админ-панель: импорт контента, регенерация квизов, управление пользователями
 - аудит безопасности (security audit log)
 
+Лицензия:
+
+- репозиторий предоставляется для демонстрации/оценки
+- для коммерческого использования нужен отдельный договор
+
+---
+
 ## Состав репозитория
 
-- **`frontend/`** — Next.js приложение (UI + server routes `/api/*`)
-- **`backend/`** — FastAPI приложение (API, воркеры RQ, миграции Alembic)
-- **`nginx/`** — локальный ingress (reverse proxy в docker-compose)
-- **`docker-compose.yml`** — запуск (локально/VPS) + profiles (`dev`, `tls`)
-- **`.env.example`** — шаблон переменных окружения
+- **`frontend/`** — Next.js (UI + server routes `/api/*`)
+- **`backend/`** — FastAPI (API + воркеры RQ + Alembic)
+- **`nginx/`** — ingress для режима IP-only
+- **`Caddyfile`** — ingress для режима домен+TLS (профиль `tls`)
+- **`docker-compose.yml`** — единый способ запуска (локально/VPS)
+- **`.env.example`** — минимальный шаблон запуска (без тюнинга)
 
-## Архитектура
+---
 
-- **Frontend**: Next.js + TypeScript
-- **Backend**: FastAPI + SQLAlchemy + Alembic
-- **DB**: Postgres
-- **Queue**: Redis + RQ (импорт/реген/cleanup очереди)
-- **Storage**: S3-compatible
+## Как устроено (коротко)
 
-### Потоки запросов (вкратце)
+### Один origin — это важно
 
-- Браузер открывает UI по одному публичному origin (например `http://127.0.0.1:8080`).
-- UI делает запросы к API по same-origin путям:
-  - `GET /api/auth/*` — Next.js server routes (ставят httpOnly cookies)
-  - `GET/POST /api/backend/*` — прокси в backend (cookies приклеиваются автоматически)
-- Backend не публикуется наружу в локальном compose (доступен только внутри docker-сети).
+Приложение рассчитано на **один публичный origin** (то, что вводят в браузере).
 
-## Быстрый старт (локально, Docker Compose)
+- `http://localhost:8080` и `http://127.0.0.1:8080` — **разные хосты**.
+- Cookies `core_token/core_refresh` — host-only (если не задан `COOKIE_DOMAIN`).
+- Поэтому “залогонился на localhost, открыл 127.0.0.1 — разлогинило” это нормально.
 
-Локальный запуск рассчитан на работу через **nginx** как единую точку входа.
+### Поток запросов
 
-1) Создай `.env` из шаблона:
+- Браузер открывает UI на `PUBLIC_APP_URL`.
+- UI делает запросы по same-origin:
+  - `/api/auth/*` — Next.js server routes (ставят/чистят httpOnly cookies)
+  - `/api/backend/*` — прокси в backend (с учётом cookies)
+- Backend не должен быть доступен напрямую из интернета: он доступен только внутри docker-сети.
+
+---
+
+## Быстрый старт (локально)
+
+1) Создай `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-2) Выбери **один** origin и используй его всегда (это важно для cookie-сессии):
-
-- `http://localhost:<PORT>` и `http://127.0.0.1:<PORT>` считаются **разными хостами**.
-- Если залогинился на `localhost`, а потом открыл `127.0.0.1`, браузер **не отправит** host-only cookies (`core_token/core_refresh`) и будет выглядеть как “разлогин”.
-
-Это нормальное поведение браузера: cookies привязаны к домену.
-
-Рекомендуем для локалки:
+2) Рекомендуемые значения для локалки:
 
 - `NGINX_HTTP_PORT=8080`
 - `PUBLIC_APP_URL=http://127.0.0.1:8080`
 - `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8080`
 - `CORS_ALLOW_ORIGINS=http://127.0.0.1:8080`
-
-Если хочешь **поддерживать оба** (`localhost` и `127.0.0.1`), это возможно для CORS:
-
-- `CORS_ALLOW_ORIGINS=http://localhost:8080,http://127.0.0.1:8080`
-
-Но cookies всё равно будут отдельные для каждого хоста.
+- `COOKIE_SECURE=false`
 
 3) Запусти:
 
@@ -74,18 +74,115 @@ docker compose up --build
 
 Открыть:
 
-- UI (через nginx): `http://127.0.0.1:${NGINX_HTTP_PORT:-80}`
-- API из браузера: `http://127.0.0.1:${NGINX_HTTP_PORT:-80}/api/*`
+- UI: `http://127.0.0.1:8080/`
+- API: `http://127.0.0.1:8080/api/*`
 
-По умолчанию `backend` и `frontend` не публикуют 8000/3000 на хост (они доступны внутри docker-сети). Наружу публикуется только `nginx`.
+### Отладочный профиль (прямой доступ к портам)
 
-Если нужно открыть прямой доступ к сервисам для отладки (локально), используй профиль `dev`:
+Если нужно опубликовать `backend:8000`, `frontend:3000`, `postgres:5432`, `redis:6379` только на `127.0.0.1`, используй:
 
 ```bash
 docker compose --profile dev up -d --build
 ```
 
-### Полезные команды
+---
+
+## Деплой на VPS (production)
+
+Здесь описано два режима:
+
+- **Режим 1: VPS IP-only (HTTP)** — nginx на произвольном порту (например `:8888`)
+- **Режим 2: VPS домен + TLS (HTTPS)** — Caddy на `:80/:443` (профиль `tls`)
+
+### Базовый принцип безопасности
+
+- наружу публикуется только ingress (nginx или caddy)
+- `backend`, `postgres`, `redis`, воркеры — только внутри docker-сети
+
+### Шаги (общие)
+
+1) На VPS создай `.env` из `.env.example`
+
+2) Обязательно замени секреты:
+
+- `JWT_SECRET_KEY`
+- `BOOTSTRAP_ADMIN_PASSWORD`
+- `POSTGRES_PASSWORD`
+- `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`
+
+3) Проверь, что `ALLOW_PUBLIC_REGISTER=false`.
+
+---
+
+### Режим 1: VPS IP-only (HTTP через nginx)
+
+Настройки:
+
+- `NGINX_HTTP_PORT=8888` (или любой свободный)
+- `PUBLIC_APP_URL=http://<VPS_IP>:8888`
+- `NEXT_PUBLIC_API_BASE_URL=http://<VPS_IP>:8888`
+- `CORS_ALLOW_ORIGINS=http://<VPS_IP>:8888`
+- `COOKIE_SECURE=false`
+
+Запуск:
+
+```bash
+docker compose up -d --build
+```
+
+Проверка:
+
+- UI: `http://<VPS_IP>:8888/`
+- API: `http://<VPS_IP>:8888/api/health/ready`
+
+---
+
+### Режим 2: VPS домен + TLS (HTTPS через Caddy)
+
+Настройки:
+
+- `CADDY_DOMAIN=lms.example.com`
+- `CADDY_EMAIL=you@example.com`
+- `PUBLIC_APP_URL=https://lms.example.com`
+- `NEXT_PUBLIC_API_BASE_URL=https://lms.example.com`
+- `CORS_ALLOW_ORIGINS=https://lms.example.com`
+- `COOKIE_SECURE=true`
+
+Запуск:
+
+```bash
+docker compose --profile tls up -d --build
+```
+
+---
+
+## Первый админ
+
+На пустой БД backend может создать первого администратора, если в системе ещё нет admin-пользователя:
+
+- `BOOTSTRAP_ADMIN_NAME`
+- `BOOTSTRAP_ADMIN_PASSWORD`
+
+Рекомендация для production:
+
+- после первого входа создай второго админа
+- затем поменяй пароль и выключи bootstrap (оставь переменные пустыми)
+
+---
+
+## Healthchecks
+
+- `GET /api/health/live`
+- `GET /api/health/ready`
+
+Переключатель строгости readiness:
+
+- `HEALTH_READY_CHECK_S3=true` — readiness требует доступность S3
+- `HEALTH_READY_CHECK_S3=false` — readiness по DB+Redis (устойчивее при нестабильном S3)
+
+---
+
+## Эксплуатация: полезные команды
 
 - Остановить:
 
@@ -93,132 +190,20 @@ docker compose --profile dev up -d --build
 docker compose down
 ```
 
-- Пересобрать и поднять:
-
-```bash
-docker compose up -d --build
-```
-
-- Посмотреть логи:
+- Логи:
 
 ```bash
 docker compose logs -f --tail=200 nginx
 docker compose logs -f --tail=200 backend
 docker compose logs -f --tail=200 worker_import
+docker compose logs -f --tail=200 worker_regen
 ```
 
-### Первый вход / админ
-
-При первом старте backend может автоматически создать администратора, если в БД ещё нет admin-пользователя:
-
-- `BOOTSTRAP_ADMIN_NAME`
-- `BOOTSTRAP_ADMIN_PASSWORD`
-
-## Админ-панель (как пользоваться)
-
-### Импорт контента
-
-- Импорт ZIP ставится в очередь `corelms_import`.
-- В админке видны:
-  - текущая активная задача (started)
-  - очередь (queued/deferred/scheduled)
-  - история
-- Можно отменять queued задачи (и best-effort отменять started через cancel checkpoints).
-
-### Регенерация квизов (AI)
-
-- Реген ставится в очередь `corelms_regen`.
-- Статусы в UI опираются на RQ `status` (а не на `stage`), чтобы “Current” не пропадал при обновлениях.
-
-### Пользователи: создание и сброс пароля
-
-- При создании пользователя и при сбросе пароля админ получает **временный пароль**.
-- UI показывает модалку с инструкцией и временным паролем.
-- Пользователь при первом входе попадает на `/force-password-change`:
-  - вводит текущий (временный) пароль
-  - задаёт новый пароль + подтверждение
-  - указывает номер телефона
-
-## Переменные окружения (.env)
-
-Шаблон: `.env.example`.
-
-### Самые важные переменные
-
-- **`APP_ENV`**
-  - `development` — более мягкие defaults для локалки
-  - `production` — строгие проверки (секреты/URL'ы), лучше для VPS
-- **`PUBLIC_APP_URL`** — публичный origin фронта (то, что вводится в браузере)
-- **`CORS_ALLOW_ORIGINS`** — список origin'ов для CORS (должен совпадать с тем, где открывают UI)
-- **`NEXT_PUBLIC_API_BASE_URL`** — публичный origin для фронта (обычно равен `PUBLIC_APP_URL`)
-- **`CORE_INTERNAL_API_BASE_URL`** — внутренний URL backend в docker-сети (обычно `http://backend:8000`)
-- **`COOKIE_SECURE`**
-  - `false` для HTTP (локалка, IP-only)
-  - `true` для HTTPS (домен + TLS)
-
-Минимальный набор для production:
-
-- `APP_ENV=production`
-- `JWT_SECRET_KEY` (сильный)
-- `ALLOW_PUBLIC_REGISTER=false`
-- `PUBLIC_APP_URL` (URL фронта)
-- `CORS_ALLOW_ORIGINS` (URL фронта)
-
-Storage:
-
-- для внешнего S3 укажи `S3_ENDPOINT_URL` / `S3_PUBLIC_ENDPOINT_URL` и ключи
-- приложение рассчитано на внешний S3 (например REG.RU)
-
-## Healthchecks
-
-- `GET /health/live`
-- `GET /health/ready`
-
-## Тесты
-
-```bash
-python -m pytest -q
-```
-
-## Деплой на VPS (как сайт)
-
-Принцип:
-
-- наружу открыт только ingress (nginx по `NGINX_HTTP_PORT`, либо Caddy на **80/443**)
-- Postgres/Redis/backend/frontend/workers работают внутри docker-сети
-
-### Запуск
-
-1) На VPS создай `.env` (из `.env.example`).
-
-2) Запусти:
-
-```bash
-docker compose up -d --build
-```
-
-Открыть:
-
-- сайт: `http://<VPS_IP>/`
-- API: `http://<VPS_IP>/api/`
-
-### HTTPS
-
-Для HTTPS (Caddy) используй профиль `tls`:
-
-```bash
-docker compose --profile tls up -d --build
-```
-
-И укажи:
-
-- `CADDY_DOMAIN`
-- `CADDY_EMAIL`
-- `PUBLIC_APP_URL` / `CORS_ALLOW_ORIGINS` (должны совпадать с доменом)
+---
 
 ## Перенос данных (локально -> VPS)
 
-### Postgres (рекомендуемый способ)
+### Postgres
 
 Локально:
 
@@ -234,41 +219,88 @@ cat backup.dump | docker compose exec -T postgres pg_restore -U sdlp -d sdlp --c
 
 ### Контент (S3)
 
-- Если используешь внешний S3 (REG.RU/AWS/etc) — контент не нужно переносить, он уже в бакете.
-- Если локально контент был в другом хранилище — перенеси его в S3 заранее (любым S3-клиентом).
+- если используешь внешний S3 — контент уже в бакете, переносить нечего
+- если контент был локально — перенеси в S3 заранее любым S3-клиентом
+
+---
 
 ## Troubleshooting
-
-- **Очередь “не исполняется”**: проверь workers для нужной очереди (`WORKERS: 0` в UI) и что контейнеры `worker_import`/`worker_regen` запущены.
-- **CORS ошибки**: выставь `CORS_ALLOW_ORIGINS` ровно на URL фронта.
-- **Force password change**: убедись, что пользователь реально имеет `must_change_password=true` и что фронт редиректит на `/force-password-change`.
 
 ### Частый случай: “после перезагрузки выкинуло”
 
 Проверь:
 
-- что ты не сменил `localhost` на `127.0.0.1` (или наоборот)
-- что `COOKIE_SECURE=false` при HTTP
-- что refresh не инвалидируется (после `down -v` он станет невалидным)
+- не поменял ли ты `localhost` на `127.0.0.1` (или наоборот)
+- при HTTP должен быть `COOKIE_SECURE=false`
+- после `docker compose down -v` Redis очищается, refresh-сессии становятся невалидными
 
-### Важно про `docker compose down -v`
+### Очереди не исполняются
 
-`docker compose down -v` удаляет volumes Postgres/Redis.
+- открой админку, вкладка diagnostics/jobs: `WORKERS: 0` значит воркеры не поднялись
+- проверь контейнеры `worker_import`, `worker_regen`, `worker_default`
+- проверь `REDIS_URL`
 
-- Данные БД удалятся.
-- Все refresh-сессии в Redis потеряются.
+### CORS ошибки
 
-После этого нужно:
+- `CORS_ALLOW_ORIGINS` должен точно совпадать с `PUBLIC_APP_URL` (origin в браузере)
 
-- заново поднять compose
-- заново залогиниться (старые cookies станут невалидными)
+---
+
+## Advanced: опциональные переменные окружения
+
+`.env.example` специально минимальный. Ниже — опциональные настройки из `backend/app/core/config.py`.
+
+### OpenRouter (если нужен AI)
+
+- `OPENROUTER_ENABLED=true`
+- `OPENROUTER_API_KEY=...`
+
+Опционально:
+
+- `OPENROUTER_BASE_URL`
+- `OPENROUTER_MODEL`
+- `OPENROUTER_TIMEOUT_CONNECT`
+- `OPENROUTER_TIMEOUT_READ`
+- `OPENROUTER_TIMEOUT_WRITE`
+- `OPENROUTER_TEMPERATURE`
+- `OPENROUTER_HTTP_REFERER`
+- `OPENROUTER_APP_TITLE`
+- `LLM_PROVIDER_ORDER`
+
+### LLM debug (диагностика генерации квизов)
+
+По умолчанию debug выключен.
+
+- `LLM_DEBUG_SAVE=true` — сохранять диагностические срезы в meta RQ job (видно в админке)
+- `LLM_DEBUG_LOG=true` — писать эти срезы в логи worker
+- `LLM_DEBUG_MAX_CHARS=2000` — лимит на размер сниппетов
+
+Важно: при включении debug может содержать фрагменты текста уроков и вывода модели.
+
+### S3 тюнинг (таймауты, presign TTL и т.д.)
+
+- `S3_REGION_NAME`
+- `S3_ADDRESSING_STYLE`
+- `S3_PRESIGN_DOWNLOAD_EXPIRES_SECONDS`
+- `S3_PRESIGN_UPLOAD_EXPIRES_SECONDS`
+- `S3_PRESIGN_MULTIPART_PART_EXPIRES_SECONDS`
+- `S3_CONNECT_TIMEOUT_SECONDS`
+- `S3_READ_TIMEOUT_SECONDS`
+- `S3_MAX_ATTEMPTS`
+- `S3_MAX_POOL_CONNECTIONS`
+
+### Uploads cleanup (операционные лимиты)
+
+- `UPLOADS_ADMIN_TTL_HOURS`
+- `UPLOADS_ADMIN_CLEANUP_INTERVAL_MINUTES`
+- `UPLOADS_ADMIN_MULTIPART_TTL_HOURS`
+- `UPLOADS_ADMIN_MULTIPART_MAX_ABORT`
 
 ---
 
 ## Примечания по безопасности
 
-- Никогда не коммить `.env` с реальными ключами.
-- В production обязательно замени:
-  - `JWT_SECRET_KEY`
-  - `BOOTSTRAP_ADMIN_PASSWORD`
-  - ключи S3
+- никогда не коммить `.env`
+- не включай runtime overrides в production без нужды:
+  - `ALLOW_RUNTIME_LLM_OVERRIDES=false`
+  - `ALLOW_RUNTIME_S3_OVERRIDES=false`

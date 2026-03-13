@@ -9,6 +9,13 @@ services:
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 128m
+    cpus: 0.25
 
   caddy:
     image: caddy:2
@@ -31,6 +38,13 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 192m
+    cpus: 0.25
 
   postgres:
     image: postgres:16
@@ -46,6 +60,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 1024m
+    cpus: 1.0
 
   worker_import:
     build: ./backend
@@ -56,6 +77,10 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     env_file:
       - ./.env
@@ -64,6 +89,13 @@ services:
       - RQ_WORKER_QUEUES=${RQ_WORKER_IMPORT_QUEUES:-corelms_import}
       - RQ_WORKER_PROCESSES=${RQ_WORKER_IMPORT_PROCESSES:-1}
     entrypoint: ["python", "-m", "app.worker"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 384m
+    cpus: 0.75
 
   worker_regen:
     build: ./backend
@@ -74,6 +106,10 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     env_file:
       - ./.env
@@ -82,6 +118,13 @@ services:
       - RQ_WORKER_QUEUES=${RQ_WORKER_REGEN_QUEUES:-corelms_regen}
       - RQ_WORKER_PROCESSES=${RQ_WORKER_REGEN_PROCESSES:-1}
     entrypoint: ["python", "-m", "app.worker"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 384m
+    cpus: 0.75
 
   worker_default:
     build: ./backend
@@ -92,6 +135,10 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     env_file:
       - ./.env
@@ -100,15 +147,30 @@ services:
       - RQ_WORKER_QUEUES=${RQ_WORKER_DEFAULT_QUEUES:-corelms_cleanup,corelms}
       - RQ_WORKER_PROCESSES=${RQ_WORKER_DEFAULT_PROCESSES:-1}
     entrypoint: ["python", "-m", "app.worker"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 256m
+    cpus: 0.5
 
   redis:
     image: redis:7
     restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 320m
+    cpus: 0.5
 
   backend:
     build: ./backend
@@ -117,15 +179,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     volumes:
       - backend_data:/data
     restart: unless-stopped
     env_file:
       - ./.env
     environment:
-      - AUTO_MIGRATE_ON_START=true
-      - BOOTSTRAP_ADMIN_NAME=${BOOTSTRAP_ADMIN_NAME:-admin}
-      - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-admin12345}
+      - AUTO_MIGRATE_ON_START=${AUTO_MIGRATE_ON_START:-false}
+      - BOOTSTRAP_ADMIN_NAME=${BOOTSTRAP_ADMIN_NAME:-}
+      - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-}
     healthcheck:
       test:
         [
@@ -137,6 +203,13 @@ services:
       interval: 10s
       timeout: 3s
       retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 512m
+    cpus: 1.0
 
   frontend:
     build:
@@ -148,6 +221,10 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
     env_file:
       - ./.env
@@ -170,6 +247,13 @@ services:
       interval: 10s
       timeout: 3s
       retries: 20
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 512m
+    cpus: 0.75
 
   backend_expose:
     image: alpine:3.20

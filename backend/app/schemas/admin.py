@@ -135,6 +135,7 @@ class UserResetPasswordResponse(BaseModel):
 
 class UserUpdateRequest(BaseModel):
     name: str | None = None
+    email: str | None = None
     position: str | None = None
     role: Literal["employee", "admin"] | None = None
     must_change_password: bool | None = None

@@ -442,40 +442,10 @@ export default function AccountPage() {
                     variant="outline"
                     size="sm"
                     className="rounded-xl"
-                    onClick={async () => {
-                      try {
-                        setSessionsLoading(true);
-                        const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
-                        setSessions(Array.isArray(sess?.items) ? sess.items : []);
-                      } catch {
-                        // ignore
-                      } finally {
-                        setSessionsLoading(false);
-                      }
-                    }}
-                    disabled={sessionsLoading}
-                  >
-                    Обновить
-                  </Button>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="rounded-xl"
                     onClick={() => void revokeOtherSessions()}
                     disabled={sessionsLoading || sessions.length <= 1}
                   >
                     Завершить остальные
-                  </Button>
-
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="rounded-xl"
-                    onClick={() => void revokeAllSessions()}
-                    disabled={sessionsLoading || sessions.length === 0}
-                  >
-                    Выйти везде
                   </Button>
                 </div>
               </div>

@@ -1,30 +1,41 @@
 from __future__ import annotations
 
+import logging
 import httpx
 
 from app.core.config import settings
 from app.core.redis_client import get_redis
 
 
+log = logging.getLogger(__name__)
+
+
 def openrouter_healthcheck(*, base_url: str | None = None) -> tuple[bool, str | None]:
     if not settings.openrouter_enabled:
         # Allow runtime enabling via Redis.
         try:
+            env = (getattr(settings, "app_env", "") or "").strip().lower()
+            if env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)):
+                return False, "disabled"
             r = get_redis()
             enabled_raw = (r.hget("runtime:llm", "openrouter_enabled") or b"").decode("utf-8", errors="ignore")
             if enabled_raw.strip().lower() not in {"1", "true", "yes", "on"}:
                 return False, "disabled"
         except Exception:
+            log.debug("openrouter_healthcheck: runtime enable check failed", exc_info=True)
             return False, "disabled"
 
     token = (settings.openrouter_api_key or "").strip()
     try:
+        env = (getattr(settings, "app_env", "") or "").strip().lower()
+        if env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)):
+            raise RuntimeError("runtime_overrides_disabled")
         r = get_redis()
         rt = r.hget("runtime:llm", "openrouter_api_key")
         if rt is not None:
             token = (rt.decode("utf-8") if isinstance(rt, (bytes, bytearray)) else str(rt)).strip() or token
     except Exception:
-        pass
+        log.debug("openrouter_healthcheck: runtime api key read failed", exc_info=True)
 
     if not token:
         return False, "missing_token"

@@ -12,6 +12,8 @@ class CoreApiError extends Error {
   }
 }
 
+const DEFAULT_API_TIMEOUT_MS = 25_000;
+
 function _makeRequestId(): string {
   try {
     // Browser runtime
@@ -66,7 +68,10 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   }
 
   const timeoutMsRaw = (init as any)?.timeoutMs;
-  const timeoutMs = typeof timeoutMsRaw === "number" && Number.isFinite(timeoutMsRaw) ? Math.max(1, timeoutMsRaw) : 25_000;
+  const timeoutMs =
+    typeof timeoutMsRaw === "number" && Number.isFinite(timeoutMsRaw)
+      ? Math.max(1, timeoutMsRaw)
+      : DEFAULT_API_TIMEOUT_MS;
   const controller = !init?.signal && typeof AbortController !== "undefined" ? new AbortController() : null;
   const timeoutId = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
 
@@ -161,21 +166,21 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
         requestId: requestId || undefined,
       });
     }
-    if (res.status === 403 && raw.includes("confirm reading")) {
+    if (res.status === 403 && (errorCode === "confirm_reading_required" || raw.includes("confirm reading"))) {
       throw new CoreApiError("Сначала подтвердите прочтение теории, затем начните тест.", {
         status: res.status,
         errorCode: errorCode || "confirm_reading_required",
         requestId: requestId || undefined,
       });
     }
-    if (res.status === 409 && raw.includes("time limit")) {
+    if (res.status === 409 && (errorCode === "time_limit_exceeded" || raw.includes("time limit"))) {
       throw new CoreApiError("Время на тест истекло. Начните тест заново.", {
         status: res.status,
         errorCode: errorCode || "time_limit_exceeded",
         requestId: requestId || undefined,
       });
     }
-    if (res.status === 409 && raw.includes("expired")) {
+    if (res.status === 409 && (errorCode === "session_expired" || raw.includes("expired"))) {
       throw new CoreApiError("Сессия теста истекла. Начните тест заново.", {
         status: res.status,
         errorCode: errorCode || "session_expired",

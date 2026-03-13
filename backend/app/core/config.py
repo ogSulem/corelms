@@ -7,6 +7,12 @@ class Settings(BaseSettings):
 
     app_env: str = Field(default="development", validation_alias="APP_ENV")
 
+    enable_api_docs: bool = Field(default=False, validation_alias="ENABLE_API_DOCS")
+
+    allow_runtime_llm_overrides: bool = Field(default=False, validation_alias="ALLOW_RUNTIME_LLM_OVERRIDES")
+
+    allow_runtime_s3_overrides: bool = Field(default=False, validation_alias="ALLOW_RUNTIME_S3_OVERRIDES")
+
     allow_public_register: bool = Field(default=False, validation_alias="ALLOW_PUBLIC_REGISTER")
     password_min_length: int = Field(default=8, validation_alias="PASSWORD_MIN_LENGTH")
 
@@ -58,6 +64,8 @@ class Settings(BaseSettings):
 
     enable_inprocess_scheduler: bool = Field(default=False, validation_alias="ENABLE_INPROCESS_SCHEDULER")
     cron_secret: str | None = Field(default=None, validation_alias="CRON_SECRET")
+
+    health_ready_check_s3: bool = Field(default=True, validation_alias="HEALTH_READY_CHECK_S3")
 
     auto_migrate_on_start: bool = Field(default=False, validation_alias="AUTO_MIGRATE_ON_START")
 

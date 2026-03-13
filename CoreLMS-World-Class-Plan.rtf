@@ -1,0 +1,169 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Calibri;}{\f1 Consolas;}}
+\fs24
+\b CoreLMS \u8212? World-Class Project Plan (Roadmap + Checklist)\b0\par
+\par
+\b How to use this document\b0\par
+1) Work in phases (P0..P6).\par
+2) Each phase has: goals, checklist, and Definition of Done (DoD).\par
+3) Only start the next phase when the current DoD is satisfied.\par
+\par
+\b Project Context (current stack)\b0\par
+\bullet\tab Frontend: Next.js (App Router), React, TypeScript, Tailwind, react-markdown.\par
+\bullet\tab Backend: FastAPI, SQLAlchemy/Alembic, Redis, RQ workers.\par
+\bullet\tab Infra: Docker Compose, Nginx (local), Caddy (TLS profile), Postgres, S3-compatible storage.\par
+\par
+\b Guiding Principles (world-class)\b0\par
+\bullet\tab Security by default (least privilege, secrets hygiene, hardened cookies, safe headers).\par
+\bullet\tab Reliability first (clear failure modes, retries, idempotency, health/readiness, observability).\par
+\bullet\tab Great UX (consistent typography/layout, accessibility, fast perceived performance).\par
+\bullet\tab Developer Experience (repeatable envs, CI, tests, lint/typecheck, fast feedback).\par
+\bullet\tab Operability (easy deploy, rollbacks, monitoring, backups, incident playbooks).\par
+\par
+\b Quality Gates (must always pass)\b0\par
+\bullet\tab Frontend: build succeeds; lint/typecheck clean or explicitly waived with rationale.\par
+\bullet\tab Backend: migrations OK; health endpoints OK; structured errors with request_id.\par
+\bullet\tab Security: no secrets in git; no large binaries in git; dependency scanning enabled.\par
+\bullet\tab Regression safety: smoke tests for auth + critical flows.\par
+\par
+\b Phase P0 \u8212? Repo Hygiene + Safety Rails (1 day)\b0\par
+\b Goals\b0\par
+\bullet\tab Prevent accidental commits of secrets/binaries; standardize repo tooling.\par
+\b Checklist\b0\par
+[ ] Ensure .env is in .gitignore and never committed.\par
+[ ] Add guards for large files (>20MB) via pre-commit + CI (reject).\par
+[ ] Add secret scanning: gitleaks (CI) + local optional hook.\par
+[ ] Add editorconfig (line endings, indentation) to reduce CRLF/LF churn.\par
+[ ] Add CONTRIBUTING workflow: how to run, test, lint, build, deploy.\par
+\b Definition of Done\b0\par
+\bullet\tab No secrets in git history on main; CI fails if secrets/big files appear.\par
+\bullet\tab A new dev can clone and run with documented steps.\par
+\par
+\b Phase P1 \u8212? Environments + Configuration Excellence (1\u8211?2 days)\b0\par
+\b Goals\b0\par
+\bullet\tab Make local/VPS/prod configs explicit, safe, and predictable.\par
+\b Checklist\b0\par
+[ ] Split env templates: .env.example (safe placeholders) + optional .env.local/.env.vps docs.\par
+[ ] Hard requirement: strong JWT secret in prod (fail-fast already exists).\par
+[ ] Cookie settings matrix: secure, domain, sameSite; validate per environment.\par
+[ ] CORS allowlist correctness per PUBLIC_APP_URL.\par
+[ ] Proxy trust: TRUST_PROXY_HEADERS=true only behind trusted proxies; keep TRUSTED_PROXY_IPS accurate.\par
+[ ] Document routing: Nginx/Caddy \u8594? Next \u8594? /api/backend/* \u8594? FastAPI.\par
+[ ] Add a single command for full rebuild (compose profiles).\par
+\b Definition of Done\b0\par
+\bullet\tab Running the app on local/VPS/prod is a cookbook (no guessing).\par
+\bullet\tab A misconfigured env fails loudly with clear errors.\par
+\par
+\b Phase P2 \u8212? Security Hardening (2\u8211?4 days)\b0\par
+\b Goals\b0\par
+\bullet\tab Treat project like fintech: robust sessions, secure defaults, auditability.\par
+\b Checklist\b0\par
+\b 2.1 Authentication & Sessions\b0\par
+[ ] Refresh token rotation tested (race conditions handled).\par
+[ ] Session store (Redis) supports: list sessions, revoke one, revoke all, idle/absolute timeouts.\par
+[ ] Rate limits on auth endpoints (login/refresh/password change).\par
+[ ] Optional device fingerprint (non-invasive): UA hash + IP prefix policy; document tradeoffs.\par
+\b 2.2 Transport & Headers\b0\par
+[ ] HSTS in prod verified only when TLS is enabled.\par
+[ ] Add Content-Security-Policy appropriate for Next + API.\par
+[ ] Ensure cookies are HttpOnly, Secure (prod), SameSite policy defined.\par
+\b 2.3 Dependency & SAST\b0\par
+[ ] Dependabot (or Renovate) enabled.\par
+[ ] Python: pip-audit; JS: npm/yarn audit in CI (or Snyk).\par
+[ ] Basic SAST (semgrep) rules for FastAPI/JS.\par
+\b Definition of Done\b0\par
+\bullet\tab Security checklist passes; critical vulnerabilities addressed or explicitly accepted.\par
+\bullet\tab Attack surface documented (auth, uploads, streaming, admin).\par
+\par
+\b Phase P3 \u8212? Reliability + Observability (2\u8211?5 days)\b0\par
+\b Goals\b0\par
+\bullet\tab Make failures diagnosable; ensure background jobs are resilient.\par
+\b Checklist\b0\par
+\b 3.1 Logging\b0\par
+[ ] Structured logs everywhere (rid, user_id, ip, path, duration_ms, status).\par
+[ ] PII policy: never log tokens/passwords; scrub headers.\par
+\b 3.2 Metrics & Tracing\b0\par
+[ ] Prometheus metrics endpoint (latency, errors, rq queue depth).\par
+[ ] Optional OpenTelemetry traces (start with HTTP + DB spans).\par
+\b 3.3 Background Jobs (RQ)\b0\par
+[ ] Retry/backoff strategy per job type; idempotency keys where possible.\par
+[ ] Dead-letter / failed job inspection process.\par
+[ ] Job timeouts and max runtime budgets documented.\par
+\b 3.4 Health/Readiness\b0\par
+[ ] /health/ready checks DB + Redis; S3 optionally.\par
+[ ] Docker healthchecks align with real readiness.\par
+\b Definition of Done\b0\par
+\bullet\tab When something breaks, you can answer: what failed, where, for which user, and why.\par
+\par
+\b Phase P4 \u8212? World-Class UX/UI (3\u8211?7 days)\b0\par
+\b Goals\b0\par
+\bullet\tab Make lessons and dashboard feel premium: typography, spacing, accessibility.\par
+\b Checklist\b0\par
+\b 4.1 Design System\b0\par
+[ ] Define tokens: spacing scale, font scale, colors, radii, shadows.\par
+[ ] Standard components: Button, Card, Modal, Form fields, Toasts, Empty states.\par
+[ ] A11y: focus styles, keyboard navigation, aria labels.\par
+\b 4.2 Lesson Rendering\b0\par
+[ ] Robust Markdown normalization (handles sloppy pasted content).\par
+[ ] \u8220?Section cards\u8221? mode: numbered sections as cards (badge + title + body).\par
+[ ] Typography: consistent margins, line-height, max width; avoid orphan headings.\par
+[ ] Media: images/video/pdf preview with safe sandboxing; responsive behavior.\par
+\b 4.3 Voice-over UX\b0\par
+[ ] Two-voice selection (male/female) compact in header controls.\par
+[ ] Rate/pitch controls persisted; pause/resume stable across browsers.\par
+\b Definition of Done\b0\par
+\bullet\tab A new user instantly feels the product is premium and consistent.\par
+\par
+\b Phase P5 \u8212? Performance (1\u8211?3 days)\b0\par
+\b Goals\b0\par
+\bullet\tab Keep app fast on slow networks and mid devices.\par
+\b Checklist\b0\par
+[ ] Measure: Lighthouse + Web Vitals baseline.\par
+[ ] Code splitting: avoid importing heavy components on initial route.\par
+[ ] API caching strategy (where safe): ETags, cache headers for static assets.\par
+[ ] S3 streaming endpoints support Range (quickstart already does) + correct cache headers.\par
+[ ] DB: add indexes for hot queries; analyze slow queries.\par
+\b Definition of Done\b0\par
+\bullet\tab Median page loads are fast; no obvious long tasks; server handles spikes gracefully.\par
+\par
+\b Phase P6 \u8212? Testing + CI/CD (3\u8211?7 days)\b0\par
+\b Goals\b0\par
+\bullet\tab Make regressions rare; make deployments safe and repeatable.\par
+\b Checklist\b0\par
+\b 6.1 Backend Tests (pytest)\b0\par
+[ ] Auth flows: login/refresh/logout; session listing/revocation.\par
+[ ] Proxy/IP extraction tests (trusted vs untrusted).\par
+[ ] Quickstart streaming tests incl. Range headers (206/416).\par
+[ ] Storage presign/upload flows; permission checks.\par
+\b 6.2 Frontend Tests\b0\par
+[ ] Playwright smoke: login, dashboard, open lesson, quickstart playback, refresh token path.\par
+\b 6.3 CI\b0\par
+[ ] Lint + typecheck + tests + docker build in CI.\par
+[ ] Secret scan + dependency scan in CI.\par
+\b 6.4 Deployment\b0\par
+[ ] Deploy runbook: backup DB, pull, migrate, health check, rollback steps.\par
+[ ] Backups: DB dumps, S3 lifecycle, retention policy.\par
+\b Definition of Done\b0\par
+\bullet\tab Every merge is validated by CI; deployments are routine with rollback.\par
+\par
+\b Execution Schedule (recommended)\b0\par
+\bullet\tab Week 1: P0\u8594?P2 (hygiene, env, security).\par
+\bullet\tab Week 2: P3\u8594?P4 (observability, UX).\par
+\bullet\tab Week 3: P5\u8594?P6 (performance, testing, CI/CD).\par
+\par
+\b Appendix A: Required Docs (deliverables)\b0\par
+[ ] README: local run, docker profiles, troubleshooting.\par
+[ ] VPS runbook: env setup, domain+TLS, rebuild, migrations, verification checklist.\par
+[ ] Security.md updated: threat model, secrets handling, contact.\par
+[ ] Architecture.md: diagrams and request routing.\par
+\par
+\b Appendix B: Quick Wins (do anytime)\b0\par
+[ ] Add pre-commit: formatters + gitleaks + big file blocker.\par
+[ ] Add \u8220?make-like\u8221? scripts: dev, build, test, lint, migrate.\par
+[ ] Add admin safety confirmations for destructive operations.\par
+\par
+\b Sign-off\b0\par
+Owner: ____________________\par
+Date: _____________________\par
+\par
+}

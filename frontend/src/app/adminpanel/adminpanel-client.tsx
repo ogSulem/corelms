@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import * as nextNavigation from "next/navigation";
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
@@ -30,8 +30,10 @@ import ImportTab from "./_components/ImportTab";
 
 export default function AdminPanelClient() {
   const { user, loading: authLoading } = useAuth();
-  const pathname = usePathname();
-  const router = useRouter();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const pathname = (nextNavigation as any).usePathname();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const router = (nextNavigation as any).useRouter();
 
   const IMPORT_STATE_KEY = "corelms:admin_import_state:v4";
   const STORAGE_UPLOADS_PREFIX_KEY = "corelms:admin_storage_uploads_prefix:v1";
@@ -76,6 +78,7 @@ export default function AdminPanelClient() {
 
   const jobsDebugEnabled = useMemo(() => {
     try {
+      if (process.env.NODE_ENV === "production") return false;
       return String(window.localStorage.getItem("corelms:admin_jobs_debug") || "").trim() === "1";
     } catch {
       return false;

@@ -29,6 +29,7 @@ interface UsersTabProps {
   userDetailLoading: boolean;
   updateSelectedUser: (patch: {
     name?: string | null;
+    email?: string | null;
     position?: string | null;
     role?: "employee" | "admin" | null;
     must_change_password?: boolean | null;
@@ -79,8 +80,10 @@ export function UsersTab(props: UsersTabProps) {
   } = props;
 
   const isSelf = Boolean(selectedUserId) && String(selectedUserId) === String(currentUserId || "");
+  const isLockedAdminTarget = Boolean(userDetail?.role) && String(userDetail?.role || "") === "admin" && !isSelf;
 
   const [draftName, setDraftName] = useState<string>("");
+  const [draftEmail, setDraftEmail] = useState<string>("");
   const [draftRole, setDraftRole] = useState<"employee" | "admin">("employee");
   const [historyOpen, setHistoryOpen] = useState(false);
 
@@ -88,17 +91,20 @@ export function UsersTab(props: UsersTabProps) {
     if (!userDetail) return false;
     return (
       String(draftName || "") !== String(userDetail.name || "") ||
+      String(draftEmail || "") !== String(userDetail.email || "") ||
       String(draftRole || "") !== String(userDetail.role || "")
     );
-  }, [draftName, draftRole, userDetail]);
+  }, [draftName, draftEmail, draftRole, userDetail]);
 
   useEffect(() => {
     if (!userDetail) {
       setDraftName("");
+      setDraftEmail("");
       setDraftRole("employee");
       return;
     }
     setDraftName(String(userDetail.name || ""));
+    setDraftEmail(String(userDetail.email || ""));
     setDraftRole((String(userDetail.role || "employee") as any) === "admin" ? "admin" : "employee");
   }, [userDetail?.id]);
 
@@ -263,10 +269,11 @@ export function UsersTab(props: UsersTabProps) {
                 <Button
                   variant="ghost"
                   className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={!selectedUserId || userDetailLoading || !userDetail || !hasDraft}
+                  disabled={!selectedUserId || userDetailLoading || !userDetail || !hasDraft || isLockedAdminTarget}
                   onClick={() =>
                     void updateSelectedUser({
                       name: String(draftName || "").trim() || null,
+                      email: String(draftEmail || "").trim() || null,
                       role: (draftRole as any) ?? null,
                       must_change_password: userDetail?.must_change_password ?? null,
                     })
@@ -277,7 +284,7 @@ export function UsersTab(props: UsersTabProps) {
                 <Button
                   variant="ghost"
                   className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={!selectedUserId || resetBusy}
+                  disabled={!selectedUserId || resetBusy || isLockedAdminTarget}
                   onClick={resetPassword}
                 >
                   {resetBusy ? "СБРОС..." : "СБРОСИТЬ ПАРОЛЬ"}
@@ -285,7 +292,7 @@ export function UsersTab(props: UsersTabProps) {
                 <Button
                   variant="destructive"
                   className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={!selectedUserId || deleteUserBusy || isSelf}
+                  disabled={!selectedUserId || deleteUserBusy || isSelf || isLockedAdminTarget}
                   onClick={deleteSelectedUser}
                 >
                   {deleteUserBusy ? "УДАЛЕНИЕ..." : "УДАЛИТЬ"}
@@ -306,11 +313,18 @@ export function UsersTab(props: UsersTabProps) {
                       className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
                       value={draftName}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraftName(String(e.target.value || ""))}
+                      disabled={isLockedAdminTarget}
                     />
                   </div>
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Email</div>
-                    <div className="mt-2 text-[11px] font-black tracking-widest text-zinc-950 break-all">{String(userDetail.email || "")}</div>
+                    <input
+                      className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
+                      value={draftEmail}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDraftEmail(String(e.target.value || ""))}
+                      placeholder="name@company.com"
+                      disabled={isLockedAdminTarget}
+                    />
                   </div>
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Роль</div>
@@ -318,7 +332,7 @@ export function UsersTab(props: UsersTabProps) {
                       className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
                       value={draftRole}
                       onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setDraftRole((e.target.value as any) === "admin" ? "admin" : "employee")}
-                      disabled={isSelf}
+                      disabled={isSelf || isLockedAdminTarget}
                     >
                       <option value="employee">СОТРУДНИК</option>
                       <option value="admin">АДМИН</option>

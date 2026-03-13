@@ -1,6 +1,7 @@
-import { cookies } from "next/headers";
+import * as nextHeaders from "next/headers";
 import { NextResponse } from "next/server";
 import { sharedRefresh } from "../_refresh_shared";
+import { clearAuthCookies, setAccessCookie, setRefreshCookie } from "../_cookies";
 
 const API_BASE_URL =
   process.env.CORE_INTERNAL_API_BASE_URL ||
@@ -8,15 +9,10 @@ const API_BASE_URL =
   "http://backend:8000";
 
 export async function GET(req: Request) {
-  const cookieStore = await cookies();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cookieStore = await (nextHeaders as any).cookies();
   const token = cookieStore.get("core_token")?.value;
   const refresh = cookieStore.get("core_refresh")?.value;
-
-  const isProd = process.env.NODE_ENV === "production";
-  const cookieSecure = String(process.env.COOKIE_SECURE || "").trim()
-    ? String(process.env.COOKIE_SECURE || "").trim().toLowerCase() === "true"
-    : isProd;
-  const cookieDomain = String(process.env.COOKIE_DOMAIN || "").trim() || undefined;
 
   async function tryRefresh(): Promise<
     | {
@@ -50,43 +46,10 @@ export async function GET(req: Request) {
   }
 
   function setTokenCookies(out: NextResponse, args: { access: string; nextRefresh?: string; expiresIn?: number; refreshExpiresIn?: number }) {
-    const configuredMaxAge = Number.parseInt(process.env.CORE_TOKEN_MAX_AGE_SECONDS || "3600", 10) || 3600;
-    const upstreamExpiresIn = typeof args.expiresIn === "number" && Number.isFinite(args.expiresIn) ? args.expiresIn : undefined;
-    const maxAge = upstreamExpiresIn ? Math.min(configuredMaxAge, upstreamExpiresIn) : configuredMaxAge;
-    const expires = new Date(Date.now() + maxAge * 1000);
-
-    out.cookies.set({
-      name: "core_token",
-      value: String(args.access || "").trim(),
-      httpOnly: true,
-      sameSite: "lax",
-      secure: cookieSecure,
-      domain: cookieDomain,
-      path: "/",
-      maxAge,
-      expires,
-      priority: "high",
+    setAccessCookie(out, args.access, { upstreamExpiresIn: typeof args.expiresIn === "number" ? args.expiresIn : null });
+    setRefreshCookie(out, String(args.nextRefresh || ""), {
+      refreshExpiresIn: typeof args.refreshExpiresIn === "number" ? args.refreshExpiresIn : null,
     });
-
-    const rr = String(args.nextRefresh || "").trim();
-    if (rr) {
-      const refreshMaxAge = typeof args.refreshExpiresIn === "number" && Number.isFinite(args.refreshExpiresIn)
-        ? args.refreshExpiresIn
-        : 30 * 24 * 60 * 60;
-      const refreshExpires = new Date(Date.now() + refreshMaxAge * 1000);
-      out.cookies.set({
-        name: "core_refresh",
-        value: rr,
-        httpOnly: true,
-        sameSite: "lax",
-        secure: cookieSecure,
-        domain: cookieDomain,
-        path: "/",
-        maxAge: refreshMaxAge,
-        expires: refreshExpires,
-        priority: "high",
-      });
-    }
   }
 
   async function fetchMe(accessToken: string): Promise<Response | null> {
@@ -160,18 +123,7 @@ export async function GET(req: Request) {
     }
 
     const out = NextResponse.json({ authenticated: false });
-    out.cookies.set({
-      name: "core_token",
-      value: "",
-      httpOnly: true,
-      sameSite: "lax",
-      secure: cookieSecure,
-      domain: cookieDomain,
-      path: "/",
-      maxAge: 0,
-      expires: new Date(0),
-      priority: "high",
-    });
+    clearAuthCookies(out);
     return out;
   }
 

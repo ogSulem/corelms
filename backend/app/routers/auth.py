@@ -4,6 +4,7 @@ import json
 import ipaddress
 from datetime import datetime, timedelta
 import re
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
@@ -25,6 +26,8 @@ from app.models.user import User, UserRole
 from app.models.password_reset import PasswordResetToken
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+log = logging.getLogger(__name__)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -312,7 +315,7 @@ def _rotate_refresh_session_by_hash(*, refresh_hash: str, request: Request) -> t
                                 refresh_ttl2 = int(_session_limits()[0])
                             return next_token, uid2, refresh_ttl2, sess2, h, next_h
         except Exception:
-            pass
+            log.debug("auth refresh grace lookup failed")
         return None
     try:
         sess = json.loads(str(raw))
@@ -359,15 +362,15 @@ def _rotate_refresh_session_by_hash(*, refresh_hash: str, request: Request) -> t
         sess["sid"] = str(uuid.uuid4())
 
     r.setex(f"auth:refresh:{new_h}", int(refresh_ttl), json.dumps(sess, ensure_ascii=False))
-    # Grace window mapping for concurrent refresh attempts with the same old token.
     try:
+        # Grace window mapping for concurrent refresh attempts with the same old token.
         r.setex(
             f"auth:refresh_rot:{h}",
             10,
             json.dumps({"token": new_token, "hash": new_h}, ensure_ascii=False),
         )
     except Exception:
-        pass
+        log.debug("auth refresh rotation grace set failed", exc_info=True)
     r.delete(f"auth:refresh:{h}")
 
     uid = str(sess.get("user_id") or "").strip()
@@ -411,7 +414,7 @@ def _rotate_refresh_session(*, refresh_token: str, request: Request) -> tuple[st
                                 refresh_ttl2 = int(_session_limits()[0])
                             return next_token, uid2, refresh_ttl2, sess2, h, next_h
         except Exception:
-            pass
+            log.debug("auth refresh grace lookup failed")
         return None
     try:
         sess = json.loads(str(raw))
@@ -470,7 +473,7 @@ def _rotate_refresh_session(*, refresh_token: str, request: Request) -> tuple[st
             json.dumps({"token": new_token, "hash": new_h}, ensure_ascii=False),
         )
     except Exception:
-        pass
+        log.debug("auth refresh rotation grace set failed", exc_info=True)
     r.delete(f"auth:refresh:{h}")
 
     uid = str(sess.get("user_id") or "").strip()
@@ -698,6 +701,7 @@ def token(
         else:
             refresh_token, refresh_ttl = _issue_refresh_session(user=user, request=request)
     except Exception:
+        log.warning("auth token: refresh session rotate failed; issuing a new session")
         refresh_token, refresh_ttl = _issue_refresh_session(user=user, request=request)
 
     expires_in = None
@@ -808,11 +812,11 @@ def logout(
                 try:
                     r.srem(_user_sessions_key(str(uid)), h)
                 except Exception:
-                    pass
+                    log.debug("auth logout: failed to update user session set")
                 audit_log(db=db, request=request, event_type="auth_logout", actor_user_id=uuid.UUID(str(uid)), target_user_id=uuid.UUID(str(uid)))
                 db.commit()
         except Exception:
-            pass
+            log.warning("auth logout: failed to revoke refresh session")
     return {"ok": True}
 
 
@@ -884,7 +888,7 @@ def list_sessions(
             if stale:
                 r.srem(key, *stale)
         except Exception:
-            pass
+            log.debug("auth sessions: failed to prune stale session hashes")
 
     items.sort(key=lambda x: str(x.last_used_at or ""), reverse=True)
     return {"items": items}
