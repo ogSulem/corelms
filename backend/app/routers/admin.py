@@ -6390,13 +6390,3 @@ def quiz_answer_key(
             for q in questions
         ],
     }
-            {
-                "id": str(q.id),
-                "type": getattr(q.type, "value", str(q.type)),
-                "prompt": q.prompt,
-                "correct_answer": q.correct_answer,
-                "concept_tag": q.concept_tag,
-            }
-            for q in questions
-        ],
-    }
