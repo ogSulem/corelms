@@ -1298,10 +1298,29 @@ export default function AdminPanelClient() {
       const subs = await apiFetch<AdminSubmoduleItem[]>(`/modules/${encodeURIComponent(selectedAdminModuleId)}/submodules`);
       const sorted = (subs || []).slice().sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
       setSelectedAdminModuleSubs(sorted);
-      if (sorted.length && (!selectedSubmoduleId || !sorted.some((s) => s.id === selectedSubmoduleId))) {
-        const first = sorted[0];
-        setSelectedSubmoduleId(first.id);
-        setSelectedQuizId(first.requires_quiz !== false ? String(first.quiz_id || "") : "");
+
+      // Keep selection stable, but if the selected submodule's quiz_id changed (regen creates a new quiz)
+      // update selectedQuizId so the questions panel reloads immediately.
+      if (sorted.length) {
+        const hasSelected = Boolean(selectedSubmoduleId) && sorted.some((s) => s.id === selectedSubmoduleId);
+        if (!hasSelected) {
+          const first = sorted[0];
+          setSelectedSubmoduleId(first.id);
+          setSelectedQuizId(first.requires_quiz !== false ? String(first.quiz_id || "") : "");
+        } else {
+          const cur = sorted.find((s) => s.id === selectedSubmoduleId) as any;
+          const nextQuizId = cur && cur.requires_quiz !== false ? String(cur.quiz_id || "") : "";
+          const prevQuizId = String(selectedQuizId || "");
+          if (nextQuizId && nextQuizId !== prevQuizId) {
+            setSelectedQuizId(nextQuizId);
+            try {
+              // Force immediate questions refresh for the new quiz.
+              void loadQuestionsForQuiz(nextQuizId);
+            } catch {
+              // ignore
+            }
+          }
+        }
       }
       void loadSelectedAdminModuleSubQuality(String(selectedAdminModuleId));
     } finally {

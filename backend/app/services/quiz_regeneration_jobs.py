@@ -17,6 +17,7 @@ from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.services.llm_handler import choose_llm_provider_order_fast, generate_quiz_questions_ai
 from app.services.quiz_generation import generate_quiz_questions_heuristic
 from app.services.quiz_text import is_useful_quiz_text
+from app.services.modules import modules_bump_rev
 from app.core.config import settings
 from app.core.redis_client import get_redis
 
@@ -1347,6 +1348,11 @@ def regenerate_module_quizzes_job(
         _set_job_stage(stage="commit")
         _cancel_checkpoint(stage="commit")
         db.commit()
+
+        try:
+            modules_bump_rev(reason=f"regen:{str(m.id)}")
+        except Exception:
+            pass
         _set_job_stage(stage="done", detail=str(m.id))
 
         try:
