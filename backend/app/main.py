@@ -126,7 +126,14 @@ def create_app() -> FastAPI:
         response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
         response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
         if (settings.app_env or "").strip().lower() in {"prod", "production"}:
-            response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+            try:
+                xf_proto = str(request.headers.get("x-forwarded-proto") or "").strip().lower()
+                req_proto = str(getattr(getattr(request, "url", None), "scheme", "") or "").strip().lower()
+                is_https = (xf_proto == "https") or (req_proto == "https")
+            except Exception:
+                is_https = False
+            if is_https:
+                response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         return response
 
     def _request_id(request: Request) -> str | None:
