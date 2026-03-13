@@ -2565,6 +2565,8 @@ def enqueue_import_zip(
     if not object_key:
         raise HTTPException(status_code=400, detail="missing object_key")
 
+    lock_key = f"admin:import_enqueued_by_object_key:{object_key}"
+
     fingerprint = ""
     try:
         ensure_bucket_exists()
@@ -2581,7 +2583,6 @@ def enqueue_import_zip(
     # Allows UI to safely retry enqueue after refresh without duplicating work.
     try:
         r = get_redis()
-        lock_key = f"admin:import_enqueued_by_object_key:{object_key}"
         existing_job_id = str(r.get(lock_key) or "").strip()
         if existing_job_id:
             # Self-heal: if the job is already gone (TTL/cleanup), allow re-enqueue.
