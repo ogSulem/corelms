@@ -237,10 +237,43 @@ export function ModulesTab(props: ModulesTabProps) {
 
         <div className="lg:col-span-8 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-10 shadow-2xl shadow-zinc-950/10">
           <div className="flex flex-wrap items-start justify-between gap-6">
-            <div>
+            <div className="min-w-0">
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">КАРТОЧКА</div>
-              <div className="text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none">
-                {selectedAdminModule ? selectedAdminModule.title : selectedAdminModuleId ? "ЗАГРУЗКА..." : "ВЫБЕРИТЕ МОДУЛЬ"}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0 text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none truncate">
+                  {selectedAdminModule ? selectedAdminModule.title : selectedAdminModuleId ? "ЗАГРУЗКА..." : "ВЫБЕРИТЕ МОДУЛЬ"}
+                </div>
+
+                {selectedAdminModuleId ? (
+                  <div className="shrink-0 flex items-center gap-2">
+                    {selectedAdminModuleId && (activeModuleRegenByModuleId[String(selectedAdminModuleId || "")] || anySubmoduleRegenForSelectedModule) ? (
+                      <div className="h-10 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-4 flex items-center justify-center text-[10px] font-black uppercase tracking-widest text-[#fe9900] whitespace-nowrap">
+                        РЕГЕН ЗАПУЩЕН
+                      </div>
+                    ) : selectedModuleHasQuizLessons ? (
+                      <Button
+                        variant="primary"
+                        className="h-10 rounded-xl shadow-xl shadow-[#fe9900]/20 whitespace-nowrap"
+                        disabled={!selectedAdminModuleId}
+                        onClick={() => void regenerateSelectedModuleQuizzes()}
+                      >
+                        РЕГЕН ТЕСТОВ
+                      </Button>
+                    ) : (
+                      <div className="h-10 rounded-xl border border-zinc-200 bg-zinc-50 px-4 flex items-center justify-center text-[9px] font-black uppercase tracking-widest text-zinc-600 whitespace-nowrap">
+                        НЕТ ТЕСТОВ
+                      </div>
+                    )}
+                    <Button
+                      variant="destructive"
+                      className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
+                      disabled={!selectedAdminModuleId}
+                      onClick={() => void deleteSelectedModule()}
+                    >
+                      УДАЛИТЬ
+                    </Button>
+                  </div>
+                ) : null}
               </div>
               {selectedAdminModule ? (
                 <div className="mt-4">
@@ -297,9 +330,7 @@ export function ModulesTab(props: ModulesTabProps) {
               ) : null}
               {selectedAdminModule ? (
                 <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <div className="text-sm text-zinc-500 font-bold uppercase tracking-widest">
-                    {selectedAdminModule.is_active ? "ВИДИМ СОТРУДНИКАМ" : "СКРЫТ"}
-                  </div>
+                  <div className="text-sm text-zinc-500 font-bold uppercase tracking-widest">ПУБЛИКАЦИЯ</div>
                   <div
                     className={
                       "text-[9px] font-black uppercase tracking-widest rounded-xl border px-3 py-2 " +
@@ -316,7 +347,7 @@ export function ModulesTab(props: ModulesTabProps) {
                     className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
                     onClick={() => void setSelectedModuleVisibility(!selectedAdminModule.is_active)}
                   >
-                    {selectedAdminModule.is_active ? "СКРЫТЬ" : "ПОКАЗАТЬ"}
+                    {selectedAdminModule.is_active ? "СКРЫТЬ ОТ СОТРУДНИКОВ" : "ПОКАЗАТЬ СОТРУДНИКАМ"}
                   </Button>
                 </div>
               ) : null}
@@ -325,8 +356,8 @@ export function ModulesTab(props: ModulesTabProps) {
                 <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5">
                   <div className="flex flex-wrap items-center justify-between gap-4">
                     <div>
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Доступ</div>
-                      <div className="mt-1 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Public/Hidden/Restricted + теги (OR)</div>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Доступ сотрудникам</div>
+                      <div className="mt-1 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Всем / только по тегам (OR) / скрыт</div>
                     </div>
                     <Button
                       variant="ghost"
@@ -347,21 +378,21 @@ export function ModulesTab(props: ModulesTabProps) {
 
                   <div className="mt-4 grid gap-3 sm:grid-cols-3">
                     <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Visibility</div>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Режим доступа</div>
                       <select
                         className="mt-2 w-full h-10 rounded-xl bg-white border border-zinc-200 px-3 text-[11px] font-black uppercase tracking-widest outline-none"
                         value={accessVisibility}
                         onChange={(e) => setAccessVisibility((e.target.value as any) || "public")}
                       >
                         <option value="public">Всем</option>
+                        <option value="restricted">Только по тегам</option>
                         <option value="hidden">Скрыт</option>
-                        <option value="restricted">Ограниченно</option>
                       </select>
                     </div>
 
                     <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
                       <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Создать тег</div>
-                      <div className="mt-2 flex items-center gap-2">
+                      <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
                         <input
                           className="h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-black uppercase tracking-widest text-zinc-900"
                           value={newTagName}
@@ -370,7 +401,8 @@ export function ModulesTab(props: ModulesTabProps) {
                           disabled={newTagBusy}
                         />
                         <Button
-                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                          variant="primary"
+                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
                           disabled={newTagBusy || !String(newTagName || "").trim()}
                           onClick={() => void createTag()}
                         >
@@ -413,35 +445,6 @@ export function ModulesTab(props: ModulesTabProps) {
                   </div>
                 </div>
               ) : null}
-            </div>
-
-            <div className="shrink-0 flex flex-col gap-2">
-              {selectedAdminModuleId && (activeModuleRegenByModuleId[String(selectedAdminModuleId || "")] || anySubmoduleRegenForSelectedModule) ? (
-                <div className="h-11 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-4 flex items-center justify-center text-[10px] font-black uppercase tracking-widest text-[#fe9900]">
-                  РЕГЕН ЗАПУЩЕН
-                </div>
-              ) : selectedModuleHasQuizLessons ? (
-                <Button
-                  variant="primary"
-                  className="h-11 rounded-xl shadow-xl shadow-[#fe9900]/20"
-                  disabled={!selectedAdminModuleId}
-                  onClick={() => void regenerateSelectedModuleQuizzes()}
-                >
-                  РЕГЕН ТЕСТОВ
-                </Button>
-              ) : (
-                <div className="h-11 rounded-xl border border-zinc-200 bg-zinc-50 px-4 flex items-center justify-center text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                  НЕТ ТЕСТОВ
-                </div>
-              )}
-              <Button
-                variant="destructive"
-                className="h-11 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                disabled={!selectedAdminModuleId}
-                onClick={() => void deleteSelectedModule()}
-              >
-                УДАЛИТЬ
-              </Button>
             </div>
           </div>
 
