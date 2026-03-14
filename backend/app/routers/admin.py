@@ -306,6 +306,67 @@ def delete_tag(
     return {"ok": True}
 
 
+@router.get("/tags/{tag_id}/users", response_model=TagUsersResponse)
+def get_tag_users(
+    tag_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    tid = _uuid(tag_id, field="tag_id")
+    t = db.scalar(select(Tag).where(Tag.id == tid))
+    if t is None:
+        raise HTTPException(status_code=404, detail="tag not found")
+    uids = [str(uid) for (uid,) in db.execute(select(UserTagMap.user_id).where(UserTagMap.tag_id == tid)).all() if uid is not None]
+    return {"tag_id": str(tid), "user_ids": uids}
+
+
+@router.put("/tags/{tag_id}/users")
+def set_tag_users(
+    request: Request,
+    tag_id: str,
+    body: TagUsersUpdateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_set_tag_users", limit=60, window_seconds=60),
+):
+    tid = _uuid(tag_id, field="tag_id")
+    t = db.scalar(select(Tag).where(Tag.id == tid))
+    if t is None:
+        raise HTTPException(status_code=404, detail="tag not found")
+
+    next_ids: list[uuid.UUID] = []
+    for raw in list(body.user_ids or []):
+        uid = _uuid(raw, field="user_id")
+        next_ids.append(uid)
+    next_ids = list(dict.fromkeys(next_ids))
+
+    if next_ids:
+        existing = set(db.scalars(select(User.id).where(User.id.in_(next_ids))).all())
+        missing = [str(uid) for uid in next_ids if uid not in existing]
+        if missing:
+            raise HTTPException(status_code=400, detail="unknown user")
+
+    db.execute(delete(UserTagMap).where(UserTagMap.tag_id == tid))
+    for uid in next_ids:
+        db.add(UserTagMap(user_id=uid, tag_id=tid))
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_set_tag_users",
+        actor_user_id=current.id,
+        meta={"tag_id": str(tid), "user_ids": [str(x) for x in next_ids]},
+    )
+    db.commit()
+
+    try:
+        modules_bump_rev(reason="tag_users_updated")
+    except Exception:
+        pass
+
+    return {"ok": True}
+
+
 def _reset_token_hash(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8", errors="ignore")).hexdigest()
 
@@ -637,8 +698,7 @@ def get_runtime_llm_settings(
     _: User = Depends(require_roles(UserRole.admin)),
 ):
     env = (getattr(settings, "app_env", "") or "").strip().lower()
-    if env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)):
-        raise HTTPException(status_code=403, detail="runtime LLM overrides are disabled in production")
+    overrides_allowed = not (env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)))
     try:
         r = get_redis()
         data = r.hgetall("runtime:llm") or {}
@@ -685,14 +745,26 @@ def get_runtime_llm_settings(
         "openrouter_app_title": _eff_str(_get("openrouter_app_title"), str(getattr(settings, "openrouter_app_title", ""))),
     }
 
+    if not overrides_allowed:
+        return {
+            "runtime_overrides_allowed": False,
+            "openrouter_enabled": False,
+            "openrouter_base_url": "",
+            "openrouter_model": "",
+            "openrouter_api_key_masked": "",
+            "openrouter_http_referer": "",
+            "openrouter_app_title": "",
+            "effective": eff,
+        }
+
     return {
+        "runtime_overrides_allowed": True,
         "openrouter_enabled": bool(or_enabled),
         "openrouter_base_url": _get("openrouter_base_url"),
         "openrouter_model": _get("openrouter_model"),
         "openrouter_api_key_masked": or_masked,
         "openrouter_http_referer": _get("openrouter_http_referer"),
         "openrouter_app_title": _get("openrouter_app_title"),
-
         "effective": eff,
     }
 
@@ -5836,6 +5908,12 @@ def get_user_detail(
     u = db.scalar(select(User).where(User.id == uid))
     if u is None:
         raise HTTPException(status_code=404, detail="user not found")
+
+    tag_ids = [
+        str(tid)
+        for (tid,) in db.execute(select(UserTagMap.tag_id).where(UserTagMap.user_id == uid)).all()
+        if tid is not None
+    ]
 
     assignments_total = db.scalar(select(func.count()).select_from(Assignment).where(Assignment.assigned_to == uid)) or 0
     assignments_completed = (

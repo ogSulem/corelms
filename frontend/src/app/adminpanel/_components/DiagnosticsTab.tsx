@@ -7,6 +7,7 @@ interface DiagnosticsTabProps {
   sys: any;
   sysLoading: boolean;
   loadSystemStatus: () => Promise<void>;
+  runtimeLlmOverridesAllowed: boolean;
   openrouterEnabledDraft: boolean;
   setOpenrouterEnabledDraft: (val: boolean) => void;
   openrouterBaseUrlDraft: string;
@@ -58,6 +59,7 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
     sys,
     sysLoading,
     loadSystemStatus,
+    runtimeLlmOverridesAllowed,
     openrouterEnabledDraft,
     setOpenrouterEnabledDraft,
     openrouterBaseUrlDraft,
@@ -361,7 +363,7 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                   <Button
                     variant="primary"
                     className="h-11 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={diagSaving}
+                    disabled={diagSaving || !runtimeLlmOverridesAllowed}
                     onClick={() => void saveRuntimeLlmSettings()}
                   >
                     {diagSaving ? "..." : "СОХРАНИТЬ"}
@@ -369,7 +371,7 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                   <Button
                     variant="outline"
                     className="h-11 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={diagSaving}
+                    disabled={diagSaving || !runtimeLlmOverridesAllowed}
                     onClick={() => void resetRuntimeLlmSettings()}
                   >
                     СБРОСИТЬ RUNTIME

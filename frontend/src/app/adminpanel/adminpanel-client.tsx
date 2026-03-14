@@ -198,6 +198,54 @@ export default function AdminPanelClient() {
   const [newTagName, setNewTagName] = useState<string>("");
   const [newTagBusy, setNewTagBusy] = useState(false);
 
+  const [bulkTagId, setBulkTagId] = useState<string>("");
+  const [bulkTagUsers, setBulkTagUsers] = useState<string[]>([]);
+  const [bulkTagBusy, setBulkTagBusy] = useState(false);
+  const bulkTagLoadedAtRef = useRef<number>(0);
+
+  async function loadBulkTagUsers(tagId: string) {
+    const tid = String(tagId || "").trim();
+    if (!tid) return;
+    const now = Date.now();
+    if (now - Number(bulkTagLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS && String(bulkTagId || "") === tid) return;
+    try {
+      setError(null);
+      setBulkTagBusy(true);
+      const res = await apiFetch<{ tag_id: string; user_ids: string[] }>(`/admin/tags/${encodeURIComponent(tid)}/users`);
+      setBulkTagId(tid);
+      setBulkTagUsers(Array.isArray(res?.user_ids) ? res.user_ids.map((x) => String(x)) : []);
+      bulkTagLoadedAtRef.current = Date.now();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ЗАГРУЗИТЬ ТЕГ");
+    } finally {
+      setBulkTagBusy(false);
+    }
+  }
+
+  async function saveBulkTagUsers(tagId: string, userIds: string[]) {
+    const tid = String(tagId || "").trim();
+    if (!tid) return;
+    try {
+      setError(null);
+      setBulkTagBusy(true);
+      await apiFetch(`/admin/tags/${encodeURIComponent(tid)}/users`, {
+        method: "PUT",
+        body: JSON.stringify({ user_ids: Array.isArray(userIds) ? userIds : [] }),
+      });
+      setBulkTagId(tid);
+      setBulkTagUsers(Array.isArray(userIds) ? userIds.map((x) => String(x)) : []);
+      bulkTagLoadedAtRef.current = Date.now();
+      await loadUsersForce();
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ТЕГ ПРИМЕНЕН", description: "" } }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ПРИМЕНИТЬ ТЕГ");
+    } finally {
+      setBulkTagBusy(false);
+    }
+  }
+
   async function loadTags() {
     try {
       setTagsLoading(true);
@@ -333,15 +381,15 @@ export default function AdminPanelClient() {
   const [sys, setSys] = useState<any>(null);
   const [sysLoading, setSysLoading] = useState(false);
   const [diagSaving, setDiagSaving] = useState(false);
-  const [openrouterEnabledDraft, setOpenrouterEnabledDraft] = useState<boolean>(false);
-  const [openrouterBaseUrlDraft, setOpenrouterBaseUrlDraft] = useState<string>("");
-  const [openrouterModelDraft, setOpenrouterModelDraft] = useState<string>("");
-  const [openrouterApiKeyDraft, setOpenrouterApiKeyDraft] = useState<string>("");
-  const [openrouterApiKeyMasked, setOpenrouterApiKeyMasked] = useState<string>("");
-  const [openrouterHttpRefererDraft, setOpenrouterHttpRefererDraft] = useState<string>("");
-  const [openrouterAppTitleDraft, setOpenrouterAppTitleDraft] = useState<string>("");
+  const [openrouterEnabledDraft, setOpenrouterEnabledDraft] = useState(false);
+  const [openrouterBaseUrlDraft, setOpenrouterBaseUrlDraft] = useState("");
+  const [openrouterModelDraft, setOpenrouterModelDraft] = useState("");
+  const [openrouterApiKeyDraft, setOpenrouterApiKeyDraft] = useState("");
+  const [openrouterApiKeyMasked, setOpenrouterApiKeyMasked] = useState("");
+  const [openrouterHttpRefererDraft, setOpenrouterHttpRefererDraft] = useState("");
+  const [openrouterAppTitleDraft, setOpenrouterAppTitleDraft] = useState("");
+  const [runtimeLlmOverridesAllowed, setRuntimeLlmOverridesAllowed] = useState(true);
   const [llmEffective, setLlmEffective] = useState<any>(null);
-
   const [s3Draft, setS3Draft] = useState<any>({
     s3_endpoint_url: "",
     s3_public_endpoint_url: "",
@@ -1476,6 +1524,7 @@ export default function AdminPanelClient() {
     if (now - Number(runtimeLlmLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
     try {
       const data = await apiFetch<any>("/admin/runtime/llm");
+      setRuntimeLlmOverridesAllowed(Boolean((data as any)?.runtime_overrides_allowed ?? true));
       setOpenrouterEnabledDraft(!!data?.openrouter_enabled);
       setOpenrouterBaseUrlDraft(data?.openrouter_base_url || "");
       setOpenrouterModelDraft(data?.openrouter_model || "");
@@ -2395,10 +2444,6 @@ export default function AdminPanelClient() {
               renameSelectedAdminModule={renameSelectedAdminModule}
               tags={tags}
               tagsLoading={tagsLoading}
-              newTagName={newTagName}
-              setNewTagName={setNewTagName}
-              newTagBusy={newTagBusy}
-              createTag={createTag}
               setSelectedAdminModuleAccess={setSelectedAdminModuleAccess}
               activeModuleRegenByModuleId={activeModuleRegenByModuleId}
               activeSubmoduleRegenBySubmoduleId={activeSubmoduleRegenBySubmoduleId}
@@ -2459,6 +2504,13 @@ export default function AdminPanelClient() {
               setNewTagName={setNewTagName}
               newTagBusy={newTagBusy}
               createTag={createTag}
+              bulkTagId={bulkTagId}
+              setBulkTagId={setBulkTagId}
+              bulkTagUsers={bulkTagUsers}
+              setBulkTagUsers={setBulkTagUsers}
+              bulkTagBusy={bulkTagBusy}
+              loadBulkTagUsers={loadBulkTagUsers}
+              saveBulkTagUsers={saveBulkTagUsers}
               setSelectedUserTags={setSelectedUserTags}
               resetBusy={resetBusy}
               resetPassword={resetPassword}
@@ -2566,6 +2618,7 @@ export default function AdminPanelClient() {
               sys={sys}
               sysLoading={sysLoading}
               loadSystemStatus={loadSystemStatus}
+              runtimeLlmOverridesAllowed={runtimeLlmOverridesAllowed}
               openrouterEnabledDraft={openrouterEnabledDraft}
               setOpenrouterEnabledDraft={setOpenrouterEnabledDraft}
               openrouterBaseUrlDraft={openrouterBaseUrlDraft}

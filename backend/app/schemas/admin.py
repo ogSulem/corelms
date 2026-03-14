@@ -170,6 +170,15 @@ class UserTagsUpdateRequest(BaseModel):
     tag_ids: list[str] = []
 
 
+class TagUsersUpdateRequest(BaseModel):
+    user_ids: list[str] = []
+
+
+class TagUsersResponse(BaseModel):
+    tag_id: str
+    user_ids: list[str] = []
+
+
 class ModuleAccessUpdateRequest(BaseModel):
     visibility: Literal["public", "hidden", "restricted"] | None = None
     tag_ids: list[str] | None = None

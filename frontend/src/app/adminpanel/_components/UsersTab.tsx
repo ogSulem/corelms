@@ -51,6 +51,14 @@ interface UsersTabProps {
   newTagBusy: boolean;
   createTag: () => Promise<void>;
   setSelectedUserTags: (tagIds: string[]) => Promise<void>;
+
+  bulkTagId: string;
+  setBulkTagId: React.Dispatch<React.SetStateAction<string>>;
+  bulkTagUsers: string[];
+  setBulkTagUsers: React.Dispatch<React.SetStateAction<string[]>>;
+  bulkTagBusy: boolean;
+  loadBulkTagUsers: (tagId: string) => Promise<void>;
+  saveBulkTagUsers: (tagId: string, userIds: string[]) => Promise<void>;
 }
 
 export function UsersTab(props: UsersTabProps) {
@@ -93,6 +101,14 @@ export function UsersTab(props: UsersTabProps) {
     newTagBusy,
     createTag,
     setSelectedUserTags,
+
+    bulkTagId,
+    setBulkTagId,
+    bulkTagUsers,
+    setBulkTagUsers,
+    bulkTagBusy,
+    loadBulkTagUsers,
+    saveBulkTagUsers,
   } = props;
 
   const isSelf = Boolean(selectedUserId) && String(selectedUserId) === String(currentUserId || "");
@@ -105,6 +121,9 @@ export function UsersTab(props: UsersTabProps) {
 
   const [tagDraft, setTagDraft] = useState<string[]>([]);
   const [tagSaving, setTagSaving] = useState(false);
+
+  const [bulkUsersOpen, setBulkUsersOpen] = useState(false);
+  const [userTagsOpen, setUserTagsOpen] = useState(false);
 
   const hasDraft = useMemo(() => {
     if (!userDetail) return false;
@@ -207,9 +226,131 @@ export function UsersTab(props: UsersTabProps) {
         </div>
 
         <div className="lg:col-span-4 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
-          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Подсказка</div>
+          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Теги</div>
           <div className="mt-2 text-sm font-bold text-zinc-600">
-            Админ видит всё. Сотруднику доступен только контент. После входа пользователь должен сменить временный пароль.
+            Создай/выбери тег, отметь сотрудников ниже, нажми применить.
+          </div>
+
+          <div className="mt-4 grid gap-3">
+            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Тег</div>
+              <select
+                className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
+                value={bulkTagId}
+                disabled={tagsLoading || bulkTagBusy}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                  const tid = String(e.target.value || "");
+                  setBulkTagId(tid);
+                  setBulkTagUsers([]);
+                  if (tid) void loadBulkTagUsers(tid);
+                }}
+              >
+                <option value="">ВЫБРАТЬ ТЕГ</option>
+                {(tags || []).map((t) => (
+                  <option key={String((t as any)?.id || "")} value={String((t as any)?.id || "")}>{String((t as any)?.name || "").toUpperCase()}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Создать тег</div>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  className="h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-black uppercase tracking-widest text-zinc-900"
+                  value={newTagName}
+                  onChange={(e) => setNewTagName(String(e.target.value || ""))}
+                  placeholder="Напр. КАЗАНЬ"
+                  disabled={newTagBusy || bulkTagBusy}
+                />
+                <Button
+                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                  disabled={newTagBusy || bulkTagBusy || !String(newTagName || "").trim()}
+                  onClick={() => void createTag()}
+                >
+                  {newTagBusy ? "..." : "СОЗДАТЬ"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Сотрудники в теге</div>
+                <Button
+                  variant="ghost"
+                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                  disabled={!bulkTagId || bulkTagBusy || usersLoading}
+                  onClick={() => void saveBulkTagUsers(bulkTagId, bulkTagUsers)}
+                >
+                  {bulkTagBusy ? "..." : "ПРИМЕНИТЬ"}
+                </Button>
+              </div>
+
+              {!bulkTagId ? (
+                <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Сначала выбери тег</div>
+              ) : usersLoading ? (
+                <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Загрузка…</div>
+              ) : (
+                <div className="mt-3 relative">
+                  <button
+                    type="button"
+                    className="w-full h-10 rounded-xl border border-zinc-200 bg-white px-3 text-left text-[10px] font-black uppercase tracking-widest text-zinc-800 hover:bg-zinc-50"
+                    onClick={() => setBulkUsersOpen((v) => !v)}
+                    disabled={bulkTagBusy}
+                  >
+                    {bulkTagUsers?.length ? `ВЫБРАНО: ${bulkTagUsers.length}` : "ВЫБРАТЬ СОТРУДНИКОВ"}
+                  </button>
+
+                  {bulkUsersOpen ? (
+                    <div className="absolute z-20 mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-xl p-2">
+                      <div className="max-h-[260px] overflow-auto pr-1 space-y-2">
+                        {(users || []).map((u) => {
+                          const uid = String((u as any)?.id || "");
+                          const checked = (bulkTagUsers || []).includes(uid);
+                          return (
+                            <label key={uid} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={bulkTagBusy}
+                                onChange={() => {
+                                  setBulkTagUsers((prev: string[]) => {
+                                    const xs = Array.isArray(prev) ? prev.slice() : [];
+                                    const has = xs.includes(uid);
+                                    return has ? xs.filter((x) => x !== uid) : [...xs, uid];
+                                  });
+                                }}
+                              />
+                              <div className="min-w-0 flex-1">
+                                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((u as any)?.name || "")}</div>
+                                {String((u as any)?.email || "").trim() ? (
+                                  <div className="mt-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-500 truncate">{String((u as any)?.email || "")}</div>
+                                ) : null}
+                              </div>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          className="h-9 px-3 rounded-xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                          onClick={() => { setBulkTagUsers([]); }}
+                        >
+                          СБРОСИТЬ
+                        </button>
+                        <button
+                          type="button"
+                          className="h-9 px-3 rounded-xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                          onClick={() => setBulkUsersOpen(false)}
+                        >
+                          ГОТОВО
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -433,27 +574,60 @@ export function UsersTab(props: UsersTabProps) {
                       ) : (tags || []).length === 0 ? (
                         <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет тегов</div>
                       ) : (
-                        <div className="mt-2 max-h-[160px] overflow-auto pr-1 space-y-2">
-                          {(tags || []).map((t) => {
-                            const id = String((t as any)?.id || "");
-                            const checked = (tagDraft || []).includes(id);
-                            return (
-                              <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => {
-                                    setTagDraft((prev) => {
-                                      const xs = Array.isArray(prev) ? prev.slice() : [];
-                                      const has = xs.includes(id);
-                                      return has ? xs.filter((x) => x !== id) : [...xs, id];
-                                    });
-                                  }}
-                                />
-                                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
-                              </label>
-                            );
-                          })}
+                        <div className="mt-2 relative">
+                          <button
+                            type="button"
+                            className="w-full h-10 rounded-xl border border-zinc-200 bg-white px-3 text-left text-[10px] font-black uppercase tracking-widest text-zinc-800 hover:bg-zinc-50"
+                            onClick={() => setUserTagsOpen((v) => !v)}
+                            disabled={tagSaving || isLockedAdminTarget}
+                          >
+                            {tagDraft?.length ? `ВЫБРАНО: ${tagDraft.length}` : "ВЫБРАТЬ ТЕГИ"}
+                          </button>
+
+                          {userTagsOpen ? (
+                            <div className="absolute z-20 mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-xl p-2">
+                              <div className="max-h-[220px] overflow-auto pr-1 space-y-2">
+                                {(tags || []).map((t) => {
+                                  const id = String((t as any)?.id || "");
+                                  const checked = (tagDraft || []).includes(id);
+                                  return (
+                                    <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        disabled={tagSaving || isLockedAdminTarget}
+                                        onChange={() => {
+                                          setTagDraft((prev) => {
+                                            const xs = Array.isArray(prev) ? prev.slice() : [];
+                                            const has = xs.includes(id);
+                                            return has ? xs.filter((x) => x !== id) : [...xs, id];
+                                          });
+                                        }}
+                                      />
+                                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                              <div className="mt-2 flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  className="h-9 px-3 rounded-xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                                  onClick={() => { setTagDraft([]); }}
+                                  disabled={tagSaving || isLockedAdminTarget}
+                                >
+                                  СБРОСИТЬ
+                                </button>
+                                <button
+                                  type="button"
+                                  className="h-9 px-3 rounded-xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                                  onClick={() => setUserTagsOpen(false)}
+                                >
+                                  ГОТОВО
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       )}
                     </div>

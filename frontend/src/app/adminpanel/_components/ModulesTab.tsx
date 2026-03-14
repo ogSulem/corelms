@@ -21,10 +21,6 @@ interface ModulesTabProps {
   renameSelectedAdminModule: (nextTitle: string) => Promise<void>;
   tags: TagItem[];
   tagsLoading: boolean;
-  newTagName: string;
-  setNewTagName: (val: string) => void;
-  newTagBusy: boolean;
-  createTag: () => Promise<void>;
   setSelectedAdminModuleAccess: (patch: { visibility?: string | null; tag_ids?: string[] | null }) => Promise<void>;
   activeModuleRegenByModuleId: Record<string, { job_id: string; status: string; stage: string }>;
   activeSubmoduleRegenBySubmoduleId: Record<string, { job_id: string; status: string; stage: string; module_id: string }>;
@@ -69,10 +65,6 @@ export function ModulesTab(props: ModulesTabProps) {
     renameSelectedAdminModule,
     tags,
     tagsLoading,
-    newTagName,
-    setNewTagName,
-    newTagBusy,
-    createTag,
     setSelectedAdminModuleAccess,
     activeModuleRegenByModuleId,
     activeSubmoduleRegenBySubmoduleId,
@@ -142,6 +134,9 @@ export function ModulesTab(props: ModulesTabProps) {
   const [accessTagDraft, setAccessTagDraft] = useState<string[]>([]);
   const [accessSaving, setAccessSaving] = useState(false);
 
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [moduleTagsOpen, setModuleTagsOpen] = useState(false);
+
   useEffect(() => {
     setIsRenaming(false);
     setRenameBusy(false);
@@ -161,6 +156,73 @@ export function ModulesTab(props: ModulesTabProps) {
     const t2 = [...(accessTagDraft || [])].map(String).sort().join(",");
     return a !== b || t1 !== t2;
   }, [selectedAdminModule, accessVisibility, accessTagDraft]);
+
+  const audienceNowLabel = useMemo(() => {
+    if (!selectedAdminModule) return "";
+    const published = Boolean((selectedAdminModule as any)?.is_active);
+    const vis = String((selectedAdminModule as any)?.visibility || "public").trim().toLowerCase();
+    const tagsCount = Array.isArray((selectedAdminModule as any)?.tag_ids) ? (selectedAdminModule as any).tag_ids.length : 0;
+
+    if (!published) return "СЕЙЧАС УВИДЯТ: НИКТО (НЕ ОПУБЛИКОВАН)";
+    if (vis === "hidden") return "СЕЙЧАС УВИДЯТ: НИКТО (СКРЫТ)";
+    if (vis === "restricted") return `СЕЙЧАС УВИДЯТ: ТОЛЬКО ПО ТЕГАМ (${tagsCount})`;
+    return "СЕЙЧАС УВИДЯТ: ВСЕ СОТРУДНИКИ";
+  }, [selectedAdminModule]);
+
+  const audienceAfterSaveLabel = useMemo(() => {
+    if (!selectedAdminModule) return "";
+    const published = Boolean((selectedAdminModule as any)?.is_active);
+    const vis = String(accessVisibility || "public").trim().toLowerCase();
+    const tagsCount = Array.isArray(accessTagDraft) ? accessTagDraft.length : 0;
+
+    if (!published) return "ПОСЛЕ СОХРАНЕНИЯ: НИКТО (НЕ ОПУБЛИКОВАН)";
+    if (vis === "hidden") return "ПОСЛЕ СОХРАНЕНИЯ: НИКТО (СКРЫТ)";
+    if (vis === "restricted") return `ПОСЛЕ СОХРАНЕНИЯ: ТОЛЬКО ПО ТЕГАМ (${tagsCount})`;
+    return "ПОСЛЕ СОХРАНЕНИЯ: ВСЕ СОТРУДНИКИ";
+  }, [selectedAdminModule, accessVisibility, accessTagDraft]);
+
+  const publishWithAccess = async (opts?: { forceVisibility?: "public" | "hidden" | "restricted" }) => {
+    if (!selectedAdminModuleId) return;
+    if (!selectedAdminModule) return;
+    if (publishBusy) return;
+
+    try {
+      setPublishBusy(true);
+
+      const draftVis = (opts?.forceVisibility || accessVisibility) as any;
+      const draftTags = Array.isArray(accessTagDraft) ? accessTagDraft : [];
+
+      const isDraftHidden = String(draftVis).toLowerCase() === "hidden";
+      const isPublishing = !Boolean((selectedAdminModule as any)?.is_active);
+
+      if (isPublishing && isDraftHidden && !opts?.forceVisibility) {
+        const okSwitch = window.confirm(
+          "СЕЙЧАС РЕЖИМ ДОСТУПА: СКРЫТ. ПОСЛЕ ПУБЛИКАЦИИ СОТРУДНИКИ ВСЁ РАВНО НЕ УВИДЯТ МОДУЛЬ.\n\nOK = ОПУБЛИКОВАТЬ ДЛЯ ВСЕХ\nОТМЕНА = ОПУБЛИКОВАТЬ КАК СКРЫТЫЙ"
+        );
+        if (okSwitch) {
+          await publishWithAccess({ forceVisibility: "public" });
+          return;
+        }
+        await publishWithAccess({ forceVisibility: "hidden" });
+        return;
+      }
+
+      if (isPublishing) {
+        try {
+          if (hasAccessDraft || opts?.forceVisibility) {
+            await setSelectedAdminModuleAccess({ visibility: draftVis, tag_ids: draftTags });
+          }
+        } catch {
+          // if access save fails, don't publish
+          return;
+        }
+      }
+
+      await setSelectedModuleVisibility(true);
+    } finally {
+      setPublishBusy(false);
+    }
+  };
 
   return (
     <div className="mt-8 space-y-6">
@@ -345,10 +407,23 @@ export function ModulesTab(props: ModulesTabProps) {
                   <Button
                     variant={selectedAdminModule.is_active ? "outline" : "primary"}
                     className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                    onClick={() => void setSelectedModuleVisibility(!selectedAdminModule.is_active)}
+                    disabled={publishBusy || accessSaving}
+                    onClick={() => {
+                      if (selectedAdminModule.is_active) {
+                        void setSelectedModuleVisibility(false);
+                      } else {
+                        void publishWithAccess();
+                      }
+                    }}
                   >
                     {selectedAdminModule.is_active ? "СКРЫТЬ ОТ СОТРУДНИКОВ" : "ПОКАЗАТЬ СОТРУДНИКАМ"}
                   </Button>
+                </div>
+              ) : null}
+
+              {selectedAdminModule ? (
+                <div className="mt-2 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                  {audienceNowLabel}
                 </div>
               ) : null}
 
@@ -372,9 +447,15 @@ export function ModulesTab(props: ModulesTabProps) {
                         }
                       }}
                     >
-                      {accessSaving ? "СОХРАН..." : "СОХРАНИТЬ"}
+                      {accessSaving ? "СОХРАН..." : (selectedAdminModule?.is_active ? "ПРИМЕНИТЬ" : "СОХРАНИТЬ")}
                     </Button>
                   </div>
+
+                  {selectedAdminModule?.is_active ? (
+                    <div className="mt-2 text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                      {hasAccessDraft ? audienceAfterSaveLabel : "ИЗМЕНЕНИЯ ДОСТУПА ПРИМЕНЯЮТСЯ СРАЗУ ПОСЛЕ КНОПКИ \"ПРИМЕНИТЬ\""}
+                    </div>
+                  ) : null}
 
                   <div className="mt-4 grid gap-3 sm:grid-cols-3">
                     <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
@@ -390,55 +471,65 @@ export function ModulesTab(props: ModulesTabProps) {
                       </select>
                     </div>
 
-                    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Создать тег</div>
-                      <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
-                        <input
-                          className="h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-black uppercase tracking-widest text-zinc-900"
-                          value={newTagName}
-                          onChange={(e) => setNewTagName(String(e.target.value || ""))}
-                          placeholder="Напр. КАЗАНЬ"
-                          disabled={newTagBusy}
-                        />
-                        <Button
-                          variant="primary"
-                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
-                          disabled={newTagBusy || !String(newTagName || "").trim()}
-                          onClick={() => void createTag()}
-                        >
-                          {newTagBusy ? "..." : "СОЗДАТЬ"}
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 sm:col-span-2">
                       <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Теги модуля</div>
                       {tagsLoading ? (
                         <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Загрузка…</div>
                       ) : (tags || []).length === 0 ? (
                         <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет тегов</div>
                       ) : (
-                        <div className="mt-2 max-h-[160px] overflow-auto pr-1 space-y-2">
-                          {(tags || []).map((t) => {
-                            const id = String((t as any)?.id || "");
-                            const checked = (accessTagDraft || []).includes(id);
-                            return (
-                              <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() => {
-                                    setAccessTagDraft((prev) => {
-                                      const xs = Array.isArray(prev) ? prev.slice() : [];
-                                      const has = xs.includes(id);
-                                      return has ? xs.filter((x) => x !== id) : [...xs, id];
-                                    });
-                                  }}
-                                />
-                                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
-                              </label>
-                            );
-                          })}
+                        <div className="mt-2 relative">
+                          <button
+                            type="button"
+                            className="w-full h-10 rounded-xl border border-zinc-200 bg-white px-3 text-left text-[10px] font-black uppercase tracking-widest text-zinc-800 hover:bg-zinc-50"
+                            onClick={() => setModuleTagsOpen((v) => !v)}
+                            disabled={accessSaving}
+                          >
+                            {accessTagDraft?.length ? `ВЫБРАНО: ${accessTagDraft.length}` : "ВЫБРАТЬ ТЕГИ"}
+                          </button>
+
+                          {moduleTagsOpen ? (
+                            <div className="absolute z-20 mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-xl p-2">
+                              <div className="max-h-[220px] overflow-auto pr-1 space-y-2">
+                                {(tags || []).map((t) => {
+                                  const id = String((t as any)?.id || "");
+                                  const checked = (accessTagDraft || []).includes(id);
+                                  return (
+                                    <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50">
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        onChange={() => {
+                                          setAccessTagDraft((prev) => {
+                                            const xs = Array.isArray(prev) ? prev.slice() : [];
+                                            const has = xs.includes(id);
+                                            return has ? xs.filter((x) => x !== id) : [...xs, id];
+                                          });
+                                        }}
+                                      />
+                                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                              <div className="mt-2 flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  className="h-9 px-3 rounded-xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                                  onClick={() => { setAccessTagDraft([]); }}
+                                >
+                                  СБРОСИТЬ
+                                </button>
+                                <button
+                                  type="button"
+                                  className="h-9 px-3 rounded-xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                                  onClick={() => setModuleTagsOpen(false)}
+                                >
+                                  ГОТОВО
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
                         </div>
                       )}
                     </div>
