@@ -262,10 +262,18 @@ def _set_job_error(*, error: Exception, error_code: str | None = None, error_hin
         hint = str(error_hint or "").strip()
 
         if not error_code:
+            try:
+                eno = getattr(error, "errno", None)
+            except Exception:
+                eno = None
             if isinstance(error, zipfile.BadZipFile) or "bad zip" in msg.lower() or "badzipfile" in msg.lower():
                 code = "ZIP_INVALID"
                 if not hint:
                     hint = "Проверьте, что ZIP не повреждён и содержит структуру модуля."
+            elif (eno == 28) or ("no space left on device" in msg.lower()) or ("enospc" in msg.lower()):
+                code = "DISK_FULL"
+                if not hint:
+                    hint = "На сервере закончилось место для распаковки ZIP. Освободите место или увеличьте диск и повторите импорт."
             elif "zip has too many files" in msg.lower():
                 code = "ZIP_TOO_MANY_FILES"
                 if not hint:
