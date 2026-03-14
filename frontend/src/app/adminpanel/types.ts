@@ -78,6 +78,7 @@ export type UserDetail = {
   role: string;
   position: string | null;
   phone: string | null;
+  tag_ids?: string[];
   xp: number;
   level: number;
   streak: number;
@@ -100,6 +101,8 @@ export type AdminModuleItem = {
   id: string;
   title: string;
   is_active: boolean;
+  visibility?: "public" | "hidden" | "restricted" | string;
+  tag_ids?: string[];
   final_quiz_id?: string | null;
   category?: string | null;
   difficulty?: number | null;
@@ -155,6 +158,8 @@ export type UserItem = {
   email?: string | null;
   role: string;
   position?: string | null;
+  tag_ids?: string[];
+  tags?: string[];
   xp?: number;
   level?: number;
   streak?: number;
@@ -168,6 +173,8 @@ export type UserItem = {
 };
 
 export type Module = { id: string; title: string };
+
+export type TagItem = { id: string; name: string };
 
 export type StorageObjectItem = {
   key: string;

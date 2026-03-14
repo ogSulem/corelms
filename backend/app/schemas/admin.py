@@ -15,6 +15,10 @@ class ModuleCreateRequest(BaseModel):
     is_active: bool = True
 
 
+class ModuleUpdateRequest(BaseModel):
+    title: str | None = None
+
+
 class ModuleCreateResponse(BaseModel):
     id: str
 
@@ -147,3 +151,25 @@ class UserUpdateResponse(BaseModel):
 
 class UserForcePasswordChangeResponse(BaseModel):
     ok: bool = True
+
+
+class TagItem(BaseModel):
+    id: str
+    name: str
+
+
+class TagsListResponse(BaseModel):
+    items: list[TagItem]
+
+
+class TagCreateRequest(BaseModel):
+    name: str
+
+
+class UserTagsUpdateRequest(BaseModel):
+    tag_ids: list[str] = []
+
+
+class ModuleAccessUpdateRequest(BaseModel):
+    visibility: Literal["public", "hidden", "restricted"] | None = None
+    tag_ids: list[str] | None = None

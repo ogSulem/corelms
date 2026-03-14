@@ -17,6 +17,7 @@ from app.models.asset import ContentAsset  # noqa: F401
 from app.models.submodule_asset import SubmoduleAssetMap  # noqa: F401
 from app.models.security_audit import SecurityAuditEvent  # noqa: F401
 from app.models.password_reset import PasswordResetToken  # noqa: F401
+from app.models.tag import Tag, UserTagMap, ModuleTagMap  # noqa: F401
 
 config = context.config
 

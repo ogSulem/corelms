@@ -10,7 +10,8 @@ param(
   [int]$RetrySleepSeconds = 20,
   [switch]$ContinueOnError,
   [switch]$SkipExisting,
-  [string[]]$ExcludeModules = @()
+  [string[]]$ExcludeModules = @(),
+  [bool]$VerifyAfterUpload = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -129,12 +130,62 @@ function UploadZip([string]$href, [string]$dst) {
   }
 }
 
+function GetHrefContentLength([string]$href) {
+  try {
+    # Yandex public download links can return different Content-Length for HEAD vs GET.
+    # Prefer a ranged GET (1 byte) and parse Content-Range total size.
+    try {
+      $resp2 = Invoke-WebRequest -Uri $href -Method Get -UseBasicParsing -Headers @{ "Accept-Encoding" = "identity"; "Range" = "bytes=0-0" }
+      $cr = $resp2.Headers["Content-Range"]
+      if ($cr) {
+        $m = [regex]::Match([string]$cr, '/(?<total>\d+)$')
+        if ($m.Success) {
+          $t = [int64]$m.Groups['total'].Value
+          if ($t -gt 0) { return $t }
+        }
+      }
+    } catch {
+      # ignore and fallback to HEAD
+    }
+
+    $resp = Invoke-WebRequest -Uri $href -Method Head -UseBasicParsing -Headers @{ "Accept-Encoding" = "identity" }
+    $cl = $resp.Headers["Content-Length"]
+    if (-not $cl) { return $null }
+    $v = [int64]$cl
+    if ($v -le 0) { return $null }
+    return $v
+  } catch {
+    return $null
+  }
+}
+
+function DeleteDst([string]$dst) {
+  try {
+    & $script:RcloneExe deletefile $dst --no-traverse 2>$null
+  } catch {
+  }
+}
+
 function UploadZipWithFreshHref([string]$publicUrl, [string]$dirPath, [string]$dst, [int]$maxAttempts, [int]$retrySleepSeconds) {
   $lastErr = $null
   for ($i = 1; $i -le $maxAttempts; $i += 1) {
     try {
       $href = GetDownloadHref -publicUrl $publicUrl -path $dirPath
+      $expectedSize = GetHrefContentLength -href $href
       UploadZip -href $href -dst $dst
+      if ($VerifyAfterUpload) {
+        if ($expectedSize -ne $null) {
+          $st = GetDstStat -dst $dst
+          if (-not $st -or $st.Size -eq $null) {
+            throw "dst stat missing"
+          }
+          $dstSize = [int64]$st.Size
+          if ($dstSize -ne $expectedSize) {
+            DeleteDst -dst $dst
+            throw "dst size mismatch (dst=$dstSize expected=$expectedSize)"
+          }
+        }
+      }
       return
     } catch {
       $lastErr = $_
@@ -156,7 +207,22 @@ function LoadState([string]$path) {
       if ($raw) {
         $obj = $raw | ConvertFrom-Json
         foreach ($k in $obj.PSObject.Properties.Name) {
-          $s[$k] = [bool]$obj.$k
+          $v = $obj.$k
+          if ($v -is [bool]) {
+            $s[$k] = @{
+              ok = [bool]$v
+            }
+          } else {
+            $t = @{}
+            try {
+              foreach ($pk in $v.PSObject.Properties.Name) {
+                $t[$pk] = $v.$pk
+              }
+            } catch {
+            }
+            if (-not $t.ContainsKey('ok')) { $t['ok'] = $false }
+            $s[$k] = $t
+          }
         }
       }
     } catch {
@@ -207,6 +273,8 @@ if (-not $PSBoundParameters.ContainsKey('SkipExisting')) {
   $SkipExisting = $true
 }
 
+if ($null -eq $VerifyAfterUpload) { $VerifyAfterUpload = $true }
+
 EnsureRclone
 
 Write-Host "PublicUrl: $PublicUrl"
@@ -240,10 +308,17 @@ foreach ($d in $rootDirs) {
   $dirPath = [string]$d.path
   $safe = Slugify $dirName
 
-  if ($ExcludeModules -and ($ExcludeModules -contains $dirName)) {
-    Write-Host "SKIP (excluded): $dirName"
-    $skipped += 1
-    continue
+  if ($ExcludeModules) {
+    $excluded = $false
+    foreach ($pat in $ExcludeModules) {
+      if (-not $pat) { continue }
+      if ($dirName -like $pat) { $excluded = $true; break }
+    }
+    if ($excluded) {
+      Write-Host "SKIP (excluded): $dirName"
+      $skipped += 1
+      continue
+    }
   }
 
   $dstName = "$dirName.zip"
@@ -252,7 +327,7 @@ foreach ($d in $rootDirs) {
 
   Write-Host "=== MODULE: $dirName => $stateKey ==="
 
-  if ($state.ContainsKey($stateKey) -and $state[$stateKey]) {
+  if ($state.ContainsKey($stateKey) -and $state[$stateKey] -and $state[$stateKey].ok) {
     if (DstExists -dst $dst) {
       Write-Host "SKIP (state): $dst"
       $skipped += 1
@@ -266,7 +341,10 @@ foreach ($d in $rootDirs) {
     if (DstExists -dst $dst) {
       $stat = GetDstStat -dst $dst
       Write-Host "SKIP (exists in S3): $dst (size=$($stat.Size))"
-      $state[$stateKey] = $true
+      $state[$stateKey] = @{
+        ok = $true
+        dst_size = [int64]$stat.Size
+      }
       SaveState -path $StateFile -state $state
       $skipped += 1
       continue
@@ -276,7 +354,11 @@ foreach ($d in $rootDirs) {
   try {
     UploadZipWithFreshHref -publicUrl $PublicUrl -dirPath $dirPath -dst $dst -maxAttempts $MaxAttempts -retrySleepSeconds $RetrySleepSeconds
     $uploaded += 1
-    $state[$stateKey] = $true
+    $st2 = GetDstStat -dst $dst
+    $state[$stateKey] = @{
+      ok = $true
+      dst_size = $(if ($st2 -and $st2.Size -ne $null) { [int64]$st2.Size } else { $null })
+    }
     SaveState -path $StateFile -state $state
   } catch {
     $msg = ""

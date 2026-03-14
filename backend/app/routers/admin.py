@@ -42,6 +42,7 @@ from app.models.password_reset import PasswordResetToken
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.quiz import QuestionType, QuizType
 from app.models.skill import UserSkill
+from app.models.tag import Tag, UserTagMap, ModuleTagMap
 from app.schemas.analytics import ModuleAnalyticsResponse
 from app.schemas.admin import (
     AssignmentCreateRequest,
@@ -50,6 +51,7 @@ from app.schemas.admin import (
     LinkAssetToSubmoduleResponse,
     ModuleCreateRequest,
     ModuleCreateResponse,
+    ModuleUpdateRequest,
     QuestionCreateRequest,
     QuestionCreateResponse,
     QuestionPublic,
@@ -67,6 +69,11 @@ from app.schemas.admin import (
     UserResetPasswordResponse,
     UserUpdateRequest,
     UserUpdateResponse,
+    TagCreateRequest,
+    TagItem,
+    TagsListResponse,
+    UserTagsUpdateRequest,
+    ModuleAccessUpdateRequest,
 )
 from app.services.quiz_text import is_useful_quiz_text
 
@@ -102,6 +109,12 @@ from app.services.openrouter_health import openrouter_healthcheck
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _normalize_tag_name(name: str) -> str:
+    s = str(name or "").strip()
+    s = " ".join(s.split())
+    return s
 
 
 def _admin_jobs_get_rev() -> int:
@@ -216,6 +229,81 @@ def _random_password(length: int = 12) -> str:
 
 def _hash_password(password: str) -> str:
     return pwd_context.hash(password)
+
+
+@router.get("/tags", response_model=TagsListResponse)
+def list_tags(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    rows = db.scalars(select(Tag).order_by(Tag.name)).all()
+    return {"items": [{"id": str(t.id), "name": str(t.name)} for t in (rows or [])]}
+
+
+@router.post("/tags", response_model=TagItem)
+def create_tag(
+    request: Request,
+    body: TagCreateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_create_tag", limit=60, window_seconds=60),
+):
+    name = _normalize_tag_name(body.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="invalid tag name")
+
+    existing = db.scalar(select(Tag).where(func.lower(Tag.name) == func.lower(name)))
+    if existing is not None:
+        return {"id": str(existing.id), "name": str(existing.name)}
+
+    t = Tag(name=name)
+    db.add(t)
+    db.flush()
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_create_tag",
+        actor_user_id=current.id,
+        meta={"tag_id": str(t.id), "name": str(t.name)},
+    )
+    db.commit()
+    return {"id": str(t.id), "name": str(t.name)}
+
+
+@router.delete("/tags/{tag_id}")
+def delete_tag(
+    request: Request,
+    tag_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_delete_tag", limit=60, window_seconds=60),
+):
+    tid = _uuid(tag_id, field="tag_id")
+    t = db.scalar(select(Tag).where(Tag.id == tid))
+    if t is None:
+        return {"ok": True, "missing": True}
+
+    # Remove mappings first
+    db.execute(delete(UserTagMap).where(UserTagMap.tag_id == tid))
+    db.execute(delete(ModuleTagMap).where(ModuleTagMap.tag_id == tid))
+    db.execute(delete(Tag).where(Tag.id == tid))
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_delete_tag",
+        actor_user_id=current.id,
+        meta={"tag_id": str(tid), "name": str(getattr(t, "name", "") or "")},
+    )
+    db.commit()
+
+    # Access rules may change for modules.
+    try:
+        modules_bump_rev(reason="tag_deleted")
+    except Exception:
+        pass
+
+    return {"ok": True}
 
 
 def _reset_token_hash(token: str) -> str:
@@ -662,6 +750,61 @@ def set_runtime_llm_settings(
             log.debug("admin_set_runtime_llm_settings: db rollback failed", exc_info=True)
         log.warning("admin_set_runtime_llm_settings: audit_log failed")
     return {"ok": True}
+
+
+@router.patch("/modules/{module_id}")
+def update_module(
+    request: Request,
+    module_id: str,
+    body: ModuleUpdateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_update_module", limit=60, window_seconds=60),
+):
+    mid = _uuid(module_id, field="module_id")
+    m = db.scalar(select(Module).where(Module.id == mid))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    changed: dict[str, object] = {}
+
+    if body.title is not None:
+        next_title = str(body.title or "").strip()
+        if not next_title:
+            raise HTTPException(status_code=400, detail="title is required")
+        if len(next_title) > 300:
+            raise HTTPException(status_code=400, detail="title too long")
+        existing = db.scalar(
+            select(Module).where(
+                (Module.id != mid) & (func.lower(Module.title) == func.lower(next_title))
+            )
+        )
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="module title already exists")
+        if next_title != m.title:
+            changed["title_from"] = m.title
+            changed["title_to"] = next_title
+            m.title = next_title
+
+    if not changed:
+        return {"ok": True, "module_id": str(m.id)}
+
+    db.add(m)
+    db.commit()
+    db.refresh(m)
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_update_module",
+        actor_user_id=current.id,
+        meta={"module_id": str(m.id), **changed},
+    )
+    try:
+        modules_bump_rev(reason="module_updated")
+    except Exception:
+        pass
+    return {"ok": True, "module_id": str(m.id), "title": m.title}
 
 
 @router.post("/runtime/llm/reset")
@@ -3594,6 +3737,13 @@ def list_modules_admin(
 ):
     mods = db.scalars(select(Module).order_by(Module.title)).all()
 
+    module_tag_rows = db.execute(select(ModuleTagMap.module_id, ModuleTagMap.tag_id)).all()
+    tag_ids_by_module: dict[uuid.UUID, list[str]] = defaultdict(list)
+    for mid, tid in (module_tag_rows or []):
+        if mid is None or tid is None:
+            continue
+        tag_ids_by_module[mid].append(str(tid))
+
     stats_by_module: dict[str, dict[str, int]] = {}
     needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
     ok_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("ok:%"))
@@ -3671,6 +3821,8 @@ def list_modules_admin(
                 "id": mid,
                 "title": str(m.title),
                 "is_active": bool(m.is_active),
+                "visibility": str(getattr(m, "visibility", "public") or "public"),
+                "tag_ids": tag_ids_by_module.get(m.id, []),
                 "category": m.category,
                 "difficulty": int(m.difficulty or 1),
                 "final_quiz_id": str(m.final_quiz_id) if getattr(m, "final_quiz_id", None) else None,
@@ -3691,6 +3843,67 @@ def list_modules_admin(
         )
 
     return {"items": items}
+
+
+@router.put("/modules/{module_id}/access")
+def set_module_access(
+    request: Request,
+    module_id: str,
+    body: ModuleAccessUpdateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_set_module_access", limit=60, window_seconds=60),
+):
+    mid = _uuid(module_id, field="module_id")
+    m = db.scalar(select(Module).where(Module.id == mid))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    if body.visibility is not None:
+        vis = str(body.visibility).strip().lower()
+        if vis not in {"public", "hidden", "restricted"}:
+            raise HTTPException(status_code=400, detail="invalid visibility")
+        m.visibility = vis
+
+    if body.tag_ids is not None:
+        next_ids: list[uuid.UUID] = []
+        for raw in list(body.tag_ids or []):
+            tid = _uuid(raw, field="tag_id")
+            next_ids.append(tid)
+        next_ids = list(dict.fromkeys(next_ids))
+
+        if next_ids:
+            existing = set(db.scalars(select(Tag.id).where(Tag.id.in_(next_ids))).all())
+            missing = [str(tid) for tid in next_ids if tid not in existing]
+            if missing:
+                raise HTTPException(status_code=400, detail="unknown tag")
+
+        db.execute(delete(ModuleTagMap).where(ModuleTagMap.module_id == mid))
+        for tid in next_ids:
+            db.add(ModuleTagMap(module_id=mid, tag_id=tid))
+
+    db.add(m)
+    db.flush()
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_set_module_access",
+        actor_user_id=current.id,
+        meta={
+            "module_id": str(m.id),
+            "visibility": getattr(body, "visibility", None),
+            "tag_ids": list(body.tag_ids) if body.tag_ids is not None else None,
+        },
+    )
+    db.commit()
+
+    try:
+        modules_bump_rev(reason="module_access_updated")
+    except Exception:
+        pass
+
+    return {"ok": True}
 
 
 class ModulesReconcileRequest(BaseModel):
@@ -5445,6 +5658,14 @@ def list_admin_modules(
 ):
     rows = db.scalars(select(User).order_by(User.name)).all()
 
+    user_tag_rows = db.execute(select(UserTagMap.user_id, UserTagMap.tag_id)).all()
+    tag_name_by_id: dict[uuid.UUID, str] = {t.id: str(t.name) for t in db.scalars(select(Tag)).all()}
+    tag_ids_by_user: dict[uuid.UUID, list[str]] = defaultdict(list)
+    for uid, tid in (user_tag_rows or []):
+        if uid is None or tid is None:
+            continue
+        tag_ids_by_user[uid].append(str(tid))
+
     modules = db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()
     module_by_id: dict[uuid.UUID, Module] = {m.id: m for m in modules}
 
@@ -5597,6 +5818,8 @@ def list_admin_modules(
                 "last_activity_at": u.last_activity_at.isoformat() if getattr(u, "last_activity_at", None) else None,
                 "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
                 "progress_summary": _progress_summary_for_user(u),
+                "tag_ids": tag_ids_by_user.get(u.id, []),
+                "tags": [tag_name_by_id.get(uuid.UUID(tid), "") for tid in tag_ids_by_user.get(u.id, []) if tid],
             }
             for u in rows
         ]
@@ -5714,6 +5937,7 @@ def get_user_detail(
         "xp": int(u.xp or 0),
         "level": int(u.level or 0),
         "streak": int(u.streak or 0),
+        "tag_ids": tag_ids,
         "must_change_password": bool(getattr(u, "must_change_password", False)),
         "password_changed_at": u.password_changed_at.isoformat() if getattr(u, "password_changed_at", None) else None,
         "last_activity_at": u.last_activity_at.isoformat() if getattr(u, "last_activity_at", None) else None,
@@ -5731,6 +5955,56 @@ def get_user_detail(
         },
         "history": history,
     }
+
+
+@router.put("/users/{user_id}/tags")
+def set_user_tags(
+    request: Request,
+    user_id: str,
+    body: UserTagsUpdateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_set_user_tags", limit=60, window_seconds=60),
+):
+    uid = _uuid(user_id, field="user_id")
+    u = db.scalar(select(User).where(User.id == uid))
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    # Validate tags exist.
+    next_ids: list[uuid.UUID] = []
+    for raw in list(body.tag_ids or []):
+        tid = _uuid(raw, field="tag_id")
+        next_ids.append(tid)
+    next_ids = list(dict.fromkeys(next_ids))
+
+    if next_ids:
+        existing = set(db.scalars(select(Tag.id).where(Tag.id.in_(next_ids))).all())
+        missing = [str(tid) for tid in next_ids if tid not in existing]
+        if missing:
+            raise HTTPException(status_code=400, detail="unknown tag")
+
+    db.execute(delete(UserTagMap).where(UserTagMap.user_id == uid))
+    for tid in next_ids:
+        db.add(UserTagMap(user_id=uid, tag_id=tid))
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_set_user_tags",
+        actor_user_id=current.id,
+        target_user_id=uid,
+        meta={"tag_ids": [str(x) for x in next_ids]},
+    )
+    db.commit()
+
+    # User's accessible modules may change.
+    try:
+        modules_bump_rev(reason="user_tags_updated")
+    except Exception:
+        pass
+
+    return {"ok": True}
 
 
 @router.get("/users/{user_id}/history", response_model=HistoryResponse)

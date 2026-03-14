@@ -46,8 +46,9 @@ def modules_overview(db: Session = Depends(get_db), user: User = Depends(get_cur
 
 
 @router.get("", response_model=list[ModulePublic])
-def list_modules(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    modules = db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()  # noqa: E712
+def list_modules(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    service = ModuleService(db)
+    modules = service._get_accessible_modules(user)
     return [
         {
             "id": str(m.id),

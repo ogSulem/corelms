@@ -1,0 +1,3 @@
+﻿
+2026-03-14T11:32:41\tМодуль 001 (старт)\tregru:karkas-taigi-modules/uploads/Модуль 001 (старт).zip\tdst size mismatch (dst=600351 expected=599815)
+2026-03-14T11:36:08\tМодуль 002 (открытие ИП)\tregru:karkas-taigi-modules/uploads/Модуль 002 (открытие ИП).zip\tdst size mismatch (dst=776555 expected=776091)

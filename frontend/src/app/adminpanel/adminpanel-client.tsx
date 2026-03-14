@@ -20,7 +20,8 @@ import {
   UserDetail,
   TabKey,
   StorageObjectItem,
-  Module
+  Module,
+  TagItem
 } from "./types";
 
 import { DiagnosticsTab } from "./_components/DiagnosticsTab";
@@ -190,6 +191,78 @@ export default function AdminPanelClient() {
   const [resetBusy, setResetBusy] = useState(false);
   const [resetTempPassword, setResetTempPassword] = useState("");
   const [tempPasswordModalOpen, setTempPasswordModalOpen] = useState(false);
+
+  // Tags
+  const [tags, setTags] = useState<TagItem[]>([]);
+  const [tagsLoading, setTagsLoading] = useState(false);
+  const [newTagName, setNewTagName] = useState<string>("");
+  const [newTagBusy, setNewTagBusy] = useState(false);
+
+  async function loadTags() {
+    try {
+      setTagsLoading(true);
+      const res = await apiFetch<{ items: TagItem[] }>(`/admin/tags`);
+      const items = Array.isArray(res?.items) ? res.items : [];
+      setTags(items.map((t) => ({ id: String((t as any).id), name: String((t as any).name || "") })));
+    } catch {
+      setTags([]);
+    } finally {
+      setTagsLoading(false);
+    }
+  }
+
+  async function createTag() {
+    const name = String(newTagName || "").trim();
+    if (!name) return;
+    try {
+      setNewTagBusy(true);
+      setError(null);
+      await apiFetch<TagItem>(`/admin/tags`, { method: "POST", body: JSON.stringify({ name }) });
+      setNewTagName("");
+      await loadTags();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ СОЗДАТЬ ТЕГ");
+    } finally {
+      setNewTagBusy(false);
+    }
+  }
+
+  async function setSelectedUserTags(tagIds: string[]) {
+    if (!selectedUserId) return;
+    try {
+      setError(null);
+      await apiFetch<any>(`/admin/users/${encodeURIComponent(selectedUserId)}/tags`, {
+        method: "PUT",
+        body: JSON.stringify({ tag_ids: Array.isArray(tagIds) ? tagIds : [] }),
+      });
+      await Promise.all([loadUsersForce(), loadUserDetail(selectedUserId)]);
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ТЕГИ ОБНОВЛЕНЫ", description: "" } }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ОБНОВИТЬ ТЕГИ");
+    }
+  }
+
+  async function setSelectedAdminModuleAccess(patch: { visibility?: string | null; tag_ids?: string[] | null }) {
+    const mid = String(selectedAdminModuleId || "").trim();
+    if (!mid) return;
+    try {
+      setError(null);
+      await apiFetch<any>(`/admin/modules/${encodeURIComponent(mid)}/access`, {
+        method: "PUT",
+        body: JSON.stringify({
+          visibility: patch?.visibility ?? null,
+          tag_ids: patch?.tag_ids ?? null,
+        }),
+      });
+      await loadAdminModulesForce();
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ДОСТУП ОБНОВЛЕН", description: "" } }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "НЕ УДАЛОСЬ ОБНОВИТЬ ДОСТУП");
+    }
+  }
 
   async function copy(text: string) {
     const t = String(text ?? "");
@@ -1228,6 +1301,8 @@ export default function AdminPanelClient() {
         id: String(m.id),
         title: String(m.title || ""),
         is_active: !!(m as any).is_active,
+        visibility: String((m as any).visibility || "public"),
+        tag_ids: Array.isArray((m as any).tag_ids) ? (m as any).tag_ids.map((x: any) => String(x)) : [],
         final_quiz_id: (m as any).final_quiz_id ? String((m as any).final_quiz_id) : null,
         category: (m as any).category ?? null,
         difficulty: typeof (m as any).difficulty === "number" ? (m as any).difficulty : null,
@@ -1555,6 +1630,25 @@ export default function AdminPanelClient() {
       void loadSelectedAdminModule();
     } catch (e) {
       setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ИЗМЕНИТЬ ВИДИМОСТЬ");
+    }
+  }
+
+  async function renameSelectedAdminModule(nextTitle: string) {
+    const mid = String(selectedAdminModuleId || "").trim();
+    const title = String(nextTitle || "").trim();
+    if (!mid) return;
+    if (!title) {
+      setError("НАЗВАНИЕ НЕ МОЖЕТ БЫТЬ ПУСТЫМ");
+      return;
+    }
+    try {
+      setError(null);
+      await apiFetch(`/admin/modules/${encodeURIComponent(mid)}`, { method: "PATCH", body: JSON.stringify({ title }) });
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "НАЗВАНИЕ ОБНОВЛЕНО", description: "" } }));
+      await loadAdminModulesForce();
+      void loadSelectedAdminModule();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ПЕРЕИМЕНОВАТЬ");
     }
   }
 
@@ -2103,6 +2197,10 @@ export default function AdminPanelClient() {
   }, [tab]);
 
   useEffect(() => {
+    if (tab === "users" || tab === "modules") void loadTags();
+  }, [tab]);
+
+  useEffect(() => {
     if (selectedAdminModuleId) void loadSelectedAdminModule();
   }, [selectedAdminModuleId]);
 
@@ -2128,10 +2226,25 @@ export default function AdminPanelClient() {
   // --- Render logic ---
   const selectedAdminModule = useMemo(() => adminModules.find((m: AdminModuleItem) => String(m.id) === String(selectedAdminModuleId)) || null, [adminModules, selectedAdminModuleId]);
   const selectedAdminModuleQuality = useMemo(() => (selectedAdminModule as any)?.question_quality || { total_current: 0, needs_regen_current: 0, fallback_current: 0, ai_current: 0, heur_current: 0 }, [selectedAdminModule]);
+  const selectedAdminModuleSubsQuality = useMemo(() => {
+    const mid = String(selectedAdminModuleId || "").trim();
+    if (!mid) return [] as any[];
+    return (subQualityByModuleId as any)?.[mid] || [];
+  }, [subQualityByModuleId, selectedAdminModuleId]);
+  const selectedAdminModuleSubsQualityLoading = useMemo(() => {
+    const mid = String(selectedAdminModuleId || "").trim();
+    if (!mid) return false;
+    return Boolean((subQualityLoadingByModuleId as any)?.[mid]);
+  }, [subQualityLoadingByModuleId, selectedAdminModuleId]);
   const selectedQuizQuestions = useMemo(() => questionsByQuizId[selectedQuizId] || [], [questionsByQuizId, selectedQuizId]);
   const activeModuleRegenByModuleId = useMemo(() => {
     const out: Record<string, any> = {};
-    regenHistory.forEach((it: any) => { if (it.module_id && !it.submodule_id && it.status !== "finished") out[it.module_id] = it; });
+    for (const it of regenHistory || []) {
+      const mid = String((it as any)?.module_id || "").trim();
+      if (!mid) continue;
+      const st = String((it as any)?.status || "").trim().toLowerCase();
+      if (st && st !== "finished") out[mid] = it;
+    }
     return out;
   }, [regenHistory]);
   const activeSubmoduleRegenBySubmoduleId = useMemo(() => {
@@ -2273,20 +2386,28 @@ export default function AdminPanelClient() {
             <ModulesTab
               adminModules={adminModules}
               adminModulesLoading={adminModulesLoading}
-              loadAdminModules={loadAdminModules}
+              loadAdminModules={loadAdminModulesForce}
               reconcileModulesStorage={reconcileModulesStorage}
               selectedAdminModuleId={selectedAdminModuleId}
               setSelectedAdminModuleId={setSelectedAdminModuleId}
               selectedAdminModule={selectedAdminModule}
               setSelectedModuleVisibility={setSelectedModuleVisibility}
+              renameSelectedAdminModule={renameSelectedAdminModule}
+              tags={tags}
+              tagsLoading={tagsLoading}
+              newTagName={newTagName}
+              setNewTagName={setNewTagName}
+              newTagBusy={newTagBusy}
+              createTag={createTag}
+              setSelectedAdminModuleAccess={setSelectedAdminModuleAccess}
               activeModuleRegenByModuleId={activeModuleRegenByModuleId}
               activeSubmoduleRegenBySubmoduleId={activeSubmoduleRegenBySubmoduleId}
               regenerateSelectedModuleQuizzes={regenerateSelectedModuleQuizzes}
               deleteSelectedModule={deleteSelectedModule}
               selectedAdminModuleSubsLoading={selectedAdminModuleSubsLoading}
               selectedAdminModuleSubs={selectedAdminModuleSubs}
-              selectedAdminModuleSubsQuality={subQualityByModuleId[selectedAdminModuleId] || []}
-              selectedAdminModuleSubsQualityLoading={subQualityLoadingByModuleId[selectedAdminModuleId] || false}
+              selectedAdminModuleSubsQuality={selectedAdminModuleSubsQuality}
+              selectedAdminModuleSubsQualityLoading={selectedAdminModuleSubsQualityLoading}
               regenerateSubmoduleQuiz={regenerateSubmoduleQuiz}
               purgeOrphanStorage={purgeOrphanStorage}
               isStorageScanning={isStorageScanning}
@@ -2332,6 +2453,13 @@ export default function AdminPanelClient() {
               userDetail={userDetail}
               userDetailLoading={userDetailLoading}
               updateSelectedUser={updateSelectedUser}
+              tags={tags}
+              tagsLoading={tagsLoading}
+              newTagName={newTagName}
+              setNewTagName={setNewTagName}
+              newTagBusy={newTagBusy}
+              createTag={createTag}
+              setSelectedUserTags={setSelectedUserTags}
               resetBusy={resetBusy}
               resetPassword={resetPassword}
               deleteUserBusy={deleteUserBusy}

@@ -8,9 +8,11 @@ import json
 
 from app.core.redis_client import get_redis
 from app.models.module import Module, Submodule
+from app.models.tag import ModuleTagMap, UserTagMap
 from app.models.attempt import QuizAttempt
 from app.models.audit import LearningEvent, LearningEventType
 from app.models.user import User
+from app.models.user import UserRole
 
 from app.services.learning import LearningService
 
@@ -67,12 +69,46 @@ class ModuleService:
         self.db = db
         self.learning_service = LearningService(db)
 
+    def _get_accessible_modules(self, user: User) -> list[Module]:
+        # Admin sees all active modules.
+        if getattr(user, "role", None) == UserRole.admin:
+            return self.db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()  # noqa: E712
+
+        tag_ids = [
+            tid
+            for (tid,) in self.db.execute(select(UserTagMap.tag_id).where(UserTagMap.user_id == user.id)).all()
+            if tid is not None
+        ]
+
+        # Public modules are accessible by default.
+        public_q = (Module.is_active == True) & (Module.visibility == "public")  # noqa: E712
+
+        if not tag_ids:
+            return self.db.scalars(select(Module).where(public_q).order_by(Module.title)).all()
+
+        # Restricted modules are accessible if they share at least one tag with the user.
+        restricted_q = (Module.is_active == True) & (Module.visibility == "restricted")  # noqa: E712
+
+        stmt = (
+            select(Module)
+            .where(public_q)
+            .union(
+                select(Module)
+                .join(ModuleTagMap, ModuleTagMap.module_id == Module.id)
+                .where(restricted_q)
+                .where(ModuleTagMap.tag_id.in_(tag_ids))
+            )
+            .order_by(Module.title)
+        )
+        rows = self.db.execute(stmt).scalars().all()
+        return list(rows or [])
+
     def get_modules_overview(self, user: User) -> List[Dict[str, Any]]:
         """
         Возвращает обзор модулей с рассчитанным прогрессом для пользователя.
         Оптимизировано для исключения N+1 запросов.
         """
-        modules = self.db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()  # noqa: E712
+        modules = self._get_accessible_modules(user)
         
         if not modules:
             return []

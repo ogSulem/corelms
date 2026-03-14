@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import {
   AdminModuleItem,
   AdminSubmoduleItem,
-  AdminSubmoduleQualityItem
+  AdminSubmoduleQualityItem,
+  TagItem
 } from "../types";
 
 interface ModulesTabProps {
@@ -17,6 +18,14 @@ interface ModulesTabProps {
   setSelectedAdminModuleId: (id: string) => void;
   selectedAdminModule: AdminModuleItem | null;
   setSelectedModuleVisibility: (active: boolean) => Promise<void>;
+  renameSelectedAdminModule: (nextTitle: string) => Promise<void>;
+  tags: TagItem[];
+  tagsLoading: boolean;
+  newTagName: string;
+  setNewTagName: (val: string) => void;
+  newTagBusy: boolean;
+  createTag: () => Promise<void>;
+  setSelectedAdminModuleAccess: (patch: { visibility?: string | null; tag_ids?: string[] | null }) => Promise<void>;
   activeModuleRegenByModuleId: Record<string, { job_id: string; status: string; stage: string }>;
   activeSubmoduleRegenBySubmoduleId: Record<string, { job_id: string; status: string; stage: string; module_id: string }>;
   regenerateSelectedModuleQuizzes: () => Promise<void>;
@@ -57,6 +66,14 @@ export function ModulesTab(props: ModulesTabProps) {
     setSelectedAdminModuleId,
     selectedAdminModule,
     setSelectedModuleVisibility,
+    renameSelectedAdminModule,
+    tags,
+    tagsLoading,
+    newTagName,
+    setNewTagName,
+    newTagBusy,
+    createTag,
+    setSelectedAdminModuleAccess,
     activeModuleRegenByModuleId,
     activeSubmoduleRegenBySubmoduleId,
     regenerateSelectedModuleQuizzes,
@@ -116,6 +133,34 @@ export function ModulesTab(props: ModulesTabProps) {
     }
     return false;
   })();
+
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+
+  const [accessVisibility, setAccessVisibility] = useState<"public" | "hidden" | "restricted">("public");
+  const [accessTagDraft, setAccessTagDraft] = useState<string[]>([]);
+  const [accessSaving, setAccessSaving] = useState(false);
+
+  useEffect(() => {
+    setIsRenaming(false);
+    setRenameBusy(false);
+    setRenameTitle(String(selectedAdminModule?.title || ""));
+
+    const vis = String((selectedAdminModule as any)?.visibility || "public").trim().toLowerCase();
+    setAccessVisibility((vis === "hidden" || vis === "restricted" || vis === "public") ? (vis as any) : "public");
+    setAccessTagDraft(Array.isArray((selectedAdminModule as any)?.tag_ids) ? (selectedAdminModule as any).tag_ids.map((x: any) => String(x)) : []);
+  }, [selectedAdminModuleId]);
+
+  const hasAccessDraft = useMemo(() => {
+    const curVis = String((selectedAdminModule as any)?.visibility || "public").trim().toLowerCase() || "public";
+    const curTags = Array.isArray((selectedAdminModule as any)?.tag_ids) ? (selectedAdminModule as any).tag_ids.map((x: any) => String(x)) : [];
+    const a = String(curVis);
+    const b = String(accessVisibility);
+    const t1 = [...curTags].sort().join(",");
+    const t2 = [...(accessTagDraft || [])].map(String).sort().join(",");
+    return a !== b || t1 !== t2;
+  }, [selectedAdminModule, accessVisibility, accessTagDraft]);
 
   return (
     <div className="mt-8 space-y-6">
@@ -198,6 +243,59 @@ export function ModulesTab(props: ModulesTabProps) {
                 {selectedAdminModule ? selectedAdminModule.title : selectedAdminModuleId ? "ЗАГРУЗКА..." : "ВЫБЕРИТЕ МОДУЛЬ"}
               </div>
               {selectedAdminModule ? (
+                <div className="mt-4">
+                  {isRenaming ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        value={renameTitle}
+                        onChange={(e) => setRenameTitle(e.target.value)}
+                        disabled={renameBusy}
+                        className="h-10 w-full max-w-[520px] rounded-xl border border-zinc-200 bg-white px-3 text-[12px] font-bold text-zinc-900"
+                        placeholder="Новое название"
+                      />
+                      <Button
+                        variant="primary"
+                        className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                        disabled={renameBusy || !String(renameTitle || "").trim()}
+                        onClick={async () => {
+                          try {
+                            setRenameBusy(true);
+                            await renameSelectedAdminModule(String(renameTitle || ""));
+                            setIsRenaming(false);
+                          } finally {
+                            setRenameBusy(false);
+                          }
+                        }}
+                      >
+                        {renameBusy ? "..." : "СОХРАНИТЬ"}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                        disabled={renameBusy}
+                        onClick={() => {
+                          setRenameTitle(String(selectedAdminModule?.title || ""));
+                          setIsRenaming(false);
+                        }}
+                      >
+                        ОТМЕНА
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                      onClick={() => {
+                        setRenameTitle(String(selectedAdminModule?.title || ""));
+                        setIsRenaming(true);
+                      }}
+                    >
+                      ПЕРЕИМЕНОВАТЬ
+                    </Button>
+                  )}
+                </div>
+              ) : null}
+              {selectedAdminModule ? (
                 <div className="mt-3 flex flex-wrap items-center gap-3">
                   <div className="text-sm text-zinc-500 font-bold uppercase tracking-widest">
                     {selectedAdminModule.is_active ? "ВИДИМ СОТРУДНИКАМ" : "СКРЫТ"}
@@ -220,6 +318,99 @@ export function ModulesTab(props: ModulesTabProps) {
                   >
                     {selectedAdminModule.is_active ? "СКРЫТЬ" : "ПОКАЗАТЬ"}
                   </Button>
+                </div>
+              ) : null}
+
+              {selectedAdminModule ? (
+                <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Доступ</div>
+                      <div className="mt-1 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Public/Hidden/Restricted + теги (OR)</div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                      disabled={!selectedAdminModuleId || accessSaving || tagsLoading || !hasAccessDraft}
+                      onClick={async () => {
+                        try {
+                          setAccessSaving(true);
+                          await setSelectedAdminModuleAccess({ visibility: accessVisibility, tag_ids: accessTagDraft });
+                        } finally {
+                          setAccessSaving(false);
+                        }
+                      }}
+                    >
+                      {accessSaving ? "СОХРАН..." : "СОХРАНИТЬ"}
+                    </Button>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Visibility</div>
+                      <select
+                        className="mt-2 w-full h-10 rounded-xl bg-white border border-zinc-200 px-3 text-[11px] font-black uppercase tracking-widest outline-none"
+                        value={accessVisibility}
+                        onChange={(e) => setAccessVisibility((e.target.value as any) || "public")}
+                      >
+                        <option value="public">Всем</option>
+                        <option value="hidden">Скрыт</option>
+                        <option value="restricted">Ограниченно</option>
+                      </select>
+                    </div>
+
+                    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Создать тег</div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <input
+                          className="h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-black uppercase tracking-widest text-zinc-900"
+                          value={newTagName}
+                          onChange={(e) => setNewTagName(String(e.target.value || ""))}
+                          placeholder="Напр. КАЗАНЬ"
+                          disabled={newTagBusy}
+                        />
+                        <Button
+                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                          disabled={newTagBusy || !String(newTagName || "").trim()}
+                          onClick={() => void createTag()}
+                        >
+                          {newTagBusy ? "..." : "СОЗДАТЬ"}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Теги модуля</div>
+                      {tagsLoading ? (
+                        <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Загрузка…</div>
+                      ) : (tags || []).length === 0 ? (
+                        <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет тегов</div>
+                      ) : (
+                        <div className="mt-2 max-h-[160px] overflow-auto pr-1 space-y-2">
+                          {(tags || []).map((t) => {
+                            const id = String((t as any)?.id || "");
+                            const checked = (accessTagDraft || []).includes(id);
+                            return (
+                              <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    setAccessTagDraft((prev) => {
+                                      const xs = Array.isArray(prev) ? prev.slice() : [];
+                                      const has = xs.includes(id);
+                                      return has ? xs.filter((x) => x !== id) : [...xs, id];
+                                    });
+                                  }}
+                                />
+                                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               ) : null}
             </div>

@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { UserItem, UserDetail, UserHistoryDetailedItem } from "../types";
+import { UserItem, UserDetail, UserHistoryDetailedItem, TagItem } from "../types";
 import { useEffect, useMemo, useState } from "react";
 
 interface UsersTabProps {
@@ -43,6 +43,14 @@ interface UsersTabProps {
   resetTempPassword: string;
   tempPasswordModalOpen: boolean;
   setTempPasswordModalOpen: (open: boolean) => void;
+
+  tags: TagItem[];
+  tagsLoading: boolean;
+  newTagName: string;
+  setNewTagName: (val: string) => void;
+  newTagBusy: boolean;
+  createTag: () => Promise<void>;
+  setSelectedUserTags: (tagIds: string[]) => Promise<void>;
 }
 
 export function UsersTab(props: UsersTabProps) {
@@ -77,6 +85,14 @@ export function UsersTab(props: UsersTabProps) {
     resetTempPassword,
     tempPasswordModalOpen,
     setTempPasswordModalOpen,
+
+    tags,
+    tagsLoading,
+    newTagName,
+    setNewTagName,
+    newTagBusy,
+    createTag,
+    setSelectedUserTags,
   } = props;
 
   const isSelf = Boolean(selectedUserId) && String(selectedUserId) === String(currentUserId || "");
@@ -86,6 +102,9 @@ export function UsersTab(props: UsersTabProps) {
   const [draftEmail, setDraftEmail] = useState<string>("");
   const [draftRole, setDraftRole] = useState<"employee" | "admin">("employee");
   const [historyOpen, setHistoryOpen] = useState(false);
+
+  const [tagDraft, setTagDraft] = useState<string[]>([]);
+  const [tagSaving, setTagSaving] = useState(false);
 
   const hasDraft = useMemo(() => {
     if (!userDetail) return false;
@@ -101,12 +120,21 @@ export function UsersTab(props: UsersTabProps) {
       setDraftName("");
       setDraftEmail("");
       setDraftRole("employee");
+      setTagDraft([]);
       return;
     }
     setDraftName(String(userDetail.name || ""));
     setDraftEmail(String(userDetail.email || ""));
     setDraftRole((String(userDetail.role || "employee") as any) === "admin" ? "admin" : "employee");
+    setTagDraft(Array.isArray((userDetail as any)?.tag_ids) ? (userDetail as any).tag_ids.map((x: any) => String(x)) : []);
   }, [userDetail?.id]);
+
+  const hasTagDraft = useMemo(() => {
+    const cur = Array.isArray((userDetail as any)?.tag_ids) ? (userDetail as any).tag_ids.map((x: any) => String(x)) : [];
+    const a = [...cur].sort().join(",");
+    const b = [...(tagDraft || [])].map(String).sort().join(",");
+    return a !== b;
+  }, [userDetail, tagDraft]);
 
   return (
     <div className="mt-8 space-y-6">
@@ -351,6 +379,84 @@ export function UsersTab(props: UsersTabProps) {
                   <div className="rounded-2xl border border-zinc-200 bg-white p-4">
                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">СЕРИЯ</div>
                     <div className="mt-2 text-2xl font-black tabular-nums text-zinc-950">{String(userDetail.streak ?? 0)}</div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-4">
+                    <div>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Теги</div>
+                      <div className="mt-1 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Доступ к модулям (OR)</div>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                      disabled={!selectedUserId || tagSaving || tagsLoading || isLockedAdminTarget || !hasTagDraft}
+                      onClick={async () => {
+                        try {
+                          setTagSaving(true);
+                          await setSelectedUserTags(tagDraft);
+                        } finally {
+                          setTagSaving(false);
+                        }
+                      }}
+                    >
+                      {tagSaving ? "СОХРАН..." : "СОХРАНИТЬ ТЕГИ"}
+                    </Button>
+                  </div>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Создать тег</div>
+                      <div className="mt-2 flex items-center gap-2">
+                        <input
+                          className="h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-black uppercase tracking-widest text-zinc-900"
+                          value={newTagName}
+                          onChange={(e) => setNewTagName(String(e.target.value || ""))}
+                          placeholder="Напр. КАЗАНЬ"
+                          disabled={newTagBusy}
+                        />
+                        <Button
+                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                          disabled={newTagBusy || !String(newTagName || "").trim()}
+                          onClick={() => void createTag()}
+                        >
+                          {newTagBusy ? "..." : "СОЗДАТЬ"}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Выбор</div>
+                      {tagsLoading ? (
+                        <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Загрузка…</div>
+                      ) : (tags || []).length === 0 ? (
+                        <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет тегов</div>
+                      ) : (
+                        <div className="mt-2 max-h-[160px] overflow-auto pr-1 space-y-2">
+                          {(tags || []).map((t) => {
+                            const id = String((t as any)?.id || "");
+                            const checked = (tagDraft || []).includes(id);
+                            return (
+                              <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => {
+                                    setTagDraft((prev) => {
+                                      const xs = Array.isArray(prev) ? prev.slice() : [];
+                                      const has = xs.includes(id);
+                                      return has ? xs.filter((x) => x !== id) : [...xs, id];
+                                    });
+                                  }}
+                                />
+                                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
 
