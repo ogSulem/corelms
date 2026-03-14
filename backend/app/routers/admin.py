@@ -71,6 +71,8 @@ from app.schemas.admin import (
     UserUpdateResponse,
     TagCreateRequest,
     TagItem,
+    TagUsersResponse,
+    TagUsersUpdateRequest,
     TagsListResponse,
     UserTagsUpdateRequest,
     ModuleAccessUpdateRequest,
