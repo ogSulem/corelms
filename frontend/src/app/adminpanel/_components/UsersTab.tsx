@@ -371,7 +371,7 @@ export function UsersTab(props: UsersTabProps) {
             />
           </div>
 
-          <div className="mt-4 space-y-2 max-h-[520px] overflow-auto pr-1">
+          <div className="mt-4 space-y-2 max-h-[640px] overflow-auto pr-1">
             {(users || [])
               .filter((u) => {
                 const q = (userQuery || "").trim().toLowerCase();
@@ -546,29 +546,9 @@ export function UsersTab(props: UsersTabProps) {
                     </Button>
                   </div>
 
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="mt-4">
                     <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Создать тег</div>
-                      <div className="mt-2 flex items-center gap-2">
-                        <input
-                          className="h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-black uppercase tracking-widest text-zinc-900"
-                          value={newTagName}
-                          onChange={(e) => setNewTagName(String(e.target.value || ""))}
-                          placeholder="Напр. КАЗАНЬ"
-                          disabled={newTagBusy}
-                        />
-                        <Button
-                          className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                          disabled={newTagBusy || !String(newTagName || "").trim()}
-                          onClick={() => void createTag()}
-                        >
-                          {newTagBusy ? "..." : "СОЗДАТЬ"}
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Выбор</div>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Выбор тегов</div>
                       {tagsLoading ? (
                         <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Загрузка…</div>
                       ) : (tags || []).length === 0 ? (
@@ -585,15 +565,16 @@ export function UsersTab(props: UsersTabProps) {
                           </button>
 
                           {userTagsOpen ? (
-                            <div className="absolute z-20 mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-xl p-2">
-                              <div className="max-h-[220px] overflow-auto pr-1 space-y-2">
+                            <div className="absolute z-30 mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-2xl p-3">
+                              <div className="max-h-[320px] overflow-auto pr-2 space-y-1">
                                 {(tags || []).map((t) => {
                                   const id = String((t as any)?.id || "");
                                   const checked = (tagDraft || []).includes(id);
                                   return (
-                                    <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50">
+                                    <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 hover:bg-zinc-50 cursor-pointer transition-colors">
                                       <input
                                         type="checkbox"
+                                        className="w-4 h-4 text-[#fe9900] border-zinc-300 rounded focus:ring-[#fe9900]/20"
                                         checked={checked}
                                         disabled={tagSaving || isLockedAdminTarget}
                                         onChange={() => {
@@ -604,7 +585,7 @@ export function UsersTab(props: UsersTabProps) {
                                           });
                                         }}
                                       />
-                                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
+                                      <div className="text-[11px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
                                     </label>
                                   );
                                 })}

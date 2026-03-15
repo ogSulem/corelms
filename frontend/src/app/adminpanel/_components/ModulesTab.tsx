@@ -489,15 +489,16 @@ export function ModulesTab(props: ModulesTabProps) {
                           </button>
 
                           {moduleTagsOpen ? (
-                            <div className="absolute z-20 mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-xl p-2">
-                              <div className="max-h-[220px] overflow-auto pr-1 space-y-2">
+                            <div className="absolute z-30 mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-2xl p-3">
+                              <div className="max-h-[320px] overflow-auto pr-2 space-y-1">
                                 {(tags || []).map((t) => {
                                   const id = String((t as any)?.id || "");
                                   const checked = (accessTagDraft || []).includes(id);
                                   return (
-                                    <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50">
+                                    <label key={id} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-4 py-3 hover:bg-zinc-50 cursor-pointer transition-colors">
                                       <input
                                         type="checkbox"
+                                        className="w-4 h-4 text-[#fe9900] border-zinc-300 rounded focus:ring-[#fe9900]/20"
                                         checked={checked}
                                         onChange={() => {
                                           setAccessTagDraft((prev) => {
@@ -507,7 +508,7 @@ export function ModulesTab(props: ModulesTabProps) {
                                           });
                                         }}
                                       />
-                                      <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
+                                      <div className="text-[11px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((t as any)?.name || "")}</div>
                                     </label>
                                   );
                                 })}
