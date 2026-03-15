@@ -396,16 +396,60 @@ class LearningService:
         submodules = [s for s in (submodules or []) if not bool(getattr(s, "is_folder", False))]
         
         if not submodules:
+            # Assets-only module: allow completion via module open or any module-level asset view.
+            # We intentionally do NOT introduce a new LearningEventType (would require enum migration).
+            # Instead:
+            # - module open: LearningEventType.submodule_opened with ref_id=None and meta {action:"module_open", module_id}
+            # - asset view: LearningEventType.asset_viewed with meta containing module_id (resolved in assets router)
+            opened = False
+            try:
+                rows = self.db.scalars(
+                    select(LearningEvent)
+                    .where(LearningEvent.user_id == user.id)
+                    .where(LearningEvent.type.in_([LearningEventType.submodule_opened, LearningEventType.asset_viewed]))
+                    .order_by(LearningEvent.created_at.desc())
+                    .limit(200)
+                ).all()
+                for ev in rows or []:
+                    try:
+                        if ev.type == LearningEventType.submodule_opened:
+                            meta_raw = str(ev.meta or "")
+                            if not meta_raw:
+                                continue
+                            try:
+                                obj = json.loads(meta_raw)
+                            except Exception:
+                                obj = None
+                            if isinstance(obj, dict):
+                                if str(obj.get("action") or "").strip().lower() == "module_open" and str(obj.get("module_id") or "") == str(m.id):
+                                    opened = True
+                                    break
+                        if ev.type == LearningEventType.asset_viewed:
+                            meta_raw = str(ev.meta or "")
+                            if not meta_raw:
+                                continue
+                            try:
+                                obj = json.loads(meta_raw)
+                            except Exception:
+                                obj = None
+                            if isinstance(obj, dict) and str(obj.get("module_id") or "") == str(m.id):
+                                opened = True
+                                break
+                    except Exception:
+                        continue
+            except Exception:
+                opened = False
+
             return {
                 "module_id": str(m.id),
                 "title": m.title,
                 "total": 0,
                 "passed": 0,
                 "final_submodule_id": None,
-                "final_quiz_id": str(m.final_quiz_id) if m.final_quiz_id else None,
+                "final_quiz_id": None,
                 "final_passed": False,
                 "final_best_score": None,
-                "completed": False,
+                "completed": bool(opened),
                 "submodules": []
             }
 

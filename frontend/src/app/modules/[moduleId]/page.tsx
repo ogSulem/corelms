@@ -121,6 +121,8 @@ export default function ModulePage() {
 
   const [fileModalOpen, setFileModalOpen] = useState(false);
 
+  const [assetsOnlyOpenMarked, setAssetsOnlyOpenMarked] = useState(false);
+
   function decodeLegacyPercentUnicode(input: string): string {
     const raw = String(input || "").trim();
     if (!raw) return "";
@@ -216,7 +218,30 @@ export default function ModulePage() {
     setFolderModalNavPath([]);
     setFolderModalLoading(false);
     setFileModalOpen(false);
+    setAssetsOnlyOpenMarked(false);
   }, [moduleId]);
+
+  useEffect(() => {
+    if (!moduleId) return;
+    if (assetsOnlyOpenMarked) return;
+    if (loading) return;
+    if ((submodules || []).length !== 0) return;
+    if ((moduleAssets || []).length === 0) return;
+    setAssetsOnlyOpenMarked(true);
+    (async () => {
+      try {
+        await apiFetch(`/modules/${encodeURIComponent(String(moduleId))}/open`, { method: "POST" });
+      } catch {
+        // ignore
+      }
+      try {
+        const p = await apiFetch<ProgressData>(`/progress/modules/${moduleId}`);
+        setProgress(p);
+      } catch {
+        // ignore
+      }
+    })();
+  }, [assetsOnlyOpenMarked, loading, moduleAssets, moduleId, submodules]);
 
   async function openFolderCatalog(nextPath: string[]) {
     const title = nextPath[nextPath.length - 1] || "Каталог";
@@ -797,6 +822,11 @@ export default function ModulePage() {
                 <h1 className="text-4xl font-black tracking-tighter text-zinc-950 uppercase leading-none">
                   {moduleMeta?.title || (loading ? "Загрузка…" : "Модуль")}
                 </h1>
+                {progress?.completed ? (
+                  <div className="mt-4 inline-flex items-center gap-2 rounded-2xl border border-[#284e13]/25 bg-[#284e13]/10 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-[#284e13]">
+                    МОДУЛЬ ПРОЙДЕН
+                  </div>
+                ) : null}
                 <div className="mt-6 max-w-md">
                   <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-zinc-600 mb-2">
                     <div>Прогресс модуля</div>
@@ -852,7 +882,7 @@ export default function ModulePage() {
           </div>
         ) : (
           <div className="mt-8 grid gap-8 lg:grid-cols-3">
-            <Card className="lg:col-span-1 relative overflow-hidden border border-zinc-200 bg-white/70 backdrop-blur-md rounded-[28px] shadow-2xl shadow-zinc-950/10">
+            <Card data-corelms="module-assets-card" className="lg:col-span-1 relative overflow-hidden border border-zinc-200 bg-white/70 backdrop-blur-md rounded-[28px] shadow-2xl shadow-zinc-950/10">
               <div className="absolute left-0 top-0 h-full w-[2px] bg-gradient-to-b from-[#fe9900]/60 to-transparent" />
               <CardHeader className="p-8">
                 <CardTitle className="text-xs font-black uppercase tracking-[0.3em] text-zinc-500">Материалы</CardTitle>
@@ -1166,9 +1196,42 @@ export default function ModulePage() {
                     <Skeleton className="h-24 w-full rounded-[24px] bg-zinc-100" />
                   </div>
                 ) : submodules.length === 0 ? (
-                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600 py-20 text-center border border-dashed border-zinc-200 rounded-[24px]">
-                    Нет уроков
-                  </div>
+                  (assetBrowser.hasAny ? (
+                    <div className="rounded-[24px] border border-zinc-200 bg-white/70 p-8">
+                      <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">МОДУЛЬ-МАТЕРИАЛЫ</div>
+                      <div className="mt-3 text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none">
+                        Здесь нет уроков — только материалы
+                      </div>
+                      <div className="mt-4 text-[11px] font-bold text-zinc-600 leading-relaxed">
+                        Откройте файлы слева в разделе «Материалы». Прогресс будет засчитан после открытия модуля или любого материала.
+                      </div>
+                      <div className="mt-6 flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            try {
+                              const el = document.querySelector('[data-corelms="module-assets-card"]');
+                              (el as any)?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+                            } catch {
+                              // ignore
+                            }
+                          }}
+                          className="h-12 rounded-2xl bg-[#fe9900] px-8 text-[10px] font-black uppercase tracking-widest text-zinc-950 shadow-2xl shadow-[#fe9900]/20 hover:bg-[#f48f00] transition-all active:scale-[0.98]"
+                        >
+                          ОТКРЫТЬ МАТЕРИАЛЫ
+                        </button>
+                        {progress?.completed ? (
+                          <div className="h-12 inline-flex items-center rounded-2xl border border-[#284e13]/25 bg-[#284e13]/10 px-5 text-[10px] font-black uppercase tracking-widest text-[#284e13]">
+                            ЗАСЧИТАНО
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600 py-20 text-center border border-dashed border-zinc-200 rounded-[24px]">
+                      Нет уроков
+                    </div>
+                  ))
                 ) : (
                   <div className="relative">
                     <div className="absolute left-[15px] top-2 bottom-2 w-px bg-zinc-200" />

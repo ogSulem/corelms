@@ -230,9 +230,8 @@ export function ModulesTab(props: ModulesTabProps) {
         <div className="lg:col-span-4 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10 min-w-0">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div className="min-w-0">
-              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">МОДУЛИ</div>
               <div className="mt-2 flex items-center gap-3">
-                <div className="text-xl font-black tracking-tighter text-zinc-950 uppercase">СПИСОК</div>
+                <div className="text-xl font-black tracking-tighter text-zinc-950 uppercase">СПИСОК МОДУЛЕЙ</div>
                 <Button
                   variant="ghost"
                   className="h-10 rounded-2xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
@@ -300,7 +299,6 @@ export function ModulesTab(props: ModulesTabProps) {
         <div className="lg:col-span-8 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-10 shadow-2xl shadow-zinc-950/10">
           <div className="flex flex-wrap items-start justify-between gap-6">
             <div className="min-w-0">
-              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">КАРТОЧКА</div>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="min-w-0 text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none truncate">
                   {selectedAdminModule ? selectedAdminModule.title : selectedAdminModuleId ? "ЗАГРУЗКА..." : "ВЫБЕРИТЕ МОДУЛЬ"}
@@ -392,7 +390,6 @@ export function ModulesTab(props: ModulesTabProps) {
               ) : null}
               {selectedAdminModule ? (
                 <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <div className="text-sm text-zinc-500 font-bold uppercase tracking-widest">ПУБЛИКАЦИЯ</div>
                   <div
                     className={
                       "text-[9px] font-black uppercase tracking-widest rounded-xl border px-3 py-2 " +
@@ -430,10 +427,7 @@ export function ModulesTab(props: ModulesTabProps) {
               {selectedAdminModule ? (
                 <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5">
                   <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div>
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Доступ сотрудникам</div>
-                      <div className="mt-1 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Всем / только по тегам (OR) / скрыт</div>
-                    </div>
+
                     <Button
                       variant="ghost"
                       className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"

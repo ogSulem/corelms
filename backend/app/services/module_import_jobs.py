@@ -517,7 +517,13 @@ def import_module_zip_job(
                         s3.download_fileobj(settings.s3_bucket, object_key, f, Config=config)
                     except Exception:
                         resp = s3.get_object(Bucket=settings.s3_bucket, Key=object_key)
+                        expected_len = None
+                        try:
+                            expected_len = int(resp.get("ContentLength") or 0) or None
+                        except Exception:
+                            expected_len = None
                         body = resp.get("Body")
+                        wrote = 0
                         try:
                             while True:
                                 _cancel_checkpoint(s3_object_key=object_key, stage="download")
@@ -526,12 +532,19 @@ def import_module_zip_job(
                                 if not chunk:
                                     break
                                 f.write(chunk)
+                                wrote += len(chunk)
                         finally:
                             try:
                                 if body is not None:
                                     body.close()
                             except Exception:
                                 pass
+
+                        # Hardening: some S3 providers may cut the connection without raising,
+                        # resulting in a truncated ZIP (BadZipFile later). If we can infer
+                        # expected length from GET response, enforce it.
+                        if expected_len is not None and wrote < expected_len:
+                            raise IOError(f"download truncated: wrote={wrote} expected={expected_len}")
 
                 return
             except ImportCanceledError:
@@ -561,7 +574,20 @@ def import_module_zip_job(
         log.info("import_module_zip_job: downloading from s3 key=%s -> %s", s3_object_key, str(zip_path))
 
         try:
-            s3.head_object(Bucket=settings.s3_bucket, Key=s3_object_key)
+            # Some S3 providers (including certain gateways) may return 404 for HEAD even when
+            # the object exists and is readable via GET. Use a 1-byte ranged GET as existence check.
+            # This keeps imports reliable across providers.
+            pre = s3.get_object(Bucket=settings.s3_bucket, Key=s3_object_key, Range="bytes=0-0")
+            try:
+                body = pre.get("Body")
+                if body is not None:
+                    body.read(1)
+            finally:
+                try:
+                    if pre.get("Body") is not None:
+                        pre.get("Body").close()
+                except Exception:
+                    pass
         except ClientError as e:
             code = str((e.response or {}).get("Error", {}).get("Code") or "")
             status = int((e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode") or 0)

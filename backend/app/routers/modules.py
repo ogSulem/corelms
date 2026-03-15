@@ -13,14 +13,17 @@ from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
 from app.core.security import get_current_user
+from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.asset import ContentAsset
+from app.models.audit import LearningEvent, LearningEventType
 from app.models.module import Module, Submodule
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.user import User
 from app.schemas.modules_overview import ModulesOverviewResponse
 from app.schemas.module import ModulePublic, SubmoduleAssetsResponse, SubmodulePublic
 from app.services.modules import ModuleService
+from app.services.skills import record_activity_and_award_xp
 
 router = APIRouter(prefix="/modules", tags=["modules"])
 
@@ -195,6 +198,39 @@ def get_module(module_id: str, db: Session = Depends(get_db), _: User = Depends(
         "category": m.category,
         "is_active": m.is_active,
     }
+
+
+@router.post("/{module_id}/open")
+def open_module(
+    module_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    _: object = rate_limit(key_prefix="module_open", limit=120, window_seconds=60),
+):
+    m = db.scalar(select(Module).where(Module.id == module_id))
+    if m is None:
+        raise HTTPException(status_code=404, detail="module not found")
+
+    # Count module open as activity for streak, but do not award XP.
+    record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
+
+    # Note: do NOT introduce a new LearningEventType (would require DB enum migration).
+    # Reuse submodule_opened with ref_id=None and encode action in meta.
+    try:
+        meta = json.dumps({"action": "module_open", "module_id": str(m.id)}, ensure_ascii=False)
+    except Exception:
+        meta = "module_open"
+
+    db.add(
+        LearningEvent(
+            user_id=user.id,
+            type=LearningEventType.submodule_opened,
+            ref_id=None,
+            meta=meta,
+        )
+    )
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/{module_id}/submodules", response_model=list[SubmodulePublic])

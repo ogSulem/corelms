@@ -225,10 +225,45 @@ export function UsersTab(props: UsersTabProps) {
           ) : null}
         </div>
 
-        <div className="lg:col-span-4 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
+        <div className="lg:col-span-4 relative overflow-visible rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
           <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Теги</div>
           <div className="mt-2 text-sm font-bold text-zinc-600">
             Создай/выбери тег, отметь сотрудников ниже, нажми применить.
+          </div>
+
+          <div className="mt-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Быстрый доступ</div>
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-400 tabular-nums">{(tags || []).length}</div>
+            </div>
+            <div className="mt-2 -mx-1 flex items-center gap-2 overflow-x-auto whitespace-nowrap px-1 pb-1">
+              {(tags || []).map((t) => {
+                const tid = String((t as any)?.id || "");
+                const name = String((t as any)?.name || "").trim();
+                const active = Boolean(tid) && String(bulkTagId || "") === tid;
+                return (
+                  <button
+                    key={`quick:${tid}`}
+                    type="button"
+                    disabled={tagsLoading || bulkTagBusy || !tid}
+                    onClick={() => {
+                      setBulkTagId(tid);
+                      setBulkTagUsers([]);
+                      if (tid) void loadBulkTagUsers(tid);
+                    }}
+                    className={
+                      "shrink-0 h-9 rounded-full border px-4 text-[9px] font-black uppercase tracking-widest transition-all active:scale-95 " +
+                      (active
+                        ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-zinc-950"
+                        : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50")
+                    }
+                    title={name}
+                  >
+                    {name ? name.toUpperCase() : "ТЕГ"}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           <div className="mt-4 grid gap-3">
@@ -301,7 +336,7 @@ export function UsersTab(props: UsersTabProps) {
                   </button>
 
                   {bulkUsersOpen ? (
-                    <div className="absolute z-20 mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-xl p-2">
+                    <div className="absolute z-[9999] mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-xl p-2">
                       <div className="max-h-[260px] overflow-auto pr-1 space-y-2">
                         {(users || []).map((u) => {
                           const uid = String((u as any)?.id || "");
