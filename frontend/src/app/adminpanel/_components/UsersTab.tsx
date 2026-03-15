@@ -227,89 +227,53 @@ export function UsersTab(props: UsersTabProps) {
 
         <div className="lg:col-span-4 relative overflow-visible rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
           <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Теги</div>
-          <div className="mt-2 text-sm font-bold text-zinc-600">
-            Создай/выбери тег, отметь сотрудников ниже, нажми применить.
-          </div>
-
-          <div className="mt-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Быстрый доступ</div>
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-400 tabular-nums">{(tags || []).length}</div>
-            </div>
-            <div className="mt-2 -mx-1 flex items-center gap-2 overflow-x-auto whitespace-nowrap px-1 pb-1">
-              {(tags || []).map((t) => {
-                const tid = String((t as any)?.id || "");
-                const name = String((t as any)?.name || "").trim();
-                const active = Boolean(tid) && String(bulkTagId || "") === tid;
-                return (
-                  <button
-                    key={`quick:${tid}`}
-                    type="button"
-                    disabled={tagsLoading || bulkTagBusy || !tid}
-                    onClick={() => {
-                      setBulkTagId(tid);
-                      setBulkTagUsers([]);
-                      if (tid) void loadBulkTagUsers(tid);
-                    }}
-                    className={
-                      "shrink-0 h-9 rounded-full border px-4 text-[9px] font-black uppercase tracking-widest transition-all active:scale-95 " +
-                      (active
-                        ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-zinc-950"
-                        : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50")
-                    }
-                    title={name}
-                  >
-                    {name ? name.toUpperCase() : "ТЕГ"}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
 
           <div className="mt-4 grid gap-3">
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Тег</div>
-              <select
-                className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
-                value={bulkTagId}
-                disabled={tagsLoading || bulkTagBusy}
-                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
-                  const tid = String(e.target.value || "");
-                  setBulkTagId(tid);
-                  setBulkTagUsers([]);
-                  if (tid) void loadBulkTagUsers(tid);
-                }}
-              >
-                <option value="">ВЫБРАТЬ ТЕГ</option>
-                {(tags || []).map((t) => (
-                  <option key={String((t as any)?.id || "")} value={String((t as any)?.id || "")}>{String((t as any)?.name || "").toUpperCase()}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Создать тег</div>
-              <div className="mt-2 flex items-center gap-2">
-                <input
-                  className="h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-black uppercase tracking-widest text-zinc-900"
-                  value={newTagName}
-                  onChange={(e) => setNewTagName(String(e.target.value || ""))}
-                  placeholder="Напр. КАЗАНЬ"
-                  disabled={newTagBusy || bulkTagBusy}
-                />
-                <Button
-                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={newTagBusy || bulkTagBusy || !String(newTagName || "").trim()}
-                  onClick={() => void createTag()}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Выбор тега</div>
+                <select
+                  className="mt-2 w-full h-10 rounded-xl bg-white border border-zinc-200 px-3 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
+                  value={bulkTagId}
+                  disabled={tagsLoading || bulkTagBusy}
+                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                    const tid = String(e.target.value || "");
+                    setBulkTagId(tid);
+                    setBulkTagUsers([]);
+                    if (tid) void loadBulkTagUsers(tid);
+                  }}
                 >
-                  {newTagBusy ? "..." : "СОЗДАТЬ"}
-                </Button>
+                  <option value="">ВЫБРАТЬ ТЕГ</option>
+                  {(tags || []).map((t) => (
+                    <option key={String((t as any)?.id || "")} value={String((t as any)?.id || "")}>{String((t as any)?.name || "").toUpperCase()}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Создать тег</div>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    className="h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-black uppercase tracking-widest text-zinc-900"
+                    value={newTagName}
+                    onChange={(e) => setNewTagName(String(e.target.value || ""))}
+                    placeholder="НАПР. КАЗАНЬ"
+                    disabled={newTagBusy || bulkTagBusy}
+                  />
+                  <Button
+                    className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
+                    disabled={newTagBusy || bulkTagBusy || !String(newTagName || "").trim()}
+                    onClick={() => void createTag()}
+                  >
+                    {newTagBusy ? "..." : "СОЗДАТЬ"}
+                  </Button>
+                </div>
               </div>
             </div>
 
-            <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+            <div>
               <div className="flex items-center justify-between gap-4">
-                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Сотрудники в теге</div>
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Сотрудники в теге</div>
                 <Button
                   variant="ghost"
                   className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
@@ -321,11 +285,11 @@ export function UsersTab(props: UsersTabProps) {
               </div>
 
               {!bulkTagId ? (
-                <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Сначала выбери тег</div>
+                <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest ml-1">Выберите тег</div>
               ) : usersLoading ? (
-                <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Загрузка…</div>
+                <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase tracking-widest ml-1">Загрузка…</div>
               ) : (
-                <div className="mt-3 relative">
+                <div className="mt-2 relative">
                   <button
                     type="button"
                     className="w-full h-10 rounded-xl border border-zinc-200 bg-white px-3 text-left text-[10px] font-black uppercase tracking-widest text-zinc-800 hover:bg-zinc-50"
