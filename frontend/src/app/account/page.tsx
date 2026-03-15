@@ -247,8 +247,8 @@ export default function AccountPage() {
     uniq.sort((a, b) => String(b.last_at).localeCompare(String(a.last_at)));
 
     const current = uniq.length ? uniq[0] : null;
-    const last5 = uniq.slice(0, 6);
-    return { current, last5 };
+    const last3 = uniq.slice(0, 3);
+    return { current, last3 };
   }, [historyAll]);
 
   const level = profile?.level ?? 1;
@@ -286,13 +286,25 @@ export default function AccountPage() {
   return (
     <AppShell>
       <div className="mx-auto max-w-6xl px-6 py-12 lg:py-20">
-        <div className="mb-16">
+        <div className="mb-10">
           <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Профиль</div>
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-8">
             <div className="min-w-0">
               <h1 className="text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-none truncate">
                 {profile?.name || "ЗАГРУЗКА..."}
               </h1>
+              <div className="mt-2 text-xl text-zinc-500 font-medium uppercase tracking-tight">
+                {profile?.role === "admin" ? "АДМИНИСТРАТОР" : "СОТРУДНИК"}
+                {String(profile?.position || "").trim() ? ` · ${String(profile?.position || "").trim().toUpperCase()}` : ""}
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {heroStats.map((s) => (
+                  <div key={s.key} className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-800">
+                    {String(s.label || "").toUpperCase()} · <span className="tabular-nums">{s.value}</span>
+                  </div>
+                ))}
+              </div>
               {securitySummary.latestSubtitle ? (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <div className="rounded-full border border-zinc-200 bg-white px-3 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-700">
@@ -313,18 +325,13 @@ export default function AccountPage() {
             </div>
 
             <div className="w-full lg:w-[360px]">
-              <div className="rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
+              <div className="rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-5 shadow-2xl shadow-zinc-950/10">
                 <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">IP</div>
                 <div className="mt-3">
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Текущий</div>
-                  <div className="mt-1 text-sm font-black text-zinc-950 tabular-nums">
+                  <div className="mt-1 text-base font-black text-zinc-950 tabular-nums">
                     {ipWidget.current?.sample_ip || "—"}
                   </div>
-                  {ipWidget.current?.label ? (
-                    <div className="mt-1 text-[10px] font-black text-zinc-700 tabular-nums">
-                      {ipWidget.current.label}
-                    </div>
-                  ) : null}
                   {ipWidget.current?.last_at ? (
                     <div className="mt-1 text-[10px] font-bold text-zinc-500 tabular-nums">
                       {new Date(ipWidget.current.last_at).toLocaleString("ru-RU", {
@@ -339,14 +346,13 @@ export default function AccountPage() {
                 </div>
 
                 <div className="mt-5">
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Последние 5</div>
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Последние 3</div>
                   <div className="mt-2 space-y-2">
-                    {ipWidget.last5.length ? (
-                      ipWidget.last5.slice(0, 5).map((x) => (
+                    {ipWidget.last3.length ? (
+                      ipWidget.last3.slice(0, 3).map((x) => (
                         <div key={x.key} className="flex items-center justify-between gap-3">
                           <div className="min-w-0">
                             <div className="text-[10px] font-black text-zinc-950 tabular-nums">{x.sample_ip || "—"}</div>
-                            <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 truncate">{x.label}</div>
                           </div>
                           <div className="text-[10px] font-bold text-zinc-500 tabular-nums shrink-0">
                             {new Date(x.last_at).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })}
@@ -361,9 +367,6 @@ export default function AccountPage() {
               </div>
             </div>
           </div>
-          <p className="mt-4 text-xl text-zinc-500 font-medium uppercase tracking-tight">
-            {profile?.role === "admin" ? "АДМИНИСТРАТОР" : "СОТРУДНИК"}
-          </p>
         </div>
         <div className="grid gap-10 lg:grid-cols-12">
           <div className="lg:col-span-8 space-y-10">

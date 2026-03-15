@@ -304,6 +304,23 @@ export function ModulesTab(props: ModulesTabProps) {
                   {selectedAdminModule ? selectedAdminModule.title : selectedAdminModuleId ? "ЗАГРУЗКА..." : "ВЫБЕРИТЕ МОДУЛЬ"}
                 </div>
 
+                {selectedAdminModule ? (
+                  <Button
+                    variant={selectedAdminModule.is_active ? "outline" : "primary"}
+                    className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
+                    disabled={publishBusy || accessSaving}
+                    onClick={() => {
+                      if (selectedAdminModule.is_active) {
+                        void setSelectedModuleVisibility(false);
+                      } else {
+                        void publishWithAccess();
+                      }
+                    }}
+                  >
+                    {selectedAdminModule.is_active ? "СКРЫТЬ" : "ПОКАЗАТЬ"}
+                  </Button>
+                ) : null}
+
                 {selectedAdminModuleId ? (
                   <div className="shrink-0 flex items-center gap-2">
                     {selectedAdminModuleId && (activeModuleRegenByModuleId[String(selectedAdminModuleId || "")] || anySubmoduleRegenForSelectedModule) ? (
@@ -389,33 +406,7 @@ export function ModulesTab(props: ModulesTabProps) {
                 </div>
               ) : null}
               {selectedAdminModule ? (
-                <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <div
-                    className={
-                      "text-[9px] font-black uppercase tracking-widest rounded-xl border px-3 py-2 " +
-                      (selectedAdminModule.storage_ok
-                        ? "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]"
-                        : "border-[#fe9900]/25 bg-[#fe9900]/10 text-[#fe9900]")
-                    }
-                    title={String(selectedAdminModule.storage_prefix || "")}
-                  >
-                    {selectedAdminModule.storage_ok ? "STORAGE OK" : "STORAGE MISSING"}
-                  </div>
-                  <Button
-                    variant={selectedAdminModule.is_active ? "outline" : "primary"}
-                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={publishBusy || accessSaving}
-                    onClick={() => {
-                      if (selectedAdminModule.is_active) {
-                        void setSelectedModuleVisibility(false);
-                      } else {
-                        void publishWithAccess();
-                      }
-                    }}
-                  >
-                    {selectedAdminModule.is_active ? "СКРЫТЬ ОТ СОТРУДНИКОВ" : "ПОКАЗАТЬ СОТРУДНИКАМ"}
-                  </Button>
-                </div>
+                <div className="mt-3" />
               ) : null}
 
               {selectedAdminModule ? (
