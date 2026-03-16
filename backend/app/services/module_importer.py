@@ -146,6 +146,11 @@ def _should_ignore_file(p: pathlib.Path) -> bool:
         parts = {x for x in p.parts}
         if "__MACOSX" in parts:
             return True
+        for seg in parts:
+            s = str(seg or "")
+            slow = s.lower()
+            if slow.startswith("tmp") and len(s) >= 6:
+                return True
     except Exception:
         pass
 
@@ -554,10 +559,26 @@ def import_module_from_dir(
             if report is not None:
                 report["module_assets"] = int(report.get("module_assets") or 0) + 1
 
-    lesson_candidates = [d for d in module_dir.iterdir() if d.is_dir() and d.name not in {"_module", "__MACOSX"}]
+    def _is_noise_lesson_dir(d: pathlib.Path) -> bool:
+        try:
+            n = str(d.name or "").strip()
+            nlow = n.lower()
+            if not n:
+                return True
+            if n in {"_module", "__MACOSX"}:
+                return True
+            if n.startswith("._"):
+                return True
+            if nlow.startswith("tmp") and len(n) >= 6:
+                return True
+        except Exception:
+            return False
+        return False
+
+    lesson_candidates = [d for d in module_dir.iterdir() if d.is_dir() and (not _is_noise_lesson_dir(d))]
     if not lesson_candidates:
-        for d in sorted([p for p in module_dir.iterdir() if p.is_dir() and p.name not in {"_module", "__MACOSX"}]):
-            inner = [x for x in d.iterdir() if x.is_dir() and x.name not in {"_module", "__MACOSX"}]
+        for d in sorted([p for p in module_dir.iterdir() if p.is_dir() and (not _is_noise_lesson_dir(p))]):
+            inner = [x for x in d.iterdir() if x.is_dir() and (not _is_noise_lesson_dir(x))]
             if inner:
                 module_dir = d
                 lesson_candidates = inner

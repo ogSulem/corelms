@@ -794,8 +794,24 @@ def import_module_zip_job(
         # - a flat root (files directly in root)
         # - multiple top-level entries including __MACOSX
         # Prefer a folder that matches the inferred title (from filename) when present.
-        top_dirs = [p for p in base.iterdir() if p.is_dir() and p.name not in {"__MACOSX"}]
-        top_files = [p for p in base.iterdir() if p.is_file() and p.name not in {"__MACOSX"}]
+        def _is_noise_dir(d: pathlib.Path) -> bool:
+            try:
+                n = str(d.name or "").strip()
+                nlow = n.lower()
+                if not n:
+                    return True
+                if n in {"__MACOSX"}:
+                    return True
+                if n.startswith("._"):
+                    return True
+                if nlow.startswith("tmp") and len(n) >= 6:
+                    return True
+            except Exception:
+                return False
+            return False
+
+        top_dirs = [p for p in base.iterdir() if p.is_dir() and (not _is_noise_dir(p))]
+        top_files = [p for p in base.iterdir() if p.is_file() and p.name not in {"__MACOSX"} and (not str(p.name).startswith("._"))]
         module_dir = None
         if len(top_dirs) == 1 and not top_files:
             module_dir = top_dirs[0]

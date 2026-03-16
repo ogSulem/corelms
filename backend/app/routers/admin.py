@@ -3477,6 +3477,8 @@ def retry_import_job(
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(
     job_id: str,
+    delete_source_zip: bool = Query(default=False),
+    db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
     job = fetch_job(job_id)
@@ -3548,6 +3550,47 @@ def cancel_job(
                     continue
         except Exception:
             pass
+
+    # Best-effort: if this is an import job, remove the stub/partial module from DB and its storage prefix.
+    try:
+        if kind == "import":
+            meta = dict(job.meta or {})
+            mid = str(meta.get("module_id") or "").strip()
+            if mid:
+                try:
+                    muid = uuid.UUID(mid)
+                except Exception:
+                    muid = None
+                if muid is not None:
+                    m = db.scalar(select(Module).where(Module.id == muid))
+                else:
+                    m = None
+                if m is not None:
+                    try:
+                        _delete_module_logic(db, m)
+                        db.commit()
+                    except Exception:
+                        try:
+                            db.rollback()
+                        except Exception:
+                            pass
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+    # Optional: delete the source ZIP itself (uploads/...).
+    try:
+        if kind == "import" and bool(delete_source_zip):
+            meta = dict(job.meta or {})
+            obj_key = str(meta.get("import_object_key") or "").strip()
+            if obj_key:
+                ensure_bucket_exists()
+                s3 = get_s3_client()
+                s3.delete_object(Bucket=settings.s3_bucket, Key=obj_key)
+    except Exception:
+        pass
 
     return {"ok": True, "status": prev_status, "job_id": job.id}
 

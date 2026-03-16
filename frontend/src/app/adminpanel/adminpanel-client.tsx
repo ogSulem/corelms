@@ -58,6 +58,7 @@ export default function AdminPanelClient() {
   const importUploadObjectKeyRef = useRef<string>("");
   const importUploadFilenameRef = useRef<string>("");
   const importUploadMultipartRef = useRef<{ object_key: string; upload_id: string } | null>(null);
+  const importSkipCurrentRef = useRef(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const importRunnerActiveRef = useRef<boolean>(false);
   const importQueuePendingRef = useRef<File[]>([]);
@@ -982,7 +983,7 @@ export default function AdminPanelClient() {
     setImportBusy(true);
 
     try {
-      const abortSignal = importUploadAbortRef.current?.signal;
+      const getAbortSignal = () => importUploadAbortRef.current?.signal;
 
       const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(() => r(), ms));
       const estimateSpeed = (samples: Array<{ t: number; b: number }>) => {
@@ -1035,9 +1036,10 @@ export default function AdminPanelClient() {
             reject(Object.assign(new Error("AbortError"), { name: "AbortError" }));
           };
 
-          if (abortSignal) {
-            if (abortSignal.aborted) return onAbort();
-            abortSignal.addEventListener("abort", onAbort, { once: true });
+          const sig = getAbortSignal();
+          if (sig) {
+            if (sig.aborted) return onAbort();
+            sig.addEventListener("abort", onAbort, { once: true });
           }
 
           xhr.setRequestHeader("Content-Type", "application/zip");
@@ -1102,9 +1104,10 @@ export default function AdminPanelClient() {
               }
               reject(Object.assign(new Error("AbortError"), { name: "AbortError" }));
             };
-            if (abortSignal) {
-              if (abortSignal.aborted) return onAbort();
-              abortSignal.addEventListener("abort", onAbort, { once: true });
+            const sig = getAbortSignal();
+            if (sig) {
+              if (sig.aborted) return onAbort();
+              sig.addEventListener("abort", onAbort, { once: true });
             }
 
             xhr.setRequestHeader("Content-Type", "application/zip");
@@ -1117,7 +1120,8 @@ export default function AdminPanelClient() {
         try {
           const partCount = Math.max(1, Math.ceil(total / chunkSize));
           for (let idx = 0; idx < partCount; idx++) {
-            if (abortSignal?.aborted) throw Object.assign(new Error("AbortError"), { name: "AbortError" });
+            const sig = getAbortSignal();
+            if (sig?.aborted) throw Object.assign(new Error("AbortError"), { name: "AbortError" });
             const start = idx * chunkSize;
             const end = Math.min(total, start + chunkSize);
             const blob = file.slice(start, end);
@@ -1152,51 +1156,75 @@ export default function AdminPanelClient() {
         setClientImportFileName(fn);
         setClientImportStage("upload");
 
-        const totalBytes = Number((f as any)?.size || 0) || 0;
-        const contentType = "application/zip";
-        const lastModifiedMs = Number((f as any)?.lastModified || 0) || null;
-        let object_key = "";
+        importSkipCurrentRef.current = false;
 
-        const useMultipart = totalBytes >= 64 * 1024 * 1024;
-        if (useMultipart) {
-          setClientImportStage("upload_multipart");
-          const created = await apiFetch<{ ok: boolean; object_key: string; upload_id: string }>(`/admin/modules/multipart-import-create`, {
-            method: "POST",
-            body: JSON.stringify({ filename: fn, title: null, content_type: contentType, size_bytes: totalBytes, last_modified_ms: lastModifiedMs }),
-          });
-          object_key = String((created as any)?.object_key || "").trim();
-          const upload_id = String((created as any)?.upload_id || "").trim();
-          if (!object_key || !upload_id) throw new Error("multipart create failed");
+        try {
+          const totalBytes = Number((f as any)?.size || 0) || 0;
+          const contentType = "application/zip";
+          const lastModifiedMs = Number((f as any)?.lastModified || 0) || null;
+          let object_key = "";
 
-          importUploadObjectKeyRef.current = object_key;
-          importUploadFilenameRef.current = fn;
-          importUploadMultipartRef.current = { object_key, upload_id };
+          const useMultipart = totalBytes >= 64 * 1024 * 1024;
+          if (useMultipart) {
+            setClientImportStage("upload_multipart");
+            const created = await apiFetch<{ ok: boolean; object_key: string; upload_id: string }>(`/admin/modules/multipart-import-create`, {
+              method: "POST",
+              body: JSON.stringify({ filename: fn, title: null, content_type: contentType, size_bytes: totalBytes, last_modified_ms: lastModifiedMs }),
+            });
+            object_key = String((created as any)?.object_key || "").trim();
+            const upload_id = String((created as any)?.upload_id || "").trim();
+            if (!object_key || !upload_id) throw new Error("multipart create failed");
 
-          await uploadViaMultipart(f, object_key, upload_id);
-        } else {
-          setClientImportStage("upload_presign");
-          const pres = await apiFetch<{ ok: boolean; object_key: string; upload_url: string | null; reused?: boolean }>(`/admin/modules/presign-import-zip`, {
-            method: "POST",
-            body: JSON.stringify({ filename: fn, title: null, content_type: contentType, size_bytes: totalBytes, last_modified_ms: lastModifiedMs }),
-          });
-          object_key = String((pres as any)?.object_key || "").trim();
-          const upload_url = String((pres as any)?.upload_url || "").trim();
-          const reused = Boolean((pres as any)?.reused);
-          if (!object_key) throw new Error("presign failed: missing object_key");
+            importUploadObjectKeyRef.current = object_key;
+            importUploadFilenameRef.current = fn;
+            importUploadMultipartRef.current = { object_key, upload_id };
 
-          importUploadObjectKeyRef.current = object_key;
-          importUploadFilenameRef.current = fn;
-          importUploadMultipartRef.current = null;
+            await uploadViaMultipart(f, object_key, upload_id);
+          } else {
+            setClientImportStage("upload_presign");
+            const pres = await apiFetch<{ ok: boolean; object_key: string; upload_url: string | null; reused?: boolean }>(`/admin/modules/presign-import-zip`, {
+              method: "POST",
+              body: JSON.stringify({ filename: fn, title: null, content_type: contentType, size_bytes: totalBytes, last_modified_ms: lastModifiedMs }),
+            });
+            object_key = String((pres as any)?.object_key || "").trim();
+            const upload_url = String((pres as any)?.upload_url || "").trim();
+            const reused = Boolean((pres as any)?.reused);
+            if (!object_key) throw new Error("presign failed: missing object_key");
 
-          if (!reused) {
-            if (!upload_url) throw new Error("presign failed: missing upload_url");
-            await uploadViaPresign(f, upload_url);
+            importUploadObjectKeyRef.current = object_key;
+            importUploadFilenameRef.current = fn;
+            importUploadMultipartRef.current = null;
+
+            if (!reused) {
+              if (!upload_url) throw new Error("presign failed: missing upload_url");
+              await uploadViaPresign(f, upload_url);
+            }
           }
-        }
 
-        setClientImportStage("enqueue");
-        if (abortSignal?.aborted) throw Object.assign(new Error("AbortError"), { name: "AbortError" });
-        await enqueueImportFromS3(object_key);
+          setClientImportStage("enqueue");
+          const sig = getAbortSignal();
+          if (sig?.aborted || importSkipCurrentRef.current) {
+            throw Object.assign(new Error("AbortError"), { name: "AbortError" });
+          }
+          await enqueueImportFromS3(object_key, fn);
+        } catch (e) {
+          if ((e as any)?.name === "AbortError" && importSkipCurrentRef.current) {
+            // Skip current file only and continue batch.
+            try {
+              setClientImportStage("skipped");
+            } catch {
+              // ignore
+            }
+            try {
+              // Prepare a fresh controller for the next file.
+              importUploadAbortRef.current = new AbortController();
+            } catch {
+              // ignore
+            }
+            continue;
+          }
+          throw e;
+        }
 
         // Product UX: newly imported module should appear immediately (stub module is created in backend).
         // Keep UI stable: do not reload public modules list automatically; rely on SSE + admin modules refresh.
@@ -1241,26 +1269,51 @@ export default function AdminPanelClient() {
 
   async function cancelActiveUpload() {
     try {
+      // Skip only the current file (do not kill the whole batch)
+      importSkipCurrentRef.current = true;
       importCancelRequestedRef.current = true;
+
+      // Abort current network operations immediately.
       importUploadAbortRef.current?.abort();
+
+      const object_key = String(importUploadObjectKeyRef.current || "").trim();
+      const filename = String(importUploadFilenameRef.current || "").trim();
+      const mp = importUploadMultipartRef.current;
+      if (mp && String(mp.object_key || "").trim() && String(mp.upload_id || "").trim()) {
+        try {
+          await apiFetch(`/admin/modules/multipart-import-abort`, {
+            method: "POST",
+            body: JSON.stringify({ object_key: mp.object_key, upload_id: mp.upload_id }),
+          });
+        } catch {
+          // ignore
+        }
+      } else if (object_key) {
+        try {
+          await apiFetch(`/admin/modules/abort-import-zip`, {
+            method: "POST",
+            body: JSON.stringify({ object_key, filename: filename || null }),
+          });
+        } catch {
+          // ignore
+        }
+      }
     } catch {
       // ignore
-    } finally {
-      setClientImportStage("canceled");
-      setImportBusy(false);
     }
   }
 
-  async function enqueueImportFromS3(objectKey: string) {
+  async function enqueueImportFromS3(objectKey: string, sourceFilename?: string) {
     const object_key = String(objectKey || "").trim();
     if (!object_key) return;
     setTab("import");
     setJobPanelOpen(true);
     try {
-      const inferredName = object_key.split("/").slice(-1)[0] || "module.zip";
+      const inferredName = String(sourceFilename || "").trim() || object_key.split("/").slice(-1)[0] || "module.zip";
+      const titleStem = inferredName.replace(/\.zip$/i, "").trim() || null;
       const enq = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/enqueue-import-zip`, {
         method: "POST",
-        body: JSON.stringify({ object_key, title: null, source_filename: inferredName }),
+        body: JSON.stringify({ object_key, title: titleStem, source_filename: inferredName }),
       });
       const jid = String((enq as any)?.job_id || "").trim();
       if (jid) {
@@ -1294,7 +1347,7 @@ export default function AdminPanelClient() {
   async function cancelImportJob(id: string) {
     try {
       setCancelBusy(true);
-      await apiFetch(`/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+      await apiFetch(`/admin/jobs/${encodeURIComponent(id)}/cancel?delete_source_zip=1`, { method: "POST" });
       void loadJobsModel(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Ошибка отмены");
