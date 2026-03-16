@@ -145,17 +145,29 @@ def _should_ignore_file(p: pathlib.Path) -> bool:
     if p.name.startswith("._"):
         return True
     try:
-        parts = {x for x in p.parts}
-        if "__MACOSX" in parts:
+        parts = list(p.parts or [])
+        if "__MACOSX" in set(parts):
             return True
-        for seg in parts:
+        for i, seg in enumerate(parts):
             s = str(seg or "")
             slow = s.lower()
+
             # Ignore tmp-like directories *inside* ZIPs (e.g. TMP12345, tmp_01),
-            # but do NOT ignore system temp roots like '/tmp' which is part of our extraction path.
+            # but do NOT ignore system temp roots like '/tmp/tmpxxxx' or '.../Temp/tmpxxxx'
+            # which are part of our extraction path.
             if slow.startswith("tmp"):
                 if slow == "tmp":
                     continue
+
+                prev = str(parts[i - 1] or "").lower() if i > 0 else ""
+                prev2 = str(parts[i - 2] or "").lower() if i > 1 else ""
+                if prev in {"tmp", "temp", "temporaryitems"}:
+                    continue
+                if prev2 in {"tmp", "temp", "temporaryitems"}:
+                    continue
+                if prev.endswith("temp") or prev2.endswith("temp"):
+                    continue
+
                 if len(s) >= 6:
                     return True
                 if re.match(r"^tmp[_-]?\d{2,}$", slow):
