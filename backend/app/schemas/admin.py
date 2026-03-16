@@ -87,8 +87,18 @@ class SubmoduleCreateRequest(BaseModel):
     quiz_id: str
 
 
+class SubmoduleUpdateRequest(BaseModel):
+    requires_quiz: bool | None = None
+
+
 class SubmoduleCreateResponse(BaseModel):
     id: str
+
+
+class SubmoduleUpdateResponse(BaseModel):
+    ok: bool = True
+    submodule_id: str
+    requires_quiz: bool
 
 
 class LinkAssetToSubmoduleRequest(BaseModel):

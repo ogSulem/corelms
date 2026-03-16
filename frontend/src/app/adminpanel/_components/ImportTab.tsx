@@ -195,14 +195,14 @@ export default function ImportTab(props: ImportTabProps) {
     return "—";
   };
 
-  const [storagePrefixDraft, setStoragePrefixDraft] = useState(storageUploadsPrefix || "uploads/admin/");
+  const [storagePrefixDraft, setStoragePrefixDraft] = useState(storageUploadsPrefix || "uploads/");
 
   React.useEffect(() => {
-    setStoragePrefixDraft(storageUploadsPrefix || "uploads/admin/");
+    setStoragePrefixDraft(storageUploadsPrefix || "uploads/");
   }, [storageUploadsPrefix]);
 
   React.useEffect(() => {
-    void loadStorageUploads(storageUploadsPrefix || "uploads/admin/");
+    void loadStorageUploads(storageUploadsPrefix || "uploads/");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

@@ -62,6 +62,8 @@ from app.schemas.admin import (
     QuizCreateResponse,
     SubmoduleCreateRequest,
     SubmoduleCreateResponse,
+    SubmoduleUpdateRequest,
+    SubmoduleUpdateResponse,
     UserCreateRequest,
     UserCreateResponse,
     UserForcePasswordChangeResponse,
@@ -1769,7 +1771,7 @@ async def import_module_zip(
     base_for_key = _normalize_import_text(str(effective_title or "").strip() or str(file.filename or "").strip())
     base_for_key = re.sub(r"\.zip$", "", base_for_key, flags=re.IGNORECASE).strip() or "module"
     safe = _slugify_s3_segment(base_for_key)
-    canonical_object_key = f"uploads/{safe}/{safe}.zip"
+    canonical_object_key = f"uploads/{safe}.zip"
 
     ensure_bucket_exists()
     s3 = get_s3_client()
@@ -2552,7 +2554,7 @@ def presign_import_zip(
         base_name = base_name[: -len(".zip")]
     safe = _slugify_s3_segment(base_name)
     # Canonical key: stable, human-readable, no UUID spam.
-    object_key = f"uploads/{safe}/{safe}.zip"
+    object_key = f"uploads/{safe}.zip"
     try:
         # Do not bind the presigned URL to Content-Type.
         # Browsers may send a slightly different content-type (or none), which would cause SignatureDoesNotMatch.
@@ -2641,7 +2643,7 @@ def multipart_import_create(
         base_name = base_name[: -len(".zip")]
     safe = _slugify_s3_segment(base_name)
     # Canonical key: stable, human-readable, no UUID spam.
-    object_key = f"uploads/{safe}/{safe}.zip"
+    object_key = f"uploads/{safe}.zip"
     upload_id = multipart_create(object_key=object_key, content_type=str(body.content_type or "").strip() or None)
     if not upload_id:
         raise HTTPException(status_code=500, detail="failed to create multipart upload")
@@ -5583,6 +5585,63 @@ def create_submodule(
     )
     db.commit()
     return {"id": str(s.id)}
+
+
+@router.patch("/submodules/{submodule_id}", response_model=SubmoduleUpdateResponse)
+def update_submodule(
+    request: Request,
+    submodule_id: str,
+    body: SubmoduleUpdateRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_update_submodule", limit=60, window_seconds=60),
+):
+    sid = _uuid(submodule_id, field="submodule_id")
+    sub = db.scalar(select(Submodule).where(Submodule.id == sid))
+    if sub is None:
+        raise HTTPException(status_code=404, detail="submodule not found")
+
+    before = {
+        "requires_quiz": bool(getattr(sub, "requires_quiz", True)),
+    }
+
+    if body.requires_quiz is not None:
+        if bool(body.requires_quiz) and getattr(sub, "quiz_id", None) is None:
+            raise HTTPException(status_code=400, detail="cannot enable quiz: submodule has no quiz_id")
+        sub.requires_quiz = bool(body.requires_quiz)
+
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+
+    after = {
+        "requires_quiz": bool(getattr(sub, "requires_quiz", True)),
+    }
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_update_submodule",
+        actor_user_id=current.id,
+        meta={
+            "submodule_id": str(sub.id),
+            "module_id": str(sub.module_id),
+            "before": before,
+            "after": after,
+        },
+    )
+    db.commit()
+
+    try:
+        modules_bump_rev(reason="admin_update_submodule")
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "submodule_id": str(sub.id),
+        "requires_quiz": bool(getattr(sub, "requires_quiz", True)),
+    }
 
 
 @router.post("/submodules/link-asset", response_model=LinkAssetToSubmoduleResponse)

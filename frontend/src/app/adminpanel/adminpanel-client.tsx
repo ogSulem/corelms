@@ -982,6 +982,169 @@ export default function AdminPanelClient() {
     setImportBusy(true);
 
     try {
+      const abortSignal = importUploadAbortRef.current?.signal;
+
+      const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(() => r(), ms));
+      const estimateSpeed = (samples: Array<{ t: number; b: number }>) => {
+        try {
+          if (samples.length < 2) return 0;
+          const a = samples[Math.max(0, samples.length - 6)];
+          const z = samples[samples.length - 1];
+          const dt = Math.max(0.001, (z.t - a.t) / 1000);
+          const db = Math.max(0, z.b - a.b);
+          return db / dt;
+        } catch {
+          return 0;
+        }
+      };
+
+      const uploadViaPresign = async (file: File, upload_url: string) => {
+        const total = Number((file as any)?.size || 0) || 0;
+        const startedAt = Date.now();
+        const samples: Array<{ t: number; b: number }> = [{ t: startedAt, b: 0 }];
+        setS3UploadProgress({ loaded: 0, total, speedBps: 0, etaSeconds: null, percent: 0 });
+
+        await new Promise<void>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("PUT", upload_url, true);
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) resolve();
+            else reject(new Error(`S3 upload failed: ${xhr.status}`));
+          };
+          xhr.onerror = () => reject(new Error("S3 upload network error"));
+          xhr.upload.onprogress = (evt) => {
+            try {
+              const loaded = Number(evt.loaded || 0);
+              const now = Date.now();
+              samples.push({ t: now, b: loaded });
+              const speedBps = estimateSpeed(samples);
+              const etaSeconds = speedBps > 1 && total > 0 ? Math.max(0, Math.round((total - loaded) / speedBps)) : null;
+              const percent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+              setS3UploadProgress({ loaded, total, speedBps, etaSeconds, percent });
+            } catch {
+              // ignore
+            }
+          };
+
+          const onAbort = () => {
+            try {
+              xhr.abort();
+            } catch {
+              // ignore
+            }
+            reject(Object.assign(new Error("AbortError"), { name: "AbortError" }));
+          };
+
+          if (abortSignal) {
+            if (abortSignal.aborted) return onAbort();
+            abortSignal.addEventListener("abort", onAbort, { once: true });
+          }
+
+          xhr.setRequestHeader("Content-Type", "application/zip");
+          xhr.send(file);
+        });
+      };
+
+      const uploadViaMultipart = async (file: File, object_key: string, upload_id: string) => {
+        const total = Number((file as any)?.size || 0) || 0;
+        const chunkSize = 8 * 1024 * 1024;
+        const parts: Array<{ ETag: string; PartNumber: number }> = [];
+        const startedAt = Date.now();
+        const samples: Array<{ t: number; b: number }> = [{ t: startedAt, b: 0 }];
+        let loadedTotal = 0;
+        setS3UploadProgress({ loaded: 0, total, speedBps: 0, etaSeconds: null, percent: 0 });
+
+        const putPart = async (partNumber: number, blob: Blob): Promise<string> => {
+          const pres = await apiFetch<{ ok: boolean; upload_url: string }>(`/admin/modules/multipart-import-presign-part`, {
+            method: "POST",
+            body: JSON.stringify({ object_key, upload_id, part_number: partNumber }),
+          });
+          const url = String((pres as any)?.upload_url || "");
+          if (!url) throw new Error("missing multipart presign url");
+
+          const etag = await new Promise<string>((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open("PUT", url, true);
+            xhr.onload = () => {
+              if (xhr.status >= 200 && xhr.status < 300) {
+                const raw = xhr.getResponseHeader("ETag") || xhr.getResponseHeader("etag") || "";
+                const clean = String(raw || "").replace(/\"/g, "").trim();
+                if (!clean) {
+                  reject(new Error("Missing ETag for multipart part"));
+                  return;
+                }
+                resolve(clean);
+              } else {
+                reject(new Error(`S3 multipart part failed: ${xhr.status}`));
+              }
+            };
+            xhr.onerror = () => reject(new Error("S3 multipart part network error"));
+            xhr.upload.onprogress = (evt) => {
+              try {
+                const partLoaded = Number(evt.loaded || 0);
+                const now = Date.now();
+                const cur = loadedTotal + partLoaded;
+                samples.push({ t: now, b: cur });
+                const speedBps = estimateSpeed(samples);
+                const etaSeconds = speedBps > 1 && total > 0 ? Math.max(0, Math.round((total - cur) / speedBps)) : null;
+                const percent = total > 0 ? Math.round((cur / total) * 100) : 0;
+                setS3UploadProgress({ loaded: cur, total, speedBps, etaSeconds, percent });
+              } catch {
+                // ignore
+              }
+            };
+
+            const onAbort = () => {
+              try {
+                xhr.abort();
+              } catch {
+                // ignore
+              }
+              reject(Object.assign(new Error("AbortError"), { name: "AbortError" }));
+            };
+            if (abortSignal) {
+              if (abortSignal.aborted) return onAbort();
+              abortSignal.addEventListener("abort", onAbort, { once: true });
+            }
+
+            xhr.setRequestHeader("Content-Type", "application/zip");
+            xhr.send(blob);
+          });
+
+          return etag;
+        };
+
+        try {
+          const partCount = Math.max(1, Math.ceil(total / chunkSize));
+          for (let idx = 0; idx < partCount; idx++) {
+            if (abortSignal?.aborted) throw Object.assign(new Error("AbortError"), { name: "AbortError" });
+            const start = idx * chunkSize;
+            const end = Math.min(total, start + chunkSize);
+            const blob = file.slice(start, end);
+            const partNumber = idx + 1;
+            const etag = await putPart(partNumber, blob);
+            parts.push({ ETag: etag, PartNumber: partNumber });
+            loadedTotal = end;
+            await sleep(0);
+          }
+
+          await apiFetch(`/admin/modules/multipart-import-complete`, {
+            method: "POST",
+            body: JSON.stringify({ object_key, upload_id, parts }),
+          });
+        } catch (e) {
+          try {
+            await apiFetch(`/admin/modules/multipart-import-abort`, {
+              method: "POST",
+              body: JSON.stringify({ object_key, upload_id }),
+            });
+          } catch {
+            // ignore
+          }
+          throw e;
+        }
+      };
+
       for (let i = 0; i < batch.length; i++) {
         const f = batch[i];
         const fn = String((f as any)?.name || "module.zip").trim() || "module.zip";
@@ -989,32 +1152,51 @@ export default function AdminPanelClient() {
         setClientImportFileName(fn);
         setClientImportStage("upload");
 
-        const fd = new FormData();
-        fd.append("file", f as unknown as Blob, fn);
+        const totalBytes = Number((f as any)?.size || 0) || 0;
+        const contentType = "application/zip";
+        const lastModifiedMs = Number((f as any)?.lastModified || 0) || null;
+        let object_key = "";
 
-        // Title is optional; backend will infer from filename if not provided.
-        const res = await apiFetch<{ ok: boolean; job_id: string; module_id?: string | null }>(
-          `/admin/modules/import-zip`,
-          {
+        const useMultipart = totalBytes >= 64 * 1024 * 1024;
+        if (useMultipart) {
+          setClientImportStage("upload_multipart");
+          const created = await apiFetch<{ ok: boolean; object_key: string; upload_id: string }>(`/admin/modules/multipart-import-create`, {
             method: "POST",
-            body: fd as any,
-            signal: importUploadAbortRef.current?.signal,
-          } as any
-        );
+            body: JSON.stringify({ filename: fn, title: null, content_type: contentType, size_bytes: totalBytes, last_modified_ms: lastModifiedMs }),
+          });
+          object_key = String((created as any)?.object_key || "").trim();
+          const upload_id = String((created as any)?.upload_id || "").trim();
+          if (!object_key || !upload_id) throw new Error("multipart create failed");
 
-        const jid = String((res as any)?.job_id || "").trim();
-        if (jid) {
-          try {
-            const hasStartedImport = (importQueue || []).some((x: any) => String(x?.status || "").trim().toLowerCase() === "started");
-            if (!hasStartedImport) {
-              setSelectedJobId(jid);
-              setJobStatus("queued");
-            }
-          } catch {
-            setSelectedJobId(jid);
-            setJobStatus("queued");
+          importUploadObjectKeyRef.current = object_key;
+          importUploadFilenameRef.current = fn;
+          importUploadMultipartRef.current = { object_key, upload_id };
+
+          await uploadViaMultipart(f, object_key, upload_id);
+        } else {
+          setClientImportStage("upload_presign");
+          const pres = await apiFetch<{ ok: boolean; object_key: string; upload_url: string | null; reused?: boolean }>(`/admin/modules/presign-import-zip`, {
+            method: "POST",
+            body: JSON.stringify({ filename: fn, title: null, content_type: contentType, size_bytes: totalBytes, last_modified_ms: lastModifiedMs }),
+          });
+          object_key = String((pres as any)?.object_key || "").trim();
+          const upload_url = String((pres as any)?.upload_url || "").trim();
+          const reused = Boolean((pres as any)?.reused);
+          if (!object_key) throw new Error("presign failed: missing object_key");
+
+          importUploadObjectKeyRef.current = object_key;
+          importUploadFilenameRef.current = fn;
+          importUploadMultipartRef.current = null;
+
+          if (!reused) {
+            if (!upload_url) throw new Error("presign failed: missing upload_url");
+            await uploadViaPresign(f, upload_url);
           }
         }
+
+        setClientImportStage("enqueue");
+        if (abortSignal?.aborted) throw Object.assign(new Error("AbortError"), { name: "AbortError" });
+        await enqueueImportFromS3(object_key);
 
         // Product UX: newly imported module should appear immediately (stub module is created in backend).
         // Keep UI stable: do not reload public modules list automatically; rely on SSE + admin modules refresh.
@@ -1041,6 +1223,11 @@ export default function AdminPanelClient() {
       importRunnerActiveRef.current = false;
       importQueuePendingRef.current = [];
       setImportBusy(false);
+      try {
+        setS3UploadProgress(null);
+      } catch {
+        // ignore
+      }
       setImportEnqueueProgress(null);
       setImportPendingCount(0);
       setImportPendingNames([]);
@@ -1741,6 +1928,26 @@ export default function AdminPanelClient() {
       void loadRegenHistory(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ЗАПУСТИТЬ РЕГЕН");
+    }
+  }
+
+  async function updateSubmoduleAdmin(submoduleId: string, patch: { requires_quiz?: boolean | null }) {
+    const sid = String(submoduleId || "").trim();
+    if (!sid) return;
+    try {
+      setError(null);
+      await apiFetch(`/admin/submodules/${encodeURIComponent(sid)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          requires_quiz: patch?.requires_quiz ?? null,
+        }),
+      });
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "УРОК ОБНОВЛЁН", description: "" } }));
+      void loadSelectedAdminModule();
+    } catch (e) {
+      const anyErr = e as any;
+      const rid = String(anyErr?.requestId || anyErr?.request_id || "").trim();
+      setError("НЕ УДАЛОСЬ ОБНОВИТЬ УРОК" + (rid ? ` (код: ${rid})` : ""));
     }
   }
 
@@ -2454,6 +2661,7 @@ export default function AdminPanelClient() {
               selectedAdminModuleSubsQuality={selectedAdminModuleSubsQuality}
               selectedAdminModuleSubsQualityLoading={selectedAdminModuleSubsQualityLoading}
               regenerateSubmoduleQuiz={regenerateSubmoduleQuiz}
+              updateSubmoduleAdmin={updateSubmoduleAdmin}
               purgeOrphanStorage={purgeOrphanStorage}
               isStorageScanning={isStorageScanning}
               storageOrphansCount={storageOrphansCount}

@@ -243,7 +243,17 @@ export default function SubmodulePage() {
         .replace(/\s+\n/g, "\n")
         .replace(/\n{3,}/g, "\n\n");
 
-      const lines = src.split("\n");
+      const src2 = src
+        .split("\n")
+        .map((ln) => {
+          const s = String(ln || "");
+          const m = /^\s*(\d{1,3})\s*[-—]\s+(.+)$/u.exec(s);
+          if (m) return `${m[1]}. ${m[2]}`;
+          return s;
+        })
+        .join("\n");
+
+      const lines = src2.split("\n");
       const out: string[] = [];
 
       const isNumberOnly = (ln: string) => /^\s*\d{1,3}\.\s*$/.test(String(ln || ""));
@@ -285,11 +295,34 @@ export default function SubmodulePage() {
         i = j - 1;
       }
 
-      return out.join("\n").replace(/\n{3,}/g, "\n\n");
+      const normalized = out
+        .join("\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .replace(/\n\s*\n\s*\n/g, "\n\n");
+
+      const normalized2 = normalized
+        .split("\n")
+        .map((ln) => {
+          const t = String(ln || "").trim();
+          if (!t) return ln;
+          const up = t.toUpperCase();
+          if (up === "КОММЕРЧЕСКАЯ ТАЙНА" || up === "КОММЕРЧЕСКАЯ ТАЙНА." || up === "КОММЕРЧЕСКАЯ ТАЙНА:" || up === "КОММЕРЧЕСКАЯ ТАЙНА!") {
+            return `> **${t.replace(/[:.!]+$/g, "")}**`;
+          }
+          if (/^КОММЕРЧ(Е|Ё)СК/i.test(t) && /ТАЙН/i.test(t)) {
+            return `> **${t}**`;
+          }
+          return ln;
+        })
+        .join("\n");
+
+      return normalized2
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
     } catch {
       return String(submodule?.content || "");
     }
-  }, [submodule?.content]);
+  }, [submodule]);
 
   const stripMarkdownForSpeech = (input: string): string => {
     try {
@@ -1697,6 +1730,7 @@ export default function SubmodulePage() {
                   {isFileLesson ? null : (
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
+                      className="max-w-[860px] text-[15px] leading-7 text-zinc-900"
                       components={{
                         h1: ({ children }: { children?: ReactNode }) => (
                           <h1 className="mt-8 mb-3 text-2xl font-black tracking-tight text-zinc-950">{children}</h1>
@@ -1708,10 +1742,10 @@ export default function SubmodulePage() {
                           <h3 className="mt-6 mb-2 text-lg font-black tracking-tight text-zinc-950">{children}</h3>
                         ),
                         p: ({ children }: { children?: ReactNode }) => (
-                          <p className="my-3 whitespace-pre-line break-words leading-7">{children}</p>
+                          <p className="my-4 whitespace-pre-line break-words leading-7 text-zinc-900">{children}</p>
                         ),
                         ul: ({ children }: { children?: ReactNode }) => <ul className="my-3 list-disc pl-6 space-y-2">{children}</ul>,
-                        ol: ({ children }: { children?: ReactNode }) => <ol className="my-4 list-decimal pl-8 space-y-4">{children}</ol>,
+                        ol: ({ children }: { children?: ReactNode }) => <ol className="my-5 list-decimal pl-8 space-y-3">{children}</ol>,
                         li: ({ children }: { children?: ReactNode }) => (
                           <li className="pl-1 whitespace-pre-line break-words leading-7 marker:font-black marker:text-zinc-400">{children}</li>
                         ),
@@ -1728,7 +1762,7 @@ export default function SubmodulePage() {
                         ),
                         hr: () => <hr className="my-6 border-zinc-200" />,
                         blockquote: ({ children }: { children?: ReactNode }) => (
-                          <blockquote className="my-4 rounded-2xl border border-zinc-200 bg-white p-4 text-zinc-800">{children}</blockquote>
+                          <blockquote className="my-6 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/10 p-5 text-zinc-950">{children}</blockquote>
                         ),
                       }}
                     >

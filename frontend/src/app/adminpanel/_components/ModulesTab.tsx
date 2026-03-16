@@ -31,6 +31,7 @@ interface ModulesTabProps {
   selectedAdminModuleSubsQuality: AdminSubmoduleQualityItem[];
   selectedAdminModuleSubsQualityLoading: boolean;
   regenerateSubmoduleQuiz: (submoduleId: string) => Promise<void>;
+  updateSubmoduleAdmin: (submoduleId: string, patch: { requires_quiz?: boolean | null }) => Promise<void>;
   purgeOrphanStorage: () => Promise<void>;
   isStorageScanning: boolean;
   storageOrphansCount: number;
@@ -75,6 +76,7 @@ export function ModulesTab(props: ModulesTabProps) {
     selectedAdminModuleSubsQuality,
     selectedAdminModuleSubsQualityLoading,
     regenerateSubmoduleQuiz,
+    updateSubmoduleAdmin,
     purgeOrphanStorage,
     isStorageScanning,
     storageOrphansCount,
@@ -560,6 +562,7 @@ export function ModulesTab(props: ModulesTabProps) {
                       const isQuizLesson = Boolean((s as any)?.requires_quiz ?? true);
                       const isFolderLesson = Boolean((s as any)?.is_folder);
                       const isFileLesson = !isQuizLesson && (!isFolderLesson);
+                      const hasQuizId = Boolean(String((s as any)?.quiz_id || "").trim());
                       const q = qualityBySubId[String(s.id)] as any;
                       const ok = q ? !!q.ok : false;
                       const needs = q ? Number(q.needs_regen || 0) : 0;
@@ -631,6 +634,37 @@ export function ModulesTab(props: ModulesTabProps) {
                                   <div className="inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest border-zinc-200 bg-zinc-50 text-zinc-700">
                                     ФАЙЛОВЫЙ
                                   </div>
+                                ) : null}
+                                {!isFolderLesson ? (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      if (!hasQuizId) return;
+                                      const next = !Boolean((s as any)?.requires_quiz ?? true);
+                                      void updateSubmoduleAdmin(String(s.id), { requires_quiz: next });
+                                      if (active && !next) {
+                                        setSelectedQuizId("");
+                                      }
+                                    }}
+                                    disabled={!hasQuizId}
+                                    className={
+                                      "inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest transition hover:bg-white active:scale-95 " +
+                                      (isQuizLesson
+                                        ? "border-[#fe9900]/25 bg-[#fe9900]/10 text-zinc-900"
+                                        : "border-zinc-200 bg-zinc-50 text-zinc-700")
+                                    }
+                                    title={
+                                      !hasQuizId
+                                        ? "У урока нет quiz_id"
+                                        : isQuizLesson
+                                          ? "Тест обязателен (нажмите чтобы выключить)"
+                                          : "Тест выключен (нажмите чтобы включить)"
+                                    }
+                                  >
+                                    ТЕСТ: {!hasQuizId ? "НЕТ" : isQuizLesson ? "ВКЛ" : "ВЫКЛ"}
+                                  </button>
                                 ) : null}
                                 {!isFileLesson && (!isFolderLesson) ? (
                                   <div

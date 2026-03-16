@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 import json
+import re
 
 from app.core.redis_client import get_redis
 from app.models.module import Module, Submodule
@@ -69,10 +70,26 @@ class ModuleService:
         self.db = db
         self.learning_service = LearningService(db)
 
+    def _sort_modules(self, modules: list[Module]) -> list[Module]:
+        def _key(m: Module) -> tuple[int, str]:
+            title = str(getattr(m, "title", "") or "")
+            mm = re.match(r"^\s*(\d{1,4})\b", title)
+            if mm:
+                try:
+                    return (int(mm.group(1)), title.casefold())
+                except Exception:
+                    return (10**9, title.casefold())
+            return (10**9, title.casefold())
+
+        xs = list(modules or [])
+        xs.sort(key=_key)
+        return xs
+
     def _get_accessible_modules(self, user: User) -> list[Module]:
         # Admin sees all active modules.
         if getattr(user, "role", None) == UserRole.admin:
-            return self.db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()  # noqa: E712
+            mods = self.db.scalars(select(Module).where(Module.is_active == True)).all()  # noqa: E712
+            return self._sort_modules(mods)
 
         tag_ids = [
             tid
@@ -84,7 +101,8 @@ class ModuleService:
         public_q = (Module.is_active == True) & (Module.visibility == "public")  # noqa: E712
 
         if not tag_ids:
-            return self.db.scalars(select(Module).where(public_q).order_by(Module.title)).all()
+            mods = self.db.scalars(select(Module).where(public_q)).all()
+            return self._sort_modules(mods)
 
         # Restricted modules are accessible if they share at least one tag with the user.
         restricted_q = (Module.is_active == True) & (Module.visibility == "restricted")  # noqa: E712
@@ -98,10 +116,9 @@ class ModuleService:
                 .where(restricted_q)
                 .where(ModuleTagMap.tag_id.in_(tag_ids))
             )
-            .order_by(Module.title)
         )
         rows = self.db.execute(stmt).scalars().all()
-        return list(rows or [])
+        return self._sort_modules(list(rows or []))
 
     def get_modules_overview(self, user: User) -> List[Dict[str, Any]]:
         """

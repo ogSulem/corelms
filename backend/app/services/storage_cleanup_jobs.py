@@ -16,7 +16,7 @@ from app.services.storage import ensure_bucket_exists, get_s3_client
 log = logging.getLogger(__name__)
 
 
-def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int | None = None) -> dict:
+def cleanup_admin_uploads_job(*, prefix: str = "uploads/", ttl_hours: int | None = None) -> dict:
     """Best-effort cleanup of large uploaded ZIP artifacts.
 
     Deletes objects under `prefix` older than TTL. Designed to be safe to run repeatedly.
