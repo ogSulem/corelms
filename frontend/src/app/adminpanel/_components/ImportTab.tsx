@@ -1499,7 +1499,7 @@ export default function ImportTab(props: ImportTabProps) {
 
             {importActive ? (
               <div className="mt-3 rounded-2xl border border-zinc-200 bg-white p-3">
-                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ИМПОРТ (СЕЙЧАС)</div>
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ЗАГРУЗКА НА ХРАНИЛИЩЕ</div>
                 {String(clientImportFileName || "").trim() ? (
                   <div className="mt-1 text-[11px] font-bold text-zinc-950 break-words">{String(clientImportFileName || "").trim()}</div>
                 ) : null}

@@ -517,27 +517,23 @@ def import_module_from_dir(
             pfx = f"modules/{str(m.id)}/"
 
     # Normalize module_dir if the ZIP has an extra nesting level.
-    for _ in range(2):
-        lesson_dirs_probe = [
-            d
-            for d in module_dir.iterdir()
-            if d.is_dir()
-            and (not _should_ignore_file(d))
-            and d.name not in {"_module", "__MACOSX"}
-        ]
-        if lesson_dirs_probe:
+    # We dive into nested folders as long as there are NO files and only ONE subfolder.
+    # This handles ZIPs like "Archive.zip -> ModuleFolder -> [Content]"
+    for _ in range(5):
+        try:
+            entries = [p for p in module_dir.iterdir() if not _should_ignore_file(p)]
+            files = [p for p in entries if p.is_file()]
+            dirs = [p for p in entries if p.is_dir() and p.name not in {"_module", "__MACOSX"}]
+            
+            # If we have files in current dir OR multiple directories, this is our root.
+            if files or len(dirs) != 1:
+                break
+            
+            # Only one directory and no files? Dive in.
+            log.info("module_importer: diving deeper from %s to %s", module_dir.name, dirs[0].name)
+            module_dir = dirs[0]
+        except Exception:
             break
-        nested = [
-            d
-            for d in module_dir.iterdir()
-            if d.is_dir()
-            and (not _should_ignore_file(d))
-            and d.name not in {"__MACOSX"}
-        ]
-        if len(nested) == 1:
-            module_dir = nested[0]
-            continue
-        break
 
     module_material_dir = module_dir / "_module"
     module_material_viewable: list[pathlib.Path] = []
@@ -592,10 +588,15 @@ def import_module_from_dir(
         return False
 
     lesson_candidates = [d for d in module_dir.iterdir() if d.is_dir() and (not _is_noise_lesson_dir(d))]
+    
+    # If no lesson candidates found in the current module_dir, but there are subfolders,
+    # it might be a nested structure where lessons are one level deeper.
     if not lesson_candidates:
-        for d in sorted([p for p in module_dir.iterdir() if p.is_dir() and (not _is_noise_lesson_dir(p))]):
+        all_subdirs = [d for d in module_dir.iterdir() if d.is_dir() and (not _is_noise_lesson_dir(d))]
+        for d in sorted(all_subdirs, key=lambda x: _parse_order(x.name, 999)):
             inner = [x for x in d.iterdir() if x.is_dir() and (not _is_noise_lesson_dir(x))]
             if inner:
+                log.info("module_importer: found lesson candidates in subfolder %s", d.name)
                 module_dir = d
                 lesson_candidates = inner
                 break
