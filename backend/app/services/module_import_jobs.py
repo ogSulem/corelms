@@ -804,14 +804,20 @@ def import_module_zip_job(
                     return True
                 if n.startswith("._"):
                     return True
-                if nlow.startswith("tmp") and len(n) >= 6:
+                if nlow.startswith("tmp"):
                     return True
             except Exception:
                 return False
             return False
 
         top_dirs = [p for p in base.iterdir() if p.is_dir() and (not _is_noise_dir(p))]
-        top_files = [p for p in base.iterdir() if p.is_file() and p.name not in {"__MACOSX"} and (not str(p.name).startswith("._"))]
+        top_files = [
+            p
+            for p in base.iterdir()
+            if p.is_file()
+            and p.name not in {"__MACOSX", ".DS_Store", "Thumbs.db", "desktop.ini"}
+            and (not str(p.name).startswith("._"))
+        ]
         module_dir = None
         if len(top_dirs) == 1 and not top_files:
             module_dir = top_dirs[0]

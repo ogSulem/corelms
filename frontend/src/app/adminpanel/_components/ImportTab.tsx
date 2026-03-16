@@ -958,16 +958,21 @@ export default function ImportTab(props: ImportTabProps) {
                 <input
                   ref={importInputRef}
                   type="file"
+                  accept=".zip,application/zip"
                   multiple
                   className="hidden"
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setImportFiles(Array.from(e.target.files || []))}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                    const files = Array.from(e.target.files || []);
+                    const zips = files.filter((f) => String(f?.name || "").toLowerCase().endsWith(".zip"));
+                    setImportFiles(zips);
+                  }}
                 />
                 <button
                   type="button"
                   className="h-8 rounded-xl border border-zinc-200 bg-white px-3 text-[9px] font-black uppercase tracking-widest text-zinc-800 hover:bg-zinc-50"
                   onClick={() => importInputRef.current?.click()}
                 >
-                  Выбрать файл
+                  Выбрать ZIP
                 </button>
                 {importFiles.length ? (
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">

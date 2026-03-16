@@ -140,6 +140,8 @@ def _should_ignore_file(p: pathlib.Path) -> bool:
     n = str(p.name or "").strip().lower()
     if not n:
         return True
+    if n in {".ds_store", "thumbs.db", "desktop.ini"}:
+        return True
     if p.name.startswith("._"):
         return True
     try:
@@ -149,7 +151,7 @@ def _should_ignore_file(p: pathlib.Path) -> bool:
         for seg in parts:
             s = str(seg or "")
             slow = s.lower()
-            if slow.startswith("tmp") and len(s) >= 6:
+            if slow.startswith("tmp"):
                 return True
     except Exception:
         pass
@@ -516,10 +518,22 @@ def import_module_from_dir(
 
     # Normalize module_dir if the ZIP has an extra nesting level.
     for _ in range(2):
-        lesson_dirs_probe = [d for d in module_dir.iterdir() if d.is_dir() and d.name not in {"_module", "__MACOSX"}]
+        lesson_dirs_probe = [
+            d
+            for d in module_dir.iterdir()
+            if d.is_dir()
+            and (not _should_ignore_file(d))
+            and d.name not in {"_module", "__MACOSX"}
+        ]
         if lesson_dirs_probe:
             break
-        nested = [d for d in module_dir.iterdir() if d.is_dir() and d.name not in {"__MACOSX"}]
+        nested = [
+            d
+            for d in module_dir.iterdir()
+            if d.is_dir()
+            and (not _should_ignore_file(d))
+            and d.name not in {"__MACOSX"}
+        ]
         if len(nested) == 1:
             module_dir = nested[0]
             continue
@@ -569,7 +583,9 @@ def import_module_from_dir(
                 return True
             if n.startswith("._"):
                 return True
-            if nlow.startswith("tmp") and len(n) >= 6:
+            if nlow.startswith("tmp"):
+                return True
+            if nlow in {".ds_store", "thumbs.db", "desktop.ini"}:
                 return True
         except Exception:
             return False
