@@ -438,6 +438,24 @@ def _slugify_s3_segment(v: str) -> str:
     return (s[:80] or "module")
 
 
+def _sanitize_uploads_zip_filename(v: str) -> str:
+    s = str(v or "")
+    try:
+        s = unicodedata.normalize("NFKC", s)
+    except Exception:
+        pass
+    s = re.sub(r"\s+", " ", s).strip()
+    s = s.replace("/", "_").replace("\\", "_")
+    s = re.sub(r"[\x00-\x1F\x7F]+", "", s)
+    s = s.strip().lstrip(".")
+    if not s.lower().endswith(".zip"):
+        s = s + ".zip"
+    if len(s) > 140:
+        base = re.sub(r"\.zip$", "", s, flags=re.IGNORECASE)
+        s = (base[: 140 - 4] + ".zip")
+    return s or "module.zip"
+
+
 def _normalize_import_text(v: str | None) -> str:
     s = str(v or "")
     try:
@@ -2547,14 +2565,7 @@ def presign_import_zip(
             # If object is missing, fall through to generating a new presign.
             pass
 
-    base_name = raw_title if raw_title else norm_fn
-    base_name = _normalize_import_text(base_name)
-    base_name = re.sub(r"\s+", " ", base_name).strip().lower()
-    if base_name.endswith(".zip"):
-        base_name = base_name[: -len(".zip")]
-    safe = _slugify_s3_segment(base_name)
-    # Canonical key: stable, human-readable, no UUID spam.
-    object_key = f"uploads/{safe}.zip"
+    object_key = f"uploads/{_sanitize_uploads_zip_filename(fn)}"
     try:
         # Do not bind the presigned URL to Content-Type.
         # Browsers may send a slightly different content-type (or none), which would cause SignatureDoesNotMatch.
@@ -2635,15 +2646,7 @@ def multipart_import_create(
 
     # Keep object keys human-readable: derive a slug from the filename *without* the .zip suffix,
     # and store uploads under a folder matching the slug.
-    raw_title = _normalize_import_text(str(body.title or "")).strip()
-    base_name = raw_title if raw_title else norm_fn
-    base_name = _normalize_import_text(base_name)
-    base_name = re.sub(r"\s+", " ", base_name).strip().lower()
-    if base_name.endswith(".zip"):
-        base_name = base_name[: -len(".zip")]
-    safe = _slugify_s3_segment(base_name)
-    # Canonical key: stable, human-readable, no UUID spam.
-    object_key = f"uploads/{safe}.zip"
+    object_key = f"uploads/{_sanitize_uploads_zip_filename(fn)}"
     upload_id = multipart_create(object_key=object_key, content_type=str(body.content_type or "").strip() or None)
     if not upload_id:
         raise HTTPException(status_code=500, detail="failed to create multipart upload")
