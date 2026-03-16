@@ -159,8 +159,8 @@ export default function DashboardPage() {
             {loading ? (
               <Skeleton className="h-[100px] rounded-[24px] bg-zinc-100" />
             ) : (
-              <div className="relative group">
-                <div className="absolute -inset-1 bg-gradient-to-r from-[#fe9900]/25 to-[#284e13]/15 rounded-[32px] blur opacity-25 group-hover:opacity-100 transition duration-1000" />
+              <div className="relative">
+                <div className="pointer-events-none absolute -inset-1 bg-gradient-to-r from-[#fe9900]/25 to-[#284e13]/15 rounded-[32px] blur opacity-25" />
                 <div className="relative border border-zinc-200 bg-white/70 backdrop-blur-xl rounded-[28px] overflow-hidden shadow-2xl shadow-zinc-950/10">
                   <InsightCard nonce={quoteNonce} />
                 </div>
