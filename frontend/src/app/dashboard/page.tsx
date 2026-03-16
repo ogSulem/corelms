@@ -146,29 +146,6 @@ export default function DashboardPage() {
                   </svg>
                   <span>Быстрый старт</span>
                 </Button>
-
-                {telegramSuppliersBaseUrl ? (
-                  <Button
-                    asChild
-                    size="sm"
-                    className="rounded-2xl bg-[#229ED9] hover:bg-[#1b8bbf] text-white gap-2"
-                  >
-                    <a href={telegramSuppliersBaseUrl} target="_blank" rel="noreferrer">
-                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                        <path
-                          d="M21.8 4.7c.3-1.3-1-2.3-2.2-1.9L3.7 9.2c-1.4.5-1.4 2.4 0 2.9l3.9 1.3 1.5 4.7c.4 1.2 1.9 1.6 2.8.7l2.2-2.1 4.3 3.2c1 .8 2.4.2 2.7-1.1l3.7-14.1Z"
-                          fill="currentColor"
-                          opacity="0.95"
-                        />
-                        <path
-                          d="M9.1 13.1 18.5 6.9c.2-.1.4.2.2.4l-7.8 7.6c-.3.3-.5.7-.6 1.1l-.3 2.4c0 .3-.5.4-.6.1l-1.2-4.1c-.2-.7.1-1.4.8-1.8Z"
-                          fill="currentColor"
-                        />
-                      </svg>
-                      <span>База поставщиков</span>
-                    </a>
-                  </Button>
-                ) : null}
               </div>
             </div>
             <h1 className="text-6xl font-black tracking-tighter text-zinc-950 leading-none uppercase">
@@ -187,6 +164,26 @@ export default function DashboardPage() {
                 <div className="relative border border-zinc-200 bg-white/70 backdrop-blur-xl rounded-[28px] overflow-hidden shadow-2xl shadow-zinc-950/10">
                   <InsightCard nonce={quoteNonce} />
                 </div>
+                {telegramSuppliersBaseUrl ? (
+                  <div className="mt-4">
+                    <Button asChild className="w-full rounded-2xl bg-[#229ED9] hover:bg-[#1b8bbf] text-white gap-2">
+                      <a href={telegramSuppliersBaseUrl} target="_blank" rel="noreferrer">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                          <path
+                            d="M21.8 4.7c.3-1.3-1-2.3-2.2-1.9L3.7 9.2c-1.4.5-1.4 2.4 0 2.9l3.9 1.3 1.5 4.7c.4 1.2 1.9 1.6 2.8.7l2.2-2.1 4.3 3.2c1 .8 2.4.2 2.7-1.1l3.7-14.1Z"
+                            fill="currentColor"
+                            opacity="0.95"
+                          />
+                          <path
+                            d="M9.1 13.1 18.5 6.9c.2-.1.4.2.2.4l-7.8 7.6c-.3.3-.5.7-.6 1.1l-.3 2.4c0 .3-.5.4-.6.1l-1.2-4.1c-.2-.7.1-1.4.8-1.8Z"
+                            fill="currentColor"
+                          />
+                        </svg>
+                        <span>База поставщиков</span>
+                      </a>
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
