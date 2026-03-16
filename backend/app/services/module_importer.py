@@ -151,8 +151,17 @@ def _should_ignore_file(p: pathlib.Path) -> bool:
         for seg in parts:
             s = str(seg or "")
             slow = s.lower()
+            # Ignore tmp-like directories *inside* ZIPs (e.g. TMP12345, tmp_01),
+            # but do NOT ignore system temp roots like '/tmp' which is part of our extraction path.
             if slow.startswith("tmp"):
-                return True
+                if slow == "tmp":
+                    continue
+                if len(s) >= 6:
+                    return True
+                if re.match(r"^tmp[_-]?\d{2,}$", slow):
+                    return True
+                if re.match(r"^tmp[0-9a-f]{4,}$", slow):
+                    return True
     except Exception:
         pass
 
