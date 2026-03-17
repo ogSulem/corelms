@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     s3_bucket: str = Field(validation_alias="S3_BUCKET")
     s3_region_name: str = Field(default="us-east-1", validation_alias="S3_REGION_NAME")
 
+    s3_sse_algorithm: str | None = Field(default=None, validation_alias="S3_SSE_ALGORITHM")
+    s3_sse_kms_key_id: str | None = Field(default=None, validation_alias="S3_SSE_KMS_KEY_ID")
+
     s3_presign_download_expires_seconds: int = Field(default=900, validation_alias="S3_PRESIGN_DOWNLOAD_EXPIRES_SECONDS")
     s3_presign_upload_expires_seconds: int = Field(default=3600, validation_alias="S3_PRESIGN_UPLOAD_EXPIRES_SECONDS")
     s3_presign_multipart_part_expires_seconds: int = Field(default=3600, validation_alias="S3_PRESIGN_MULTIPART_PART_EXPIRES_SECONDS")

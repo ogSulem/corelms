@@ -24,10 +24,19 @@ type MyProfile = {
   last_activity_at?: string | null;
 };
 
+type ProgressSummary = {
+  modules_total: number;
+  modules_completed: number;
+  steps_total: number;
+  steps_completed: number;
+  percent: number;
+};
+
 export default function DashboardPage() {
   const { user } = useAuth();
   const [profile, setProfile] = useState<MyProfile | null>(null);
   const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
+  const [progress, setProgress] = useState<ProgressSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [quoteNonce, setQuoteNonce] = useState(0);
@@ -46,12 +55,14 @@ export default function DashboardPage() {
     try {
       setError(null);
       setLoading(true);
-      const [p, as] = await Promise.all([
+      const [p, as, pr] = await Promise.all([
         apiFetch<MyProfile>("/me/profile"),
         apiFetch<{ items: AssignmentItem[] }>("/me/assignments"),
+        apiFetch<ProgressSummary>("/me/progress-summary"),
       ]);
       setProfile(p || null);
       setAssignments(as.items || []);
+      setProgress(pr || null);
     } catch (e) {
       const anyErr = e as any;
       const msg = e instanceof Error ? e.message : "Не удалось загрузить данные";
@@ -151,6 +162,54 @@ export default function DashboardPage() {
             <h1 className="text-6xl font-black tracking-tighter text-zinc-950 leading-none uppercase">
               {user?.name ? user.name.split(' ')[0] : "TEAM"}
             </h1>
+            {loading ? (
+              <div className="mt-5">
+                <Skeleton className="h-[72px] rounded-[24px] bg-zinc-100" />
+              </div>
+            ) : (
+              <div className="mt-5">
+                <div className="relative overflow-hidden rounded-[26px] border border-zinc-200 bg-white/70 backdrop-blur-xl p-5 shadow-2xl shadow-zinc-950/10">
+                  <div className="absolute inset-0 pointer-events-none">
+                    <div className="absolute -top-12 -left-12 h-40 w-40 rounded-full bg-[#fe9900]/18 blur-[70px]" />
+                    <div className="absolute -bottom-12 -right-12 h-44 w-44 rounded-full bg-[#284e13]/14 blur-[70px]" />
+                  </div>
+
+                  <div className="relative">
+                    <div className="flex items-end justify-between gap-4">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.32em] text-zinc-500">Общий прогресс</div>
+                        <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-950">
+                          {progress ? `${Number(progress.steps_completed || 0)} / ${Number(progress.steps_total || 0)} шагов` : "—"}
+                        </div>
+                        <div className="mt-1 text-[11px] font-bold text-zinc-600">
+                          {progress ? `${Number(progress.modules_completed || 0)} / ${Number(progress.modules_total || 0)} модулей` : ""}
+                        </div>
+                      </div>
+
+                      <div className="shrink-0 text-right">
+                        <div className="text-[10px] font-black uppercase tracking-[0.32em] text-zinc-500">%</div>
+                        <div className="mt-1 text-3xl font-black tracking-tighter text-zinc-950">
+                          {progress ? `${Math.max(0, Math.min(100, Number(progress.percent || 0)))}%` : "0%"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-4">
+                      <div className="h-3 rounded-full bg-zinc-100 overflow-hidden border border-zinc-200">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-[#fe9900] to-[#284e13] transition-all duration-700"
+                          style={{ width: `${progress ? Math.max(0, Math.min(100, Number(progress.percent || 0))) : 0}%` }}
+                        />
+                      </div>
+                      <div className="mt-2 flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                        <span>Старт</span>
+                        <span>Финиш</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             <p className="mt-4 text-lg text-zinc-500 font-medium uppercase tracking-tight">
               Умный прогресс — <span className="text-[#284e13]">КАРКАС ТАЙГИ</span>.
             </p>

@@ -58,6 +58,7 @@ export default function AdminPanelClient() {
   const importUploadObjectKeyRef = useRef<string>("");
   const importUploadFilenameRef = useRef<string>("");
   const importUploadMultipartRef = useRef<{ object_key: string; upload_id: string } | null>(null);
+  const presignHeadersRef = useRef<Record<string, string> | null>(null);
   const importSkipCurrentRef = useRef(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const importRunnerActiveRef = useRef<boolean>(false);
@@ -1043,6 +1044,18 @@ export default function AdminPanelClient() {
           }
 
           xhr.setRequestHeader("Content-Type", "application/zip");
+          try {
+            const hs = (presignHeadersRef.current || null) as any;
+            if (hs && typeof hs === "object") {
+              for (const k of Object.keys(hs)) {
+                const v = String((hs as any)[k] || "").trim();
+                const kk = String(k || "").trim();
+                if (kk && v) xhr.setRequestHeader(kk, v);
+              }
+            }
+          } catch {
+            // ignore
+          }
           xhr.send(file);
         });
       };
@@ -1182,13 +1195,18 @@ export default function AdminPanelClient() {
             await uploadViaMultipart(f, object_key, upload_id);
           } else {
             setClientImportStage("upload_presign");
-            const pres = await apiFetch<{ ok: boolean; object_key: string; upload_url: string | null; reused?: boolean }>(`/admin/modules/presign-import-zip`, {
+            const pres = await apiFetch<{ ok: boolean; object_key: string; upload_url: string | null; reused?: boolean; headers?: Record<string, string> | null }>(`/admin/modules/presign-import-zip`, {
               method: "POST",
               body: JSON.stringify({ filename: fn, title: null, content_type: contentType, size_bytes: totalBytes, last_modified_ms: lastModifiedMs }),
             });
             object_key = String((pres as any)?.object_key || "").trim();
             const upload_url = String((pres as any)?.upload_url || "").trim();
             const reused = Boolean((pres as any)?.reused);
+            try {
+              presignHeadersRef.current = ((pres as any)?.headers || null) as any;
+            } catch {
+              presignHeadersRef.current = null as any;
+            }
             if (!object_key) throw new Error("presign failed: missing object_key");
 
             importUploadObjectKeyRef.current = object_key;

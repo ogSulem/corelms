@@ -1566,6 +1566,8 @@ def admin_update_user(
     if role_raw is not None:
         next_role = UserRole(str(role_raw))
         prev_role = getattr(u, "role", None)
+        if prev_role != UserRole.admin and next_role == UserRole.admin:
+            raise HTTPException(status_code=403, detail="cannot promote user to admin")
         if prev_role == UserRole.admin and next_role != UserRole.admin:
             admins = int(db.scalar(select(func.count()).select_from(User).where(User.role == UserRole.admin)) or 0)
             if admins <= 1:
@@ -1840,7 +1842,26 @@ async def import_module_zip(
             file.file.seek(0)
         except Exception:
             log.debug("admin import zip: failed to seek upload file", exc_info=True)
-        s3.put_object(Bucket=settings.s3_bucket, Key=object_key, Body=file.file, ContentType="application/zip")
+        put_kwargs: dict[str, object] = {
+            "Bucket": settings.s3_bucket,
+            "Key": object_key,
+            "Body": file.file,
+            "ContentType": "application/zip",
+        }
+        try:
+            alg = str(getattr(settings, "s3_sse_algorithm", None) or "").strip()
+        except Exception:
+            alg = ""
+        if alg:
+            put_kwargs["ServerSideEncryption"] = alg
+            if alg.lower() in {"aws:kms", "aws_kms", "kms"}:
+                try:
+                    kms = str(getattr(settings, "s3_sse_kms_key_id", None) or "").strip()
+                except Exception:
+                    kms = ""
+                if kms:
+                    put_kwargs["SSEKMSKeyId"] = kms
+        s3.put_object(**put_kwargs)
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to upload zip") from e
 
@@ -2467,6 +2488,7 @@ class AdminPresignImportZipResponse(BaseModel):
     object_key: str
     upload_url: str | None = None
     reused: bool = False
+    headers: dict[str, str] | None = None
 
 
 @router.post("/modules/presign-import-zip", response_model=AdminPresignImportZipResponse)
@@ -2566,6 +2588,20 @@ def presign_import_zip(
             pass
 
     object_key = f"uploads/{_sanitize_uploads_zip_filename(fn)}"
+    out_headers: dict[str, str] | None = None
+    try:
+        alg = str(getattr(settings, "s3_sse_algorithm", None) or "").strip()
+    except Exception:
+        alg = ""
+    if alg:
+        out_headers = {"x-amz-server-side-encryption": alg}
+        if alg.lower() in {"aws:kms", "aws_kms", "kms"}:
+            try:
+                kms = str(getattr(settings, "s3_sse_kms_key_id", None) or "").strip()
+            except Exception:
+                kms = ""
+            if kms:
+                out_headers["x-amz-server-side-encryption-aws-kms-key-id"] = kms
     try:
         # Do not bind the presigned URL to Content-Type.
         # Browsers may send a slightly different content-type (or none), which would cause SignatureDoesNotMatch.
@@ -2589,7 +2625,7 @@ def presign_import_zip(
     )
     db.commit()
 
-    return {"ok": True, "object_key": object_key, "upload_url": url, "reused": False}
+    return {"ok": True, "object_key": object_key, "upload_url": url, "reused": False, "headers": out_headers}
 
 
 @router.post("/modules/multipart-import-create", response_model=AdminMultipartCreateResponse)
@@ -2809,9 +2845,15 @@ def enqueue_import_zip(
         if existing_job_id:
             # Self-heal: if the job is already gone (TTL/cleanup), allow re-enqueue.
             try:
-                if fetch_job(existing_job_id) is None:
+                j = fetch_job(existing_job_id)
+                if j is None:
                     r.delete(lock_key)
                     existing_job_id = ""
+                else:
+                    st = str(j.get_status(refresh=True) or "").strip().lower()
+                    if st in {"finished", "failed", "canceled"}:
+                        r.delete(lock_key)
+                        existing_job_id = ""
             except Exception:
                 pass
         if existing_job_id:
@@ -2829,9 +2871,15 @@ def enqueue_import_zip(
             if existing_fp_job_id:
                 # Self-heal: if the job is already gone (TTL/cleanup), allow re-enqueue.
                 try:
-                    if fetch_job(existing_fp_job_id) is None:
+                    j = fetch_job(existing_fp_job_id)
+                    if j is None:
                         r.delete(fp_key)
                         existing_fp_job_id = ""
+                    else:
+                        st = str(j.get_status(refresh=True) or "").strip().lower()
+                        if st in {"finished", "failed", "canceled"}:
+                            r.delete(fp_key)
+                            existing_fp_job_id = ""
                 except Exception:
                     pass
             if existing_fp_job_id:
@@ -2918,9 +2966,15 @@ def enqueue_import_zip(
             if existing_title_job_id:
                 # Self-heal: if the job is already gone (TTL/cleanup), allow re-enqueue.
                 try:
-                    if fetch_job(existing_title_job_id) is None:
+                    j = fetch_job(existing_title_job_id)
+                    if j is None:
                         r.delete(title_lock_key)
                         existing_title_job_id = ""
+                    else:
+                        st = str(j.get_status(refresh=True) or "").strip().lower()
+                        if st in {"finished", "failed", "canceled"}:
+                            r.delete(title_lock_key)
+                            existing_title_job_id = ""
                 except Exception:
                     pass
             if existing_title_job_id:
@@ -2984,7 +3038,7 @@ def enqueue_import_zip(
         r.expire(lock_key, 60 * 60 * 6)
         if title_lock_key:
             r.set(title_lock_key, str(job.id))
-            r.expire(title_lock_key, 60 * 60 * 24 * 30)
+            r.expire(title_lock_key, 60 * 60 * 6)
         if fingerprint:
             fp_key = f"admin:import_enqueued_by_fingerprint:{fingerprint}"
             r.set(fp_key, str(job.id))
@@ -6666,11 +6720,18 @@ def create_user(
     # Admin receives a temporary password (must be changed on first login).
     temp_password = str(body.password or "").strip() or _random_password(14)
 
+    try:
+        requested_role = UserRole(str(getattr(body, "role", None)))
+    except Exception:
+        requested_role = UserRole.employee
+    if requested_role == UserRole.admin:
+        raise HTTPException(status_code=403, detail="cannot create admin user")
+
     user = User(
         name=name,
         email=email,
         position=body.position,
-        role=UserRole(str(body.role)),
+        role=UserRole.employee,
         xp=0,
         level=1,
         streak=0,

@@ -27,6 +27,14 @@ class MyProfileResponse(BaseModel):
     last_activity_at: str | None = None
 
 
+class MyProgressSummaryResponse(BaseModel):
+    modules_total: int
+    modules_completed: int
+    steps_total: int
+    steps_completed: int
+    percent: int
+
+
 class RecentAttempt(BaseModel):
     quiz_id: str
     attempt_no: int

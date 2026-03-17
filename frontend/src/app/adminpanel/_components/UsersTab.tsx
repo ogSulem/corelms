@@ -144,7 +144,7 @@ export function UsersTab(props: UsersTabProps) {
     }
     setDraftName(String(userDetail.name || ""));
     setDraftEmail(String(userDetail.email || ""));
-    setDraftRole((String(userDetail.role || "employee") as any) === "admin" ? "admin" : "employee");
+    setDraftRole("employee");
     setTagDraft(Array.isArray((userDetail as any)?.tag_ids) ? (userDetail as any).tag_ids.map((x: any) => String(x)) : []);
   }, [userDetail?.id]);
 
@@ -199,10 +199,10 @@ export function UsersTab(props: UsersTabProps) {
               <select
                 className="mt-2 w-full h-12 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
                 value={newUserRole}
-                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setNewUserRole(e.target.value as any)}
+                onChange={() => setNewUserRole("employee")}
+                disabled
               >
-                <option value="employee">СОТРУДНИК</option>
-                <option value="admin">АДМИН</option>
+                <option value="employee">ПАРТНЁР</option>
               </select>
             </div>
             <div className="lg:col-span-2" />

@@ -481,6 +481,20 @@ def presign_put(*, object_key: str, content_type: str | None, expires_seconds: i
     if content_type:
         params["ContentType"] = content_type
 
+    try:
+        alg = str(getattr(settings, "s3_sse_algorithm", None) or "").strip()
+    except Exception:
+        alg = ""
+    if alg:
+        params["ServerSideEncryption"] = alg
+        if alg.lower() in {"aws:kms", "aws_kms", "kms"}:
+            try:
+                kms = str(getattr(settings, "s3_sse_kms_key_id", None) or "").strip()
+            except Exception:
+                kms = ""
+            if kms:
+                params["SSEKMSKeyId"] = kms
+
     if expires_seconds is None:
         try:
             cfg = int(getattr(settings, "s3_presign_upload_expires_seconds", 0) or 0)
@@ -541,6 +555,20 @@ def multipart_create(*, object_key: str, content_type: str | None = None) -> str
     params: dict[str, object] = {"Bucket": bucket, "Key": object_key}
     if content_type:
         params["ContentType"] = content_type
+
+    try:
+        alg = str(getattr(settings, "s3_sse_algorithm", None) or "").strip()
+    except Exception:
+        alg = ""
+    if alg:
+        params["ServerSideEncryption"] = alg
+        if alg.lower() in {"aws:kms", "aws_kms", "kms"}:
+            try:
+                kms = str(getattr(settings, "s3_sse_kms_key_id", None) or "").strip()
+            except Exception:
+                kms = ""
+            if kms:
+                params["SSEKMSKeyId"] = kms
     resp = s3.create_multipart_upload(**params)
     return str(resp.get("UploadId") or "")
 

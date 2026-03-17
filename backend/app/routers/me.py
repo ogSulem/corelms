@@ -21,6 +21,7 @@ from app.schemas.me import (
     HistoryResponse,
     MyProfileResponse,
     MyRecentActivityResponse,
+    MyProgressSummaryResponse,
 )
 
 router = APIRouter(prefix="/me", tags=["me"])
@@ -38,6 +39,54 @@ def my_profile(user: User = Depends(get_current_user)):
         "level": int(user.level),
         "streak": int(user.streak),
         "last_activity_at": user.last_activity_at.isoformat() if user.last_activity_at else None,
+    }
+
+
+@router.get("/progress-summary", response_model=MyProgressSummaryResponse)
+def my_progress_summary(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.services.modules import ModuleService
+    from app.services.learning import LearningService
+
+    ms = ModuleService(db)
+    mods = ms._get_accessible_modules(user)
+    module_ids = [m.id for m in (mods or [])]
+
+    ls = LearningService(db)
+    progress_map = ls.get_modules_progress_compact(user, module_ids)
+
+    modules_total = int(len(module_ids))
+    modules_completed = 0
+    steps_total = 0
+    steps_completed = 0
+
+    for mid in module_ids:
+        p = progress_map.get(mid) or {}
+        try:
+            if bool(p.get("completed")):
+                modules_completed += 1
+        except Exception:
+            pass
+        try:
+            steps_total += int(p.get("total_lessons") or 0)
+        except Exception:
+            pass
+        try:
+            steps_completed += int(p.get("passed_count") or 0)
+        except Exception:
+            pass
+
+    if steps_total <= 0:
+        percent = 0
+    else:
+        percent = int(round((float(steps_completed) / float(steps_total)) * 100.0))
+        percent = max(0, min(100, percent))
+
+    return {
+        "modules_total": int(modules_total),
+        "modules_completed": int(modules_completed),
+        "steps_total": int(steps_total),
+        "steps_completed": int(steps_completed),
+        "percent": int(percent),
     }
 
 
