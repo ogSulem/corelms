@@ -294,7 +294,7 @@ export default function AccountPage() {
                 {profile?.name || "ЗАГРУЗКА..."}
               </h1>
               <div className="mt-2 text-xl text-zinc-500 font-medium uppercase tracking-tight">
-                {profile?.role === "admin" ? "АДМИНИСТРАТОР" : "СОТРУДНИК"}
+                {profile?.role === "admin" ? "АДМИНИСТРАТОР" : "ПАРТНЁР"}
                 {String(profile?.position || "").trim() ? ` · ${String(profile?.position || "").trim().toUpperCase()}` : ""}
               </div>
 

@@ -168,7 +168,7 @@ export function ModulesTab(props: ModulesTabProps) {
     if (!published) return "СЕЙЧАС УВИДЯТ: НИКТО (НЕ ОПУБЛИКОВАН)";
     if (vis === "hidden") return "СЕЙЧАС УВИДЯТ: НИКТО (СКРЫТ)";
     if (vis === "restricted") return `СЕЙЧАС УВИДЯТ: ТОЛЬКО ПО ТЕГАМ (${tagsCount})`;
-    return "СЕЙЧАС УВИДЯТ: ВСЕ СОТРУДНИКИ";
+    return "СЕЙЧАС УВИДЯТ: ВСЕ ПАРТНЁРЫ";
   }, [selectedAdminModule]);
 
   const audienceAfterSaveLabel = useMemo(() => {
@@ -180,7 +180,7 @@ export function ModulesTab(props: ModulesTabProps) {
     if (!published) return "ПОСЛЕ СОХРАНЕНИЯ: НИКТО (НЕ ОПУБЛИКОВАН)";
     if (vis === "hidden") return "ПОСЛЕ СОХРАНЕНИЯ: НИКТО (СКРЫТ)";
     if (vis === "restricted") return `ПОСЛЕ СОХРАНЕНИЯ: ТОЛЬКО ПО ТЕГАМ (${tagsCount})`;
-    return "ПОСЛЕ СОХРАНЕНИЯ: ВСЕ СОТРУДНИКИ";
+    return "ПОСЛЕ СОХРАНЕНИЯ: ВСЕ ПАРТНЁРЫ";
   }, [selectedAdminModule, accessVisibility, accessTagDraft]);
 
   const publishWithAccess = async (opts?: { forceVisibility?: "public" | "hidden" | "restricted" }) => {
@@ -199,7 +199,7 @@ export function ModulesTab(props: ModulesTabProps) {
 
       if (isPublishing && isDraftHidden && !opts?.forceVisibility) {
         const okSwitch = window.confirm(
-          "СЕЙЧАС РЕЖИМ ДОСТУПА: СКРЫТ. ПОСЛЕ ПУБЛИКАЦИИ СОТРУДНИКИ ВСЁ РАВНО НЕ УВИДЯТ МОДУЛЬ.\n\nOK = ОПУБЛИКОВАТЬ ДЛЯ ВСЕХ\nОТМЕНА = ОПУБЛИКОВАТЬ КАК СКРЫТЫЙ"
+          "СЕЙЧАС РЕЖИМ ДОСТУПА: СКРЫТ. ПОСЛЕ ПУБЛИКАЦИИ ПАРТНЁРЫ ВСЁ РАВНО НЕ УВИДЯТ МОДУЛЬ.\n\nOK = ОПУБЛИКОВАТЬ ДЛЯ ВСЕХ\nОТМЕНА = ОПУБЛИКОВАТЬ КАК СКРЫТЫЙ"
         );
         if (okSwitch) {
           await publishWithAccess({ forceVisibility: "public" });

@@ -7,7 +7,7 @@ import { ToastHost } from "@/components/ui/toast-host";
 
 export const metadata: Metadata = {
   title: "Каркас Тайги — Контроль квалификации",
-  description: "Корпоративная система контроля квалификации сотрудников: обучение, тестирование, прогресс и аудит.",
+  description: "Корпоративная система контроля квалификации партнёров: обучение, тестирование, прогресс и аудит.",
   icons: {
     icon: [
       { url: "/icon.svg", type: "image/svg+xml" },

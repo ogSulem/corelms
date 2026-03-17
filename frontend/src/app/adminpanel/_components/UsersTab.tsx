@@ -111,6 +111,14 @@ export function UsersTab(props: UsersTabProps) {
     saveBulkTagUsers,
   } = props;
 
+  const roleLabel = (role: any): string => {
+    const r = String(role || "").trim().toLowerCase();
+    if (r === "admin") return "АДМИН";
+    if (r === "employee") return "ПАРТНЁР";
+    if (!r) return "—";
+    return String(role || "").toUpperCase();
+  };
+
   const isSelf = Boolean(selectedUserId) && String(selectedUserId) === String(currentUserId || "");
   const isLockedAdminTarget = Boolean(userDetail?.role) && String(userDetail?.role || "") === "admin" && !isSelf;
 
@@ -226,62 +234,115 @@ export function UsersTab(props: UsersTabProps) {
         </div>
 
         <div className="lg:col-span-4 relative overflow-visible rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
-          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Теги</div>
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Теги</div>
+              <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-950">Выдача доступа по группам</div>
+            </div>
+            <Button
+              variant="ghost"
+              className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+              disabled={bulkTagBusy && !bulkTagId}
+              onClick={() => {
+                setBulkTagId("");
+                setBulkTagUsers([]);
+                setBulkUsersOpen(false);
+              }}
+            >
+              ОЧИСТИТЬ
+            </Button>
+          </div>
 
-          <div className="mt-4 grid gap-3">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div>
+          <div className="mt-5 grid gap-5">
+            <div>
+              <div className="flex items-center justify-between gap-3">
                 <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Выбор тега</div>
-                <select
-                  className="mt-2 w-full h-10 rounded-xl bg-white border border-zinc-200 px-3 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
-                  value={bulkTagId}
-                  disabled={tagsLoading || bulkTagBusy}
-                  onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
-                    const tid = String(e.target.value || "");
-                    setBulkTagId(tid);
-                    setBulkTagUsers([]);
-                    if (tid) void loadBulkTagUsers(tid);
-                  }}
-                >
-                  <option value="">ВЫБРАТЬ ТЕГ</option>
-                  {(tags || []).map((t) => (
-                    <option key={String((t as any)?.id || "")} value={String((t as any)?.id || "")}>{String((t as any)?.name || "").toUpperCase()}</option>
-                  ))}
-                </select>
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">{tagsLoading ? "ЗАГРУЗКА" : `${(tags || []).length}`}</div>
               </div>
 
-              <div>
-                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Создать тег</div>
-                <div className="mt-2 flex items-center gap-2">
-                  <input
-                    className="h-10 flex-1 rounded-xl border border-zinc-200 bg-white px-3 text-[11px] font-black uppercase tracking-widest text-zinc-900"
-                    value={newTagName}
-                    onChange={(e) => setNewTagName(String(e.target.value || ""))}
-                    placeholder="НАПР. КАЗАНЬ"
-                    disabled={newTagBusy || bulkTagBusy}
-                  />
-                  <Button
-                    className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
-                    disabled={newTagBusy || bulkTagBusy || !String(newTagName || "").trim()}
-                    onClick={() => void createTag()}
-                  >
-                    {newTagBusy ? "..." : "СОЗДАТЬ"}
-                  </Button>
-                </div>
+              <select
+                className="mt-2 w-full h-11 rounded-2xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
+                value={bulkTagId}
+                disabled={tagsLoading || bulkTagBusy}
+                onChange={(e: React.ChangeEvent<HTMLSelectElement>) => {
+                  const tid = String(e.target.value || "");
+                  setBulkTagId(tid);
+                  setBulkTagUsers([]);
+                  setBulkUsersOpen(false);
+                  if (tid) void loadBulkTagUsers(tid);
+                }}
+              >
+                <option value="">ВЫБРАТЬ ТЕГ</option>
+                {(tags || []).map((t) => (
+                  <option key={String((t as any)?.id || "")} value={String((t as any)?.id || "")}>
+                    {String((t as any)?.name || "").toUpperCase()}
+                  </option>
+                ))}
+              </select>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                {(tags || []).slice(0, 14).map((t) => {
+                  const tid = String((t as any)?.id || "");
+                  const active = Boolean(bulkTagId) && String(bulkTagId) === tid;
+                  return (
+                    <button
+                      key={tid}
+                      type="button"
+                      className={
+                        "h-8 px-3 rounded-full border text-[9px] font-black uppercase tracking-widest transition " +
+                        (active
+                          ? "border-[#fe9900]/25 bg-[#fe9900]/15 text-zinc-950"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50")
+                      }
+                      disabled={tagsLoading || bulkTagBusy}
+                      onClick={() => {
+                        setBulkTagId(tid);
+                        setBulkTagUsers([]);
+                        setBulkUsersOpen(false);
+                        void loadBulkTagUsers(tid);
+                      }}
+                      title={String((t as any)?.name || "")}
+                    >
+                      {String((t as any)?.name || "").toUpperCase()}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Создать тег</div>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  className="h-11 flex-1 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-900 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
+                  value={newTagName}
+                  onChange={(e) => setNewTagName(String(e.target.value || ""))}
+                  placeholder="НАПР. КАЗАНЬ"
+                  disabled={newTagBusy || bulkTagBusy}
+                />
+                <Button
+                  className="h-11 rounded-2xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
+                  disabled={newTagBusy || bulkTagBusy || !String(newTagName || "").trim()}
+                  onClick={() => void createTag()}
+                >
+                  {newTagBusy ? "СОЗДАНИЕ..." : "СОЗДАТЬ"}
+                </Button>
               </div>
             </div>
 
             <div>
               <div className="flex items-center justify-between gap-4">
-                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Сотрудники в теге</div>
-                <Button
-                  variant="ghost"
-                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={!bulkTagId || bulkTagBusy || usersLoading}
-                  onClick={() => void saveBulkTagUsers(bulkTagId, bulkTagUsers)}
-                >
-                  {bulkTagBusy ? "..." : "ПРИМЕНИТЬ"}
-                </Button>
+                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Партнёры в теге</div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                    disabled={!bulkTagId || bulkTagBusy || usersLoading}
+                    onClick={() => void saveBulkTagUsers(bulkTagId, bulkTagUsers)}
+                  >
+                    {bulkTagBusy ? "СОХРАНЕНИЕ..." : "ПРИМЕНИТЬ"}
+                  </Button>
+                </div>
               </div>
 
               {!bulkTagId ? (
@@ -292,58 +353,76 @@ export function UsersTab(props: UsersTabProps) {
                 <div className="mt-2 relative">
                   <button
                     type="button"
-                    className="w-full h-10 rounded-xl border border-zinc-200 bg-white px-3 text-left text-[10px] font-black uppercase tracking-widest text-zinc-800 hover:bg-zinc-50"
+                    className="w-full h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-left text-[10px] font-black uppercase tracking-widest text-zinc-900 hover:bg-zinc-50 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
                     onClick={() => setBulkUsersOpen((v) => !v)}
                     disabled={bulkTagBusy}
                   >
-                    {bulkTagUsers?.length ? `ВЫБРАНО: ${bulkTagUsers.length}` : "ВЫБРАТЬ СОТРУДНИКОВ"}
+                    <span className="inline-flex items-center justify-between w-full">
+                      <span>{bulkTagUsers?.length ? `ВЫБРАНО: ${bulkTagUsers.length}` : "ВЫБРАТЬ ПАРТНЁРОВ"}</span>
+                      <span className="text-zinc-400">▾</span>
+                    </span>
                   </button>
 
                   {bulkUsersOpen ? (
-                    <div className="absolute z-[9999] mt-2 w-full rounded-2xl border border-zinc-200 bg-white shadow-xl p-2">
-                      <div className="max-h-[260px] overflow-auto pr-1 space-y-2">
-                        {(users || []).map((u) => {
-                          const uid = String((u as any)?.id || "");
-                          const checked = (bulkTagUsers || []).includes(uid);
-                          return (
-                            <label key={uid} className="flex items-center gap-3 rounded-xl border border-zinc-200 bg-white px-3 py-2 hover:bg-zinc-50">
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                disabled={bulkTagBusy}
-                                onChange={() => {
-                                  setBulkTagUsers((prev: string[]) => {
-                                    const xs = Array.isArray(prev) ? prev.slice() : [];
-                                    const has = xs.includes(uid);
-                                    return has ? xs.filter((x) => x !== uid) : [...xs, uid];
-                                  });
-                                }}
-                              />
-                              <div className="min-w-0 flex-1">
-                                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-800 truncate">{String((u as any)?.name || "")}</div>
-                                {String((u as any)?.email || "").trim() ? (
-                                  <div className="mt-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-500 truncate">{String((u as any)?.email || "")}</div>
-                                ) : null}
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
-                      <div className="mt-2 flex items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          className="h-9 px-3 rounded-xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                          onClick={() => { setBulkTagUsers([]); }}
-                        >
-                          СБРОСИТЬ
-                        </button>
-                        <button
-                          type="button"
-                          className="h-9 px-3 rounded-xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                          onClick={() => setBulkUsersOpen(false)}
-                        >
-                          ГОТОВО
-                        </button>
+                    <div className="absolute z-[9999] mt-2 w-full rounded-[24px] border border-zinc-200 bg-white shadow-2xl shadow-zinc-950/10 overflow-hidden">
+                      <div className="p-2">
+                        <div className="max-h-[280px] overflow-auto pr-1 space-y-2">
+                          {(users || []).map((u) => {
+                            const uid = String((u as any)?.id || "");
+                            const checked = (bulkTagUsers || []).includes(uid);
+                            return (
+                              <label
+                                key={uid}
+                                className={
+                                  "flex items-center gap-3 rounded-2xl border px-3 py-2.5 transition " +
+                                  (checked ? "border-[#fe9900]/25 bg-[#fe9900]/10" : "border-zinc-200 bg-white hover:bg-zinc-50")
+                                }
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  disabled={bulkTagBusy}
+                                  onChange={() => {
+                                    setBulkTagUsers((prev: string[]) => {
+                                      const xs = Array.isArray(prev) ? prev.slice() : [];
+                                      const has = xs.includes(uid);
+                                      return has ? xs.filter((x) => x !== uid) : [...xs, uid];
+                                    });
+                                  }}
+                                />
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-900 truncate">
+                                    {String((u as any)?.name || "")}
+                                  </div>
+                                  {String((u as any)?.email || "").trim() ? (
+                                    <div className="mt-0.5 text-[9px] font-black uppercase tracking-widest text-zinc-500 truncate">
+                                      {String((u as any)?.email || "")}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </label>
+                            );
+                          })}
+                        </div>
+
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <button
+                            type="button"
+                            className="h-10 px-4 rounded-2xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                            onClick={() => {
+                              setBulkTagUsers([]);
+                            }}
+                          >
+                            СБРОСИТЬ
+                          </button>
+                          <button
+                            type="button"
+                            className="h-10 px-4 rounded-2xl border border-zinc-200 bg-white text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                            onClick={() => setBulkUsersOpen(false)}
+                          >
+                            ГОТОВО
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ) : null}
@@ -357,7 +436,7 @@ export function UsersTab(props: UsersTabProps) {
       <div className="grid gap-6 lg:grid-cols-12 items-start">
         <div className="lg:col-span-5 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
           <div className="flex items-center justify-between gap-4">
-            <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Сотрудники</div>
+            <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Партнёры</div>
             <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">{users.length}</div>
           </div>
 
@@ -379,6 +458,7 @@ export function UsersTab(props: UsersTabProps) {
               })
               .map((u) => {
                 const active = String(u.id) === String(selectedUserId);
+                const roleText = roleLabel((u as any)?.role);
                 return (
                   <button
                     key={u.id}
@@ -398,7 +478,7 @@ export function UsersTab(props: UsersTabProps) {
                           </div>
                         ) : null}
                         <div className="mt-1 truncate text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                          {u.role}
+                          {roleText}
                         </div>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-widest text-zinc-700">
@@ -415,7 +495,7 @@ export function UsersTab(props: UsersTabProps) {
                           ) : null}
                         </div>
                       </div>
-                      <div className="shrink-0 text-[9px] font-black uppercase tracking-widest text-zinc-500">{u.role}</div>
+                      <div className="shrink-0 text-[9px] font-black uppercase tracking-widest text-zinc-500">{roleText}</div>
                     </div>
                   </button>
                 );
@@ -429,7 +509,7 @@ export function UsersTab(props: UsersTabProps) {
               <div>
                 <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Карточка</div>
                 <div className="text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none">
-                  {userDetail ? userDetail.name : selectedUserId ? "Загрузка..." : "Выберите сотрудника"}
+                  {userDetail ? userDetail.name : selectedUserId ? "Загрузка..." : "Выберите партнёра"}
                 </div>
               </div>
 
@@ -502,7 +582,7 @@ export function UsersTab(props: UsersTabProps) {
                       onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setDraftRole((e.target.value as any) === "admin" ? "admin" : "employee")}
                       disabled={isSelf || isLockedAdminTarget}
                     >
-                      <option value="employee">СОТРУДНИК</option>
+                      <option value="employee">ПАРТНЁР</option>
                       <option value="admin">АДМИН</option>
                     </select>
                   </div>
@@ -766,7 +846,7 @@ export function UsersTab(props: UsersTabProps) {
               </div>
             ) : (
               <div className="mt-8 py-12 text-center text-[10px] font-black uppercase tracking-widest text-zinc-600">
-                {selectedUserId ? "НЕТ ДАННЫХ" : "ВЫБЕРИТЕ СОТРУДНИКА"}
+                {selectedUserId ? "НЕТ ДАННЫХ" : "ВЫБЕРИТЕ ПАРТНЁРА"}
               </div>
             )}
           </div>

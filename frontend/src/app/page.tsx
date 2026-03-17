@@ -200,7 +200,7 @@ export default function HomePage() {
               <div className="rounded-[40px] border border-zinc-200/70 bg-white/70 backdrop-blur-2xl p-8 sm:p-10 shadow-[0_30px_120px_rgba(24,24,27,0.10)] transition-all duration-200 hover:bg-white hover:border-zinc-300 hover:-translate-y-0.5">
                 <div className="flex items-center gap-3">
                   <BookOpen className="h-6 w-6 text-[#fe9900]" />
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Для сотрудников</div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Для партнёров</div>
                 </div>
                 <div className="mt-4 text-2xl sm:text-3xl font-black tracking-tighter text-zinc-950 uppercase">
                   «Открыл → прошёл → подтвердил»
