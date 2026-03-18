@@ -92,6 +92,7 @@ from app.services.modules import modules_bump_rev, modules_invalidate_storage_ca
 from app.services.content_migration_jobs import migrate_legacy_submodule_content_job
 from app.services.module_storage_prefix_jobs import backfill_module_storage_prefix_job
 from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job, regenerate_submodule_quiz_job
+from app.services.video_transcode_jobs import transcode_all_videos_job
 from app.services.llm_handler import generate_quiz_questions_ai
 from app.services.storage import (
     ensure_bucket_exists,
@@ -209,6 +210,64 @@ def _admin_jobs_build_lane(*, kind: str, listing: dict) -> dict:
         "queue_stats": listing.get("queue_stats") if isinstance(listing, dict) else None,
         "queue_name": listing.get("queue") if isinstance(listing, dict) else None,
     }
+
+
+@router.post("/transcode/videos/enqueue")
+def enqueue_transcode_videos(
+    limit: int = Query(default=5000, ge=1, le=20000),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    # Batch transcode existing non-mp4 videos into mp4 (H.264/AAC) to ensure stable browser playback.
+    # Runs in RQ worker; uses 1 worker concurrency by your ops choice.
+    try:
+        q = get_queue(str(settings.rq_queue_import))
+        job = q.enqueue(
+            transcode_all_videos_job,
+            limit=int(limit),
+            delete_original=True,
+            job_timeout=60 * 60 * 24,
+            result_ttl=60 * 60 * 24 * 7,
+            failure_ttl=60 * 60 * 24 * 7,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="failed to enqueue transcode job") from e
+
+    # Register in admin import lane so it shows up in /admin/jobs immediately.
+    try:
+        jm = dict(job.meta or {})
+        jm["job_kind"] = "import"
+        jm["job_subkind"] = "transcode_videos"
+        jm["limit"] = int(limit)
+        jm["stage"] = "queued"
+        jm["detail"] = "transcode_videos"
+        job.meta = jm
+        job.save_meta()
+    except Exception:
+        pass
+
+    try:
+        r = get_redis()
+        meta = {
+            "job_id": str(job.id),
+            "job_kind": "import",
+            "job_subkind": "transcode_videos",
+            "created_at": datetime.utcnow().isoformat(),
+            "status": "queued",
+            "stage": "queued",
+            "detail": "transcode_videos",
+            "limit": int(limit),
+            "module_id": "",
+            "module_title": "ТРАНСКОДИРОВАНИЕ ВИДЕО (BATCH)",
+        }
+        r.lpush("admin:import_jobs", json.dumps(meta, ensure_ascii=False))
+        r.ltrim("admin:import_jobs", 0, 49)
+        r.expire("admin:import_jobs", 60 * 60 * 24 * 30)
+        _admin_jobs_bump_rev()
+        r.publish("admin:jobs:changed", str(job.id))
+    except Exception:
+        pass
+
+    return {"ok": True, "job_id": str(job.id)}
 
 
 @router.get("/jobs/model")
