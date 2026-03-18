@@ -200,10 +200,21 @@ export default function SubmodulePage() {
 
   function getExtFromNameOrKey(name: string, objectKey?: string | null): string {
     const pick = (s: string): string => {
-      const raw = String(s || "").trim();
+      let raw = String(s || "").trim();
       if (!raw) return "";
-      const m = /\.([a-z0-9]{1,8})$/i.exec(raw);
-      return m ? String(m[1] || "").toLowerCase() : "";
+      try {
+        raw = raw.replaceAll("\\", "/");
+        if (raw.includes("/")) raw = raw.split("/").pop() || raw;
+      } catch {
+        // ignore
+      }
+      const idx = raw.lastIndexOf(".");
+      if (idx < 0) return "";
+      const ext = raw.slice(idx + 1).trim().toLowerCase();
+      if (!ext) return "";
+      if (ext.length > 8) return "";
+      if (!/^[a-z0-9]+$/.test(ext)) return "";
+      return ext;
     };
     return pick(name) || pick(String(objectKey || ""));
   }
