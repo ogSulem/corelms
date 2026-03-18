@@ -37,6 +37,55 @@ def _is_cancel_requested() -> bool:
         return False
 
 
+def _ffprobe_codecs(path: pathlib.Path) -> tuple[str, str]:
+    try:
+        cmd = [
+            "ffprobe",
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_streams",
+            str(path),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            return "", ""
+        import json
+
+        data = json.loads(proc.stdout or "{}") if (proc.stdout or "").strip() else {}
+        streams = list((data or {}).get("streams") or [])
+        vcodec = ""
+        acodec = ""
+        for st in streams:
+            if not isinstance(st, dict):
+                continue
+            ctype = str(st.get("codec_type") or "").strip().lower()
+            cname = str(st.get("codec_name") or "").strip().lower()
+            if ctype == "video" and not vcodec:
+                vcodec = cname
+            if ctype == "audio" and not acodec:
+                acodec = cname
+        return vcodec, acodec
+    except Exception:
+        return "", ""
+
+
+def _codecs_already_browser_friendly(*, object_key: str, asset_ct: str, vcodec: str, acodec: str) -> bool:
+    k = str(object_key or "").strip().lower()
+    ct = str(asset_ct or "").strip().lower()
+    is_mp4 = k.endswith(".mp4") or k.endswith(".m4v") or ct in {"video/mp4", "video/x-m4v"}
+    if not is_mp4:
+        return False
+    vc = str(vcodec or "").strip().lower()
+    ac = str(acodec or "").strip().lower()
+    if vc not in {"h264", "avc1"}:
+        return False
+    if not ac:
+        return True
+    return ac in {"aac"}
+
+
 class TranscodeCanceledError(RuntimeError):
     pass
 
@@ -81,10 +130,10 @@ def _needs_transcode(asset: ContentAsset) -> bool:
     key = str(getattr(asset, "object_key", "") or "").strip().lower()
     ct = str(getattr(asset, "mime_type", "") or "").strip().lower()
 
-    if name.endswith(".mp4") or key.endswith(".mp4"):
-        return False
-    if ct == "video/mp4":
-        return False
+    # For batch normalization we treat any video asset as a candidate and decide
+    # whether it needs conversion after probing codecs.
+    if ct.startswith("video/"):
+        return True
 
     ext = ""
     for s in (name, key):
@@ -92,6 +141,9 @@ def _needs_transcode(asset: ContentAsset) -> bool:
             ext = s.rsplit(".", 1)[-1].strip()
             if ext:
                 break
+
+    if ext in {"mp4", "m4v", "mov", "mkv", "avi", "wmv", "flv", "mpg", "mpeg", "mts", "m2ts", "webm"}:
+        return True
 
     transcode_exts = {"mov", "mkv", "avi", "wmv", "flv", "mpg", "mpeg", "mts", "m2ts"}
     if ext in transcode_exts:
@@ -217,6 +269,7 @@ def transcode_all_videos_job(*, limit: int = 5000, delete_original: bool = True)
         "candidates": 0,
         "transcoded": 0,
         "skipped": 0,
+        "skipped_codec_ok": 0,
         "errors": 0,
         "deleted_original": 0,
         "bytes_in": 0,
@@ -263,6 +316,12 @@ def transcode_all_videos_job(*, limit: int = 5000, delete_original: bool = True)
                     report["bytes_in"] = int(report.get("bytes_in") or 0) + int(in_path.stat().st_size)
                 except Exception:
                     pass
+
+                vcodec, acodec = _ffprobe_codecs(in_path)
+                if _codecs_already_browser_friendly(object_key=old_key, asset_ct=str(a.mime_type or ""), vcodec=vcodec, acodec=acodec):
+                    report["skipped"] = int(report.get("skipped") or 0) + 1
+                    report["skipped_codec_ok"] = int(report.get("skipped_codec_ok") or 0) + 1
+                    continue
 
                 ok, err = _transcode_to_mp4(input_path=in_path, output_path=out_path)
                 if not ok:

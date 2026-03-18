@@ -76,7 +76,7 @@ def get_submodule(submodule_id: str, db: Session = Depends(get_db), user: User =
         raise HTTPException(status_code=404, detail="submodule not found")
 
     content = sub.content
-    if sub.content_object_key:
+    if sub.content_object_key and (not str(content or "").strip()):
         try:
             s3 = get_s3_client()
             obj = s3.get_object(Bucket=settings.s3_bucket, Key=sub.content_object_key)
