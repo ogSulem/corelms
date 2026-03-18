@@ -804,7 +804,7 @@ def import_module_zip_job(
                     return True
                 if n.startswith("._"):
                     return True
-                if nlow.startswith("tmp"):
+                if nlow.startswith("tmp") or nlow.startswith("tmr"):
                     return True
             except Exception:
                 return False

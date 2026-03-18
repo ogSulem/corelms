@@ -281,7 +281,7 @@ def _collect_leaf_lesson_dirs(root: pathlib.Path) -> list[pathlib.Path]:
     out: list[pathlib.Path] = []
     try:
         direct_files = [p for p in root.iterdir() if p.is_file() and not _should_ignore_file(p)]
-        direct_dirs = [p for p in root.iterdir() if p.is_dir() and p.name not in {"_module", "__MACOSX"}]
+        direct_dirs = [p for p in root.iterdir() if p.is_dir() and (not _is_noise_dir_name(p.name))]
     except Exception:
         return out
 
