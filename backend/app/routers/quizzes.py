@@ -164,27 +164,29 @@ def _select_final_question_ids_from_lessons(*, db: Session, module: Module) -> l
 
     selected: list[uuid.UUID] = []
 
-    if len(pools) == 1:
-        selected = list(pools[0])
-        rng.shuffle(selected)
-        return [str(qid) for qid in selected]
+    # Product rule (final test):
+    # - Take up to 3 questions from EACH lesson submodule that has a quiz.
+    # - If there are more than 10 such submodules, cap the final quiz to 30 questions total.
+    #   (i.e. at most 10 submodules x 3 questions)
+    max_submodules = 10
+    per_submodule = 3
+    max_total = max_submodules * per_submodule
 
-    # Phase 1: up to 3 questions per lesson.
-    per_lesson = 3
-    for pool in pools:
-        for _ in range(per_lesson):
-            if pool:
-                selected.append(pool.pop(0))
+    if not pools:
+        return []
 
-    # Phase 2: keep taking remaining questions round-robin until pools are exhausted.
-    while True:
-        progressed = False
+    # If there are too many lesson submodules, sample at most 10 of them.
+    if len(pools) > max_submodules:
+        rng.shuffle(pools)
+        pools = pools[:max_submodules]
+
+    # Round-robin selection: preserves per-submodule cap while filling up to max_total.
+    for _ in range(per_submodule):
         for pool in pools:
+            if len(selected) >= max_total:
+                break
             if pool:
                 selected.append(pool.pop(0))
-                progressed = True
-        if not progressed:
-            break
 
     rng.shuffle(selected)
     return [str(qid) for qid in selected]

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronLeft,
   File,
@@ -38,12 +38,14 @@ type ModuleAsset = {
   object_key: string;
   original_filename: string;
   mime_type: string | null;
+  size_bytes?: number | null;
 };
 
 type AssetLike = {
   asset_id: string;
   mime_type: string | null;
   original_filename: string;
+  size_bytes?: number | null;
 };
 
 type SubmoduleAsset = {
@@ -51,6 +53,7 @@ type SubmoduleAsset = {
   object_key?: string;
   original_filename: string;
   mime_type: string | null;
+  size_bytes?: number | null;
   order?: number;
 };
 
@@ -107,6 +110,9 @@ export default function ModulePage() {
   const [inlineName, setInlineName] = useState<string | null>(null);
   const [inlineText, setInlineText] = useState<string | null>(null);
   const [inlineAssetId, setInlineAssetId] = useState<string | null>(null);
+
+  const inlineTextAbortRef = useRef<AbortController | null>(null);
+  const presignCacheRef = useRef<Map<string, { url: string; expiresAt: number }>>(new Map());
   const [inlineKind, setInlineKind] = useState<InlineKind>("iframe");
 
   const [submodulePrimaryAssetById, setSubmodulePrimaryAssetById] = useState<Record<string, { original_filename: string; mime_type: string | null } | null>>({});
@@ -402,6 +408,12 @@ export default function ModulePage() {
   }
 
   function closeInline() {
+    try {
+      inlineTextAbortRef.current?.abort();
+    } catch {
+      // ignore
+    }
+    inlineTextAbortRef.current = null;
     setInlineUrl(null);
     setInlineMime(null);
     setInlineName(null);
@@ -414,18 +426,35 @@ export default function ModulePage() {
     closeInline();
   }
 
+  function getExtFromNameOrKey(name: string, objectKey?: string | null): string {
+    const pick = (s: string): string => {
+      const raw = String(s || "").trim();
+      if (!raw) return "";
+      const m = /\.([a-z0-9]{1,8})$/i.exec(raw);
+      return m ? String(m[1] || "").toLowerCase() : "";
+    };
+    return pick(name) || pick(String(objectKey || ""));
+  }
+
   function streamUrl(assetId: string): string {
     return `/api/backend/assets/${encodeURIComponent(String(assetId || "").trim())}/stream`;
   }
 
   async function presignViewUrl(assetId: string): Promise<string> {
     const sid = String(assetId || "").trim();
+
+    const now = Date.now();
+    const cached = presignCacheRef.current.get(sid);
+    if (cached && cached.url && cached.expiresAt > now) return cached.url;
+
     const r = await apiFetch<{ asset_id: string; download_url: string }>(
       `/assets/${encodeURIComponent(sid)}/presign-download?action=view`,
       { method: "GET" }
     );
     const u = String((r as any)?.download_url || "").trim();
     if (!u) throw new Error("missing presigned url");
+
+    presignCacheRef.current.set(sid, { url: u, expiresAt: now + 2 * 60 * 1000 });
     return u;
   }
 
@@ -434,10 +463,14 @@ export default function ModulePage() {
       const stream = streamUrl(a.asset_id);
       const rawName = String(a.original_filename || "").trim();
       const mime = String(a.mime_type || "").toLowerCase();
-      const ext = (() => {
-        const m = /\.([a-z0-9]{1,8})$/i.exec(rawName);
-        return m ? String(m[1] || "").toLowerCase() : "";
-      })();
+      const ext = getExtFromNameOrKey(rawName, (a as any)?.object_key);
+
+      try {
+        inlineTextAbortRef.current?.abort();
+      } catch {
+        // ignore
+      }
+      inlineTextAbortRef.current = null;
 
       setInlineMime(a.mime_type || null);
       setInlineName(rawName || null);
@@ -479,7 +512,31 @@ export default function ModulePage() {
     }
 
     if (kind === "text") {
-      const res = await fetch(targetUrl, { credentials: "include" });
+      const maxTextBytes = 2_000_000;
+      const sz = Number((a as any)?.size_bytes ?? null);
+      if (Number.isFinite(sz) && sz > maxTextBytes) {
+        try {
+          if (typeof window !== "undefined") {
+            window.open(targetUrl, "_blank", "noopener,noreferrer");
+            window.dispatchEvent(
+              new CustomEvent("corelms:toast", {
+                detail: {
+                  title: "ФАЙЛ СЛИШКОМ БОЛЬШОЙ ДЛЯ ПРЕДПРОСМОТРА",
+                  description: "Открываю в новой вкладке.",
+                },
+              })
+            );
+          }
+        } catch {
+          // ignore
+        }
+        closeInline();
+        return;
+      }
+
+      const ctrl = new AbortController();
+      inlineTextAbortRef.current = ctrl;
+      const res = await fetch(targetUrl, { credentials: "include", signal: ctrl.signal });
       if (!res.ok) {
         if (res.status === 404) {
           throw new Error("Файл удалён из хранилища (404). Переимпортируйте модуль или загрузите файл заново.");
@@ -502,6 +559,8 @@ export default function ModulePage() {
       }, 100);
     }
     } catch (e) {
+      const anyErr = e as any;
+      if (anyErr?.name === "AbortError") return;
       closeInline();
       const msg = e instanceof Error ? e.message : String(e);
       if (typeof window !== "undefined") {
@@ -517,13 +576,10 @@ export default function ModulePage() {
     }
   }
 
-  function isViewableMaterial(a: { original_filename: string; mime_type: string | null }): boolean {
+  function isViewableMaterial(a: { original_filename: string; mime_type: string | null; object_key?: string | null }): boolean {
     const name = String(a?.original_filename || "").toLowerCase();
     const mime = String(a?.mime_type || "").toLowerCase();
-    const ext = (() => {
-      const m = /\.([a-z0-9]{1,8})$/i.exec(name);
-      return m ? String(m[1] || "").toLowerCase() : "";
-    })();
+    const ext = getExtFromNameOrKey(name, (a as any)?.object_key);
     if (mime.includes("pdf") || ext === "pdf") return true;
     if (mime.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(ext)) return true;
     if (mime.startsWith("video/") || ["mp4", "webm", "mov", "mkv"].includes(ext)) return true;
@@ -533,13 +589,10 @@ export default function ModulePage() {
     return false;
   }
 
-  function getAssetIcon(a: { original_filename: string; mime_type: string | null }) {
+  function getAssetIcon(a: { original_filename: string; mime_type: string | null; object_key?: string | null }) {
     const name = String(a?.original_filename || "").toLowerCase();
     const mime = String(a?.mime_type || "").toLowerCase();
-    const ext = (() => {
-      const m = /\.([a-z0-9]{1,8})$/i.exec(name);
-      return m ? String(m[1] || "").toLowerCase() : "";
-    })();
+    const ext = getExtFromNameOrKey(name, (a as any)?.object_key);
 
     if (mime.includes("pdf") || ext === "pdf") return FileText;
     if (mime.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(ext)) return FileImage;
@@ -667,17 +720,15 @@ export default function ModulePage() {
   }, [folderModalFiles, folderModalNavPath]);
 
   const canInlinePreview = useMemo(() => {
-    const mime = String(inlineMime || "").toLowerCase();
     if (!inlineUrl) return false;
     if (inlineKind === "office") return true;
-    if (!mime) return false;
-    if (mime.includes("pdf")) return true;
-    if (mime.startsWith("image/")) return true;
-    if (mime.startsWith("video/")) return true;
-    if (mime.startsWith("audio/")) return true;
-    if (mime.startsWith("text/")) return true;
+    if (inlineKind === "pdf") return true;
+    if (inlineKind === "image") return true;
+    if (inlineKind === "video") return true;
+    if (inlineKind === "audio") return true;
+    if (inlineKind === "text") return true;
     return false;
-  }, [inlineKind, inlineMime, inlineUrl]);
+  }, [inlineKind, inlineUrl]);
 
   const progressMap = useMemo(() => {
     const m = new Map<string, any>();
@@ -983,7 +1034,7 @@ export default function ModulePage() {
                                 );
                               }
 
-                              const Icon = getAssetIcon({ original_filename: e.name, mime_type: e.asset.mime_type });
+                              const Icon = getAssetIcon({ original_filename: e.name, mime_type: e.asset.mime_type, object_key: (e.asset as any)?.object_key });
                               return (
                                 <button
                                   key={`file:${e.path.join("/")}:${e.asset.asset_id}`}
@@ -1484,7 +1535,7 @@ export default function ModulePage() {
                   );
                 }
 
-                const Icon = getAssetIcon({ original_filename: e.name, mime_type: e.asset.mime_type });
+                const Icon = getAssetIcon({ original_filename: e.name, mime_type: e.asset.mime_type, object_key: (e.asset as any)?.object_key });
                 return (
                   <button
                     key={`ffile:${e.asset.asset_id}`}

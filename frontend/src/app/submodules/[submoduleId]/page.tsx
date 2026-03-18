@@ -119,6 +119,7 @@ type SubmoduleAsset = {
   object_key: string;
   original_filename: string;
   mime_type: string | null;
+  size_bytes?: number | null;
   order: number;
 };
 
@@ -127,12 +128,14 @@ type ModuleAsset = {
   object_key: string;
   original_filename: string;
   mime_type: string | null;
+  size_bytes?: number | null;
 };
 
 type AssetLike = {
   asset_id: string;
   original_filename: string;
   mime_type: string | null;
+  size_bytes?: number | null;
 };
 
 type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text" | "office";
@@ -192,18 +195,48 @@ export default function SubmodulePage() {
   const resultRef = useRef<HTMLDivElement | null>(null);
   const inlineRef = useRef<HTMLDivElement | null>(null);
 
+  const inlineTextAbortRef = useRef<AbortController | null>(null);
+  const presignCacheRef = useRef<Map<string, { url: string; expiresAt: number }>>(new Map());
+
+  function getExtFromNameOrKey(name: string, objectKey?: string | null): string {
+    const pick = (s: string): string => {
+      const raw = String(s || "").trim();
+      if (!raw) return "";
+      const m = /\.([a-z0-9]{1,8})$/i.exec(raw);
+      return m ? String(m[1] || "").toLowerCase() : "";
+    };
+    return pick(name) || pick(String(objectKey || ""));
+  }
+
+  function getExtFromName(name: string): string {
+    return getExtFromNameOrKey(name, null);
+  }
+
+  function closeInline() {
+    try {
+      inlineTextAbortRef.current?.abort();
+    } catch {
+      // ignore
+    }
+    inlineTextAbortRef.current = null;
+    setInlineUrl(null);
+    setInlineMime(null);
+    setInlineName(null);
+    setInlineText(null);
+    setInlineAssetId(null);
+    setInlineKind("iframe");
+  }
+
   const canInlinePreview = useMemo(() => {
-    const mime = String(inlineMime || "").toLowerCase();
     if (!inlineUrl) return false;
     if (inlineKind === "office") return true;
-    if (!mime) return false;
-    if (mime.includes("pdf")) return true;
-    if (mime.startsWith("image/")) return true;
-    if (mime.startsWith("video/")) return true;
-    if (mime.startsWith("audio/")) return true;
-    if (mime.startsWith("text/")) return true;
+    if (inlineKind === "pdf") return true;
+    if (inlineKind === "image") return true;
+    if (inlineKind === "video") return true;
+    if (inlineKind === "audio") return true;
+    if (inlineKind === "text") return true;
     return false;
-  }, [inlineKind, inlineMime, inlineUrl]);
+  }, [inlineKind, inlineUrl]);
 
   const requiresQuiz = useMemo(() => {
     const v = (submodule as any)?.requires_quiz;
@@ -238,6 +271,28 @@ export default function SubmodulePage() {
     try {
       const raw = String(submodule?.content || "");
       if (!raw.trim()) return raw;
+
+      const sanitizeMarkdownArtifacts = (input: string): string => {
+        try {
+          let s = String(input || "");
+
+          // Escape underline/bold markers that commonly appear as extraction artifacts
+          // (e.g. separators like "____" or "** **"), to prevent accidental emphasis.
+          // Only escape when the marker is surrounded by non-alphanumeric characters.
+          s = s.replace(
+            /(^|[^\p{L}\p{N}])(_{2,})(?=[^\p{L}\p{N}]|$)/gu,
+            (_m, p1: string, p2: string) => p1 + p2.split("").map(() => "\\_").join("")
+          );
+          s = s.replace(
+            /(^|[^\p{L}\p{N}])(\*{2,})(?=[^\p{L}\p{N}]|$)/gu,
+            (_m, p1: string, p2: string) => p1 + p2.split("").map(() => "\\*").join("")
+          );
+
+          return s;
+        } catch {
+          return String(input || "");
+        }
+      };
 
       const src = normalizeTheoryText(raw)
         .replace(/\r\n/g, "\n")
@@ -317,9 +372,11 @@ export default function SubmodulePage() {
         })
         .join("\n");
 
-      return normalized2
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
+      return sanitizeMarkdownArtifacts(
+        normalized2
+          .replace(/\n{3,}/g, "\n\n")
+          .trim()
+      );
     } catch {
       return String(submodule?.content || "");
     }
@@ -562,21 +619,6 @@ export default function SubmodulePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function closeInline() {
-    setInlineUrl(null);
-    setInlineMime(null);
-    setInlineName(null);
-    setInlineText(null);
-    setInlineAssetId(null);
-    setInlineKind("iframe");
-  }
-
-  function getExtFromName(name: string): string {
-    const raw = String(name || "").trim();
-    const m = /\.([a-z0-9]{1,8})$/i.exec(raw);
-    return m ? String(m[1] || "").toLowerCase() : "";
-  }
-
   const inlineTextBlocks = useMemo<InlineTextBlock[]>(() => {
     const raw = String(inlineText || "").replace(/\r\n/g, "\n").trim();
     if (!raw) return [];
@@ -800,12 +842,19 @@ export default function SubmodulePage() {
 
   async function presignViewUrl(assetId: string): Promise<string> {
     const sid = String(assetId || "").trim();
+
+    const now = Date.now();
+    const cached = presignCacheRef.current.get(sid);
+    if (cached && cached.url && cached.expiresAt > now) return cached.url;
+
     const r = await apiFetch<{ asset_id: string; download_url: string }>(
       `/assets/${encodeURIComponent(sid)}/presign-download?action=view`,
       { method: "GET" }
     );
     const u = String((r as any)?.download_url || "").trim();
     if (!u) throw new Error("missing presigned url");
+
+    presignCacheRef.current.set(sid, { url: u, expiresAt: now + 2 * 60 * 1000 });
     return u;
   }
 
@@ -818,8 +867,15 @@ export default function SubmodulePage() {
       setInlineName(nm || null);
       setInlineAssetId(String(a.asset_id || "").trim() || null);
 
+      try {
+        inlineTextAbortRef.current?.abort();
+      } catch {
+        // ignore
+      }
+      inlineTextAbortRef.current = null;
+
       const mime = String(a.mime_type || "").toLowerCase();
-      const ext = getExtFromName(nm);
+      const ext = getExtFromNameOrKey(nm, anyA?.object_key);
 
       const isOffice = ["doc", "docx", "ppt", "pptx", "xls", "xlsx"].includes(ext);
       const isTextLike = ["csv", "json"].includes(ext);
@@ -859,9 +915,35 @@ export default function SubmodulePage() {
       if (kind === "text") {
         try {
           const targetUrl = String(chosenUrl || "").trim();
+
+          const maxTextBytes = 2_000_000;
+          const sz = Number(anyA?.size_bytes ?? null);
+          if (Number.isFinite(sz) && sz > maxTextBytes) {
+            try {
+              if (typeof window !== "undefined") {
+                window.open(targetUrl || stream, "_blank", "noopener,noreferrer");
+                window.dispatchEvent(
+                  new CustomEvent("corelms:toast", {
+                    detail: {
+                      title: "ФАЙЛ СЛИШКОМ БОЛЬШОЙ ДЛЯ ПРЕДПРОСМОТРА",
+                      description: "Открываю в новой вкладке.",
+                    },
+                  })
+                );
+              }
+            } catch {
+              // ignore
+            }
+            closeInline();
+            return;
+          }
+
+          const ctrl = new AbortController();
+          inlineTextAbortRef.current = ctrl;
           const resp = await fetch(targetUrl || stream, {
             method: "GET",
             credentials: "include",
+            signal: ctrl.signal,
           });
           if (!resp.ok) {
             if (resp.status === 404) {
@@ -871,7 +953,9 @@ export default function SubmodulePage() {
           }
           const txt = await resp.text();
           setInlineText(txt || "");
-        } catch {
+        } catch (e) {
+          const anyErr = e as any;
+          if (anyErr?.name === "AbortError") return;
           setInlineText(null);
         }
       } else {
@@ -890,6 +974,8 @@ export default function SubmodulePage() {
         // ignore
       }
     } catch (e) {
+      const anyErr = e as any;
+      if (anyErr?.name === "AbortError") return;
       const msg = e instanceof Error ? e.message : String(e);
       if (typeof window !== "undefined") {
         window.dispatchEvent(
@@ -1014,13 +1100,10 @@ export default function SubmodulePage() {
     return items;
   }, [moduleSubmodules, submoduleId]);
 
-  function getAssetIcon(a: { original_filename: string; mime_type: string | null }) {
+  function getAssetIcon(a: { original_filename: string; mime_type: string | null; object_key?: string | null }) {
     const name = String(a?.original_filename || "").toLowerCase();
     const mime = String(a?.mime_type || "").toLowerCase();
-    const ext = (() => {
-      const m = /\.([a-z0-9]{1,8})$/i.exec(name);
-      return m ? String(m[1] || "").toLowerCase() : "";
-    })();
+    const ext = getExtFromNameOrKey(name, (a as any)?.object_key);
 
     if (mime.startsWith("video/") || ext === "mp4" || ext === "webm") return FileVideo;
     if (mime.includes("pdf") || ext === "pdf") return FileText;

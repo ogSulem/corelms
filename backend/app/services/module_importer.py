@@ -154,11 +154,11 @@ def _should_ignore_file(p: pathlib.Path) -> bool:
             s = str(seg or "")
             slow = s.lower()
 
-            # Ignore tmp-like directories *inside* ZIPs (e.g. TMP12345, tmp_01),
+            # Ignore tmp-like directories *inside* ZIPs (e.g. TMP12345, tmp_01, TMRXXXX),
             # but do NOT ignore system temp roots like '/tmp/tmpxxxx' or '.../Temp/tmpxxxx'
             # which are part of our extraction path.
-            if slow.startswith("tmp"):
-                if slow == "tmp":
+            if slow.startswith("tmp") or slow.startswith("tmr"):
+                if slow in {"tmp", "tmr"}:
                     continue
 
                 prev = str(parts[i - 1] or "").lower() if i > 0 else ""
@@ -172,9 +172,9 @@ def _should_ignore_file(p: pathlib.Path) -> bool:
 
                 if len(s) >= 6:
                     return True
-                if re.match(r"^tmp[_-]?\d{2,}$", slow):
+                if re.match(r"^(tmp|tmr)[_-]?\d{2,}$", slow):
                     return True
-                if re.match(r"^tmp[0-9a-f]{4,}$", slow):
+                if re.match(r"^(tmp|tmr)[0-9a-f]{4,}$", slow):
                     return True
     except Exception:
         pass
@@ -717,7 +717,7 @@ def import_module_from_dir(
                 return True
             if n.startswith("._"):
                 return True
-            if nlow.startswith("tmp"):
+            if nlow.startswith("tmp") or nlow.startswith("tmr"):
                 return True
             if nlow in {".ds_store", "thumbs.db", "desktop.ini"}:
                 return True

@@ -273,6 +273,7 @@ def submodule_assets(submodule_id: str, db: Session = Depends(get_db), _: User =
                 "object_key": asset.object_key,
                 "original_filename": asset.original_filename,
                 "mime_type": asset.mime_type,
+                "size_bytes": asset.size_bytes,
                 "order": int(order),
             }
             for order, asset in rows
@@ -304,6 +305,7 @@ def module_assets(module_id: str, db: Session = Depends(get_db), _: User = Depen
                 "object_key": a.object_key,
                 "original_filename": a.original_filename,
                 "mime_type": a.mime_type,
+                "size_bytes": a.size_bytes,
             }
             for a in assets
         ],

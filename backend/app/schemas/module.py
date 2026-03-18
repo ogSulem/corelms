@@ -28,6 +28,7 @@ class AssetPublic(BaseModel):
     object_key: str
     original_filename: str
     mime_type: str | None
+    size_bytes: int | None = None
     order: int
 
 
