@@ -77,6 +77,53 @@ def _set_job_detail(detail: str) -> None:
         return
 
 
+def _track_transcode_meta(*, event: str, rel_name: str, **extra: object) -> None:
+    try:
+        job = get_current_job()
+    except Exception:
+        job = None
+    if job is None:
+        return
+    try:
+        meta = dict(job.meta or {})
+        tc = dict(meta.get("transcode") or {})
+
+        def _inc(key: str) -> None:
+            try:
+                tc[key] = int(tc.get(key) or 0) + 1
+            except Exception:
+                tc[key] = 1
+
+        tc["last_event"] = str(event)
+        tc["last_rel_name"] = str(rel_name or "")
+
+        if event == "attempt":
+            _inc("attempted")
+        elif event == "ok":
+            _inc("ok")
+        elif event == "timeout":
+            _inc("timeout")
+            _inc("failed")
+        elif event == "failed":
+            _inc("failed")
+
+        for k, v in (extra or {}).items():
+            try:
+                if v is None:
+                    continue
+                s = str(v)
+                tc[f"last_{k}"] = s[:2000]
+            except Exception:
+                continue
+
+        meta["transcode"] = tc
+        job.meta = meta
+        job.save_meta()
+    except Exception:
+        log.debug("module_importer: failed to save transcode meta", exc_info=True)
+        return
+
+
 def _track_uploaded_key(object_key: str) -> None:
     try:
         job = get_current_job()
@@ -442,6 +489,8 @@ def _maybe_transcode_video(*, file_path: pathlib.Path, rel_name: str) -> tuple[p
         tmpdir = tempfile.mkdtemp(prefix="corelms_transcode_")
         out_path = pathlib.Path(tmpdir) / (file_path.stem + ".mp4")
 
+        _track_transcode_meta(event="attempt", rel_name=rel_name, src_ext=ext)
+
         # ffmpeg:
         # - H.264 video + AAC audio
         # - faststart for progressive playback
@@ -471,13 +520,32 @@ def _maybe_transcode_video(*, file_path: pathlib.Path, rel_name: str) -> tuple[p
         ]
 
         timeout_s = int(getattr(settings, "import_transcode_timeout_seconds", 0) or 0) or 60 * 45
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        started = time.time()
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired as e:
+            _track_transcode_meta(
+                event="timeout",
+                rel_name=rel_name,
+                timeout_s=str(timeout_s),
+                stderr=(str(getattr(e, "stderr", "") or "") or "")[:2000],
+            )
+            return file_path, rel_name, None
+
+        dur_ms = int(max(0.0, (time.time() - started)) * 1000.0)
         if proc.returncode != 0:
             log.warning(
                 "module_importer: ffmpeg transcode failed for %s rc=%s stderr=%s",
                 str(file_path),
                 proc.returncode,
                 (proc.stderr or "")[:2000],
+            )
+            _track_transcode_meta(
+                event="failed",
+                rel_name=rel_name,
+                rc=str(proc.returncode),
+                dur_ms=str(dur_ms),
+                stderr=(proc.stderr or "")[:2000],
             )
             try:
                 if out_path is not None:
@@ -492,6 +560,7 @@ def _maybe_transcode_video(*, file_path: pathlib.Path, rel_name: str) -> tuple[p
             return file_path, rel_name, None
 
         if out_path is None or (not out_path.exists()) or int(out_path.stat().st_size) <= 0:
+            _track_transcode_meta(event="failed", rel_name=rel_name, rc=str(proc.returncode), dur_ms=str(dur_ms), stderr="empty output")
             try:
                 if out_path is not None:
                     out_path.unlink(missing_ok=True)
@@ -507,9 +576,15 @@ def _maybe_transcode_video(*, file_path: pathlib.Path, rel_name: str) -> tuple[p
         new_rel = re.sub(r"\.[A-Za-z0-9]{1,8}$", ".mp4", str(rel_name or "").strip())
         if not new_rel:
             new_rel = (file_path.stem + ".mp4")
+
+        try:
+            _track_transcode_meta(event="ok", rel_name=rel_name, dur_ms=str(dur_ms), out_bytes=str(int(out_path.stat().st_size)))
+        except Exception:
+            _track_transcode_meta(event="ok", rel_name=rel_name, dur_ms=str(dur_ms))
         return out_path, new_rel, "video/mp4"
     except Exception:
         log.debug("module_importer: ffmpeg transcode failed", exc_info=True)
+        _track_transcode_meta(event="failed", rel_name=rel_name, stderr="exception")
         try:
             if out_path is not None:
                 out_path.unlink(missing_ok=True)
