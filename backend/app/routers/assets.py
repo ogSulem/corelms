@@ -222,6 +222,9 @@ def presign_download(
     if act == "view" and is_office_ext:
         expires_seconds = max(int(expires_seconds), 900)
 
+    if act == "view" and is_office_ext:
+        disposition = "inline"
+
     # Media playback can exceed short presign TTLs; allow a longer view window
     # to avoid mid-session expiration. This keeps load off the backend.
     try:

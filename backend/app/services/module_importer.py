@@ -67,6 +67,7 @@ def _set_job_detail(detail: str) -> None:
         job = None
     if job is None:
         return
+
     try:
         meta = dict(job.meta or {})
         meta["detail"] = str(detail)
@@ -75,6 +76,25 @@ def _set_job_detail(detail: str) -> None:
     except Exception:
         log.debug("module_importer: failed to save job meta detail", exc_info=True)
         return
+
+
+def _is_noise_dir_name(name: str) -> bool:
+    try:
+        n = str(name or "").strip()
+        nlow = n.lower()
+        if not n:
+            return True
+        if n in {"_module", "__MACOSX"}:
+            return True
+        if n.startswith("._"):
+            return True
+        if nlow.startswith("tmp") or nlow.startswith("tmr"):
+            return True
+        if nlow in {".ds_store", "thumbs.db", "desktop.ini"}:
+            return True
+    except Exception:
+        return False
+    return False
 
 
 def _track_transcode_meta(*, event: str, rel_name: str, **extra: object) -> None:
@@ -724,7 +744,7 @@ def import_module_from_dir(
         try:
             entries = [p for p in module_dir.iterdir() if not _should_ignore_file(p)]
             files = [p for p in entries if p.is_file()]
-            dirs = [p for p in entries if p.is_dir() and p.name not in {"_module", "__MACOSX"}]
+            dirs = [p for p in entries if p.is_dir() and (not _is_noise_dir_name(p.name))]
             
             # If we have files in current dir OR multiple directories, this is our root.
             if files or len(dirs) != 1:
@@ -783,22 +803,7 @@ def import_module_from_dir(
                 report["module_assets"] = int(report.get("module_assets") or 0) + 1
 
     def _is_noise_lesson_dir(d: pathlib.Path) -> bool:
-        try:
-            n = str(d.name or "").strip()
-            nlow = n.lower()
-            if not n:
-                return True
-            if n in {"_module", "__MACOSX"}:
-                return True
-            if n.startswith("._"):
-                return True
-            if nlow.startswith("tmp") or nlow.startswith("tmr"):
-                return True
-            if nlow in {".ds_store", "thumbs.db", "desktop.ini"}:
-                return True
-        except Exception:
-            return False
-        return False
+        return _is_noise_dir_name(d.name)
 
     lesson_candidates = [d for d in module_dir.iterdir() if d.is_dir() and (not _is_noise_lesson_dir(d))]
     

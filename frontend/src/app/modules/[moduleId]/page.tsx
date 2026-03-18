@@ -110,6 +110,7 @@ export default function ModulePage() {
   const [inlineName, setInlineName] = useState<string | null>(null);
   const [inlineText, setInlineText] = useState<string | null>(null);
   const [inlineAssetId, setInlineAssetId] = useState<string | null>(null);
+  const [inlineRawUrl, setInlineRawUrl] = useState<string | null>(null);
 
   const inlineTextAbortRef = useRef<AbortController | null>(null);
   const presignCacheRef = useRef<Map<string, { url: string; expiresAt: number }>>(new Map());
@@ -216,6 +217,7 @@ export default function ModulePage() {
     setInlineName(null);
     setInlineText(null);
     setInlineAssetId(null);
+    setInlineRawUrl(null);
     setInlineKind("iframe");
     setOutlinePath([]);
     setFolderModalOpen(false);
@@ -419,6 +421,7 @@ export default function ModulePage() {
     setInlineName(null);
     setInlineText(null);
     setInlineAssetId(null);
+    setInlineRawUrl(null);
   }
 
   function closeFileModal() {
@@ -514,12 +517,16 @@ export default function ModulePage() {
         : stream;
 
     if (kind === "office") {
+      setInlineRawUrl(targetUrl);
       try {
         const officeUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(targetUrl)}`;
         setInlineUrl(officeUrl);
       } catch {
         setInlineUrl(targetUrl);
       }
+    } else {
+      setInlineRawUrl(null);
+      if (targetUrl) setInlineUrl(targetUrl);
     }
 
     if (kind === "text") {
@@ -559,8 +566,6 @@ export default function ModulePage() {
     } else {
       setInlineText(null);
     }
-
-    if (kind !== "office") setInlineUrl(targetUrl);
 
     // Auto-scroll to preview for non-media files to keep focus on content
     if (!isMedia && typeof window !== "undefined") {
@@ -1586,6 +1591,24 @@ export default function ModulePage() {
           ) : inlineKind === "text" ? (
             <div className="p-6">
               <pre className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-800">{inlineText || ""}</pre>
+            </div>
+          ) : inlineKind === "office" ? (
+            <div>
+              <div className="flex items-center justify-end gap-2 p-4">
+                <Button
+                  variant="outline"
+                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                  onClick={() => window.open((inlineRawUrl || inlineUrl) as string, "_blank", "noopener,noreferrer")}
+                >
+                  ОТКРЫТЬ ФАЙЛ
+                </Button>
+              </div>
+              <iframe
+                src={inlineUrl}
+                className="w-full h-[640px]"
+                referrerPolicy="no-referrer"
+                title={String(inlineName || "OFFICE")}
+              />
             </div>
           ) : ["pdf"].includes(String(inlineKind || "")) ? (
             <div>
