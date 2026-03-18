@@ -23,7 +23,7 @@ from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.user import User, UserRole
 from app.schemas.asset import AssetCreateRequest, AssetCreateResponse, AssetGetUrlResponse
 from app.services.skills import record_activity_and_award_xp
-from app.services.storage import get_s3_client
+from app.services.storage import get_s3_client, presign_get, presign_put
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -139,8 +139,6 @@ def presign_download(
     user: User = Depends(get_current_user),
     _: object = rate_limit(key_prefix="asset_presign_download", limit=120, window_seconds=60),
 ):
-    raise HTTPException(status_code=410, detail="presigned downloads disabled")
-
     try:
         aid = uuid.UUID(asset_id)
     except ValueError as e:
@@ -158,9 +156,7 @@ def presign_download(
 
     # Enrich meta: this is the most reliable place to log file-level activity.
     # Note: we intentionally treat "presign download" as a learning event, because it reflects intent to open/download.
-    act = str(action or "").strip().lower()
-    if act not in {"view", "download"}:
-        act = "view" if user.role != UserRole.admin else "download"
+    act = "view"
 
     filename = str(asset.original_filename or "").strip() or "file"
     # Hardening: browsers/PDF viewers may mis-handle Content-Disposition filename* values
@@ -173,8 +169,7 @@ def presign_download(
     except Exception:
         log.debug("assets: filename normalization failed", exc_info=True)
     quoted = urllib.parse.quote(filename, safe="")
-    disp_kind = "inline" if act == "view" else "attachment"
-    disposition = f"{disp_kind}; filename*=UTF-8''{quoted}"
+    disposition = f"inline; filename*=UTF-8''{quoted}"
 
     meta = {
         "action": act,
@@ -204,14 +199,7 @@ def presign_download(
     )
     db.commit()
 
-    expires_seconds = 900
-    try:
-        if act == "view":
-            expires_seconds = 120 if user.role != UserRole.admin else 300
-        else:
-            expires_seconds = 900
-    except Exception:
-        expires_seconds = 300
+    expires_seconds = 300
 
     # Office Online viewer requires a stable public URL and often behaves better
     # with a correct Content-Type. Also give Office embeds a longer TTL.
@@ -233,6 +221,20 @@ def presign_download(
     is_office_ext = ext in office_ct_by_ext
     if act == "view" and is_office_ext:
         expires_seconds = max(int(expires_seconds), 900)
+
+    # Media playback can exceed short presign TTLs; allow a longer view window
+    # to avoid mid-session expiration. This keeps load off the backend.
+    try:
+        ct_l = str(asset.mime_type or "").strip().lower()
+        is_video = ct_l.startswith("video/") or ext in {"mp4", "webm", "mov", "mkv"}
+        is_audio = ct_l.startswith("audio/") or ext in {"mp3", "wav", "ogg", "m4a"}
+        is_pdf = (ct_l == "application/pdf") or (ext == "pdf")
+        if act == "view" and (is_video or is_audio):
+            expires_seconds = max(int(expires_seconds), 60 * 60)
+        elif act == "view" and is_pdf:
+            expires_seconds = max(int(expires_seconds), 15 * 60)
+    except Exception:
+        pass
 
     response_ct = str(asset.mime_type or "").strip() or None
     if is_office_ext:

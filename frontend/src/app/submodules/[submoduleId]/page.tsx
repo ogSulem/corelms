@@ -131,10 +131,11 @@ type ModuleAsset = {
 
 type AssetLike = {
   asset_id: string;
+  original_filename: string;
   mime_type: string | null;
 };
 
-type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text";
+type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text" | "office";
 
 type InlineTextBlock = { kind: "h" | "p" | "ul" | "pre"; text?: string; items?: string[] };
 
@@ -194,6 +195,7 @@ export default function SubmodulePage() {
   const canInlinePreview = useMemo(() => {
     const mime = String(inlineMime || "").toLowerCase();
     if (!inlineUrl) return false;
+    if (inlineKind === "office") return true;
     if (!mime) return false;
     if (mime.includes("pdf")) return true;
     if (mime.startsWith("image/")) return true;
@@ -796,6 +798,17 @@ export default function SubmodulePage() {
     return `/api/backend/assets/${encodeURIComponent(String(assetId || "").trim())}/stream`;
   }
 
+  async function presignViewUrl(assetId: string): Promise<string> {
+    const sid = String(assetId || "").trim();
+    const r = await apiFetch<{ asset_id: string; download_url: string }>(
+      `/assets/${encodeURIComponent(sid)}/presign-download?action=view`,
+      { method: "GET" }
+    );
+    const u = String((r as any)?.download_url || "").trim();
+    if (!u) throw new Error("missing presigned url");
+    return u;
+  }
+
   async function onOpenInline(a: AssetLike) {
     try {
       const stream = streamUrl(a.asset_id);
@@ -823,14 +836,24 @@ export default function SubmodulePage() {
               : mime.startsWith("text/") || ["txt", "md"].includes(ext) || isTextLike
                 ? "text"
               : isOffice
-                ? "iframe"
+                ? "office"
                 : "iframe";
       setInlineKind(kind);
 
-      const chosenUrl = stream;
+      const chosenUrl =
+        kind === "office" || kind === "video" || kind === "audio" || kind === "pdf" || kind === "image"
+          ? await presignViewUrl(a.asset_id)
+          : stream;
 
-      if (chosenUrl) {
-        setInlineUrl(chosenUrl);
+      if (kind === "office") {
+        try {
+          const officeUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(chosenUrl)}`;
+          setInlineUrl(officeUrl);
+        } catch {
+          setInlineUrl(chosenUrl);
+        }
+      } else {
+        if (chosenUrl) setInlineUrl(chosenUrl);
       }
 
       if (kind === "text") {

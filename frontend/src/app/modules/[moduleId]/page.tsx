@@ -54,7 +54,7 @@ type SubmoduleAsset = {
   order?: number;
 };
 
-type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text";
+type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text" | "office";
 
 type Submodule = {
   id: string;
@@ -384,7 +384,7 @@ export default function ModulePage() {
     try {
       const sid = String(assetId || "").trim();
       if (!sid) return;
-      const url = `/api/backend/assets/${encodeURIComponent(sid)}/stream`;
+      const url = await presignViewUrl(sid);
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -418,6 +418,17 @@ export default function ModulePage() {
     return `/api/backend/assets/${encodeURIComponent(String(assetId || "").trim())}/stream`;
   }
 
+  async function presignViewUrl(assetId: string): Promise<string> {
+    const sid = String(assetId || "").trim();
+    const r = await apiFetch<{ asset_id: string; download_url: string }>(
+      `/assets/${encodeURIComponent(sid)}/presign-download?action=view`,
+      { method: "GET" }
+    );
+    const u = String((r as any)?.download_url || "").trim();
+    if (!u) throw new Error("missing presigned url");
+    return u;
+  }
+
   async function onOpenInline(a: AssetLike) {
     try {
       const stream = streamUrl(a.asset_id);
@@ -447,11 +458,25 @@ export default function ModulePage() {
               ? "image"
               : mime.startsWith("text/") || ["txt", "md"].includes(ext) || isTextLike
                 ? "text"
-                : "iframe";
+                : isOffice
+                  ? "office"
+                  : "iframe";
 
     setInlineKind(kind);
 
-    const targetUrl = stream;
+    const targetUrl =
+      kind === "office" || kind === "video" || kind === "audio" || kind === "pdf" || kind === "image"
+        ? await presignViewUrl(a.asset_id)
+        : stream;
+
+    if (kind === "office") {
+      try {
+        const officeUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(targetUrl)}`;
+        setInlineUrl(officeUrl);
+      } catch {
+        setInlineUrl(targetUrl);
+      }
+    }
 
     if (kind === "text") {
       const res = await fetch(targetUrl, { credentials: "include" });
@@ -467,7 +492,7 @@ export default function ModulePage() {
       setInlineText(null);
     }
 
-    setInlineUrl(targetUrl);
+    if (kind !== "office") setInlineUrl(targetUrl);
 
     // Auto-scroll to preview for non-media files to keep focus on content
     if (!isMedia && typeof window !== "undefined") {
@@ -644,6 +669,7 @@ export default function ModulePage() {
   const canInlinePreview = useMemo(() => {
     const mime = String(inlineMime || "").toLowerCase();
     if (!inlineUrl) return false;
+    if (inlineKind === "office") return true;
     if (!mime) return false;
     if (mime.includes("pdf")) return true;
     if (mime.startsWith("image/")) return true;

@@ -22,11 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     ca-certificates \
     curl \
-    libreoffice-core \
-    libreoffice-writer \
-    libreoffice-calc \
-    libreoffice-impress \
-    fonts-dejavu-core \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin app

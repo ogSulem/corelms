@@ -5,13 +5,12 @@ import mimetypes
 import pathlib
 import re
 import random
+import subprocess
+import tempfile
 import time
 import uuid
 import zipfile
 import unicodedata
-import subprocess
-import tempfile
-import shutil
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -137,52 +136,6 @@ def _is_lesson_asset(path: pathlib.Path) -> bool:
 
 def _is_module_material(path: pathlib.Path) -> bool:
     return path.suffix.lower() in {".xlsx", ".xls", ".pptx", ".ppt", ".zip", ".rar", ".7z"}
-
-
-def _is_office_asset(path: pathlib.Path) -> bool:
-    return path.suffix.lower() in {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
-
-
-def _convert_office_to_pdf(*, input_path: pathlib.Path) -> pathlib.Path | None:
-    """Convert Office document to PDF using LibreOffice.
-
-    Runs only in import worker context; failures fall back to original file.
-    """
-    try:
-        if not input_path.exists() or (not input_path.is_file()):
-            return None
-    except Exception:
-        return None
-
-    try:
-        suffix = input_path.suffix.lower()
-        if suffix not in {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}:
-            return None
-    except Exception:
-        return None
-
-    out_dir = None
-    try:
-        out_dir = pathlib.Path(tempfile.mkdtemp(prefix="corelms_pdf_"))
-        cmd = [
-            "soffice",
-            "--headless",
-            "--nologo",
-            "--nofirststartwizard",
-            "--norestore",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(out_dir),
-            str(input_path),
-        ]
-        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
-        pdf_path = out_dir / (input_path.stem + ".pdf")
-        if pdf_path.exists() and pdf_path.is_file() and pdf_path.stat().st_size > 0:
-            return pdf_path
-        return None
-    except Exception:
-        return None
 
 
 def _should_ignore_file(p: pathlib.Path) -> bool:
@@ -467,37 +420,107 @@ def _upload_file(*, s3, object_key: str, file_path: pathlib.Path) -> tuple[str |
     return ct, size
 
 
-def _upload_asset_maybe_convert_office(
-    *,
-    s3,
-    object_key: str,
-    file_path: pathlib.Path,
-    original_rel_name: str,
-) -> tuple[str, int | None, str, str]:
-    """Upload asset; if it's an Office file, try converting to PDF and upload that instead.
+def _maybe_transcode_video(*, file_path: pathlib.Path, rel_name: str) -> tuple[pathlib.Path, str, str | None]:
+    # Convert non-browser-friendly containers to MP4 for stable playback.
+    # Note: we intentionally do NOT add new dependencies besides ffmpeg.
+    ext = str(file_path.suffix or "").lower().lstrip(".")
+    if not ext:
+        return file_path, rel_name, None
 
-    Returns (mime_type, size_bytes, stored_rel_name, stored_object_key).
-    """
-    if _is_office_asset(file_path):
-        pdf_path = _convert_office_to_pdf(input_path=file_path)
-        if pdf_path is not None:
-            try:
-                # Replace both filename and key with .pdf to keep downstream viewer simple.
-                stored_rel = re.sub(r"\.[A-Za-z0-9]{1,8}$", ".pdf", str(original_rel_name))
-                stored_key = re.sub(r"\.[A-Za-z0-9]{1,8}$", ".pdf", str(object_key))
-            except Exception:
-                stored_rel = str(file_path.stem) + ".pdf"
-                stored_key = str(object_key) + ".pdf"
+    # Common problematic / inconsistent browser support.
+    # (mp4/webm are typically fine and should not be re-encoded.)
+    transcode_exts = {"mov", "mkv", "avi", "wmv", "flv", "mpg", "mpeg", "mts", "m2ts"}
+    if ext not in transcode_exts:
+        return file_path, rel_name, None
 
-            ct, size = _upload_file(s3=s3, object_key=stored_key, file_path=pdf_path)
+    if not file_path.exists():
+        return file_path, rel_name, None
+
+    tmpdir = ""
+    out_path: pathlib.Path | None = None
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="corelms_transcode_")
+        out_path = pathlib.Path(tmpdir) / (file_path.stem + ".mp4")
+
+        # ffmpeg:
+        # - H.264 video + AAC audio
+        # - faststart for progressive playback
+        # - map audio optionally ("a?") to handle videos without audio
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(file_path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            str(out_path),
+        ]
+
+        timeout_s = int(getattr(settings, "import_transcode_timeout_seconds", 0) or 0) or 60 * 45
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        if proc.returncode != 0:
+            log.warning(
+                "module_importer: ffmpeg transcode failed for %s rc=%s stderr=%s",
+                str(file_path),
+                proc.returncode,
+                (proc.stderr or "")[:2000],
+            )
             try:
-                shutil.rmtree(str(pdf_path.parent), ignore_errors=True)
+                if out_path is not None:
+                    out_path.unlink(missing_ok=True)
             except Exception:
                 pass
-            return ("application/pdf", size, stored_rel, stored_key)
+            try:
+                if tmpdir:
+                    pathlib.Path(tmpdir).rmdir()
+            except Exception:
+                pass
+            return file_path, rel_name, None
 
-    ct, size = _upload_file(s3=s3, object_key=object_key, file_path=file_path)
-    return (str(ct or "application/octet-stream"), size, str(original_rel_name), str(object_key))
+        if out_path is None or (not out_path.exists()) or int(out_path.stat().st_size) <= 0:
+            try:
+                if out_path is not None:
+                    out_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            try:
+                if tmpdir:
+                    pathlib.Path(tmpdir).rmdir()
+            except Exception:
+                pass
+            return file_path, rel_name, None
+
+        new_rel = re.sub(r"\.[A-Za-z0-9]{1,8}$", ".mp4", str(rel_name or "").strip())
+        if not new_rel:
+            new_rel = (file_path.stem + ".mp4")
+        return out_path, new_rel, "video/mp4"
+    except Exception:
+        log.debug("module_importer: ffmpeg transcode failed", exc_info=True)
+        try:
+            if out_path is not None:
+                out_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        try:
+            if tmpdir:
+                pathlib.Path(tmpdir).rmdir()
+        except Exception:
+            pass
+        return file_path, rel_name, None
 
 
 def _upload_markdown_text(*, s3, object_key: str, text_value: str) -> None:
@@ -649,20 +672,27 @@ def import_module_from_dir(
                 rel_name = fp.name
 
             _set_job_detail(f"material: {rel_name}")
-            object_key = f"{pfx}_module/{rel_name}"
-            mime, size, stored_rel_name, stored_object_key = _upload_asset_maybe_convert_office(
-                s3=s3,
-                object_key=object_key,
-                file_path=fp,
-                original_rel_name=rel_name,
-            )
+            eff_path, eff_rel, forced_ct = _maybe_transcode_video(file_path=fp, rel_name=rel_name)
+            object_key = f"{pfx}_module/{eff_rel}"
+            mime, size = _upload_file(s3=s3, object_key=object_key, file_path=eff_path)
+            if forced_ct:
+                mime = forced_ct
+            try:
+                if eff_path != fp:
+                    eff_path.unlink(missing_ok=True)
+                    try:
+                        eff_path.parent.rmdir()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
-            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == stored_object_key))
+            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == object_key))
             if asset is None:
                 asset = ContentAsset(
                     bucket=settings.s3_bucket,
-                    object_key=stored_object_key,
-                    original_filename=stored_rel_name,
+                    object_key=object_key,
+                    original_filename=eff_rel,
                     mime_type=mime,
                     size_bytes=size,
                     checksum_sha256=None,
@@ -671,7 +701,7 @@ def import_module_from_dir(
                 db.add(asset)
                 db.flush()
 
-            if (str(mime or "").lower() == "application/pdf") or _is_previewable_lesson_asset(fp):
+            if _is_previewable_lesson_asset(fp):
                 module_material_viewable.append(fp)
 
             if report is not None:
@@ -1012,20 +1042,27 @@ def import_module_from_dir(
                 rel_name = fp.name
 
             _set_job_detail(f"asset: {rel_name}")
-            object_key = f"{pfx}{order:02d}/{rel_name}"
-            mime, size, stored_rel_name, stored_object_key = _upload_asset_maybe_convert_office(
-                s3=s3,
-                object_key=object_key,
-                file_path=fp,
-                original_rel_name=rel_name,
-            )
+            eff_path, eff_rel, forced_ct = _maybe_transcode_video(file_path=fp, rel_name=rel_name)
+            object_key = f"{pfx}{order:02d}/{eff_rel}"
+            mime, size = _upload_file(s3=s3, object_key=object_key, file_path=eff_path)
+            if forced_ct:
+                mime = forced_ct
+            try:
+                if eff_path != fp:
+                    eff_path.unlink(missing_ok=True)
+                    try:
+                        eff_path.parent.rmdir()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
-            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == stored_object_key))
+            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == object_key))
             if asset is None:
                 asset = ContentAsset(
                     bucket=settings.s3_bucket,
-                    object_key=stored_object_key,
-                    original_filename=stored_rel_name,
+                    object_key=object_key,
+                    original_filename=eff_rel,
                     mime_type=mime,
                     size_bytes=size,
                     checksum_sha256=None,
