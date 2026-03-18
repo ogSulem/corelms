@@ -134,7 +134,7 @@ type AssetLike = {
   mime_type: string | null;
 };
 
-type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text" | "office";
+type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text";
 
 type InlineTextBlock = { kind: "h" | "p" | "ul" | "pre"; text?: string; items?: string[] };
 
@@ -194,7 +194,6 @@ export default function SubmodulePage() {
   const canInlinePreview = useMemo(() => {
     const mime = String(inlineMime || "").toLowerCase();
     if (!inlineUrl) return false;
-    if (inlineKind === "office") return true;
     if (!mime) return false;
     if (mime.includes("pdf")) return true;
     if (mime.startsWith("image/")) return true;
@@ -797,20 +796,6 @@ export default function SubmodulePage() {
     return `/api/backend/assets/${encodeURIComponent(String(assetId || "").trim())}/stream`;
   }
 
-  async function presignViewUrl(assetId: string): Promise<string> {
-    const data = await apiFetch<{ asset_id: string; download_url: string }>(
-      `/assets/${encodeURIComponent(String(assetId || "").trim())}/presign-download?action=view`
-    );
-    return String((data as any)?.download_url || "").trim();
-  }
-
-  async function presignDownloadUrl(assetId: string): Promise<string> {
-    const data = await apiFetch<{ asset_id: string; download_url: string }>(
-      `/assets/${encodeURIComponent(String(assetId || "").trim())}/presign-download?action=download`
-    );
-    return String((data as any)?.download_url || "").trim();
-  }
-
   async function onOpenInline(a: AssetLike) {
     try {
       const stream = streamUrl(a.asset_id);
@@ -835,51 +820,14 @@ export default function SubmodulePage() {
           ? "video"
           : mime.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(ext)
             ? "image"
-            : mime.startsWith("text/") || ["txt", "md"].includes(ext) || isTextLike
-              ? "text"
+              : mime.startsWith("text/") || ["txt", "md"].includes(ext) || isTextLike
+                ? "text"
               : isOffice
-                ? "office"
+                ? "iframe"
                 : "iframe";
       setInlineKind(kind);
 
-      let chosenUrl: string | null = null;
-
-      if (kind === "office") {
-        const viewUrl = await presignViewUrl(a.asset_id);
-        const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(viewUrl)}`;
-        chosenUrl = officeViewerUrl;
-      } else {
-        // Best practice: use presigned S3 URL (direct browser fetch) to avoid proxying bytes through backend.
-        // Fallback to backend streaming if presign fails.
-        let viewUrl = "";
-        try {
-          viewUrl = await presignViewUrl(a.asset_id);
-        } catch {
-          viewUrl = "";
-        }
-
-        const targetUrl = viewUrl || stream;
-
-        // Hardening: detect missing object before showing broken iframe/video/etc.
-        const pre = await fetch(targetUrl, {
-          method: "GET",
-          credentials: viewUrl ? "omit" : "include",
-          headers: { Range: "bytes=0-0" },
-        });
-        try {
-          pre.body?.cancel();
-        } catch {
-          // ignore
-        }
-        if (!pre.ok) {
-          if (pre.status === 404) {
-            throw new Error("Файл удалён из хранилища (404). Переимпортируйте модуль или загрузите файл заново.");
-          }
-          throw new Error(`Не удалось получить файл (код ${pre.status}).`);
-        }
-
-        chosenUrl = targetUrl;
-      }
+      const chosenUrl = stream;
 
       if (chosenUrl) {
         setInlineUrl(chosenUrl);
@@ -888,10 +836,9 @@ export default function SubmodulePage() {
       if (kind === "text") {
         try {
           const targetUrl = String(chosenUrl || "").trim();
-          const isPresigned = /^https?:\/\//i.test(targetUrl);
           const resp = await fetch(targetUrl || stream, {
             method: "GET",
-            credentials: isPresigned ? "omit" : "include",
+            credentials: "include",
           });
           if (!resp.ok) {
             if (resp.status === 404) {
@@ -1507,19 +1454,8 @@ export default function SubmodulePage() {
                   <div ref={inlineRef} className="mb-10 overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-sm">
                     {canInlinePreview ? (
                       <div className="overflow-hidden rounded-2xl bg-white">
-                        {["pdf", "office"].includes(String(inlineKind || "")) ? (
+                        {["pdf"].includes(String(inlineKind || "")) ? (
                           <div className="flex items-center justify-end gap-2 border-b border-zinc-200 bg-white p-4">
-                            <Button
-                              variant="outline"
-                              className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                              onClick={async () => {
-                                const url = await presignDownloadUrl(String(inlineAssetId || "")).catch(() => "");
-                                if (url) window.open(url, "_blank", "noopener,noreferrer");
-                              }}
-                              disabled={!String(inlineAssetId || "").trim()}
-                            >
-                              СКАЧАТЬ
-                            </Button>
                             <Button
                               variant="outline"
                               className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
@@ -1544,13 +1480,6 @@ export default function SubmodulePage() {
                           />
                         ) : inlineKind === "image" ? (
                           <img src={inlineUrl} alt="" className="w-full h-auto" />
-                        ) : inlineKind === "office" ? (
-                          <iframe
-                            src={inlineUrl}
-                            className="w-full h-[720px]"
-                            sandbox="allow-same-origin allow-scripts allow-forms"
-                            title={String(inlineName || "Office")}
-                          />
                         ) : inlineKind === "text" ? (
                           <div className="p-4">
                             {!inlineTextBlocks.length ? (

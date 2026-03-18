@@ -115,6 +115,8 @@ def stream_quickstart(
         headers = {
             "Content-Disposition": disposition,
             "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
         }
         if obj.get("ContentRange"):
             headers["Content-Range"] = str(obj.get("ContentRange"))

@@ -9,6 +9,9 @@ import time
 import uuid
 import zipfile
 import unicodedata
+import subprocess
+import tempfile
+import shutil
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -134,6 +137,52 @@ def _is_lesson_asset(path: pathlib.Path) -> bool:
 
 def _is_module_material(path: pathlib.Path) -> bool:
     return path.suffix.lower() in {".xlsx", ".xls", ".pptx", ".ppt", ".zip", ".rar", ".7z"}
+
+
+def _is_office_asset(path: pathlib.Path) -> bool:
+    return path.suffix.lower() in {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+
+
+def _convert_office_to_pdf(*, input_path: pathlib.Path) -> pathlib.Path | None:
+    """Convert Office document to PDF using LibreOffice.
+
+    Runs only in import worker context; failures fall back to original file.
+    """
+    try:
+        if not input_path.exists() or (not input_path.is_file()):
+            return None
+    except Exception:
+        return None
+
+    try:
+        suffix = input_path.suffix.lower()
+        if suffix not in {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}:
+            return None
+    except Exception:
+        return None
+
+    out_dir = None
+    try:
+        out_dir = pathlib.Path(tempfile.mkdtemp(prefix="corelms_pdf_"))
+        cmd = [
+            "soffice",
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            "--norestore",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(out_dir),
+            str(input_path),
+        ]
+        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180)
+        pdf_path = out_dir / (input_path.stem + ".pdf")
+        if pdf_path.exists() and pdf_path.is_file() and pdf_path.stat().st_size > 0:
+            return pdf_path
+        return None
+    except Exception:
+        return None
 
 
 def _should_ignore_file(p: pathlib.Path) -> bool:
@@ -418,6 +467,39 @@ def _upload_file(*, s3, object_key: str, file_path: pathlib.Path) -> tuple[str |
     return ct, size
 
 
+def _upload_asset_maybe_convert_office(
+    *,
+    s3,
+    object_key: str,
+    file_path: pathlib.Path,
+    original_rel_name: str,
+) -> tuple[str, int | None, str, str]:
+    """Upload asset; if it's an Office file, try converting to PDF and upload that instead.
+
+    Returns (mime_type, size_bytes, stored_rel_name, stored_object_key).
+    """
+    if _is_office_asset(file_path):
+        pdf_path = _convert_office_to_pdf(input_path=file_path)
+        if pdf_path is not None:
+            try:
+                # Replace both filename and key with .pdf to keep downstream viewer simple.
+                stored_rel = re.sub(r"\.[A-Za-z0-9]{1,8}$", ".pdf", str(original_rel_name))
+                stored_key = re.sub(r"\.[A-Za-z0-9]{1,8}$", ".pdf", str(object_key))
+            except Exception:
+                stored_rel = str(file_path.stem) + ".pdf"
+                stored_key = str(object_key) + ".pdf"
+
+            ct, size = _upload_file(s3=s3, object_key=stored_key, file_path=pdf_path)
+            try:
+                shutil.rmtree(str(pdf_path.parent), ignore_errors=True)
+            except Exception:
+                pass
+            return ("application/pdf", size, stored_rel, stored_key)
+
+    ct, size = _upload_file(s3=s3, object_key=object_key, file_path=file_path)
+    return (str(ct or "application/octet-stream"), size, str(original_rel_name), str(object_key))
+
+
 def _upload_markdown_text(*, s3, object_key: str, text_value: str) -> None:
     data = (text_value or "").encode("utf-8")
     _s3_put_object_with_retry(s3=s3, object_key=object_key, body=data, content_type="text/markdown; charset=utf-8")
@@ -568,14 +650,19 @@ def import_module_from_dir(
 
             _set_job_detail(f"material: {rel_name}")
             object_key = f"{pfx}_module/{rel_name}"
-            mime, size = _upload_file(s3=s3, object_key=object_key, file_path=fp)
+            mime, size, stored_rel_name, stored_object_key = _upload_asset_maybe_convert_office(
+                s3=s3,
+                object_key=object_key,
+                file_path=fp,
+                original_rel_name=rel_name,
+            )
 
-            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == object_key))
+            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == stored_object_key))
             if asset is None:
                 asset = ContentAsset(
                     bucket=settings.s3_bucket,
-                    object_key=object_key,
-                    original_filename=rel_name,
+                    object_key=stored_object_key,
+                    original_filename=stored_rel_name,
                     mime_type=mime,
                     size_bytes=size,
                     checksum_sha256=None,
@@ -584,7 +671,7 @@ def import_module_from_dir(
                 db.add(asset)
                 db.flush()
 
-            if _is_previewable_lesson_asset(fp):
+            if (str(mime or "").lower() == "application/pdf") or _is_previewable_lesson_asset(fp):
                 module_material_viewable.append(fp)
 
             if report is not None:
@@ -926,14 +1013,19 @@ def import_module_from_dir(
 
             _set_job_detail(f"asset: {rel_name}")
             object_key = f"{pfx}{order:02d}/{rel_name}"
-            mime, size = _upload_file(s3=s3, object_key=object_key, file_path=fp)
+            mime, size, stored_rel_name, stored_object_key = _upload_asset_maybe_convert_office(
+                s3=s3,
+                object_key=object_key,
+                file_path=fp,
+                original_rel_name=rel_name,
+            )
 
-            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == object_key))
+            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == stored_object_key))
             if asset is None:
                 asset = ContentAsset(
                     bucket=settings.s3_bucket,
-                    object_key=object_key,
-                    original_filename=rel_name,
+                    object_key=stored_object_key,
+                    original_filename=stored_rel_name,
                     mime_type=mime,
                     size_bytes=size,
                     checksum_sha256=None,

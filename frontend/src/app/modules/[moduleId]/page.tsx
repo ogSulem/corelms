@@ -54,7 +54,7 @@ type SubmoduleAsset = {
   order?: number;
 };
 
-type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text" | "office";
+type InlineKind = "iframe" | "image" | "video" | "audio" | "pdf" | "text";
 
 type Submodule = {
   id: string;
@@ -418,20 +418,6 @@ export default function ModulePage() {
     return `/api/backend/assets/${encodeURIComponent(String(assetId || "").trim())}/stream`;
   }
 
-  async function presignViewUrl(assetId: string): Promise<string> {
-    const data = await apiFetch<{ asset_id: string; download_url: string }>(
-      `/assets/${encodeURIComponent(String(assetId || "").trim())}/presign-download?action=view`
-    );
-    return String((data as any)?.download_url || "").trim();
-  }
-
-  async function presignDownloadUrl(assetId: string): Promise<string> {
-    const data = await apiFetch<{ asset_id: string; download_url: string }>(
-      `/assets/${encodeURIComponent(String(assetId || "").trim())}/presign-download?action=download`
-    );
-    return String((data as any)?.download_url || "").trim();
-  }
-
   async function onOpenInline(a: AssetLike) {
     try {
       const stream = streamUrl(a.asset_id);
@@ -461,55 +447,14 @@ export default function ModulePage() {
               ? "image"
               : mime.startsWith("text/") || ["txt", "md"].includes(ext) || isTextLike
                 ? "text"
-                : isOffice
-                  ? "office"
-                  : "iframe";
+                : "iframe";
 
     setInlineKind(kind);
 
-    if (kind === "office") {
-      const viewUrl = await presignViewUrl(a.asset_id);
-      const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(viewUrl)}`;
-      setInlineUrl(officeViewerUrl);
-      setInlineText(null);
-      return;
-    }
-
-    // Best practice: use presigned S3 URL (direct browser fetch) to avoid proxying bytes through backend.
-    // Fallback to backend streaming if presign fails.
-    let viewUrl = "";
-    try {
-      viewUrl = await presignViewUrl(a.asset_id);
-    } catch {
-      viewUrl = "";
-    }
-
-    const targetUrl = viewUrl || stream;
-
-    // Hardening: detect deleted objects in storage before showing broken iframe/video/etc.
-    try {
-      const pre = await fetch(targetUrl, {
-        method: "GET",
-        credentials: viewUrl ? "omit" : "include",
-        headers: { Range: "bytes=0-0" },
-      });
-      try {
-        pre.body?.cancel();
-      } catch {
-        // ignore
-      }
-      if (!pre.ok) {
-        if (pre.status === 404) {
-          throw new Error("Файл удалён из хранилища (404). Переимпортируйте модуль или загрузите файл заново.");
-        }
-        throw new Error(`Не удалось получить файл (код ${pre.status}).`);
-      }
-    } catch (e) {
-      throw e;
-    }
+    const targetUrl = stream;
 
     if (kind === "text") {
-      const res = await fetch(targetUrl, { credentials: viewUrl ? "omit" : "include" });
+      const res = await fetch(targetUrl, { credentials: "include" });
       if (!res.ok) {
         if (res.status === 404) {
           throw new Error("Файл удалён из хранилища (404). Переимпортируйте модуль или загрузите файл заново.");
@@ -699,7 +644,6 @@ export default function ModulePage() {
   const canInlinePreview = useMemo(() => {
     const mime = String(inlineMime || "").toLowerCase();
     if (!inlineUrl) return false;
-    if (inlineKind === "office") return true;
     if (!mime) return false;
     if (mime.includes("pdf")) return true;
     if (mime.startsWith("image/")) return true;
@@ -1089,24 +1033,6 @@ export default function ModulePage() {
                               </div>
                             ) : inlineKind === "image" ? (
                               <img src={inlineUrl} alt="" className="w-full h-auto" />
-                            ) : inlineKind === "office" ? (
-                              <div>
-                                <div className="flex items-center justify-end gap-2 px-4 pt-4">
-                                  <Button
-                                    variant="outline"
-                                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                                    onClick={() => window.open(inlineUrl, "_blank", "noopener,noreferrer")}
-                                  >
-                                    ОТКРЫТЬ В НОВОЙ ВКЛАДКЕ
-                                  </Button>
-                                </div>
-                                <iframe
-                                  src={inlineUrl}
-                                  className="w-full h-[520px]"
-                                  referrerPolicy="no-referrer"
-                                  title={String(inlineName || "Office")}
-                                />
-                              </div>
                             ) : inlineKind === "text" ? (
                               <div className="p-4">
                                 <pre className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-800">{inlineText || ""}</pre>
@@ -1554,7 +1480,7 @@ export default function ModulePage() {
         open={fileModalOpen}
         onClose={closeFileModal}
         title={inlineName || "Просмотр файла"}
-        className={["office", "pdf"].includes(String(inlineKind || "")) ? "max-w-6xl" : "max-w-4xl"}
+        className={["pdf"].includes(String(inlineKind || "")) ? "max-w-6xl" : "max-w-4xl"}
       >
         <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
           {!inlineUrl ? (
@@ -1573,19 +1499,9 @@ export default function ModulePage() {
             <div className="p-6">
               <pre className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-800">{inlineText || ""}</pre>
             </div>
-          ) : ["pdf", "office"].includes(String(inlineKind || "")) ? (
+          ) : ["pdf"].includes(String(inlineKind || "")) ? (
             <div>
               <div className="flex items-center justify-end gap-2 p-4">
-                <Button
-                  variant="outline"
-                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  onClick={async () => {
-                    const url = await presignDownloadUrl(String(inlineAssetId || "")).catch(() => "");
-                    if (url) window.open(url, "_blank", "noopener,noreferrer");
-                  }}
-                >
-                  СКАЧАТЬ
-                </Button>
                 <Button
                   variant="outline"
                   className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
@@ -1596,9 +1512,9 @@ export default function ModulePage() {
               </div>
               <iframe
                 src={inlineUrl}
-                className={inlineKind === "office" ? "w-full h-[520px]" : "w-full h-[520px]"}
+                className="w-full h-[520px]"
                 referrerPolicy="no-referrer"
-                title={String(inlineName || (inlineKind === "office" ? "Office" : "PDF"))}
+                title={String(inlineName || "PDF")}
               />
             </div>
           ) : (

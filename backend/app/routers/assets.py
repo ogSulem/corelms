@@ -23,7 +23,7 @@ from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.user import User, UserRole
 from app.schemas.asset import AssetCreateRequest, AssetCreateResponse, AssetGetUrlResponse
 from app.services.skills import record_activity_and_award_xp
-from app.services.storage import get_s3_client, presign_get, presign_put
+from app.services.storage import get_s3_client
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -139,6 +139,8 @@ def presign_download(
     user: User = Depends(get_current_user),
     _: object = rate_limit(key_prefix="asset_presign_download", limit=120, window_seconds=60),
 ):
+    raise HTTPException(status_code=410, detail="presigned downloads disabled")
+
     try:
         aid = uuid.UUID(asset_id)
     except ValueError as e:
@@ -333,6 +335,22 @@ def stream_asset(
     quoted = urllib.parse.quote(filename, safe="")
     disposition = f"inline; filename*=UTF-8''{quoted}"
 
+    ct_l = content_type.lower()
+    allowed = False
+    try:
+        if ct_l == "application/pdf":
+            allowed = True
+        elif ct_l.startswith("image/"):
+            allowed = True
+        elif ct_l.startswith("video/"):
+            allowed = True
+        elif ct_l.startswith("text/"):
+            allowed = True
+    except Exception:
+        allowed = False
+    if not allowed:
+        raise HTTPException(status_code=415, detail="unsupported media type")
+
     # Parse Range: bytes=start-end
     range_value = str(range_header or "").strip()
     range_value_l = range_value.lower()
@@ -427,6 +445,8 @@ def stream_asset(
         headers = {
             "Content-Disposition": disposition,
             "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
         }
         if obj.get("ContentRange"):
             headers["Content-Range"] = str(obj.get("ContentRange"))
