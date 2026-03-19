@@ -799,6 +799,41 @@ def import_module_from_dir(
         except Exception:
             break
 
+    # Diagnostics: store directory scan in the current import job meta.
+    try:
+        job = get_current_job()
+    except Exception:
+        job = None
+    if job is not None:
+        try:
+            dir_names: list[str] = []
+            noise_names: list[str] = []
+            ok_names: list[str] = []
+            try:
+                for p in module_dir.iterdir():
+                    if not p.is_dir():
+                        continue
+                    nm = str(p.name or "")
+                    dir_names.append(nm)
+                    if _is_noise_dir_name(nm):
+                        noise_names.append(nm)
+                    else:
+                        ok_names.append(nm)
+            except Exception:
+                pass
+
+            jm = dict(job.meta or {})
+            dbg = dict(jm.get("import_debug") or {})
+            dbg["module_dir"] = str(module_dir)
+            dbg["dirs"] = dir_names[:200]
+            dbg["dirs_noise"] = noise_names[:200]
+            dbg["dirs_ok"] = ok_names[:200]
+            jm["import_debug"] = dbg
+            job.meta = jm
+            job.save_meta()
+        except Exception:
+            pass
+
     module_material_dir = module_dir / "_module"
     module_material_viewable: list[pathlib.Path] = []
     if module_material_dir.exists() and module_material_dir.is_dir():
@@ -849,6 +884,18 @@ def import_module_from_dir(
         return _is_noise_dir_name(d.name)
 
     lesson_candidates = [d for d in module_dir.iterdir() if d.is_dir() and (not _is_noise_lesson_dir(d))]
+
+    # Diagnostics: store selected lesson candidates.
+    if job is not None:
+        try:
+            jm = dict(job.meta or {})
+            dbg = dict(jm.get("import_debug") or {})
+            dbg["lesson_candidates"] = [str(getattr(d, "name", "")) for d in lesson_candidates][:200]
+            jm["import_debug"] = dbg
+            job.meta = jm
+            job.save_meta()
+        except Exception:
+            pass
     
     # If no lesson candidates found in the current module_dir, but there are subfolders,
     # it might be a nested structure where lessons are one level deeper.
