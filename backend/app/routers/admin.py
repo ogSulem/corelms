@@ -2868,6 +2868,7 @@ class AdminEnqueueImportZipRequest(BaseModel):
     object_key: str
     title: str | None = None
     source_filename: str | None = None
+    force_reimport: bool | None = None
 
 
 @router.post("/modules/enqueue-import-zip")
@@ -3055,6 +3056,7 @@ def enqueue_import_zip(
             source_filename=(str(body.source_filename or "").strip() or None),
             actor_user_id=str(current.id),
             module_id=str(stub_module.id) if stub_module is not None else None,
+            force_reimport=bool(body.force_reimport),
             job_timeout=60 * 60 * 3,
             result_ttl=60 * 60 * 24 * 7,
             failure_ttl=60 * 60 * 24 * 7,

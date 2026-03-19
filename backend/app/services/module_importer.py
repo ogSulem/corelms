@@ -12,7 +12,7 @@ import uuid
 import zipfile
 import unicodedata
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from rq import get_current_job
 
@@ -677,6 +677,49 @@ def import_module_from_dir(
         m = db.scalar(select(Module).where(Module.id == mid))
         if m is None:
             raise ValueError(f"module_id_override not found: {module_id_override}")
+
+        # Force rebuild behavior: when importing into an existing (stub) module, wipe previous
+        # submodule structure so the resulting tree matches the ZIP.
+        try:
+            old_sub_ids = [
+                r[0]
+                for r in (db.execute(select(Submodule.id).where(Submodule.module_id == mid)).all() or [])
+                if r and r[0] is not None
+            ]
+        except Exception:
+            old_sub_ids = []
+
+        old_quiz_ids: list[uuid.UUID] = []
+        if old_sub_ids:
+            try:
+                old_quiz_ids = [
+                    r[0]
+                    for r in (db.execute(select(Submodule.quiz_id).where(Submodule.id.in_(old_sub_ids))).all() or [])
+                    if r and r[0] is not None
+                ]
+            except Exception:
+                old_quiz_ids = []
+
+        if old_sub_ids:
+            try:
+                db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.submodule_id.in_(old_sub_ids)))
+            except Exception:
+                pass
+            try:
+                db.execute(delete(Submodule).where(Submodule.id.in_(old_sub_ids)))
+            except Exception:
+                pass
+
+        if old_quiz_ids:
+            try:
+                db.execute(delete(Question).where(Question.quiz_id.in_(old_quiz_ids)))
+            except Exception:
+                pass
+            try:
+                db.execute(delete(Quiz).where(Quiz.id.in_(old_quiz_ids)))
+            except Exception:
+                pass
+
         # Update stub metadata to match inferred title.
         m.title = module_title
         m.description = f"Материалы модуля «{module_title}»."

@@ -391,6 +391,7 @@ def import_module_zip_job(
     actor_user_id: str | None = None,
     module_id: str | None = None,
     enqueue_regen: bool = True,
+    force_reimport: bool = False,
 ) -> dict:
     log.info("import_module_zip_job: start s3_object_key=%s source_filename=%s title=%s", s3_object_key, source_filename, title)
     _set_job_stage(stage="start", detail=s3_object_key)
@@ -623,7 +624,7 @@ def import_module_zip_job(
         except Exception:
             sha256 = ""
 
-        if sha256:
+        if sha256 and (not force_reimport):
             # Hard idempotency: if the same ZIP content was already imported, reuse it.
             try:
                 r = get_redis()

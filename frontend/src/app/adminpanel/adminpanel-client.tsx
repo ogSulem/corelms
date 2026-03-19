@@ -1329,9 +1329,14 @@ export default function AdminPanelClient() {
     try {
       const inferredName = String(sourceFilename || "").trim() || object_key.split("/").slice(-1)[0] || "module.zip";
       const titleStem = inferredName.replace(/\.zip$/i, "").trim() || null;
+      const forceReimport = window.confirm(
+        "Форс-переимпортировать этот ZIP?\n\n" +
+          "Это пересоберёт структуру модуля заново (удалит старые подмодули/уроки в целевом модуле).\n" +
+          "Нажми OK, если нужно именно пересобрать заново."
+      );
       const enq = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/enqueue-import-zip`, {
         method: "POST",
-        body: JSON.stringify({ object_key, title: titleStem, source_filename: inferredName }),
+        body: JSON.stringify({ object_key, title: titleStem, source_filename: inferredName, force_reimport: forceReimport }),
       });
       const jid = String((enq as any)?.job_id || "").trim();
       if (jid) {
