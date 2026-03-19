@@ -15,6 +15,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
+  const [globalUploadBusy, setGlobalUploadBusy] = React.useState(false);
+
   const [quickStartOpen, setQuickStartOpen] = React.useState(false);
 
   const keepAliveInFlightRef = React.useRef(false);
@@ -147,6 +149,20 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
     return () => window.removeEventListener("corelms:open-quickstart", onOpen as EventListener);
   }, []);
 
+  React.useEffect(() => {
+    const read = () => {
+      try {
+        setGlobalUploadBusy(Boolean((window as any).__corelms_upload_busy));
+      } catch {
+        setGlobalUploadBusy(false);
+      }
+    };
+    const onBusy = () => read();
+    read();
+    window.addEventListener("corelms:upload-busy", onBusy as EventListener);
+    return () => window.removeEventListener("corelms:upload-busy", onBusy as EventListener);
+  }, []);
+
   const closeQuickStart = () => {
     try {
       localStorage.setItem("corelms:quickstart_dismissed_v1", String(Date.now()));
@@ -164,6 +180,22 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   return (
     <div className="min-h-screen flex flex-col">
+      {globalUploadBusy ? (
+        <div className="fixed inset-0 z-40">
+          <div className="absolute inset-0 bg-zinc-950/15 backdrop-blur-[1px]" />
+          <div className="absolute inset-0 flex items-start justify-center p-6 pt-24">
+            <div className="w-full max-w-lg rounded-[22px] border border-zinc-200 bg-white/90 shadow-2xl shadow-zinc-950/15">
+              <div className="px-6 py-5">
+                <div className="text-[10px] font-black uppercase tracking-[0.35em] text-zinc-500">Загрузка</div>
+                <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-950">
+                  Идёт загрузка/импорт модуля. Не закрывай страницу и не переходи по меню.
+                </div>
+                <div className="mt-2 text-xs font-bold text-zinc-600">Окно можно оставить открытым — процесс продолжится.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {quickStartOpen ? (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm" onClick={closeQuickStart} />

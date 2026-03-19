@@ -967,21 +967,46 @@ export default function AdminPanelClient() {
     }
   };
 
-  async function startImport() {
-    if (importFiles.length === 0) return;
+  async function startImport(batch?: File[]) {
     if (importRunnerActiveRef.current) return;
 
     importRunnerActiveRef.current = true;
     importUploadAbortRef.current = new AbortController();
+    try {
+      (window as any).__corelms_import_upload_abort_controller = importUploadAbortRef.current;
+    } catch {
+      // ignore
+    }
 
-    const batch = Array.from(importFiles);
-    importQueuePendingRef.current = batch;
-    setImportPendingCount(batch.length);
-    setImportPendingNames(batch.map((f) => String((f as any)?.name || "").trim()).filter(Boolean));
-    setImportEnqueueProgress({ total: batch.length, done: 0 });
+    const effBatch: File[] = (Array.isArray(batch) && batch.length ? batch : importFiles) as File[];
+    importQueuePendingRef.current = effBatch;
+    setImportPendingCount(effBatch.length);
+    setImportPendingNames(effBatch.map((f) => String((f as any)?.name || "").trim()).filter(Boolean));
+    setImportEnqueueProgress({ total: effBatch.length, done: 0 });
     goTab("import");
     setJobPanelOpen(true);
     setImportBusy(true);
+    try {
+      (window as any).__corelms_upload_busy = true;
+      window.dispatchEvent(new Event("corelms:upload-busy"));
+    } catch {
+      // ignore
+    }
+
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      try {
+        if (!importRunnerActiveRef.current) return;
+        e.preventDefault();
+        e.returnValue = "";
+      } catch {
+        // ignore
+      }
+    };
+    try {
+      window.addEventListener("beforeunload", onBeforeUnload);
+    } catch {
+      // ignore
+    }
 
     try {
       const getAbortSignal = () => importUploadAbortRef.current?.signal;
@@ -1062,19 +1087,23 @@ export default function AdminPanelClient() {
 
       const uploadViaMultipart = async (file: File, object_key: string, upload_id: string) => {
         const total = Number((file as any)?.size || 0) || 0;
-        const chunkSize = 8 * 1024 * 1024;
+        const chunkSize = 64 * 1024 * 1024;
+        const concurrency = 4;
         const parts: Array<{ ETag: string; PartNumber: number }> = [];
         const startedAt = Date.now();
         const samples: Array<{ t: number; b: number }> = [{ t: startedAt, b: 0 }];
+
+        const inFlightLoaded: Record<number, number> = {};
+        let completedBytes = 0;
         let loadedTotal = 0;
         setS3UploadProgress({ loaded: 0, total, speedBps: 0, etaSeconds: null, percent: 0 });
 
-        const putPart = async (partNumber: number, blob: Blob): Promise<string> => {
-          const pres = await apiFetch<{ ok: boolean; upload_url: string }>(`/admin/modules/multipart-import-presign-part`, {
+        const putPart = async (partNumber: number, blob: Blob) => {
+          const urlRes = await apiFetch<{ ok: boolean; upload_url: string }>(`/admin/modules/multipart-import-presign-part`, {
             method: "POST",
             body: JSON.stringify({ object_key, upload_id, part_number: partNumber }),
           });
-          const url = String((pres as any)?.upload_url || "");
+          const url = String((urlRes as any)?.upload_url || "");
           if (!url) throw new Error("missing multipart presign url");
 
           const etag = await new Promise<string>((resolve, reject) => {
@@ -1096,9 +1125,11 @@ export default function AdminPanelClient() {
             xhr.onerror = () => reject(new Error("S3 multipart part network error"));
             xhr.upload.onprogress = (evt) => {
               try {
-                const partLoaded = Number(evt.loaded || 0);
+                const partLoaded = Math.max(0, Number(evt.loaded || 0));
+                inFlightLoaded[partNumber] = partLoaded;
                 const now = Date.now();
-                const cur = loadedTotal + partLoaded;
+                const inflightSum = Object.values(inFlightLoaded).reduce((a, b) => a + (Number(b) || 0), 0);
+                const cur = Math.max(0, completedBytes + inflightSum);
                 samples.push({ t: now, b: cur });
                 const speedBps = estimateSpeed(samples);
                 const etaSeconds = speedBps > 1 && total > 0 ? Math.max(0, Math.round((total - cur) / speedBps)) : null;
@@ -1130,20 +1161,42 @@ export default function AdminPanelClient() {
           return etag;
         };
 
-        try {
-          const partCount = Math.max(1, Math.ceil(total / chunkSize));
-          for (let idx = 0; idx < partCount; idx++) {
+        const partCount = Math.max(1, Math.ceil(total / chunkSize));
+        const nextIndexRef = { i: 0 };
+
+        const worker = async () => {
+          while (true) {
             const sig = getAbortSignal();
             if (sig?.aborted) throw Object.assign(new Error("AbortError"), { name: "AbortError" });
+
+            const idx = nextIndexRef.i;
+            nextIndexRef.i += 1;
+            if (idx >= partCount) return;
+
             const start = idx * chunkSize;
             const end = Math.min(total, start + chunkSize);
             const blob = file.slice(start, end);
             const partNumber = idx + 1;
+
             const etag = await putPart(partNumber, blob);
             parts.push({ ETag: etag, PartNumber: partNumber });
-            loadedTotal = end;
+
+            // Mark part completed for aggregated progress.
+            try {
+              delete inFlightLoaded[partNumber];
+            } catch {
+              // ignore
+            }
+            completedBytes = Math.min(total, completedBytes + (end - start));
             await sleep(0);
           }
+        };
+
+        try {
+          const workers = Array.from({ length: Math.max(1, Math.min(concurrency, partCount)) }, () => worker());
+          await Promise.all(workers);
+
+          parts.sort((a, b) => a.PartNumber - b.PartNumber);
 
           await apiFetch(`/admin/modules/multipart-import-complete`, {
             method: "POST",
@@ -1162,8 +1215,8 @@ export default function AdminPanelClient() {
         }
       };
 
-      for (let i = 0; i < batch.length; i++) {
-        const f = batch[i];
+      for (let i = 0; i < effBatch.length; i++) {
+        const f = effBatch[i];
         const fn = String((f as any)?.name || "module.zip").trim() || "module.zip";
 
         setClientImportFileName(fn);
@@ -1248,9 +1301,9 @@ export default function AdminPanelClient() {
         // Keep UI stable: do not reload public modules list automatically; rely on SSE + admin modules refresh.
         void loadAdminModulesForce();
 
-        setImportEnqueueProgress({ total: batch.length, done: i + 1 });
-        setImportPendingCount(Math.max(0, batch.length - (i + 1)));
-        setImportPendingNames(batch.slice(i + 1).map((x) => String((x as any)?.name || "").trim()).filter(Boolean));
+        setImportEnqueueProgress({ total: effBatch.length, done: i + 1 });
+        setImportPendingCount(Math.max(0, effBatch.length - (i + 1)));
+        setImportPendingNames(effBatch.slice(i + 1).map((x) => String((x as any)?.name || "").trim()).filter(Boolean));
 
         // Keep admin queue fresh.
         void loadImportQueue(50, true, true);
@@ -1270,6 +1323,17 @@ export default function AdminPanelClient() {
       importQueuePendingRef.current = [];
       setImportBusy(false);
       try {
+        (window as any).__corelms_upload_busy = false;
+        window.dispatchEvent(new Event("corelms:upload-busy"));
+      } catch {
+        // ignore
+      }
+      try {
+        window.removeEventListener("beforeunload", onBeforeUnload);
+      } catch {
+        // ignore
+      }
+      try {
         setS3UploadProgress(null);
       } catch {
         // ignore
@@ -1279,6 +1343,11 @@ export default function AdminPanelClient() {
       setImportPendingNames([]);
       try {
         importUploadAbortRef.current = null;
+      } catch {
+        // ignore
+      }
+      try {
+        (window as any).__corelms_import_upload_abort_controller = null;
       } catch {
         // ignore
       }
@@ -1292,6 +1361,12 @@ export default function AdminPanelClient() {
       importCancelRequestedRef.current = true;
 
       // Abort current network operations immediately.
+      try {
+        const ctrl = (window as any).__corelms_import_upload_abort_controller as AbortController | null | undefined;
+        ctrl?.abort();
+      } catch {
+        // ignore
+      }
       importUploadAbortRef.current?.abort();
 
       const object_key = String(importUploadObjectKeyRef.current || "").trim();
