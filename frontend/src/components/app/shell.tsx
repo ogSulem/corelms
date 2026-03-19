@@ -163,7 +163,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const isYouTube = !quickStartAssetId && /youtube\.com|youtu\.be/i.test(quickStartVideoUrl);
 
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen flex flex-col">
       {quickStartOpen ? (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm" onClick={closeQuickStart} />
@@ -327,7 +327,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           {!loading && authenticated ? <AppNav role={user?.role} authenticated={authenticated} /> : null}
         </div>
       </header>
-      <main className="animate-in fade-in duration-700">{children}</main>
+      <main className="flex-1 min-h-0 animate-in fade-in duration-700">{children}</main>
 
       <footer className="border-t border-zinc-200/80 bg-white/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl flex-col gap-2 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">

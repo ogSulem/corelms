@@ -121,7 +121,7 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
-      <div className="h-[calc(100vh-80px)] overflow-hidden flex flex-col mx-auto max-w-7xl px-6 py-6 lg:py-10">
+      <div className="flex flex-col mx-auto max-w-7xl px-6 py-6 lg:py-10">
         {error ? (
           <div className="mb-6 rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 text-sm text-rose-400 font-bold uppercase tracking-widest text-center">
             {error}

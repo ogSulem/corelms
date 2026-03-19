@@ -213,6 +213,21 @@ def _should_ignore_file(p: pathlib.Path) -> bool:
         return True
     if p.name.startswith("._"):
         return True
+
+    # Ignore tmp-like FILE NAMES commonly created by archivers/editors.
+    # This prevents TMPxxxx assets from being treated as standalone "file lessons".
+    try:
+        stem = str(getattr(p, "stem", "") or "").strip().lower()
+        if stem.startswith("tmp") or stem.startswith("tmr"):
+            # Keep very short names like "tmp" intact; ignore only realistic temp artifacts.
+            if len(stem) >= 6:
+                return True
+            if re.match(r"^(tmp|tmr)[_-]?\d{2,}$", stem):
+                return True
+            if re.match(r"^(tmp|tmr)[0-9a-f]{4,}$", stem):
+                return True
+    except Exception:
+        pass
     try:
         parts = list(p.parts or [])
         if "__MACOSX" in set(parts):
