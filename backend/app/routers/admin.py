@@ -2461,6 +2461,71 @@ def list_storage_objects(
     }
 
 
+class AdminDeleteStorageObjectRequest(BaseModel):
+    object_key: str
+
+
+@router.post("/storage/object/delete")
+def delete_storage_object(
+    request: Request,
+    body: AdminDeleteStorageObjectRequest,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_delete_storage_object", limit=60, window_seconds=60),
+):
+    object_key = str(getattr(body, "object_key", "") or "").strip()
+    if not object_key:
+        raise HTTPException(status_code=400, detail="object_key required")
+    if not object_key.startswith("uploads/"):
+        raise HTTPException(status_code=400, detail="only uploads/ keys can be deleted")
+
+    # Do not allow deleting a ZIP that is already attached to a module.
+    try:
+        in_db = db.scalar(select(func.count()).select_from(Module).where(Module.import_object_key == object_key))
+        if int(in_db or 0) > 0:
+            raise HTTPException(status_code=409, detail="object_key is used by a module")
+    except HTTPException:
+        raise
+    except Exception:
+        log.debug("admin delete storage: DB check failed", exc_info=True)
+
+    # Do not allow deleting a ZIP currently in the active import queue.
+    try:
+        r = get_redis()
+        raw = r.lrange("admin:import_jobs", 0, 500)
+        for s in list(raw or []):
+            try:
+                obj = json.loads(s)
+                if isinstance(obj, dict) and str(obj.get("object_key") or "").strip() == object_key:
+                    raise HTTPException(status_code=409, detail="object_key is in active import queue")
+            except HTTPException:
+                raise
+            except Exception:
+                continue
+    except HTTPException:
+        raise
+    except Exception:
+        log.debug("admin delete storage: redis queue check failed", exc_info=True)
+
+    ensure_bucket_exists()
+    s3 = get_s3_client()
+    try:
+        s3.delete_object(Bucket=settings.s3_bucket, Key=object_key)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="failed to delete object") from e
+
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_delete_storage_object",
+        actor_user_id=current.id,
+        meta={"bucket": settings.s3_bucket, "object_key": object_key},
+    )
+    db.commit()
+
+    return {"ok": True, "object_key": object_key}
+
+
 class AdminPresignImportZipRequest(BaseModel):
     filename: str
     title: str | None = None

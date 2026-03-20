@@ -1857,6 +1857,24 @@ export default function AdminPanelClient() {
     }
   }
 
+  async function deleteStorageObject(objectKey: string) {
+    const object_key = String(objectKey || "").trim();
+    if (!object_key) return;
+    try {
+      setError(null);
+      await apiFetch(`/admin/storage/object/delete`, { method: "POST", body: JSON.stringify({ object_key }) });
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ZIP УДАЛЕН", description: "" } }));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ УДАЛИТЬ ZIP");
+    } finally {
+      try {
+        void loadStorageUploads(storageUploadsPrefix);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   async function loadRuntimeLlmSettings() {
     const now = Date.now();
     if (now - Number(runtimeLlmLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
@@ -3036,6 +3054,7 @@ export default function AdminPanelClient() {
               storageUploadsDebug={storageUploadsDebug}
               loadStorageUploads={loadStorageUploads}
               enqueueImportFromS3={enqueueImportFromS3}
+              deleteStorageObject={deleteStorageObject}
               adminModules={adminModules}
               setImportQueueView={setImportQueueView}
               setImportQueueModalOpen={setImportQueueModalOpen}

@@ -41,6 +41,7 @@ interface ImportTabProps {
   storageUploadsDebug?: any;
   loadStorageUploads: (prefixOverride?: string) => Promise<void>;
   enqueueImportFromS3: (objectKey: string) => void;
+  deleteStorageObject: (objectKey: string) => void | Promise<void>;
   adminModules: AdminModuleItem[];
   setImportQueueView: (view: "active" | "history") => void;
   setImportQueueModalOpen: (open: boolean) => void;
@@ -118,6 +119,7 @@ export default function ImportTab(props: ImportTabProps) {
     storageUploadsDebug,
     loadStorageUploads,
     enqueueImportFromS3,
+    deleteStorageObject,
     adminModules,
     setImportQueueView,
     setImportQueueModalOpen,
@@ -898,51 +900,60 @@ export default function ImportTab(props: ImportTabProps) {
           ) : (
             <div className="max-h-[520px] overflow-y-auto overflow-x-auto pr-1">
               <div className="flex flex-nowrap gap-2 min-w-max">
-              {storageRows.slice(0, 80).map((it: any) => (
-                <div
-                  key={it.key}
-                  className="shrink-0 w-[320px] rounded-xl border border-zinc-200 bg-white px-3 py-2"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate text-[11px] font-black text-zinc-950">{it.name}</div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[9px] font-black uppercase tracking-widest text-zinc-600">
-                        <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{humanBytes(it.size)}</div>
-                        {it.lm ? (
-                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{String(it.lm).replace("T", " ").slice(0, 16)}</div>
-                        ) : null}
+                {storageRows.slice(0, 80).map((it: any) => (
+                  <div
+                    key={it.key}
+                    className="shrink-0 w-[320px] rounded-xl border border-zinc-200 bg-white px-3 py-2"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-[11px] font-black text-zinc-950">{it.name}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-[9px] font-black uppercase tracking-widest text-zinc-600">
+                          <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{humanBytes(it.size)}</div>
+                          {it.lm ? (
+                            <div className="rounded-full border border-zinc-200 bg-zinc-50 px-2.5 py-1">{String(it.lm).replace("T", " ").slice(0, 16)}</div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="shrink-0 flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="h-8 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
+                          onClick={() => void copy(String(it.key || ""))}
+                        >
+                          COPY KEY
+                        </button>
+                        <button
+                          type="button"
+                          className="h-8 rounded-xl border border-[#fe9900]/30 bg-[#fe9900]/10 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-900 hover:bg-[#fe9900]/20"
+                          onClick={() => {
+                            const ok = window.confirm(`Импортировать ZIP из STORAGE?\n\n${it.name}\n\n${it.key}`);
+                            if (!ok) return;
+                            enqueueImportFromS3(it.key);
+                          }}
+                        >
+                          ИМПОРТ
+                        </button>
+                        <button
+                          type="button"
+                          className="h-8 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-800 hover:bg-rose-100 disabled:opacity-60"
+                          disabled={storageUploadsLoading || importBusy}
+                          onClick={() => {
+                            const ok = window.confirm(`Удалить ZIP из STORAGE?\n\n${it.name}\n\n${it.key}\n\nЭто удалит исходник из uploads/.`);
+                            if (!ok) return;
+                            void deleteStorageObject(String(it.key || ""));
+                          }}
+                        >
+                          УДАЛИТЬ
+                        </button>
                       </div>
                     </div>
-
-                    <div className="shrink-0 flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="h-8 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-                        onClick={() => void copy(String(it.key || ""))}
-                      >
-                        COPY KEY
-                      </button>
-                      <button
-                        type="button"
-                        className="h-8 rounded-xl border border-[#fe9900]/30 bg-[#fe9900]/10 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-zinc-900 hover:bg-[#fe9900]/20"
-                        onClick={() => {
-                          const ok = window.confirm(`Импортировать ZIP из STORAGE?\n\n${it.name}\n\n${it.key}`);
-                          if (!ok) return;
-                          enqueueImportFromS3(it.key);
-                        }}
-                      >
-                        ИМПОРТ
-                      </button>
-                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
               </div>
             </div>
           )}
-        </div>
-
-      </div>
 
       <div className="grid gap-6 lg:grid-cols-12 items-start">
         <div className="lg:col-span-7 relative overflow-hidden rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">
