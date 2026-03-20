@@ -766,6 +766,7 @@ export default function ImportTab(props: ImportTabProps) {
     return st !== "done" && st !== "failed" && st !== "canceled";
   })();
 
+  ;
   return (
     <div className="mt-8 space-y-6">
       {uploadActive ? (
@@ -954,6 +955,9 @@ export default function ImportTab(props: ImportTabProps) {
               </div>
             </div>
           )}
+
+        </div>
+      </div>
 
       <div className="grid gap-6 lg:grid-cols-12 items-start">
         <div className="lg:col-span-7 relative overflow-hidden rounded-[22px] border border-zinc-200 bg-white/70 backdrop-blur-md p-3 shadow-2xl shadow-zinc-950/10">
