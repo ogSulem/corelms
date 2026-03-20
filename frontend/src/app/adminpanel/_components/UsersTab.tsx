@@ -166,7 +166,8 @@ export function UsersTab(props: UsersTabProps) {
   }, [userDetail, tagDraft]);
 
   return (
-    <div className="mt-8 space-y-6">
+    <>
+      <div className="mt-8 space-y-6">
       <div className="grid gap-6 lg:grid-cols-12 items-start">
         <div className="lg:col-span-8 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
           <div className="flex items-end justify-between gap-6">
@@ -905,6 +906,7 @@ export function UsersTab(props: UsersTabProps) {
           </div>
         </div>
       </Modal>
-    </div>
+      </div>
+    </>
   );
 }
