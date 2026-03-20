@@ -68,9 +68,13 @@ def get_current_user(
 
 def require_roles(*roles: UserRole):
     def _dep(user: User = Depends(get_current_user)) -> User:
-        # Role model: admin + employee
+        # Role model: superadmin + admin + employee
+        # - superadmin can access everything
         # - admin can access everything
         # - employee can access only endpoints that explicitly allow it
+        if user.role == UserRole.superadmin:
+            return user
+
         if user.role == UserRole.admin:
             return user
 

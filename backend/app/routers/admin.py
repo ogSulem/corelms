@@ -1594,9 +1594,15 @@ def admin_update_user(
     if u is None:
         raise HTTPException(status_code=404, detail="user not found")
 
-    # Permission: admins may edit employees and their own account, but must not edit other admins.
-    if getattr(u, "role", None) == UserRole.admin and u.id != current.id:
-        raise HTTPException(status_code=403, detail="cannot modify admin user")
+    is_superadmin = getattr(current, "role", None) == UserRole.superadmin
+    target_role = getattr(u, "role", None)
+
+    # Permission model:
+    # - superadmin: can edit anyone
+    # - admin: can edit employees and self, but must not edit other admins/superadmins
+    if not is_superadmin:
+        if target_role in {UserRole.admin, UserRole.superadmin} and u.id != current.id:
+            raise HTTPException(status_code=403, detail="cannot modify admin user")
 
     name = body.name
     if name is not None:
@@ -1625,12 +1631,14 @@ def admin_update_user(
     if role_raw is not None:
         next_role = UserRole(str(role_raw))
         prev_role = getattr(u, "role", None)
-        if prev_role != UserRole.admin and next_role == UserRole.admin:
-            raise HTTPException(status_code=403, detail="cannot promote user to admin")
+        if not is_superadmin:
+            raise HTTPException(status_code=403, detail="cannot change user role")
+
         if prev_role == UserRole.admin and next_role != UserRole.admin:
             admins = int(db.scalar(select(func.count()).select_from(User).where(User.role == UserRole.admin)) or 0)
             if admins <= 1:
                 raise HTTPException(status_code=400, detail="cannot demote last admin")
+
         u.role = next_role
 
     if body.must_change_password is not None:
@@ -1672,8 +1680,11 @@ def admin_force_password_change(
     if u is None:
         raise HTTPException(status_code=404, detail="user not found")
 
-    if getattr(u, "role", None) == UserRole.admin and u.id != current.id:
-        raise HTTPException(status_code=403, detail="cannot modify admin user")
+    is_superadmin = getattr(current, "role", None) == UserRole.superadmin
+    target_role = getattr(u, "role", None)
+    if not is_superadmin:
+        if target_role in {UserRole.admin, UserRole.superadmin} and u.id != current.id:
+            raise HTTPException(status_code=403, detail="cannot modify admin user")
 
     u.must_change_password = True
     u.password_changed_at = None
@@ -6766,8 +6777,10 @@ def delete_user(
     if u is None:
         raise HTTPException(status_code=404, detail="user not found")
 
-    if getattr(u, "role", None) == UserRole.admin:
-        raise HTTPException(status_code=403, detail="cannot delete admin user")
+    is_superadmin = getattr(current, "role", None) == UserRole.superadmin
+    if not is_superadmin:
+        if getattr(u, "role", None) in {UserRole.admin, UserRole.superadmin}:
+            raise HTTPException(status_code=403, detail="cannot delete admin user")
 
     try:
         attempt_ids = db.scalars(select(QuizAttempt.id).where(QuizAttempt.user_id == uid)).all()
@@ -6849,18 +6862,16 @@ def create_user(
     # Admin receives a temporary password (must be changed on first login).
     temp_password = str(body.password or "").strip() or _random_password(14)
 
-    try:
-        requested_role = UserRole(str(getattr(body, "role", None)))
-    except Exception:
-        requested_role = UserRole.employee
-    if requested_role == UserRole.admin:
-        raise HTTPException(status_code=403, detail="cannot create admin user")
+    # Product invariant: user creation always creates an employee.
+    # Role escalation (admin/superadmin) must be done explicitly via update flow
+    # and is restricted to superadmin.
+    requested_role = UserRole.employee
 
     user = User(
         name=name,
         email=email,
         position=body.position,
-        role=UserRole.employee,
+        role=requested_role,
         xp=0,
         level=1,
         streak=0,
@@ -6892,8 +6903,10 @@ def reset_user_password(
     if user is None:
         raise HTTPException(status_code=404, detail="user not found")
 
-    if getattr(user, "role", None) == UserRole.admin and user.id != current.id:
-        raise HTTPException(status_code=403, detail="cannot reset password for admin user")
+    is_superadmin = getattr(current, "role", None) == UserRole.superadmin
+    if not is_superadmin:
+        if getattr(user, "role", None) in {UserRole.admin, UserRole.superadmin} and user.id != current.id:
+            raise HTTPException(status_code=403, detail="cannot reset password for admin user")
 
     # Issue a temporary password (must be changed on first login).
     temp_password = str(body.password or "").strip() or _random_password(14)

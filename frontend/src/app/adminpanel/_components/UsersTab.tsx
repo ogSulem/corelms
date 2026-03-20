@@ -8,14 +8,13 @@ import { useEffect, useMemo, useState } from "react";
 
 interface UsersTabProps {
   currentUserId: string;
+  currentUserRole?: string;
   newUserBusy: boolean;
   createUser: () => Promise<void>;
   newUserName: string;
   setNewUserName: (val: string) => void;
   newUserEmail: string;
   setNewUserEmail: (val: string) => void;
-  newUserRole: "employee" | "admin";
-  setNewUserRole: (val: "employee" | "admin") => void;
   usersLoading: boolean;
   loadUsers: () => Promise<void>;
   newUserTempPassword: string;
@@ -31,7 +30,7 @@ interface UsersTabProps {
     name?: string | null;
     email?: string | null;
     position?: string | null;
-    role?: "employee" | "admin" | null;
+    role?: "employee" | "admin" | "superadmin" | null;
     must_change_password?: boolean | null;
   }) => Promise<void>;
   resetBusy: boolean;
@@ -64,14 +63,13 @@ interface UsersTabProps {
 export function UsersTab(props: UsersTabProps) {
   const {
     currentUserId,
+    currentUserRole,
     newUserBusy,
     createUser,
     newUserName,
     setNewUserName,
     newUserEmail,
     setNewUserEmail,
-    newUserRole,
-    setNewUserRole,
     usersLoading,
     loadUsers,
     newUserTempPassword,
@@ -111,8 +109,11 @@ export function UsersTab(props: UsersTabProps) {
     saveBulkTagUsers,
   } = props;
 
+  const isSuperadmin = String(currentUserRole || "").trim().toLowerCase() === "superadmin";
+
   const roleLabel = (role: any): string => {
     const r = String(role || "").trim().toLowerCase();
+    if (r === "superadmin") return "СУПЕРАДМИН";
     if (r === "admin") return "АДМИН";
     if (r === "employee") return "ПАРТНЁР";
     if (!r) return "—";
@@ -120,11 +121,12 @@ export function UsersTab(props: UsersTabProps) {
   };
 
   const isSelf = Boolean(selectedUserId) && String(selectedUserId) === String(currentUserId || "");
-  const isLockedAdminTarget = Boolean(userDetail?.role) && String(userDetail?.role || "") === "admin" && !isSelf;
+  const targetRole = String(userDetail?.role || "").trim().toLowerCase();
+  const isLockedAdminTarget = !isSuperadmin && (targetRole === "admin" || targetRole === "superadmin") && !isSelf;
 
   const [draftName, setDraftName] = useState<string>("");
   const [draftEmail, setDraftEmail] = useState<string>("");
-  const [draftRole, setDraftRole] = useState<"employee" | "admin">("employee");
+  const [draftRole, setDraftRole] = useState<"employee" | "admin" | "superadmin">("employee");
   const [historyOpen, setHistoryOpen] = useState(false);
 
   const [tagDraft, setTagDraft] = useState<string[]>([]);
@@ -152,7 +154,7 @@ export function UsersTab(props: UsersTabProps) {
     }
     setDraftName(String(userDetail.name || ""));
     setDraftEmail(String(userDetail.email || ""));
-    setDraftRole("employee");
+    setDraftRole((String((userDetail as any).role || "employee") as any) || "employee");
     setTagDraft(Array.isArray((userDetail as any)?.tag_ids) ? (userDetail as any).tag_ids.map((x: any) => String(x)) : []);
   }, [userDetail?.id]);
 
@@ -200,18 +202,6 @@ export function UsersTab(props: UsersTabProps) {
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewUserEmail(e.target.value)}
                 placeholder="name@company.com"
               />
-            </div>
-
-            <div className="lg:col-span-4">
-              <div className="text-[9px] font-black text-zinc-600 uppercase tracking-widest ml-1">Роль</div>
-              <select
-                className="mt-2 w-full h-12 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
-                value={newUserRole}
-                onChange={() => setNewUserRole("employee")}
-                disabled
-              >
-                <option value="employee">ПАРТНЁР</option>
-              </select>
             </div>
             <div className="lg:col-span-2" />
           </div>
@@ -579,11 +569,12 @@ export function UsersTab(props: UsersTabProps) {
                     <select
                       className="mt-2 w-full h-11 rounded-xl bg-white border border-zinc-200 px-4 text-[11px] font-black text-zinc-950 uppercase tracking-widest outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all appearance-none cursor-pointer"
                       value={draftRole}
-                      onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setDraftRole((e.target.value as any) === "admin" ? "admin" : "employee")}
-                      disabled={isSelf || isLockedAdminTarget}
+                      onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setDraftRole((String(e.target.value || "employee") as any) || "employee")}
+                      disabled={!isSuperadmin || isLockedAdminTarget}
                     >
                       <option value="employee">ПАРТНЁР</option>
                       <option value="admin">АДМИН</option>
+                      <option value="superadmin">СУПЕРАДМИН</option>
                     </select>
                   </div>
                 </div>

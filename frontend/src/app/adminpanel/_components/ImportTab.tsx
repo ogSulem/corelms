@@ -1008,7 +1008,16 @@ export default function ImportTab(props: ImportTabProps) {
                 variant="primary"
                 className="h-8 rounded-xl font-black uppercase tracking-widest text-[9px]"
                 disabled={importFiles.length === 0}
-                onClick={() => void startImport()}
+                onClick={() => {
+                  const names = importFiles
+                    .map((f: any) => String(f?.name || "").trim())
+                    .filter(Boolean)
+                    .slice(0, 5);
+                  const label = names.length === 1 ? names[0] : names.length ? `${names[0]}${names.length > 1 ? ` + ещё ${names.length - 1}` : ""}` : "ZIP";
+                  const ok = window.confirm(`Загрузить ZIP в STORAGE и запустить импорт?\n\n${label}`);
+                  if (!ok) return;
+                  void startImport();
+                }}
               >
                 {importBusy ? "..." : "ЗАПУСТИТЬ"}
               </Button>

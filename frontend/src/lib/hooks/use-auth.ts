@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 
 export type User = {
   name: string;
-  role: 'admin' | 'user';
+  role: 'admin' | 'superadmin' | 'user';
   xp: number;
   level: number;
   streak: number;

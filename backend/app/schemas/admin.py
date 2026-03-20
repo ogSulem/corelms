@@ -127,7 +127,6 @@ class UserCreateRequest(BaseModel):
     name: str
     email: str | None = None
     position: str | None = None
-    role: Literal["employee", "admin"] = "employee"
     password: str | None = None
     must_change_password: bool = True
 
@@ -151,7 +150,7 @@ class UserUpdateRequest(BaseModel):
     name: str | None = None
     email: str | None = None
     position: str | None = None
-    role: Literal["employee", "admin"] | None = None
+    role: Literal["employee", "admin", "superadmin"] | None = None
     must_change_password: bool | None = None
 
 

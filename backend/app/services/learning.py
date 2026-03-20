@@ -16,6 +16,22 @@ class LearningService:
     def __init__(self, db: Session):
         self.db = db
 
+    def _meta_action_is_read(self, meta: str | None) -> bool:
+        if not meta:
+            return False
+        action = str(meta).strip().lower()
+        if action == "read" or action == "open":
+            return True
+        try:
+            obj = json.loads(str(meta))
+            if isinstance(obj, dict):
+                act = str(obj.get("action") or "").strip().lower()
+                if act == "read" or act == "open":
+                    return True
+        except Exception:
+            return False
+        return False
+
     def get_modules_progress_compact(self, user: User, module_ids: List[uuid.UUID]) -> Dict[uuid.UUID, Dict[str, Any]]:
         """Fast progress aggregation for modules list.
 
@@ -51,12 +67,15 @@ class LearningService:
         def _meta_action_is_read(meta: str | None) -> bool:
             if not meta:
                 return False
-            if str(meta).strip().lower() == "read":
+            action = str(meta).strip().lower()
+            if action == "read" or action == "open":
                 return True
             try:
                 obj = json.loads(str(meta))
-                if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
-                    return True
+                if isinstance(obj, dict):
+                    act = str(obj.get("action") or "").strip().lower()
+                    if act == "read" or act == "open":
+                        return True
             except Exception:
                 return False
             return False
@@ -195,12 +214,15 @@ class LearningService:
         def _meta_action_is_read(meta: str | None) -> bool:
             if not meta:
                 return False
-            if str(meta).strip().lower() == "read":
+            action = str(meta).strip().lower()
+            if action == "read" or action == "open":
                 return True
             try:
                 obj = json.loads(str(meta))
-                if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
-                    return True
+                if isinstance(obj, dict):
+                    act = str(obj.get("action") or "").strip().lower()
+                    if act == "read" or act == "open":
+                        return True
             except Exception:
                 return False
             return False
@@ -339,21 +361,24 @@ class LearningService:
         for uid, qid in passed_attempts_rows:
             passed_map[(uid, qid)] = True
 
-        # Batch load all read events
+        # Batch load all read/open events (legacy + JSON meta)
         sub_ids = [s.id for s in submodules]
         read_events_rows = self.db.execute(
-            select(LearningEvent.user_id, LearningEvent.ref_id)
+            select(LearningEvent.user_id, LearningEvent.ref_id, LearningEvent.meta)
             .where(
                 LearningEvent.user_id.in_(user_ids),
                 LearningEvent.type == LearningEventType.submodule_opened,
-                LearningEvent.meta == "read",
-                LearningEvent.ref_id.in_(sub_ids)
+                LearningEvent.meta.is_not(None),
+                LearningEvent.ref_id.in_(sub_ids),
             )
         ).all()
-        
-        read_map = {} # (user_id, submodule_id) -> bool
-        for uid, sid in read_events_rows:
-            read_map[(uid, sid)] = True
+
+        read_map = {}  # (user_id, submodule_id) -> bool
+        for uid, sid, meta in (read_events_rows or []):
+            if sid is None:
+                continue
+            if self._meta_action_is_read(meta):
+                read_map[(uid, sid)] = True
 
         report = []
         for u in users:

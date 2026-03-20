@@ -14,7 +14,7 @@ const baseItems = [
 export function AppNav({ role, authenticated = true }: { role?: string; authenticated?: boolean }) {
   const pathname = usePathname();
 
-  const items = role === "admin" ? [...baseItems, { href: "/admin/modules", label: "Админ‑центр" }] : baseItems;
+  const items = role === "admin" || role === "superadmin" ? [...baseItems, { href: "/admin/modules", label: "Админ‑центр" }] : baseItems;
 
   return (
     <nav className="flex items-center gap-1 rounded-2xl border border-zinc-200 bg-white/85 backdrop-blur-xl p-1.5 shadow-sm shadow-zinc-950/5">

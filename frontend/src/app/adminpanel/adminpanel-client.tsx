@@ -187,7 +187,6 @@ export default function AdminPanelClient() {
   const [deleteUserBusy, setDeleteUserBusy] = useState(false);
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
-  const [newUserRole, setNewUserRole] = useState<"employee" | "admin">("employee");
   const [newUserBusy, setNewUserBusy] = useState(false);
   const [newUserTempPassword, setNewUserTempPassword] = useState("");
   const [resetBusy, setResetBusy] = useState(false);
@@ -1404,14 +1403,9 @@ export default function AdminPanelClient() {
     try {
       const inferredName = String(sourceFilename || "").trim() || object_key.split("/").slice(-1)[0] || "module.zip";
       const titleStem = inferredName.replace(/\.zip$/i, "").trim() || null;
-      const forceReimport = window.confirm(
-        "Форс-переимпортировать этот ZIP?\n\n" +
-          "Это пересоберёт структуру модуля заново (удалит старые подмодули/уроки в целевом модуле).\n" +
-          "Нажми OK, если нужно именно пересобрать заново."
-      );
       const enq = await apiFetch<{ ok: boolean; job_id: string }>(`/admin/modules/enqueue-import-zip`, {
         method: "POST",
-        body: JSON.stringify({ object_key, title: titleStem, source_filename: inferredName, force_reimport: forceReimport }),
+        body: JSON.stringify({ object_key, title: titleStem, source_filename: inferredName, force_reimport: true }),
       });
       const jid = String((enq as any)?.job_id || "").trim();
       if (jid) {
@@ -1558,7 +1552,6 @@ export default function AdminPanelClient() {
         body: JSON.stringify({
           name: nm || em.split("@", 1)[0] || em,
           email: em,
-          role: newUserRole,
           must_change_password: true,
         }),
       });
@@ -2855,14 +2848,13 @@ export default function AdminPanelClient() {
           {tab === "users" && (
             <UsersTab
               currentUserId={String((user as any)?.id || "")}
+              currentUserRole={String((user as any)?.role || "")}
               newUserBusy={newUserBusy}
               createUser={createUser}
               newUserName={newUserName}
               setNewUserName={setNewUserName}
               newUserEmail={newUserEmail}
               setNewUserEmail={setNewUserEmail}
-              newUserRole={newUserRole}
-              setNewUserRole={setNewUserRole}
               usersLoading={usersLoading}
               loadUsers={loadUsers}
               newUserTempPassword={newUserTempPassword}

@@ -240,7 +240,7 @@ def create_app() -> FastAPI:
 
         db = SessionLocal()
         try:
-            existing_admin = db.scalar(select(User).where(User.role == UserRole.admin))
+            existing_admin = db.scalar(select(User).where(User.role.in_([UserRole.admin, UserRole.superadmin])))
             if existing_admin is not None:
                 return
 
@@ -249,7 +249,7 @@ def create_app() -> FastAPI:
                 name=name,
                 email=email,
                 position=None,
-                role=UserRole.admin,
+                role=UserRole.superadmin,
                 xp=0,
                 level=1,
                 streak=0,

@@ -490,6 +490,8 @@ def _rotate_refresh_session(*, refresh_token: str, request: Request) -> tuple[st
 
 
 def _public_role(role: UserRole) -> str:
+    if role == UserRole.superadmin:
+        return "superadmin"
     if role == UserRole.admin:
         return "admin"
     return "user"
