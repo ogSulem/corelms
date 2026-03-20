@@ -166,23 +166,23 @@ export function UsersTab(props: UsersTabProps) {
   }, [userDetail, tagDraft]);
 
   return (
-    <>
+    <React.Fragment>
       <div className="mt-8 space-y-6">
-      <div className="grid gap-6 lg:grid-cols-12 items-start">
-        <div className="lg:col-span-8 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
-          <div className="flex items-end justify-between gap-6">
-            <div>
-              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Пользователи</div>
-              <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">Быстрая выдача доступа</div>
+        <div className="grid gap-6 lg:grid-cols-12 items-start">
+          <div className="lg:col-span-8 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
+            <div className="flex items-end justify-between gap-6">
+              <div>
+                <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Пользователи</div>
+                <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">Быстрая выдача доступа</div>
+              </div>
+              <Button
+                className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
+                disabled={newUserBusy}
+                onClick={createUser}
+              >
+                {newUserBusy ? "СОЗДАНИЕ..." : "СОЗДАТЬ"}
+              </Button>
             </div>
-            <Button
-              className="h-12 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-              disabled={newUserBusy}
-              onClick={createUser}
-            >
-              {newUserBusy ? "СОЗДАНИЕ..." : "СОЗДАТЬ"}
-            </Button>
-          </div>
 
           <div className="mt-6 grid gap-4 lg:grid-cols-12 items-end">
             <div className="lg:col-span-4">
@@ -856,7 +856,6 @@ export function UsersTab(props: UsersTabProps) {
                     </div>
                   </Modal>
                 </div>
-              </div>
             ) : (
               <div className="mt-8 py-12 text-center text-[10px] font-black uppercase tracking-widest text-zinc-600">
                 {selectedUserId ? "НЕТ ДАННЫХ" : "ВЫБЕРИТЕ ПАРТНЁРА"}
@@ -907,6 +906,6 @@ export function UsersTab(props: UsersTabProps) {
         </div>
       </Modal>
       </div>
-    </>
+    </React.Fragment>
   );
 }
