@@ -87,7 +87,7 @@ class ModuleService:
 
     def _get_accessible_modules(self, user: User) -> list[Module]:
         # Admin sees all active modules.
-        if getattr(user, "role", None) == UserRole.admin:
+        if getattr(user, "role", None) in {UserRole.admin, UserRole.superadmin}:
             mods = self.db.scalars(select(Module).where(Module.is_active == True)).all()  # noqa: E712
             return self._sort_modules(mods)
 

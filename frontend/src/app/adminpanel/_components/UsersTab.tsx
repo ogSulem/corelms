@@ -721,50 +721,71 @@ export function UsersTab(props: UsersTabProps) {
                       <div className="mt-2 text-lg font-black tabular-nums text-zinc-950">{String(userDetail.stats.events_total)}</div>
                     </div>
                   </div>
+                </div>
 
-                  <div className="mt-6 grid gap-6 sm:grid-cols-2">
-                    <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-4">В процессе</div>
-                      {userDetail.modules_progress.in_progress.length > 0 ? (
-                        <div className="space-y-3">
-                          {userDetail.modules_progress.in_progress.map((m: { module_id: string; title: string; percent: number }) => (
-                            <div key={m.module_id} className="space-y-2">
-                              <div className="flex items-center justify-between gap-4">
-                                <div className="text-[11px] font-black text-zinc-950 truncate">{m.title}</div>
-                                <div className="text-[10px] font-black text-[#fe9900] tabular-nums">{m.percent}%</div>
-                              </div>
-                              <div className="h-1.5 w-full rounded-full bg-zinc-100 overflow-hidden">
-                                <div 
-                                  className="h-full bg-[#fe9900] transition-all duration-500" 
-                                  style={{ width: `${m.percent}%` }}
-                                />
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет активных модулей</div>
-                      )}
+                <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                  <div className="flex items-end justify-between gap-4">
+                    <div>
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Общий прогресс</div>
+                      <div className="mt-2 text-[11px] font-black uppercase tracking-widest text-zinc-900">
+                        {Number((userDetail as any)?.modules_progress?.overall_progress?.steps_completed || 0)} / {Number((userDetail as any)?.modules_progress?.overall_progress?.steps_total || 0)} шагов
+                      </div>
                     </div>
-
-                    <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-4">Завершено</div>
-                      {userDetail.modules_progress.completed.length > 0 ? (
-                        <div className="space-y-2">
-                          {userDetail.modules_progress.completed.map((m: { module_id: string; title: string }) => (
-                            <div key={m.module_id} className="flex items-center justify-between gap-4 rounded-xl bg-zinc-50 p-2 border border-zinc-100">
-                              <div className="text-[11px] font-black text-zinc-950 truncate">{m.title}</div>
-                              <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[#284e13] text-[8px] text-white">✓</div>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет завершенных модулей</div>
-                      )}
+                    <div className="text-right">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">%</div>
+                      <div className="mt-1 text-2xl font-black tabular-nums text-zinc-950">
+                        {Math.max(0, Math.min(100, Number((userDetail as any)?.modules_progress?.overall_progress?.percent || 0)))}%
+                      </div>
                     </div>
                   </div>
+                  <div className="mt-4 h-2 w-full rounded-full bg-zinc-100 overflow-hidden border border-zinc-200">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-[#fe9900] to-[#284e13] transition-all duration-700"
+                      style={{ width: `${Math.max(0, Math.min(100, Number((userDetail as any)?.modules_progress?.overall_progress?.percent || 0)))}%` }}
+                    />
+                  </div>
+                </div>
 
-                  <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5">
+                <div className="mt-6 grid gap-6 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-4">В процессе</div>
+                    {userDetail.modules_progress.in_progress.length > 0 ? (
+                      <div className="space-y-3">
+                        {userDetail.modules_progress.in_progress.map((m: { module_id: string; title: string; percent: number }) => (
+                          <div key={m.module_id} className="space-y-2">
+                            <div className="flex items-center justify-between gap-4">
+                              <div className="text-[11px] font-black text-zinc-950 truncate">{m.title}</div>
+                              <div className="text-[10px] font-black text-[#fe9900] tabular-nums shrink-0">{m.percent}%</div>
+                            </div>
+                            <div className="h-1.5 w-full rounded-full bg-zinc-100 overflow-hidden">
+                              <div className="h-full bg-[#fe9900] transition-all duration-500" style={{ width: `${m.percent}%` }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет активных модулей</div>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-4">Завершено</div>
+                    {userDetail.modules_progress.completed.length > 0 ? (
+                      <div className="space-y-2">
+                        {userDetail.modules_progress.completed.map((m: { module_id: string; title: string }) => (
+                          <div key={m.module_id} className="flex items-center justify-between gap-4 rounded-xl bg-zinc-50 p-2 border border-zinc-100">
+                            <div className="text-[11px] font-black text-zinc-950 truncate">{m.title}</div>
+                            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[#284e13] text-[8px] text-white">✓</div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Нет завершенных модулей</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-zinc-200 bg-white p-5">
                     <div className="flex items-center justify-between mb-4">
                       <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Последняя активность</div>
                       <button 

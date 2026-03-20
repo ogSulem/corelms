@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from fastapi import APIRouter, Depends, Query
+import logging
+from fastapi import APIRouter, Depends, Query, Request
 from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -26,10 +27,12 @@ from app.schemas.me import (
 
 router = APIRouter(prefix="/me", tags=["me"])
 
+logger = logging.getLogger(__name__)
+
 
 @router.get("/profile", response_model=MyProfileResponse)
 def my_profile(user: User = Depends(get_current_user)):
-    role = "admin" if user.role.value == "admin" else "user"
+    role = "admin" if user.role.value in ("admin", "superadmin") else "user"
     return {
         "id": str(user.id),
         "name": user.name,
@@ -43,51 +46,63 @@ def my_profile(user: User = Depends(get_current_user)):
 
 
 @router.get("/progress-summary", response_model=MyProgressSummaryResponse)
-def my_progress_summary(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def my_progress_summary(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     from app.services.modules import ModuleService
     from app.services.learning import LearningService
 
-    ms = ModuleService(db)
-    mods = ms._get_accessible_modules(user)
-    module_ids = [m.id for m in (mods or [])]
+    try:
+        ms = ModuleService(db)
+        mods = ms._get_accessible_modules(user)
+        module_ids = [m.id for m in (mods or [])]
 
-    ls = LearningService(db)
-    progress_map = ls.get_modules_progress_compact(user, module_ids)
+        ls = LearningService(db)
+        progress_map = ls.get_modules_progress_compact(user, module_ids)
 
-    modules_total = int(len(module_ids))
-    modules_completed = 0
-    steps_total = 0
-    steps_completed = 0
+        modules_total = int(len(module_ids))
+        modules_completed = 0
+        steps_total = 0
+        steps_completed = 0
 
-    for mid in module_ids:
-        p = progress_map.get(mid) or {}
-        try:
-            if bool(p.get("completed")):
-                modules_completed += 1
-        except Exception:
-            pass
-        try:
-            steps_total += int(p.get("total_lessons") or 0)
-        except Exception:
-            pass
-        try:
-            steps_completed += int(p.get("passed_count") or 0)
-        except Exception:
-            pass
+        for mid in module_ids:
+            p = progress_map.get(mid) or {}
+            try:
+                if bool(p.get("completed")):
+                    modules_completed += 1
+            except Exception:
+                pass
+            try:
+                steps_total += int(p.get("total_lessons") or 0)
+            except Exception:
+                pass
+            try:
+                steps_completed += int(p.get("passed_count") or 0)
+            except Exception:
+                pass
 
-    if steps_total <= 0:
-        percent = 0
-    else:
-        percent = int(round((float(steps_completed) / float(steps_total)) * 100.0))
-        percent = max(0, min(100, percent))
+        if steps_total <= 0:
+            percent = 0
+        else:
+            percent = int(round((float(steps_completed) / float(steps_total)) * 100.0))
+            percent = max(0, min(100, percent))
 
-    return {
-        "modules_total": int(modules_total),
-        "modules_completed": int(modules_completed),
-        "steps_total": int(steps_total),
-        "steps_completed": int(steps_completed),
-        "percent": int(percent),
-    }
+        return {
+            "modules_total": int(modules_total),
+            "modules_completed": int(modules_completed),
+            "steps_total": int(steps_total),
+            "steps_completed": int(steps_completed),
+            "percent": int(percent),
+        }
+    except Exception as e:
+        rid = getattr(getattr(request, "state", None), "request_id", None)
+        rid_s = str(rid or "").strip() or None
+        logger.exception("/me/progress-summary failed", extra={"rid": rid_s})
+        return {
+            "modules_total": 0,
+            "modules_completed": 0,
+            "steps_total": 0,
+            "steps_completed": 0,
+            "percent": 0,
+        }
 
 
 @router.get("/activity-feed", response_model=MyActivityFeedResponse)

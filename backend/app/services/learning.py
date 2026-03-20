@@ -20,13 +20,13 @@ class LearningService:
         if not meta:
             return False
         action = str(meta).strip().lower()
-        if action == "read" or action == "open":
+        if action == "read":
             return True
         try:
             obj = json.loads(str(meta))
             if isinstance(obj, dict):
                 act = str(obj.get("action") or "").strip().lower()
-                if act == "read" or act == "open":
+                if act == "read":
                     return True
         except Exception:
             return False
@@ -68,13 +68,13 @@ class LearningService:
             if not meta:
                 return False
             action = str(meta).strip().lower()
-            if action == "read" or action == "open":
+            if action == "read":
                 return True
             try:
                 obj = json.loads(str(meta))
                 if isinstance(obj, dict):
                     act = str(obj.get("action") or "").strip().lower()
-                    if act == "read" or act == "open":
+                    if act == "read":
                         return True
             except Exception:
                 return False
@@ -215,13 +215,13 @@ class LearningService:
             if not meta:
                 return False
             action = str(meta).strip().lower()
-            if action == "read" or action == "open":
+            if action == "read":
                 return True
             try:
                 obj = json.loads(str(meta))
                 if isinstance(obj, dict):
                     act = str(obj.get("action") or "").strip().lower()
-                    if act == "read" or act == "open":
+                    if act == "read":
                         return True
             except Exception:
                 return False

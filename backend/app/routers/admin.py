@@ -1634,11 +1634,6 @@ def admin_update_user(
         if not is_superadmin:
             raise HTTPException(status_code=403, detail="cannot change user role")
 
-        if prev_role == UserRole.admin and next_role != UserRole.admin:
-            admins = int(db.scalar(select(func.count()).select_from(User).where(User.role == UserRole.admin)) or 0)
-            if admins <= 1:
-                raise HTTPException(status_code=400, detail="cannot demote last admin")
-
         u.role = next_role
 
     if body.must_change_password is not None:
@@ -6052,6 +6047,8 @@ def list_admin_modules(
     sub_to_module: dict[uuid.UUID, uuid.UUID] = {}
     requires_quiz_by_sub: dict[uuid.UUID, bool] = {}
 
+    any_quiz_required_by_module: dict[uuid.UUID, bool] = defaultdict(bool)
+
     steps_by_module: dict[uuid.UUID, int] = defaultdict(int)
     all_quiz_ids: set[uuid.UUID] = set()
     all_sub_ids: set[uuid.UUID] = set()
@@ -6061,6 +6058,8 @@ def list_admin_modules(
             continue
         sub_to_module[sid] = mid
         requires_quiz_by_sub[sid] = bool(rq)
+        if bool(rq):
+            any_quiz_required_by_module[mid] = True
         steps_by_module[mid] += 1
         all_sub_ids.add(sid)
         if qid is not None and bool(rq):
@@ -6068,7 +6067,7 @@ def list_admin_modules(
             all_quiz_ids.add(qid)
 
     for m in modules:
-        if m.final_quiz_id:
+        if m.final_quiz_id and bool(any_quiz_required_by_module.get(m.id, False)):
             quiz_to_module[m.final_quiz_id] = m.id
             steps_by_module[m.id] += 1
             all_quiz_ids.add(m.final_quiz_id)
@@ -6239,6 +6238,9 @@ def get_user_detail(
 
     completed_modules: list[dict[str, object]] = []
     in_progress_modules: list[dict[str, object]] = []
+
+    overall_steps_total = 0
+    overall_steps_completed = 0
     for m in modules:
         prog = progress_map.get(m.id) or {}
         total = int(prog.get("total") or 0)
@@ -6250,6 +6252,10 @@ def get_user_detail(
         pct = 0
         if total > 0:
             pct = int(round((passed / total) * 100))
+
+        if total > 0:
+            overall_steps_total += total
+            overall_steps_completed += min(passed, total)
 
         item = {
             "module_id": str(m.id),
@@ -6264,6 +6270,11 @@ def get_user_detail(
             completed_modules.append(item)
         elif started:
             in_progress_modules.append(item)
+
+    overall_percent = 0
+    if overall_steps_total > 0:
+        overall_percent = int(round((float(overall_steps_completed) / float(overall_steps_total)) * 100.0))
+        overall_percent = max(0, min(100, overall_percent))
 
     # Fetch recent history (last 20 events)
     recent_events = db.scalars(
@@ -6331,6 +6342,11 @@ def get_user_detail(
         "modules_progress": {
             "completed": completed_modules,
             "in_progress": in_progress_modules,
+            "overall_progress": {
+                "steps_total": int(overall_steps_total),
+                "steps_completed": int(overall_steps_completed),
+                "percent": int(overall_percent),
+            },
         },
         "history": history,
     }

@@ -159,6 +159,17 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     }
 
     const raw = (msg || "").trim();
+
+    const rawLower = raw.toLowerCase();
+    if (res.status >= 500) {
+      const friendly = "Ошибка сервера. Повторите попытку позже.";
+      const isGeneric = !raw || rawLower === "internal server error" || rawLower.includes("internal server error");
+      throw new CoreApiError(isGeneric ? friendly : raw, {
+        status: res.status,
+        errorCode: errorCode || undefined,
+        requestId: requestId || undefined,
+      });
+    }
     if (res.status === 429) {
       throw new CoreApiError("Слишком много запросов. Подождите немного и повторите.", {
         status: res.status,
