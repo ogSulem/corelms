@@ -223,7 +223,7 @@ export function UsersTab(props: UsersTabProps) {
           ) : null}
         </div>
 
-        <div className="lg:col-span-4 relative overflow-visible rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
+        <div className="lg:col-span-4 relative z-50 overflow-visible rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10">
           <div className="flex items-center justify-between gap-4">
             <div>
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Теги</div>
@@ -244,6 +244,26 @@ export function UsersTab(props: UsersTabProps) {
           </div>
 
           <div className="mt-5 grid gap-5">
+            <div>
+              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Создать тег</div>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  className="h-11 flex-1 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-900 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
+                  value={newTagName}
+                  onChange={(e) => setNewTagName(String(e.target.value || ""))}
+                  placeholder="НАПР. КАЗАНЬ"
+                  disabled={newTagBusy || bulkTagBusy}
+                />
+                <Button
+                  className="h-11 rounded-2xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
+                  disabled={newTagBusy || bulkTagBusy || !String(newTagName || "").trim()}
+                  onClick={() => void createTag()}
+                >
+                  {newTagBusy ? "СОЗДАНИЕ..." : "СОЗДАТЬ"}
+                </Button>
+              </div>
+            </div>
+
             <div>
               <div className="flex items-center justify-between gap-3">
                 <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Выбор тега</div>
@@ -297,26 +317,6 @@ export function UsersTab(props: UsersTabProps) {
                     </button>
                   );
                 })}
-              </div>
-            </div>
-
-            <div>
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 ml-1">Создать тег</div>
-              <div className="mt-2 flex items-center gap-2">
-                <input
-                  className="h-11 flex-1 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-900 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all"
-                  value={newTagName}
-                  onChange={(e) => setNewTagName(String(e.target.value || ""))}
-                  placeholder="НАПР. КАЗАНЬ"
-                  disabled={newTagBusy || bulkTagBusy}
-                />
-                <Button
-                  className="h-11 rounded-2xl font-black uppercase tracking-widest text-[9px] whitespace-nowrap"
-                  disabled={newTagBusy || bulkTagBusy || !String(newTagName || "").trim()}
-                  onClick={() => void createTag()}
-                >
-                  {newTagBusy ? "СОЗДАНИЕ..." : "СОЗДАТЬ"}
-                </Button>
               </div>
             </div>
 
