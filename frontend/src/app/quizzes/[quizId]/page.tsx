@@ -136,7 +136,10 @@ export default function QuizPage() {
     if (!isFinalQuiz) return true;
     const subs = moduleProgress?.submodules || [];
     if (!subs.length) return false;
-    return subs.every((s) => Boolean(s.passed));
+    return subs.every((s) => {
+      const rq = typeof (s as any)?.requires_quiz === "boolean" ? Boolean((s as any).requires_quiz) : true;
+      return rq ? Boolean((s as any)?.passed) : true;
+    });
   }, [isFinalQuiz, moduleProgress]);
 
   useEffect(() => {
