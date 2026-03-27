@@ -37,20 +37,40 @@ export function ContinueCard() {
         });
         const lastModuleId = String((lastCompleted as any)?.module_id || "").trim();
         if (lastModuleId) {
-          const [meta, prog] = await Promise.all([
-            apiFetch<{ id: string; title: string }>(`/modules/${encodeURIComponent(lastModuleId)}`),
-            apiFetch<{ passed: number; total: number }>(`/progress/modules/${encodeURIComponent(lastModuleId)}`),
-          ]);
-          const total = Math.max(1, Number((prog as any)?.total || 0));
-          const passed = Math.max(0, Number((prog as any)?.passed || 0));
-          const pct = Math.round((passed / total) * 100);
-          setInProgress({
-            id: String((meta as any)?.id || lastModuleId),
-            title: String((meta as any)?.title || ""),
-            progressText: `${passed}/${total}`,
-            pct,
-          });
-          return;
+          const ov = await apiFetch<{
+            items: Array<{
+              id: string;
+              title: string;
+              progress?: {
+                completed: boolean;
+              };
+            }>;
+          }>("/modules/overview");
+
+          const items = Array.isArray((ov as any)?.items) ? ((ov as any).items as any[]) : [];
+          const idx = items.findIndex((m) => String(m?.id || "") === String(lastModuleId));
+
+          const isCompleted = (m: any) => Boolean(m?.progress?.completed);
+
+          let pick: any = null;
+          if (idx >= 0) {
+            if (!isCompleted(items[idx])) {
+              pick = items[idx];
+            } else {
+              pick = items.slice(idx + 1).find((m) => m && !isCompleted(m)) || items.find((m) => m && !isCompleted(m));
+            }
+          } else {
+            pick = items.find((m) => m && !isCompleted(m));
+          }
+
+          if (pick?.id) {
+            const prog = await apiFetch<{ passed: number; total: number }>(`/progress/modules/${encodeURIComponent(String(pick.id))}`);
+            const total = Math.max(1, Number((prog as any)?.total || 0));
+            const passed = Math.max(0, Number((prog as any)?.passed || 0));
+            const pct = Math.round((passed / total) * 100);
+            setInProgress({ id: String(pick.id), title: String(pick.title || ""), progressText: `${passed}/${total}`, pct });
+            return;
+          }
         }
       } catch {
         // ignore: fallback below

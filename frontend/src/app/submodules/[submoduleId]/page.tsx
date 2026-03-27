@@ -54,6 +54,29 @@ function decodeLegacyPercentUnicode(input: string): string {
   }
 }
 
+async function presignDownloadUrl(assetId: string): Promise<string> {
+  const sid = String(assetId || "").trim();
+  if (!sid) throw new Error("missing asset id");
+  const r = await apiFetch<{ asset_id: string; download_url: string }>(
+    `/assets/${encodeURIComponent(sid)}/presign-download?action=download`,
+    { method: "GET" }
+  );
+  const u = String((r as any)?.download_url || "").trim();
+  if (!u) throw new Error("missing presigned url");
+  return u;
+}
+
+function isTableByNameOrMime(name: string, mimeType: string | null): boolean {
+  const mime = String(mimeType || "").toLowerCase();
+  const raw = String(name || "").trim().replaceAll("\\", "/");
+  const base = raw.includes("/") ? (raw.split("/").pop() || raw) : raw;
+  const idx = base.lastIndexOf(".");
+  const ext = idx >= 0 ? base.slice(idx + 1).trim().toLowerCase() : "";
+  if (["xls", "xlsx", "csv"].includes(ext)) return true;
+  if (mime.includes("spreadsheet") || mime.includes("ms-excel")) return true;
+  return false;
+}
+
 function normalizeOptionLabel(ch: string): string | null {
   const c = String(ch || "").trim().toUpperCase();
   const map: Record<string, string> = { "А": "A", "Б": "B", "В": "C", "Г": "D", "Д": "E" };
@@ -1573,6 +1596,61 @@ export default function SubmodulePage() {
                       <div className="overflow-hidden rounded-2xl bg-white">
                         {["pdf"].includes(String(inlineKind || "")) ? (
                           <div className="flex items-center justify-end gap-2 border-b border-zinc-200 bg-white p-4">
+                            {(() => {
+                              const aid = String(inlineAssetId || "").trim();
+                              const nm = String(inlineName || "").trim();
+                              if (!aid) return null;
+                              if (!isTableByNameOrMime(nm, inlineMime)) return null;
+                              return (
+                                <Button
+                                  variant="outline"
+                                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                  onClick={async () => {
+                                    try {
+                                      const url = await presignDownloadUrl(aid);
+                                      window.open(url, "_blank", "noopener,noreferrer");
+                                    } catch {
+                                      // ignore
+                                    }
+                                  }}
+                                >
+                                  СКАЧАТЬ
+                                </Button>
+                              );
+                            })()}
+                            <Button
+                              variant="outline"
+                              className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                              onClick={() => window.open(inlineUrl, "_blank", "noopener,noreferrer")}
+                            >
+                              ОТКРЫТЬ В НОВОЙ ВКЛАДКЕ
+                            </Button>
+                          </div>
+                        ) : null}
+                        {inlineKind === "office" ? (
+                          <div className="flex items-center justify-end gap-2 border-b border-zinc-200 bg-white p-4">
+                            {(() => {
+                              const aid = String(inlineAssetId || "").trim();
+                              const nm = String(inlineName || "").trim();
+                              if (!aid) return null;
+                              if (!isTableByNameOrMime(nm, inlineMime)) return null;
+                              return (
+                                <Button
+                                  variant="outline"
+                                  className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                  onClick={async () => {
+                                    try {
+                                      const url = await presignDownloadUrl(aid);
+                                      window.open(url, "_blank", "noopener,noreferrer");
+                                    } catch {
+                                      // ignore
+                                    }
+                                  }}
+                                >
+                                  СКАЧАТЬ
+                                </Button>
+                              );
+                            })()}
                             <Button
                               variant="outline"
                               className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
@@ -1595,10 +1673,42 @@ export default function SubmodulePage() {
                             sandbox="allow-same-origin allow-scripts allow-forms"
                             title={String(inlineName || "PDF")}
                           />
+                        ) : inlineKind === "office" ? (
+                          <iframe
+                            src={inlineUrl}
+                            className="w-full h-[640px]"
+                            sandbox="allow-same-origin allow-scripts allow-forms"
+                            title={String(inlineName || "OFFICE")}
+                          />
                         ) : inlineKind === "image" ? (
                           <img src={inlineUrl} alt="" className="w-full h-auto" />
                         ) : inlineKind === "text" ? (
-                          <div className="p-4">
+                          <div>
+                            <div className="flex items-center justify-end gap-2 border-b border-zinc-200 bg-white p-4">
+                              {(() => {
+                                const aid = String(inlineAssetId || "").trim();
+                                const nm = String(inlineName || "").trim();
+                                if (!aid) return null;
+                                if (!isTableByNameOrMime(nm, inlineMime)) return null;
+                                return (
+                                  <Button
+                                    variant="outline"
+                                    className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                                    onClick={async () => {
+                                      try {
+                                        const url = await presignDownloadUrl(aid);
+                                        window.open(url, "_blank", "noopener,noreferrer");
+                                      } catch {
+                                        // ignore
+                                      }
+                                    }}
+                                  >
+                                    СКАЧАТЬ
+                                  </Button>
+                                );
+                              })()}
+                            </div>
+                            <div className="p-4">
                             {!inlineTextBlocks.length ? (
                               <div className="text-xs text-zinc-600 font-medium">Не удалось загрузить текст для предпросмотра.</div>
                             ) : (
@@ -1626,6 +1736,7 @@ export default function SubmodulePage() {
                                 )}
                               </div>
                             )}
+                            </div>
                           </div>
                         ) : (
                           <iframe

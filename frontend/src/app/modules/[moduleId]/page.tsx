@@ -116,7 +116,7 @@ export default function ModulePage() {
   const presignCacheRef = useRef<Map<string, { url: string; expiresAt: number }>>(new Map());
   const [inlineKind, setInlineKind] = useState<InlineKind>("iframe");
 
-  const [submodulePrimaryAssetById, setSubmodulePrimaryAssetById] = useState<Record<string, { original_filename: string; mime_type: string | null } | null>>({});
+  const [submodulePrimaryAssetById, setSubmodulePrimaryAssetById] = useState<Record<string, { asset_id: string; original_filename: string; mime_type: string | null } | null>>({});
 
   const [outlinePath, setOutlinePath] = useState<string[]>([]);
 
@@ -307,18 +307,24 @@ export default function ModulePage() {
           return;
         }
 
-        const next: Record<string, { original_filename: string; mime_type: string | null } | null> = {};
+        const next: Record<string, { asset_id: string; original_filename: string; mime_type: string | null } | null> = {};
 
         await Promise.all(
           wants.map(async (s: Submodule) => {
             try {
-              const resp = await apiFetch<{ assets: Array<{ original_filename: string; mime_type: string | null; order?: number }> }>(
+              const resp = await apiFetch<{ assets: Array<{ asset_id: string; original_filename: string; mime_type: string | null; order?: number }> }>(
                 `/modules/submodules/${encodeURIComponent(String(s.id))}/assets`
               );
               const assets = (resp?.assets || []).slice();
               assets.sort((a, b) => Number(a?.order || 0) - Number(b?.order || 0));
               const a0 = assets[0];
-              next[String(s.id)] = a0 ? { original_filename: String(a0.original_filename || ""), mime_type: a0.mime_type ?? null } : null;
+              next[String(s.id)] = a0
+                ? {
+                    asset_id: String(a0.asset_id || ""),
+                    original_filename: String(a0.original_filename || ""),
+                    mime_type: a0.mime_type ?? null,
+                  }
+                : null;
             } catch {
               next[String(s.id)] = null;
             }
@@ -448,6 +454,50 @@ export default function ModulePage() {
       return ext;
     };
     return pick(name) || pick(String(objectKey || ""));
+  }
+
+  function getMaterialTag(a: { original_filename: string; mime_type: string | null; object_key?: string | null } | null): string {
+    if (!a) return "МАТЕРИАЛЫ";
+    const name = String(a.original_filename || "").trim();
+    const mime = String(a.mime_type || "").toLowerCase();
+    const ext = getExtFromNameOrKey(name, (a as any)?.object_key);
+
+    if (isTableFile(a)) return "ТАБЛИЦА";
+
+    if (mime.startsWith("video/") || ["mp4", "webm", "mov", "mkv"].includes(ext)) return "ВИДЕО";
+    if (mime.includes("pdf") || ext === "pdf") return "PDF";
+    if (mime.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "gif", "svg"].includes(ext)) return "ИЗОБРАЖЕНИЕ";
+    if (mime.startsWith("audio/") || ["mp3", "wav", "ogg", "m4a"].includes(ext)) return "АУДИО";
+    if (ext) return `.${ext.toUpperCase()}`;
+    return "ФАЙЛ";
+  }
+
+  function isTableFile(a: { original_filename: string; mime_type: string | null; object_key?: string | null } | null): boolean {
+    if (!a) return false;
+    const name = String(a.original_filename || "").toLowerCase();
+    const mime = String(a.mime_type || "").toLowerCase();
+    const ext = getExtFromNameOrKey(name, (a as any)?.object_key);
+    if (["xls", "xlsx", "csv"].includes(ext)) return true;
+    if (mime.includes("spreadsheet") || mime.includes("ms-excel")) return true;
+    return false;
+  }
+
+  async function onDownloadAsset(assetId: string) {
+    const aid = String(assetId || "").trim();
+    if (!aid) return;
+    try {
+      const r = await apiFetch<{ asset_id: string; download_url: string }>(
+        `/assets/${encodeURIComponent(aid)}/presign-download?action=download`,
+        { method: "GET" }
+      );
+      const url = String((r as any)?.download_url || "").trim();
+      if (!url) throw new Error("missing download url");
+      if (typeof window !== "undefined") {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    } catch {
+      // ignore
+    }
   }
 
   function streamUrl(assetId: string): string {
@@ -1309,6 +1359,9 @@ export default function ModulePage() {
                         const lockedReason = "";
                         const isCurrent = currentSubmoduleId === s.id;
                         const score = displayScore(p);
+                        const a0 = !requiresQuiz ? (submodulePrimaryAssetById[String(s.id)] || null) : null;
+                        const materialTag = !requiresQuiz ? getMaterialTag(a0 as any) : "";
+                        const allowDownload = !requiresQuiz && isTableFile(a0 as any) && String((a0 as any)?.asset_id || "").trim();
 
                         const dotClass = locked
                           ? "bg-zinc-300"
@@ -1334,8 +1387,7 @@ export default function ModulePage() {
                                 {requiresQuiz ? (
                                   <HelpCircle className="h-4 w-4" />
                                 ) : (() => {
-                                    const a0 = submodulePrimaryAssetById[String(s.id)] || null;
-                                    const Icon = a0 ? getAssetIcon(a0) : FileText;
+                                    const Icon = a0 ? getAssetIcon(a0 as any) : FileText;
                                     return <Icon className="h-4 w-4" />;
                                   })()}
                               </div>
@@ -1384,9 +1436,24 @@ export default function ModulePage() {
                                       </span>
                                     </div>
                                   ) : (
-                                    (submodulePrimaryAssetById[String(s.id)] ? (
-                                      <div className="rounded-lg px-3 py-1 text-[9px] font-black uppercase tracking-widest border bg-zinc-100 border-zinc-200 text-zinc-600">
-                                        МАТЕРИАЛЫ
+                                    (a0 ? (
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <div className="rounded-lg px-3 py-1 text-[9px] font-black uppercase tracking-widest border bg-zinc-100 border-zinc-200 text-zinc-600">
+                                          {materialTag}
+                                        </div>
+                                        {allowDownload ? (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.preventDefault();
+                                              e.stopPropagation();
+                                              void onDownloadAsset(String((a0 as any)?.asset_id || ""));
+                                            }}
+                                            className="rounded-lg px-3 py-1 text-[9px] font-black uppercase tracking-widest border bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50"
+                                          >
+                                            СКАЧАТЬ
+                                          </button>
+                                        ) : null}
                                       </div>
                                     ) : null)
                                   )}
@@ -1445,6 +1512,22 @@ export default function ModulePage() {
                           <p className="mt-3 text-sm text-zinc-600 max-w-lg leading-relaxed font-medium">
                             Комплексная проверка знаний по всем темам. Результат фиксируется в отчётах и аналитике.
                           </p>
+                          {typeof progress.final_best_score === "number" ? (
+                            <div className="mt-4">
+                              <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                                <span>Результат</span>
+                                <span className={`tabular-nums ${progress.final_passed ? "text-[#284e13]" : "text-rose-700"}`}>
+                                  {Math.max(0, Math.min(100, Number(progress.final_best_score || 0)))}%
+                                </span>
+                              </div>
+                              <div className="mt-2 h-1 w-full rounded-full bg-zinc-200 overflow-hidden">
+                                <div
+                                  className={`h-full transition-all duration-700 ${progress.final_passed ? "bg-[#284e13]" : "bg-rose-500"}`}
+                                  style={{ width: `${Math.max(0, Math.min(100, Number(progress.final_best_score || 0)))}%` }}
+                                />
+                              </div>
+                            </div>
+                          ) : null}
                           {finalExamLocked ? (
                             <div className="mt-4 text-[10px] font-black uppercase tracking-widest text-zinc-500">
                               Сначала пройдите все тесты уроков
@@ -1589,12 +1672,46 @@ export default function ModulePage() {
           ) : inlineKind === "image" ? (
             <img src={inlineUrl} alt="" className="w-full h-auto" />
           ) : inlineKind === "text" ? (
-            <div className="p-6">
-              <pre className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-800">{inlineText || ""}</pre>
+            <div>
+              <div className="flex items-center justify-end gap-2 p-4">
+                {(() => {
+                  const ext = getExtFromNameOrKey(String(inlineName || ""), null);
+                  const isTable = ["xls", "xlsx", "csv"].includes(String(ext || "").toLowerCase());
+                  const aid = String(inlineAssetId || "").trim();
+                  if (!isTable || !aid) return null;
+                  return (
+                    <Button
+                      variant="outline"
+                      className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                      onClick={() => void onDownloadAsset(aid)}
+                    >
+                      СКАЧАТЬ
+                    </Button>
+                  );
+                })()}
+              </div>
+              <div className="p-6">
+                <pre className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-800">{inlineText || ""}</pre>
+              </div>
             </div>
           ) : inlineKind === "office" ? (
             <div>
               <div className="flex items-center justify-end gap-2 p-4">
+                {(() => {
+                  const ext = getExtFromNameOrKey(String(inlineName || ""), null);
+                  const isTable = ["xls", "xlsx", "csv"].includes(String(ext || "").toLowerCase());
+                  const aid = String(inlineAssetId || "").trim();
+                  if (!isTable || !aid) return null;
+                  return (
+                    <Button
+                      variant="outline"
+                      className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                      onClick={() => void onDownloadAsset(aid)}
+                    >
+                      СКАЧАТЬ
+                    </Button>
+                  );
+                })()}
                 <Button
                   variant="outline"
                   className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"

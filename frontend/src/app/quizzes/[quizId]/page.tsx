@@ -90,6 +90,7 @@ export default function QuizPage() {
     final_passed?: boolean;
     final_quiz_id?: string | null;
     final_submodule_id?: string | null;
+    final_best_score?: number | null;
     submodules?: Array<{ submodule_id: string; passed: boolean; best_score: number | null }>;
   } | null>(null);
 
@@ -105,6 +106,7 @@ export default function QuizPage() {
             final_passed?: boolean;
             final_quiz_id?: string | null;
             final_submodule_id?: string | null;
+            final_best_score?: number | null;
             submodules: Array<{ submodule_id: string; passed: boolean; best_score: number | null }>;
           }>(`/progress/modules/${moduleId}`);
           setModuleProgress(prog);
@@ -270,6 +272,22 @@ export default function QuizPage() {
               <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-8">Панель управления</div>
               
               <div className="space-y-6">
+                {isFinalQuiz && typeof moduleProgress?.final_best_score === "number" ? (
+                  <div className="rounded-2xl border border-zinc-200 bg-white p-4">
+                    <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-zinc-600">
+                      <span>Лучший результат</span>
+                      <span className={`tabular-nums ${moduleProgress?.final_passed ? "text-[#284e13]" : "text-rose-700"}`}>
+                        {Math.max(0, Math.min(100, Number(moduleProgress.final_best_score || 0)))}%
+                      </span>
+                    </div>
+                    <div className="mt-2 h-1 w-full rounded-full bg-zinc-200 overflow-hidden">
+                      <div
+                        className={`h-full transition-all duration-700 ${moduleProgress?.final_passed ? "bg-[#284e13]" : "bg-rose-500"}`}
+                        style={{ width: `${Math.max(0, Math.min(100, Number(moduleProgress.final_best_score || 0)))}%` }}
+                      />
+                    </div>
+                  </div>
+                ) : null}
                 {!quiz ? (
                   <Button
                     className="w-full h-14 rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-sm"

@@ -157,6 +157,8 @@ def presign_download(
     # Enrich meta: this is the most reliable place to log file-level activity.
     # Note: we intentionally treat "presign download" as a learning event, because it reflects intent to open/download.
     act = "view"
+    if str(action or "").strip().lower() == "download":
+        act = "download"
 
     filename = str(asset.original_filename or "").strip() or "file"
     # Hardening: browsers/PDF viewers may mis-handle Content-Disposition filename* values
@@ -170,6 +172,8 @@ def presign_download(
         log.debug("assets: filename normalization failed", exc_info=True)
     quoted = urllib.parse.quote(filename, safe="")
     disposition = f"inline; filename*=UTF-8''{quoted}"
+    if act == "download":
+        disposition = f"attachment; filename*=UTF-8''{quoted}"
 
     meta = {
         "action": act,
