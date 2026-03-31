@@ -561,9 +561,11 @@ export function ModulesTab(props: ModulesTabProps) {
                       const active = String(s.id) === String(selectedSubmoduleId);
                       const isQuizLesson = Boolean((s as any)?.requires_quiz ?? true);
                       const isFolderLesson = Boolean((s as any)?.is_folder);
-                      const isFileLesson = !isQuizLesson && (!isFolderLesson);
                       const hasQuizId = Boolean(String((s as any)?.quiz_id || "").trim());
                       const q = qualityBySubId[String(s.id)] as any;
+                      const questionTotal = q ? Number(q.total || 0) : 0;
+                      const isTestCapable = !isFolderLesson && hasQuizId && questionTotal > 0;
+                      const isFileLesson = !isFolderLesson && !isTestCapable;
                       const ok = q ? !!q.ok : false;
                       const needs = q ? Number(q.needs_regen || 0) : 0;
                       const total = q ? Number(q.total || 0) : 0;
@@ -635,21 +637,20 @@ export function ModulesTab(props: ModulesTabProps) {
                                     ФАЙЛОВЫЙ
                                   </div>
                                 ) : null}
-                                {!isFolderLesson ? (
+                                {!isFolderLesson && isTestCapable ? (
                                   <button
                                     type="button"
                                     onClick={(e) => {
                                       e.preventDefault();
                                       e.stopPropagation();
                                       if (!hasQuizId) return;
-                                      if (!isQuizLesson && isFileLesson) return;
                                       const next = !Boolean((s as any)?.requires_quiz ?? true);
                                       void updateSubmoduleAdmin(String(s.id), { requires_quiz: next });
                                       if (active && !next) {
                                         setSelectedQuizId("");
                                       }
                                     }}
-                                    disabled={!hasQuizId || (!isQuizLesson && isFileLesson)}
+                                    disabled={!hasQuizId}
                                     className={
                                       "inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest transition hover:bg-white active:scale-95 " +
                                       (isQuizLesson
@@ -659,8 +660,6 @@ export function ModulesTab(props: ModulesTabProps) {
                                     title={
                                       !hasQuizId
                                         ? "У урока нет quiz_id"
-                                        : (!isQuizLesson && isFileLesson)
-                                          ? "Файловый урок нельзя сделать тестовым"
                                         : isQuizLesson
                                           ? "Тест обязателен (нажмите чтобы выключить)"
                                           : "Тест выключен (нажмите чтобы включить)"

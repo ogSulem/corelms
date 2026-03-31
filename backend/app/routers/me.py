@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 import json
 import logging
 from fastapi import APIRouter, Depends, Query, Request
@@ -14,6 +15,7 @@ from app.models.assignment import Assignment
 from app.models.audit import LearningEvent
 from app.models.asset import ContentAsset
 from app.models.module import Module, Submodule
+from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User
 from app.schemas.me import (
@@ -318,6 +320,28 @@ def my_recent_activity(db: Session = Depends(get_db), user: User = Depends(get_c
                 "module_id": str(mid),
                 "module_title": str(mtitle),
             }
+
+    assets_ctx_by_id: dict[str, dict] = {}
+    if asset_ids:
+        try:
+            rows = db.execute(
+                select(ContentAsset.id, Submodule.id, Submodule.title, Module.id, Module.title)
+                .select_from(ContentAsset)
+                .join(SubmoduleAssetMap, SubmoduleAssetMap.asset_id == ContentAsset.id)
+                .join(Submodule, Submodule.id == SubmoduleAssetMap.submodule_id)
+                .join(Module, Module.id == Submodule.module_id)
+                .where(ContentAsset.id.in_(asset_ids))
+            ).all()
+            for aid, sid, stitle, mid, mtitle in rows:
+                assets_ctx_by_id[str(aid)] = {
+                    "asset_id": str(aid),
+                    "submodule_id": str(sid),
+                    "submodule_title": str(stitle),
+                    "module_id": str(mid),
+                    "module_title": str(mtitle),
+                }
+        except Exception:
+            assets_ctx_by_id = {}
 
     assets_by_id: dict[str, dict] = {}
     if asset_ids:
@@ -720,26 +744,55 @@ def my_history(
     for e in events:
         kind, title, subtitle, _code = _event_display(e)
         ev_meta = _sanitize_learning_meta(_try_parse_meta(e.meta))
-        module_id = (
-            subs_by_id.get(str(e.ref_id), {}).get("module_id")
-            if e.ref_id and e.type.value == "submodule_opened"
-            else subs_by_quiz_event.get(str(e.ref_id), {}).get("module_id")
-        )
-        module_title = (
-            subs_by_id.get(str(e.ref_id), {}).get("module_title")
-            if e.ref_id and e.type.value == "submodule_opened"
-            else subs_by_quiz_event.get(str(e.ref_id), {}).get("module_title")
-        )
-        submodule_id = (
-            subs_by_id.get(str(e.ref_id), {}).get("submodule_id")
-            if e.ref_id and e.type.value == "submodule_opened"
-            else subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_id")
-        )
-        submodule_title = (
-            subs_by_id.get(str(e.ref_id), {}).get("submodule_title")
-            if e.ref_id and e.type.value == "submodule_opened"
-            else subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_title")
-        )
+        parsed_meta = _try_parse_meta(e.meta)
+
+        module_id = None
+        module_title = None
+        submodule_id = None
+        submodule_title = None
+
+        if e.ref_id and e.type.value == "submodule_opened":
+            module_id = subs_by_id.get(str(e.ref_id), {}).get("module_id")
+            module_title = subs_by_id.get(str(e.ref_id), {}).get("module_title")
+            submodule_id = subs_by_id.get(str(e.ref_id), {}).get("submodule_id")
+            submodule_title = subs_by_id.get(str(e.ref_id), {}).get("submodule_title")
+        elif e.ref_id and e.type.value in ("quiz_started", "quiz_completed"):
+            module_id = subs_by_quiz_event.get(str(e.ref_id), {}).get("module_id")
+            module_title = subs_by_quiz_event.get(str(e.ref_id), {}).get("module_title")
+            submodule_id = subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_id")
+            submodule_title = subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_title")
+        elif e.ref_id and e.type.value == "asset_viewed":
+            # Prefer explicit context recorded by the asset router.
+            try:
+                module_id = str((parsed_meta or {}).get("module_id") or "").strip() or None
+                submodule_id = str((parsed_meta or {}).get("submodule_id") or "").strip() or None
+            except Exception:
+                module_id = None
+                submodule_id = None
+
+            if (not module_id) or (not submodule_id):
+                ctx = assets_ctx_by_id.get(str(e.ref_id), {})
+                module_id = module_id or ctx.get("module_id")
+                module_title = module_title or ctx.get("module_title")
+                submodule_id = submodule_id or ctx.get("submodule_id")
+                submodule_title = submodule_title or ctx.get("submodule_title")
+
+            # If we only got IDs from meta, fill titles.
+            if module_id and not module_title:
+                try:
+                    row = db.execute(select(Module.id, Module.title).where(Module.id == uuid.UUID(module_id))).first()
+                    if row:
+                        module_title = str(row[1])
+                except Exception:
+                    pass
+            if submodule_id and not submodule_title:
+                try:
+                    row = db.execute(select(Submodule.id, Submodule.title).where(Submodule.id == uuid.UUID(submodule_id))).first()
+                    if row:
+                        submodule_title = str(row[1])
+                except Exception:
+                    pass
+
         asset_id = assets_by_id.get(str(e.ref_id), {}).get("asset_id") if e.ref_id else None
         asset_name = assets_by_id.get(str(e.ref_id), {}).get("asset_name") if e.ref_id else None
 
@@ -749,27 +802,31 @@ def my_history(
         elif e.ref_id and e.type.value in ("quiz_started", "quiz_completed") and submodule_id and module_id:
             href = f"/submodules/{submodule_id}?module={module_id}&quiz={e.ref_id}"
 
-        items.append(
-            {
-                "id": str(e.id),
-                "created_at": e.created_at.isoformat(),
-                "kind": kind,
-                "title": title,
-                "subtitle": subtitle or asset_name,
-                "href": href,
-                "event_type": e.type.value,
-                "ref_id": str(e.ref_id) if e.ref_id else None,
-                "meta": ev_meta,
-                "ip": None,
-                "request_id": None,
-                "module_id": module_id,
-                "module_title": module_title,
-                "submodule_id": submodule_id,
-                "submodule_title": submodule_title,
-                "asset_id": asset_id,
-                "asset_name": asset_name,
-            }
-        )
+        item = {
+            "id": f"event:{e.id}",
+            "created_at": e.created_at.isoformat(),
+            "kind": kind,
+            "title": title,
+            "subtitle": subtitle or asset_name,
+            "href": href,
+            "event_type": e.type.value,
+            "ref_id": str(e.ref_id) if e.ref_id else None,
+            "meta": ev_meta,
+            "ip": None,
+            "request_id": None,
+            "module_id": module_id,
+            "module_title": module_title,
+            "submodule_id": submodule_id,
+            "submodule_title": submodule_title,
+            "asset_id": asset_id,
+            "asset_name": asset_name,
+        }
+
+        if e.type.value == "asset_viewed" and not item.get("href"):
+            if submodule_id and module_id:
+                item["href"] = f"/submodules/{submodule_id}?module={module_id}"
+
+        items.append(item)
 
     items.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
     return {"items": items[:take]}

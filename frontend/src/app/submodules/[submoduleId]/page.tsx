@@ -77,6 +77,20 @@ function isTableByNameOrMime(name: string, mimeType: string | null): boolean {
   return false;
 }
 
+function isOfficeViewableByNameOrMime(name: string, mimeType: string | null): boolean {
+  const mime = String(mimeType || "").toLowerCase();
+  const raw = String(name || "").trim().replaceAll("\\", "/");
+  const base = raw.includes("/") ? (raw.split("/").pop() || raw) : raw;
+  const idx = base.lastIndexOf(".");
+  const ext = idx >= 0 ? base.slice(idx + 1).trim().toLowerCase() : "";
+
+  if (["doc", "docx"].includes(ext)) return true;
+  if (isOfficeViewerOnlyByNameOrMime(name, mimeType)) return true;
+  if (mime.includes("officedocument")) return true;
+  if (mime.includes("msword")) return true;
+  return false;
+}
+
 function isPdfByNameOrMime(name: string, mimeType: string | null): boolean {
   const mime = String(mimeType || "").toLowerCase();
   const raw = String(name || "").trim().replaceAll("\\", "/");
@@ -1155,7 +1169,7 @@ export default function SubmodulePage() {
     const mime = String((primaryLessonAsset as any)?.mime_type || "");
 
     if (isPdfByNameOrMime(nm, mime)) return primaryLessonAsset;
-    if (isOfficeViewerOnlyByNameOrMime(nm, mime)) return primaryLessonAsset;
+    if (isOfficeViewableByNameOrMime(nm, mime)) return primaryLessonAsset;
     return null;
   }, [primaryLessonAsset]);
 
@@ -1168,7 +1182,7 @@ export default function SubmodulePage() {
     const mime = String((primaryViewerAsset as any)?.mime_type || "");
     const kind: "pdf" | "office" | null = isPdfByNameOrMime(nm, mime)
       ? "pdf"
-      : isOfficeViewerOnlyByNameOrMime(nm, mime)
+      : isOfficeViewableByNameOrMime(nm, mime)
         ? "office"
         : null;
     if (!kind) return;
@@ -1978,7 +1992,6 @@ export default function SubmodulePage() {
                       <iframe
                         src={primaryViewerUrl}
                         className="w-full h-[640px]"
-                        sandbox="allow-same-origin allow-scripts allow-forms"
                         title={String((primaryViewerAsset as any)?.original_filename || (primaryViewerKind === "office" ? "OFFICE" : "PDF"))}
                       />
                     </div>

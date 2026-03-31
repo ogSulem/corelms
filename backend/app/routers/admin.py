@@ -5846,19 +5846,17 @@ def update_submodule(
             raise HTTPException(status_code=400, detail="cannot enable quiz: submodule has no quiz_id")
 
         if wants:
-            # Product rule: do not allow turning materials-only lessons (file lessons) into quiz lessons.
-            # Those lessons have no stable extractable text, regen will skip them.
+            # Materials-only lessons are imported with a quiz record (legacy DB shape)
+            # but with *zero* questions. Do not allow enabling quiz requirement for those.
             try:
-                obj_key = str(getattr(sub, "content_object_key", None) or "").strip()
+                qid = getattr(sub, "quiz_id", None)
+                total = db.scalar(select(func.count()).select_from(Question).where(Question.quiz_id == qid)) or 0
+                if int(total) <= 0:
+                    raise HTTPException(status_code=400, detail="cannot enable quiz: lesson has no questions")
+            except HTTPException:
+                raise
             except Exception:
-                obj_key = ""
-            if obj_key:
-                raise HTTPException(status_code=400, detail="cannot enable quiz for file lesson")
-
-            txt = str(getattr(sub, "content", "") or "")
-            if not bool(is_useful_quiz_text(txt)):
-                raise HTTPException(status_code=400, detail="cannot enable quiz: lesson has no useful text")
-
+                raise HTTPException(status_code=400, detail="cannot enable quiz: lesson has no questions")
         sub.requires_quiz = wants
 
     db.add(sub)
@@ -6567,6 +6565,28 @@ def admin_user_history(
         for aid, name in rows:
             assets_by_id[str(aid)] = {"asset_id": str(aid), "asset_name": str(name)}
 
+    assets_ctx_by_id: dict[str, dict] = {}
+    if asset_ids:
+        try:
+            rows = db.execute(
+                select(ContentAsset.id, Submodule.id, Submodule.title, Module.id, Module.title)
+                .select_from(ContentAsset)
+                .join(SubmoduleAssetMap, SubmoduleAssetMap.asset_id == ContentAsset.id)
+                .join(Submodule, Submodule.id == SubmoduleAssetMap.submodule_id)
+                .join(Module, Module.id == Submodule.module_id)
+                .where(ContentAsset.id.in_(asset_ids))
+            ).all()
+            for aid, sid, stitle, mid, mtitle in rows:
+                assets_ctx_by_id[str(aid)] = {
+                    "asset_id": str(aid),
+                    "submodule_id": str(sid),
+                    "submodule_title": str(stitle),
+                    "module_id": str(mid),
+                    "module_title": str(mtitle),
+                }
+        except Exception:
+            assets_ctx_by_id = {}
+
     def _try_parse_meta(meta: str | None) -> dict | None:
         if not meta:
             return None
@@ -6772,26 +6792,52 @@ def admin_user_history(
     for e in events:
         kind, title, subtitle = _event_display(e)
         ev_meta = _sanitize_learning_meta(_try_parse_meta(e.meta))
-        module_id = (
-            subs_by_id.get(str(e.ref_id), {}).get("module_id")
-            if e.ref_id and e.type.value == "submodule_opened"
-            else subs_by_quiz_event.get(str(e.ref_id), {}).get("module_id")
-        )
-        module_title = (
-            subs_by_id.get(str(e.ref_id), {}).get("module_title")
-            if e.ref_id and e.type.value == "submodule_opened"
-            else subs_by_quiz_event.get(str(e.ref_id), {}).get("module_title")
-        )
-        submodule_id = (
-            subs_by_id.get(str(e.ref_id), {}).get("submodule_id")
-            if e.ref_id and e.type.value == "submodule_opened"
-            else subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_id")
-        )
-        submodule_title = (
-            subs_by_id.get(str(e.ref_id), {}).get("submodule_title")
-            if e.ref_id and e.type.value == "submodule_opened"
-            else subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_title")
-        )
+        parsed_meta = _try_parse_meta(e.meta)
+
+        module_id = None
+        module_title = None
+        submodule_id = None
+        submodule_title = None
+
+        if e.ref_id and e.type.value == "submodule_opened":
+            module_id = subs_by_id.get(str(e.ref_id), {}).get("module_id")
+            module_title = subs_by_id.get(str(e.ref_id), {}).get("module_title")
+            submodule_id = subs_by_id.get(str(e.ref_id), {}).get("submodule_id")
+            submodule_title = subs_by_id.get(str(e.ref_id), {}).get("submodule_title")
+        elif e.ref_id and e.type.value in ("quiz_started", "quiz_completed"):
+            module_id = subs_by_quiz_event.get(str(e.ref_id), {}).get("module_id")
+            module_title = subs_by_quiz_event.get(str(e.ref_id), {}).get("module_title")
+            submodule_id = subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_id")
+            submodule_title = subs_by_quiz_event.get(str(e.ref_id), {}).get("submodule_title")
+        elif e.ref_id and e.type.value == "asset_viewed":
+            try:
+                module_id = str((parsed_meta or {}).get("module_id") or "").strip() or None
+                submodule_id = str((parsed_meta or {}).get("submodule_id") or "").strip() or None
+            except Exception:
+                module_id = None
+                submodule_id = None
+
+            if (not module_id) or (not submodule_id):
+                ctx = assets_ctx_by_id.get(str(e.ref_id), {})
+                module_id = module_id or ctx.get("module_id")
+                module_title = module_title or ctx.get("module_title")
+                submodule_id = submodule_id or ctx.get("submodule_id")
+                submodule_title = submodule_title or ctx.get("submodule_title")
+
+            if module_id and not module_title:
+                try:
+                    row = db.execute(select(Module.id, Module.title).where(Module.id == uuid.UUID(module_id))).first()
+                    if row:
+                        module_title = str(row[1])
+                except Exception:
+                    pass
+            if submodule_id and not submodule_title:
+                try:
+                    row = db.execute(select(Submodule.id, Submodule.title).where(Submodule.id == uuid.UUID(submodule_id))).first()
+                    if row:
+                        submodule_title = str(row[1])
+                except Exception:
+                    pass
         asset_id = assets_by_id.get(str(e.ref_id), {}).get("asset_id") if e.ref_id else None
         asset_name = assets_by_id.get(str(e.ref_id), {}).get("asset_name") if e.ref_id else None
 
