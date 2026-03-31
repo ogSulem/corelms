@@ -77,6 +77,32 @@ function isTableByNameOrMime(name: string, mimeType: string | null): boolean {
   return false;
 }
 
+function isPdfByNameOrMime(name: string, mimeType: string | null): boolean {
+  const mime = String(mimeType || "").toLowerCase();
+  const raw = String(name || "").trim().replaceAll("\\", "/");
+  const base = raw.includes("/") ? (raw.split("/").pop() || raw) : raw;
+  const idx = base.lastIndexOf(".");
+  const ext = idx >= 0 ? base.slice(idx + 1).trim().toLowerCase() : "";
+  if (ext === "pdf") return true;
+  if (mime.includes("pdf")) return true;
+  return false;
+}
+
+function isOfficeViewerOnlyByNameOrMime(name: string, mimeType: string | null): boolean {
+  const mime = String(mimeType || "").toLowerCase();
+  const raw = String(name || "").trim().replaceAll("\\", "/");
+  const base = raw.includes("/") ? (raw.split("/").pop() || raw) : raw;
+  const idx = base.lastIndexOf(".");
+  const ext = idx >= 0 ? base.slice(idx + 1).trim().toLowerCase() : "";
+
+  // viewer-only office types
+  if (["ppt", "pptx", "xls", "xlsx"].includes(ext)) return true;
+  if (mime.includes("ms-powerpoint") || mime.includes("powerpoint")) return true;
+  if (mime.includes("ms-excel") || mime.includes("spreadsheet")) return true;
+
+  return false;
+}
+
 function normalizeOptionLabel(ch: string): string | null {
   const c = String(ch || "").trim().toUpperCase();
   const map: Record<string, string> = { "А": "A", "Б": "B", "В": "C", "Г": "D", "Д": "E" };
@@ -206,6 +232,9 @@ export default function SubmodulePage() {
   const [inlineText, setInlineText] = useState<string | null>(null);
   const [inlineAssetId, setInlineAssetId] = useState<string | null>(null);
   const [inlineKind, setInlineKind] = useState<InlineKind>("iframe");
+
+  const [primaryViewerUrl, setPrimaryViewerUrl] = useState<string | null>(null);
+  const [primaryViewerKind, setPrimaryViewerKind] = useState<"pdf" | "office" | null>(null);
 
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isSpeakPaused, setIsSpeakPaused] = useState(false);
@@ -1115,7 +1144,58 @@ export default function SubmodulePage() {
     setInlineAssetId(null);
     setInlineKind("iframe");
     setAssetNavPath([]);
+
+    setPrimaryViewerUrl(null);
+    setPrimaryViewerKind(null);
   }, [submoduleId]);
+
+  const primaryViewerAsset = useMemo<AssetLike | null>(() => {
+    if (!primaryLessonAsset) return null;
+    const nm = String((primaryLessonAsset as any)?.original_filename || (primaryLessonAsset as any)?.title || "");
+    const mime = String((primaryLessonAsset as any)?.mime_type || "");
+
+    if (isPdfByNameOrMime(nm, mime)) return primaryLessonAsset;
+    if (isOfficeViewerOnlyByNameOrMime(nm, mime)) return primaryLessonAsset;
+    return null;
+  }, [primaryLessonAsset]);
+
+  useEffect(() => {
+    if (!primaryViewerAsset) return;
+    const aid = String((primaryViewerAsset as any)?.asset_id || "").trim();
+    if (!aid) return;
+
+    const nm = String((primaryViewerAsset as any)?.original_filename || (primaryViewerAsset as any)?.title || "");
+    const mime = String((primaryViewerAsset as any)?.mime_type || "");
+    const kind: "pdf" | "office" | null = isPdfByNameOrMime(nm, mime)
+      ? "pdf"
+      : isOfficeViewerOnlyByNameOrMime(nm, mime)
+        ? "office"
+        : null;
+    if (!kind) return;
+
+    let canceled = false;
+    (async () => {
+      try {
+        const u0 = await presignViewUrl(aid);
+        const u = kind === "office" ? `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(u0)}` : u0;
+        if (!canceled) {
+          setPrimaryViewerKind(kind);
+          setPrimaryViewerUrl(u);
+        }
+      } catch {
+        if (!canceled) {
+          setPrimaryViewerKind(null);
+          setPrimaryViewerUrl(null);
+        }
+      }
+    })();
+
+    return () => {
+      canceled = true;
+    };
+  }, [primaryViewerAsset]);
+
+  const hideLessonText = Boolean(primaryViewerUrl && primaryViewerKind);
 
   useEffect(() => {
     if (!isFileLesson) return;
@@ -1761,7 +1841,7 @@ export default function SubmodulePage() {
 
                 
                 <div className="max-w-none break-words hyphens-auto text-zinc-700 text-[17px] leading-relaxed">
-                  {isFileLesson ? null : (
+                  {isFileLesson ? null : hideLessonText ? null : (
                     <div className="not-prose mb-6 rounded-2xl border border-zinc-200 bg-white p-4">
                       <div className="flex flex-wrap items-center gap-2">
                         <Button
@@ -1884,47 +1964,68 @@ export default function SubmodulePage() {
                       </div>
                     </div>
                   )}
-                  {isFileLesson ? null : (
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      className="max-w-[860px] text-[15px] leading-7 text-zinc-900"
-                      components={{
-                        h1: ({ children }: { children?: ReactNode }) => (
-                          <h1 className="mt-8 mb-3 text-2xl font-black tracking-tight text-zinc-950">{children}</h1>
-                        ),
-                        h2: ({ children }: { children?: ReactNode }) => (
-                          <h2 className="mt-7 mb-3 text-xl font-black tracking-tight text-zinc-950">{children}</h2>
-                        ),
-                        h3: ({ children }: { children?: ReactNode }) => (
-                          <h3 className="mt-6 mb-2 text-lg font-black tracking-tight text-zinc-950">{children}</h3>
-                        ),
-                        p: ({ children }: { children?: ReactNode }) => (
-                          <p className="my-4 whitespace-pre-line break-words leading-7 text-zinc-900">{children}</p>
-                        ),
-                        ul: ({ children }: { children?: ReactNode }) => <ul className="my-3 list-disc pl-6 space-y-2">{children}</ul>,
-                        ol: ({ children }: { children?: ReactNode }) => <ol className="my-5 list-decimal pl-8 space-y-3">{children}</ol>,
-                        li: ({ children }: { children?: ReactNode }) => (
-                          <li className="pl-1 whitespace-pre-line break-words leading-7 marker:font-black marker:text-zinc-400">{children}</li>
-                        ),
-                        a: ({ children, href }: { children?: ReactNode; href?: string }) => (
-                          <a className="text-[#fe9900] font-bold underline underline-offset-4" href={href} target="_blank" rel="noopener noreferrer">
-                            {children}
-                          </a>
-                        ),
-                        code: ({ children }: { children?: ReactNode }) => (
-                          <code className="rounded-md bg-zinc-100 px-1.5 py-0.5 font-mono text-[0.92em] text-zinc-900">{children}</code>
-                        ),
-                        pre: ({ children }: { children?: ReactNode }) => (
-                          <pre className="my-4 overflow-auto rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-xs leading-relaxed text-zinc-900">{children}</pre>
-                        ),
-                        hr: () => <hr className="my-6 border-zinc-200" />,
-                        blockquote: ({ children }: { children?: ReactNode }) => (
-                          <blockquote className="my-6 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/10 p-5 text-zinc-950">{children}</blockquote>
-                        ),
-                      }}
-                    >
-                      {lessonMarkdownForDisplay.trim() || "Загрузка контента..."}
-                    </ReactMarkdown>
+                  {(primaryViewerAsset && primaryViewerUrl && primaryViewerKind) ? (
+                    <div className="mb-8 overflow-hidden rounded-[24px] border border-zinc-200 bg-white shadow-sm">
+                      <div className="flex items-center justify-end gap-2 border-b border-zinc-200 bg-white p-4">
+                        <Button
+                          variant="outline"
+                          className="h-9 rounded-xl font-black uppercase tracking-widest text-[9px]"
+                          onClick={() => window.open(primaryViewerUrl, "_blank", "noopener,noreferrer")}
+                        >
+                          ОТКРЫТЬ В НОВОЙ ВКЛАДКЕ
+                        </Button>
+                      </div>
+                      <iframe
+                        src={primaryViewerUrl}
+                        className="w-full h-[640px]"
+                        sandbox="allow-same-origin allow-scripts allow-forms"
+                        title={String((primaryViewerAsset as any)?.original_filename || (primaryViewerKind === "office" ? "OFFICE" : "PDF"))}
+                      />
+                    </div>
+                  ) : null}
+
+                  {isFileLesson ? null : hideLessonText ? null : (
+                    <div>
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        className="max-w-[860px] text-[15px] leading-7 text-zinc-900"
+                        components={{
+                          h1: ({ children }) => (
+                            <h1 className="text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-tight mb-6">{children}</h1>
+                          ),
+                          h2: ({ children }) => (
+                            <h2 className="text-xl font-black tracking-tighter text-zinc-950 uppercase leading-tight mt-10 mb-4">{children}</h2>
+                          ),
+                          h3: ({ children }) => (
+                            <h3 className="text-lg font-black tracking-tighter text-zinc-950 uppercase leading-tight mt-8 mb-3">{children}</h3>
+                          ),
+                          p: ({ children }) => <p className="text-[15px] leading-7 text-zinc-800 font-medium mb-4">{children}</p>,
+                          ul: ({ children }) => <ul className="list-disc pl-6 space-y-2 mb-4">{children}</ul>,
+                          li: ({ children }) => <li className="text-[15px] leading-7 text-zinc-800 font-medium">{children}</li>,
+                          a: ({ href, children }) => (
+                            <a href={href} target="_blank" rel="noopener noreferrer" className="text-[#fe9900] font-black underline">
+                              {children}
+                            </a>
+                          ),
+                          code: ({ children }: { children?: ReactNode }) => (
+                            <code className="rounded-md bg-zinc-100 px-1.5 py-0.5 font-mono text-[0.92em] text-zinc-900">{children}</code>
+                          ),
+                          pre: ({ children }: { children?: ReactNode }) => (
+                            <pre className="my-4 overflow-auto rounded-2xl border border-zinc-200 bg-zinc-50 p-4 text-xs leading-relaxed text-zinc-900">
+                              {children}
+                            </pre>
+                          ),
+                          hr: () => <hr className="my-6 border-zinc-200" />,
+                          blockquote: ({ children }: { children?: ReactNode }) => (
+                            <blockquote className="my-6 rounded-2xl border border-[#fe9900]/25 bg-[#fe9900]/10 p-5 text-zinc-950">
+                              {children}
+                            </blockquote>
+                          ),
+                        }}
+                      >
+                        {lessonMarkdownForDisplay.trim() || "Загрузка контента..."}
+                      </ReactMarkdown>
+                    </div>
                   )}
                 </div>
               </div>

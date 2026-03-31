@@ -1332,7 +1332,7 @@ export default function ModulePage() {
                                       <Folder className="h-4 w-4" />
                                     </div>
                                     <span className="text-sm font-black text-zinc-600 tabular-nums uppercase">—</span>
-                                    <h4 className="text-base font-black text-zinc-950 uppercase tracking-tighter break-words leading-snug">{name}</h4>
+                                    <h4 className="min-w-0 text-base font-black text-zinc-950 uppercase tracking-tighter whitespace-normal break-all leading-snug">{name}</h4>
                                   </div>
                                   <div className="mt-4 flex flex-wrap items-center gap-3">
                                     <div className="rounded-lg px-3 py-1 text-[9px] font-black uppercase tracking-widest border bg-zinc-100 border-zinc-200 text-zinc-600">
@@ -1392,7 +1392,7 @@ export default function ModulePage() {
                                   })()}
                               </div>
                                 <span className="text-sm font-black text-zinc-600 tabular-nums uppercase">{String(s.order).padStart(2, '0')}</span>
-                                <h4 className="text-base font-black text-zinc-950 uppercase tracking-tighter break-words leading-snug">
+                                <h4 className="min-w-0 text-base font-black text-zinc-950 uppercase tracking-tighter whitespace-normal break-all leading-snug">
                                   {s.title}
                                 </h4>
                               </div>

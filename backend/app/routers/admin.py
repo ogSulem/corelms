@@ -5841,9 +5841,25 @@ def update_submodule(
     }
 
     if body.requires_quiz is not None:
-        if bool(body.requires_quiz) and getattr(sub, "quiz_id", None) is None:
+        wants = bool(body.requires_quiz)
+        if wants and getattr(sub, "quiz_id", None) is None:
             raise HTTPException(status_code=400, detail="cannot enable quiz: submodule has no quiz_id")
-        sub.requires_quiz = bool(body.requires_quiz)
+
+        if wants:
+            # Product rule: do not allow turning materials-only lessons (file lessons) into quiz lessons.
+            # Those lessons have no stable extractable text, regen will skip them.
+            try:
+                obj_key = str(getattr(sub, "content_object_key", None) or "").strip()
+            except Exception:
+                obj_key = ""
+            if obj_key:
+                raise HTTPException(status_code=400, detail="cannot enable quiz for file lesson")
+
+            txt = str(getattr(sub, "content", "") or "")
+            if not bool(is_useful_quiz_text(txt)):
+                raise HTTPException(status_code=400, detail="cannot enable quiz: lesson has no useful text")
+
+        sub.requires_quiz = wants
 
     db.add(sub)
     db.commit()
@@ -6284,6 +6300,45 @@ def get_user_detail(
         .limit(20)
     ).all()
 
+    sub_ids = [e.ref_id for e in (recent_events or []) if e.ref_id is not None and getattr(e.type, "value", str(e.type)) == "submodule_opened"]
+    quiz_ids = [
+        e.ref_id
+        for e in (recent_events or [])
+        if e.ref_id is not None and getattr(e.type, "value", str(e.type)) in ("quiz_started", "quiz_completed")
+    ]
+
+    subs_by_id: dict[str, dict] = {}
+    if sub_ids:
+        rows = db.execute(
+            select(Submodule.id, Submodule.title, Module.id, Module.title)
+            .select_from(Submodule)
+            .join(Module, Module.id == Submodule.module_id)
+            .where(Submodule.id.in_(sub_ids))
+        ).all()
+        for sid, stitle, mid, mtitle in rows:
+            subs_by_id[str(sid)] = {
+                "submodule_id": str(sid),
+                "submodule_title": str(stitle),
+                "module_id": str(mid),
+                "module_title": str(mtitle),
+            }
+
+    subs_by_quiz: dict[str, dict] = {}
+    if quiz_ids:
+        rows = db.execute(
+            select(Submodule.quiz_id, Submodule.id, Submodule.title, Module.id, Module.title)
+            .select_from(Submodule)
+            .join(Module, Module.id == Submodule.module_id)
+            .where(Submodule.quiz_id.in_(quiz_ids))
+        ).all()
+        for qid, sid, stitle, mid, mtitle in rows:
+            subs_by_quiz[str(qid)] = {
+                "submodule_id": str(sid),
+                "submodule_title": str(stitle),
+                "module_id": str(mid),
+                "module_title": str(mtitle),
+            }
+
     history = []
     for ev in recent_events:
         et = None
@@ -6311,12 +6366,28 @@ def get_user_detail(
         except Exception:
             meta_val = {}
 
-        history.append({
-            "id": str(ev.id),
-            "event_type": (et.value if hasattr(et, "value") else str(et)) if et is not None else "",
-            "created_at": ev.created_at.isoformat(),
-            "meta": meta_val or {},
-        })
+        et_val = (et.value if hasattr(et, "value") else str(et)) if et is not None else ""
+        ctx = {}
+        try:
+            if et_val == "submodule_opened" and ev.ref_id is not None:
+                ctx = subs_by_id.get(str(ev.ref_id), {})
+            elif et_val in ("quiz_started", "quiz_completed") and ev.ref_id is not None:
+                ctx = subs_by_quiz.get(str(ev.ref_id), {})
+        except Exception:
+            ctx = {}
+
+        history.append(
+            {
+                "id": str(ev.id),
+                "event_type": et_val,
+                "created_at": ev.created_at.isoformat(),
+                "meta": meta_val or {},
+                "module_id": ctx.get("module_id"),
+                "module_title": ctx.get("module_title"),
+                "submodule_id": ctx.get("submodule_id"),
+                "submodule_title": ctx.get("submodule_title"),
+            }
+        )
 
     return {
         "id": str(u.id),

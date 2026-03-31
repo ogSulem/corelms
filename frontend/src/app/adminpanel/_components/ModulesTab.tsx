@@ -642,13 +642,14 @@ export function ModulesTab(props: ModulesTabProps) {
                                       e.preventDefault();
                                       e.stopPropagation();
                                       if (!hasQuizId) return;
+                                      if (!isQuizLesson && isFileLesson) return;
                                       const next = !Boolean((s as any)?.requires_quiz ?? true);
                                       void updateSubmoduleAdmin(String(s.id), { requires_quiz: next });
                                       if (active && !next) {
                                         setSelectedQuizId("");
                                       }
                                     }}
-                                    disabled={!hasQuizId}
+                                    disabled={!hasQuizId || (!isQuizLesson && isFileLesson)}
                                     className={
                                       "inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest transition hover:bg-white active:scale-95 " +
                                       (isQuizLesson
@@ -658,6 +659,8 @@ export function ModulesTab(props: ModulesTabProps) {
                                     title={
                                       !hasQuizId
                                         ? "У урока нет quiz_id"
+                                        : (!isQuizLesson && isFileLesson)
+                                          ? "Файловый урок нельзя сделать тестовым"
                                         : isQuizLesson
                                           ? "Тест обязателен (нажмите чтобы выключить)"
                                           : "Тест выключен (нажмите чтобы включить)"

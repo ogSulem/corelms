@@ -128,6 +128,8 @@ export function UsersTab(props: UsersTabProps) {
   const [draftEmail, setDraftEmail] = useState<string>("");
   const [draftRole, setDraftRole] = useState<"employee" | "admin" | "superadmin">("employee");
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [modulesListOpen, setModulesListOpen] = useState(false);
+  const [modulesListKind, setModulesListKind] = useState<"in_progress" | "completed">("in_progress");
 
   const [tagDraft, setTagDraft] = useState<string[]>([]);
   const [tagSaving, setTagSaving] = useState(false);
@@ -749,10 +751,24 @@ export function UsersTab(props: UsersTabProps) {
 
                 <div className="mt-6 grid gap-6 sm:grid-cols-2">
                   <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-4">В процессе</div>
+                    <div className="flex items-center justify-between gap-4 mb-4">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">В процессе</div>
+                      {userDetail.modules_progress.in_progress.length > 2 ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModulesListKind("in_progress");
+                            setModulesListOpen(true);
+                          }}
+                          className="text-[9px] font-black uppercase tracking-widest text-[#fe9900] hover:underline"
+                        >
+                          ПОДРОБНЕЕ
+                        </button>
+                      ) : null}
+                    </div>
                     {userDetail.modules_progress.in_progress.length > 0 ? (
                       <div className="space-y-3">
-                        {userDetail.modules_progress.in_progress.map((m: { module_id: string; title: string; percent: number }) => (
+                        {userDetail.modules_progress.in_progress.slice(0, 2).map((m: { module_id: string; title: string; percent: number }) => (
                           <div key={m.module_id} className="space-y-2">
                             <div className="flex items-center justify-between gap-4">
                               <div className="text-[11px] font-black text-zinc-950 truncate">{m.title}</div>
@@ -770,10 +786,24 @@ export function UsersTab(props: UsersTabProps) {
                   </div>
 
                   <div className="rounded-2xl border border-zinc-200 bg-white p-5">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-4">Завершено</div>
+                    <div className="flex items-center justify-between gap-4 mb-4">
+                      <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Завершено</div>
+                      {userDetail.modules_progress.completed.length > 2 ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModulesListKind("completed");
+                            setModulesListOpen(true);
+                          }}
+                          className="text-[9px] font-black uppercase tracking-widest text-[#fe9900] hover:underline"
+                        >
+                          ПОДРОБНЕЕ
+                        </button>
+                      ) : null}
+                    </div>
                     {userDetail.modules_progress.completed.length > 0 ? (
                       <div className="space-y-2">
-                        {userDetail.modules_progress.completed.map((m: { module_id: string; title: string }) => (
+                        {userDetail.modules_progress.completed.slice(0, 2).map((m: { module_id: string; title: string }) => (
                           <div key={m.module_id} className="flex items-center justify-between gap-4 rounded-xl bg-zinc-50 p-2 border border-zinc-100">
                             <div className="text-[11px] font-black text-zinc-950 truncate">{m.title}</div>
                             <div className="flex h-5 w-5 items-center justify-center rounded-full bg-[#284e13] text-[8px] text-white">✓</div>
@@ -885,6 +915,11 @@ export function UsersTab(props: UsersTabProps) {
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
                       <div className="text-[11px] font-black text-zinc-950 uppercase tracking-tight truncate">{h.title}</div>
+                      {(h as any)?.module_title ? (
+                        <div className="mt-1 text-[10px] font-bold text-zinc-700 uppercase tracking-tight truncate">
+                          МОДУЛЬ: {(h as any).module_title}
+                        </div>
+                      ) : null}
                       {h.subtitle ? (
                         <div className="mt-1 text-[10px] font-bold text-zinc-500 uppercase tracking-tight truncate">{h.subtitle}</div>
                       ) : null}
@@ -900,6 +935,49 @@ export function UsersTab(props: UsersTabProps) {
 
           <div className="flex justify-end">
             <Button variant="outline" className="rounded-2xl" onClick={() => setHistoryOpen(false)}>
+              Закрыть
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={modulesListOpen}
+        onClose={() => setModulesListOpen(false)}
+        title={modulesListKind === "completed" ? "Завершённые модули" : "Модули в процессе"}
+        className="max-w-[min(92vw,860px)]"
+      >
+        <div className="space-y-4">
+          <div className="max-h-[70vh] overflow-auto pr-1 space-y-2">
+            {(() => {
+              const mp = (userDetail as any)?.modules_progress;
+              const list: any[] = Array.isArray(mp?.[modulesListKind]) ? mp[modulesListKind] : [];
+              return list.map((m: any) => (
+                <div key={String(m.module_id)} className="rounded-2xl border border-zinc-100 bg-zinc-50/50 p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-black text-zinc-950 uppercase tracking-tight truncate">{String(m.title || "")}</div>
+                    </div>
+                    {modulesListKind === "completed" ? (
+                      <div className="flex h-6 w-6 items-center justify-center rounded-full bg-[#284e13] text-[9px] text-white">✓</div>
+                    ) : (
+                      <div className="text-[10px] font-black text-[#fe9900] tabular-nums shrink-0">{Number(m.percent || 0)}%</div>
+                    )}
+                  </div>
+                  {modulesListKind !== "completed" ? (
+                    <div className="mt-3 h-1.5 w-full rounded-full bg-zinc-100 overflow-hidden">
+                      <div
+                        className="h-full bg-[#fe9900] transition-all duration-500"
+                        style={{ width: `${Math.max(0, Math.min(100, Number(m.percent || 0)))}%` }}
+                      />
+                    </div>
+                  ) : null}
+                </div>
+              ));
+            })()}
+          </div>
+          <div className="flex justify-end">
+            <Button variant="outline" className="rounded-2xl" onClick={() => setModulesListOpen(false)}>
               Закрыть
             </Button>
           </div>
