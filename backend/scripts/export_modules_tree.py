@@ -35,6 +35,16 @@ def _normalize_path(s: str) -> list[str]:
     return parts
 
 
+def _outline_parts(s: Submodule) -> list[str]:
+    try:
+        p = str(getattr(s, "outline_path", "") or "").strip().replace("\\", "/")
+    except Exception:
+        p = ""
+    if not p:
+        return []
+    return [seg.strip() for seg in p.split("/") if seg.strip()]
+
+
 def _insert_path(root: Node, parts: list[str]) -> None:
     if not parts:
         return
@@ -91,6 +101,17 @@ def export_modules_tree(*, out_path: str, include_module_assets: bool) -> int:
 
             subs = db.scalars(select(Submodule).where(Submodule.module_id == m.id)).all()
             for s in subs:
+                prefix_parts: list[str] = []
+                try:
+                    prefix_parts.extend(_outline_parts(s))
+                except Exception:
+                    prefix_parts = []
+
+                is_folder = bool(getattr(s, "is_folder", False))
+                if is_folder:
+                    folder_title = str(getattr(s, "title", "") or "").strip() or "Папка"
+                    prefix_parts.append(folder_title)
+
                 rows = db.execute(
                     select(SubmoduleAssetMap.order, ContentAsset)
                     .join(ContentAsset, ContentAsset.id == SubmoduleAssetMap.asset_id)
@@ -101,7 +122,7 @@ def export_modules_tree(*, out_path: str, include_module_assets: bool) -> int:
                     parts = _normalize_path(getattr(a, "original_filename", "") or "")
                     if not parts:
                         parts = [str(getattr(a, "object_key", "") or "") or str(getattr(a, "id", ""))]
-                    _insert_path(module_tree, parts)
+                    _insert_path(module_tree, list(prefix_parts) + parts)
 
             if include_module_assets:
                 try:
@@ -120,7 +141,7 @@ def export_modules_tree(*, out_path: str, include_module_assets: bool) -> int:
                         parts = _normalize_path(getattr(a, "original_filename", "") or "")
                         if not parts:
                             parts = [str(getattr(a, "object_key", "") or "") or str(getattr(a, "id", ""))]
-                        _insert_path(module_tree, parts)
+                        _insert_path(module_tree, ["_module"] + parts)
                 except Exception:
                     pass
 
