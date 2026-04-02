@@ -814,6 +814,11 @@ export default function ModulePage() {
       })
       .slice()
       .sort((a: any, b: any) => {
+        const aOrder = Number(a?.order);
+        const bOrder = Number(b?.order);
+        const aoN = Number.isFinite(aOrder) ? aOrder : 999999;
+        const boN = Number.isFinite(bOrder) ? bOrder : 999999;
+        if (aoN !== boN) return aoN - boN;
         const at = String(a?.title || "");
         const bt = String(b?.title || "");
         const ao = naturalPrefixOrder(at, 999999);
@@ -1013,6 +1018,11 @@ export default function ModulePage() {
                           {(outlinePath.length ? folderSubmodules : rootFolderSubmodules)
                             .slice()
                             .sort((a: any, b: any) => {
+                              const aOrder = Number(a?.order);
+                              const bOrder = Number(b?.order);
+                              const aoN = Number.isFinite(aOrder) ? aOrder : 999999;
+                              const boN = Number.isFinite(bOrder) ? bOrder : 999999;
+                              if (aoN !== boN) return aoN - boN;
                               const ao = naturalPrefixOrder(String(a?.title || ""), 999999);
                               const bo = naturalPrefixOrder(String(b?.title || ""), 999999);
                               if (ao !== bo) return ao - bo;

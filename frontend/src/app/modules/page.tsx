@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/lib/hooks/use-auth";
 
 type ModuleItem = {
   id: string;
@@ -26,12 +27,15 @@ type ModuleItem = {
 };
 
 export default function ModulesPage() {
+  const { user } = useAuth();
   const [items, setItems] = useState<ModuleItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const [query, setQuery] = useState("");
+
+  const isAdmin = (user?.role === "admin" || user?.role === "superadmin");
 
   const reloadInFlightRef = useRef(false);
   const lastReloadAtRef = useRef(0);
@@ -330,16 +334,24 @@ export default function ModulesPage() {
           <div className="mt-10 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-12 text-center shadow-2xl shadow-zinc-950/10">
             <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-4">Контент</div>
             <div className="text-2xl font-black tracking-tighter text-zinc-950 uppercase">Модулей пока нет</div>
-            <div className="mt-4 text-sm text-zinc-600 font-medium uppercase tracking-tight">
-              Добавьте первый модуль через админ‑центр (импорт ZIP).
-            </div>
-            <div className="mt-8">
-              <Link href="/adminpanel">
-                <Button className="h-14 px-10 rounded-2xl">
-                  Открыть админ‑центр
-                </Button>
-              </Link>
-            </div>
+            {isAdmin ? (
+              <>
+                <div className="mt-4 text-sm text-zinc-600 font-medium uppercase tracking-tight">
+                  Добавьте первый модуль через админ‑центр (импорт ZIP).
+                </div>
+                <div className="mt-8">
+                  <Link href="/adminpanel">
+                    <Button className="h-14 px-10 rounded-2xl">
+                      Открыть админ‑центр
+                    </Button>
+                  </Link>
+                </div>
+              </>
+            ) : (
+              <div className="mt-4 text-sm text-zinc-600 font-medium uppercase tracking-tight">
+                Модули появятся здесь после публикации. Если нужно — обратитесь к администратору.
+              </div>
+            )}
           </div>
         ) : null}
       </div>

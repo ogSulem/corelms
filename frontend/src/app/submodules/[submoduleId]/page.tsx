@@ -214,6 +214,7 @@ export default function SubmodulePage() {
   const [submodule, setSubmodule] = useState<SubmoduleMeta | null>(null);
   const [moduleMeta, setModuleMeta] = useState<ModuleMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [effectiveModuleId, setEffectiveModuleId] = useState<string>("");
   const [moduleProgress, setModuleProgress] = useState<{
     passed: number;
     total: number;
@@ -882,14 +883,15 @@ export default function SubmodulePage() {
       );
       setSubmoduleAssets(Array.isArray((sa as any)?.assets) ? ((sa as any).assets as any) : []);
 
-      const effectiveModuleId = String(moduleId || meta?.module_id || "").trim();
-      if (effectiveModuleId) {
+      const effMid = String(moduleId || meta?.module_id || "").trim();
+      setEffectiveModuleId(effMid);
+      if (effMid) {
         const ma = await apiFetch<{ module_id: string; assets: ModuleAsset[] }>(
-          `/modules/${effectiveModuleId}/assets`
+          `/modules/${effMid}/assets`
         );
         setModuleAssets(ma.assets || []);
 
-        const subs = await apiFetch<ModuleSubmoduleListItem[]>(`/modules/${effectiveModuleId}/submodules`);
+        const subs = await apiFetch<ModuleSubmoduleListItem[]>(`/modules/${effMid}/submodules`);
         setModuleSubmodules(Array.isArray(subs) ? subs : []);
       } else {
         setModuleAssets([]);
@@ -899,10 +901,10 @@ export default function SubmodulePage() {
       const rs = await apiFetch<{ read: boolean }>(`/submodules/${submoduleId}/read-status`);
       setReadConfirmed(Boolean(rs.read));
 
-      if (effectiveModuleId) {
-        const mm = await apiFetch<ModuleMeta>(`/modules/${effectiveModuleId}`);
+      if (effMid) {
+        const mm = await apiFetch<ModuleMeta>(`/modules/${effMid}`);
         setModuleMeta(mm);
-        const prog = await apiFetch<any>(`/progress/modules/${effectiveModuleId}`);
+        const prog = await apiFetch<any>(`/progress/modules/${effMid}`);
         setModuleProgress(prog);
       }
     } catch (e) {
@@ -1386,8 +1388,8 @@ export default function SubmodulePage() {
 
       // Immediately refresh module progress so UI updates without waiting for navigation.
       try {
-        if (moduleId) {
-          const prog = await apiFetch<any>(`/progress/modules/${moduleId}`);
+        if (effectiveModuleId) {
+          const prog = await apiFetch<any>(`/progress/modules/${effectiveModuleId}`);
           setModuleProgress(prog);
         }
       } catch {
@@ -1512,7 +1514,7 @@ export default function SubmodulePage() {
             </div>
 
             <div className="mt-6">
-              <Link href={`/modules/${moduleId}`}>
+              <Link href={`/modules/${encodeURIComponent(String(effectiveModuleId || moduleId || "").trim())}`}>
                 <Button variant="ghost" size="sm" className="rounded-xl font-black uppercase tracking-widest text-[10px]">
                   <ChevronLeft className="mr-2 h-4 w-4" />
                   оглавление
@@ -1571,9 +1573,9 @@ export default function SubmodulePage() {
                       <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
                         Этот урок без теста
                       </div>
-                      {moduleId && nextSubmoduleId ? (
+                      {effectiveModuleId && nextSubmoduleId ? (
                         <div className="mt-4">
-                          <Link href={`/submodules/${encodeURIComponent(nextSubmoduleId)}?module=${encodeURIComponent(moduleId)}`} className="block">
+                          <Link href={`/submodules/${encodeURIComponent(nextSubmoduleId)}?module=${encodeURIComponent(effectiveModuleId)}`} className="block">
                             <Button className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-[10px]">
                               Следующий урок
                             </Button>
@@ -1654,9 +1656,9 @@ export default function SubmodulePage() {
                       : (thisLastQuizPassed ? "Результат засчитан. Можно идти дальше." : "Результат не засчитан. Попробуй еще раз.")}
                   </div>
 
-                  {moduleId && nextSubmoduleId ? (
+                  {effectiveModuleId && nextSubmoduleId ? (
                     <div className="mt-5">
-                      <Link href={`/submodules/${encodeURIComponent(nextSubmoduleId)}?module=${encodeURIComponent(moduleId)}`} className="block">
+                      <Link href={`/submodules/${encodeURIComponent(nextSubmoduleId)}?module=${encodeURIComponent(effectiveModuleId)}`} className="block">
                         <Button className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-[10px]">
                           Следующий урок
                         </Button>

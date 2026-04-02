@@ -2077,10 +2077,16 @@ export default function AdminPanelClient() {
     if (!window.confirm("Запустить реген теста для выбранного урока?")) return;
     try {
       setError(null);
-      const res = await apiFetch<{ job_id: string }>(
+      const res = await apiFetch<{ job_id?: string; skipped?: boolean; skip_reason?: string; deduped?: boolean }>(
         `/admin/submodules/${encodeURIComponent(sid)}/regenerate-quiz`,
         { method: "POST" }
       );
+      if ((res as any)?.skipped) {
+        const reason = String((res as any)?.skip_reason || "").trim();
+        const label = reason === "folder_lesson" ? "ПАПКА" : reason === "file_lesson" ? "ФАЙЛОВЫЙ" : "SKIPPED";
+        window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: `РЕГЕН НЕ НУЖЕН (${label})`, description: "" } }));
+        return;
+      }
       if (res?.job_id) {
         setSelectedJobId(String(res.job_id));
         goTab("import");

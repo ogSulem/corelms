@@ -4592,7 +4592,7 @@ def regenerate_submodule_quiz(
     except Exception:
         pass
     try:
-        if str(getattr(sub, "content_object_key", None) or "").strip():
+        if not bool(getattr(sub, "requires_quiz", True)):
             return {"ok": True, "skipped": True, "skip_reason": "file_lesson", "submodule_id": str(sub.id), "module_id": str(sub.module_id)}
     except Exception:
         pass
