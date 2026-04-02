@@ -804,14 +804,35 @@ export default function ModulePage() {
 
   const displayedSubmodules = useMemo(() => {
     const key = outlinePath.join("/");
-    return (submodules || []).filter((s) => {
-      const p = String((s as any)?.outline_path || "").trim();
-      const isFolder = Boolean((s as any)?.is_folder);
-      if (isFolder) return false;
-      if (!key) return !p;
-      return p === key;
-    });
+    return (submodules || [])
+      .filter((s) => {
+        const p = String((s as any)?.outline_path || "").trim();
+        const isFolder = Boolean((s as any)?.is_folder);
+        if (isFolder) return false;
+        if (!key) return !p;
+        return p === key;
+      })
+      .slice()
+      .sort((a: any, b: any) => {
+        const at = String(a?.title || "");
+        const bt = String(b?.title || "");
+        const ao = naturalPrefixOrder(at, 999999);
+        const bo = naturalPrefixOrder(bt, 999999);
+        if (ao !== bo) return ao - bo;
+        return at.localeCompare(bt, undefined, { sensitivity: "base" });
+      });
   }, [outlinePath, submodules]);
+
+  const displayedOrderStartsAtZero = useMemo(() => {
+    if (!displayedSubmodules.length) return false;
+    let min = Number.POSITIVE_INFINITY;
+    for (const s of displayedSubmodules as any[]) {
+      const o = Number((s as any)?.order);
+      if (!Number.isFinite(o)) continue;
+      if (o < min) min = o;
+    }
+    return Number.isFinite(min) && min <= 0;
+  }, [displayedSubmodules]);
 
   const folderSubmodules = useMemo(() => {
     const key = outlinePath.join("/");
@@ -1391,7 +1412,9 @@ export default function ModulePage() {
                                     return <Icon className="h-4 w-4" />;
                                   })()}
                               </div>
-                                <span className="text-sm font-black text-zinc-600 tabular-nums uppercase">{String(s.order).padStart(2, '0')}</span>
+                                <span className="text-sm font-black text-zinc-600 tabular-nums uppercase">
+                                  {String(displayedOrderStartsAtZero ? Number((s as any)?.order || 0) + 1 : Number((s as any)?.order || 0)).padStart(2, "0")}
+                                </span>
                                 <h4 className="min-w-0 text-base font-black text-zinc-950 uppercase tracking-tighter whitespace-normal break-all leading-snug">
                                   {s.title}
                                 </h4>
