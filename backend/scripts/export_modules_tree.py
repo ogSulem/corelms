@@ -60,6 +60,23 @@ def _render_tree(node: Node, indent: str = "") -> list[str]:
     return lines
 
 
+def _render_tree_as_sections(node: Node) -> list[str]:
+    lines: list[str] = []
+
+    for dname in sorted(node.children.keys(), key=lambda x: x.lower()):
+        lines.append(f"## {dname}/")
+        child = node.children[dname]
+        rendered = _render_tree(child, indent="")
+        lines.extend(rendered if rendered else ["- (пусто)"])
+        lines.append("")
+
+    for fname in sorted(node.files, key=lambda x: x.lower()):
+        lines.append(f"## {fname}")
+        lines.append("")
+
+    return lines
+
+
 def export_modules_tree(*, out_path: str, include_module_assets: bool) -> int:
     out: list[str] = []
 
@@ -70,38 +87,21 @@ def export_modules_tree(*, out_path: str, include_module_assets: bool) -> int:
             out.append(f"# {m.title} ({m.id})")
             out.append("")
 
-            subs = db.scalars(
-                select(Submodule).where(Submodule.module_id == m.id).order_by(Submodule.order)
-            ).all()
+            module_tree = Node()
 
-            if not subs and not include_module_assets:
-                out.append("(нет уроков)")
-                out.append("")
-                continue
-
+            subs = db.scalars(select(Submodule).where(Submodule.module_id == m.id)).all()
             for s in subs:
-                out.append(f"## {str(s.order).zfill(2)}. {s.title} ({s.id})")
-                tree = Node()
-
                 rows = db.execute(
                     select(SubmoduleAssetMap.order, ContentAsset)
                     .join(ContentAsset, ContentAsset.id == SubmoduleAssetMap.asset_id)
                     .where(SubmoduleAssetMap.submodule_id == s.id)
                     .order_by(SubmoduleAssetMap.order)
                 ).all()
-
                 for _, a in rows:
                     parts = _normalize_path(getattr(a, "original_filename", "") or "")
                     if not parts:
                         parts = [str(getattr(a, "object_key", "") or "") or str(getattr(a, "id", ""))]
-                    _insert_path(tree, parts)
-
-                if not tree.children and not tree.files:
-                    out.append("- (нет файлов)")
-                else:
-                    out.extend(_render_tree(tree))
-
-                out.append("")
+                    _insert_path(module_tree, parts)
 
             if include_module_assets:
                 try:
@@ -116,20 +116,19 @@ def export_modules_tree(*, out_path: str, include_module_assets: bool) -> int:
                         .order_by(ContentAsset.original_filename)
                     ).all()
 
-                    if mod_assets:
-                        out.append("## _module (материалы модуля)")
-                        tree = Node()
-                        for a in mod_assets:
-                            parts = _normalize_path(getattr(a, "original_filename", "") or "")
-                            if not parts:
-                                parts = [str(getattr(a, "object_key", "") or "") or str(getattr(a, "id", ""))]
-                            _insert_path(tree, parts)
-                        out.extend(_render_tree(tree))
-                        out.append("")
+                    for a in mod_assets:
+                        parts = _normalize_path(getattr(a, "original_filename", "") or "")
+                        if not parts:
+                            parts = [str(getattr(a, "object_key", "") or "") or str(getattr(a, "id", ""))]
+                        _insert_path(module_tree, parts)
                 except Exception:
-                    out.append("## _module (материалы модуля)")
-                    out.append("- (ошибка чтения материалов)")
-                    out.append("")
+                    pass
+
+            if not module_tree.children and not module_tree.files:
+                out.append("(нет файлов)")
+                out.append("")
+            else:
+                out.extend(_render_tree_as_sections(module_tree))
 
             if mi != len(modules):
                 out.append("---")
