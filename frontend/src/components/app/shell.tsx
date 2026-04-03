@@ -251,8 +251,8 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       ) : null}
 
       <header className="sticky top-0 z-20 border-b border-zinc-200/80 bg-white/80 backdrop-blur-xl shadow-sm shadow-zinc-950/5">
-        <div className="mx-auto grid max-w-6xl grid-cols-3 items-center px-6 py-4">
-          <div className="flex items-center justify-start gap-8">
+        <div className="mx-auto grid max-w-7xl grid-cols-3 items-center px-6 py-4">
+          <div className="flex items-center justify-start gap-5">
             <button
               type="button"
               aria-label="Частые вопросы"
@@ -326,12 +326,14 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                 <div className="rounded-xl border border-[#284e13]/20 bg-[#284e13]/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-[#284e13]">
                   LVL {user.level}
                 </div>
-                <div className="h-4 w-px bg-zinc-200" />
-                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-700">{user.xp} XP</div>
-                <div className="h-4 w-px bg-zinc-200" />
-                <div className="flex items-center gap-1.5 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-900">
-                  <span>🔥</span>
-                  <span>{user.streak}</span>
+                <div className="hidden lg:flex items-center gap-3">
+                  <div className="h-4 w-px bg-zinc-200" />
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-700">{user.xp} XP</div>
+                  <div className="h-4 w-px bg-zinc-200" />
+                  <div className="flex items-center gap-1.5 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/15 px-2.5 py-1 text-[10px] font-black uppercase tracking-widest text-zinc-900">
+                    <span>🔥</span>
+                    <span>{user.streak}</span>
+                  </div>
                 </div>
               </div>
             ) : null}

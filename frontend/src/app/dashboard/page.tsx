@@ -208,9 +208,6 @@ export default function DashboardPage() {
                 </div>
               </div>
             )}
-            <p className="mt-4 text-lg text-zinc-500 font-medium uppercase tracking-tight">
-              Умный прогресс — <span className="text-[#284e13]">КАРКАС ТАЙГИ</span>.
-            </p>
           </div>
           <div className="lg:col-span-5">
             {loading ? (
