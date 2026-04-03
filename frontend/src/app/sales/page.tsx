@@ -248,7 +248,7 @@ function LinksTabbedModal({ open, onClose }: { open: boolean; onClose: () => voi
   return (
     <Modal
       open={open}
-      title="Ссылки"
+      title="Видео"
       onClose={() => {
         setPath([]);
         onClose();
@@ -422,7 +422,7 @@ export default function SalesPage() {
             className="group text-left rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-7 shadow-2xl shadow-zinc-950/10 hover:bg-white transition"
           >
             <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Блок</div>
-            <div className="mt-2 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Ссылки</div>
+            <div className="mt-2 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Видео</div>
             <div className="mt-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">Открыть проводник →</div>
           </button>
         </div>
