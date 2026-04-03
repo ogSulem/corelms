@@ -413,7 +413,7 @@ export default function SalesPage() {
           >
             <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Блок</div>
             <div className="mt-2 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Договора</div>
-            <div className="mt-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">Ссылки →</div>
+            <div className="mt-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">Открыть проводник →</div>
           </button>
 
           <button
@@ -423,7 +423,7 @@ export default function SalesPage() {
           >
             <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Блок</div>
             <div className="mt-2 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Ссылки</div>
-            <div className="mt-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">Вкладки + проводник →</div>
+            <div className="mt-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">Открыть проводник →</div>
           </button>
         </div>
 
