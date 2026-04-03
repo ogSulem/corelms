@@ -218,8 +218,12 @@ export default function SubmodulePage() {
   const [moduleProgress, setModuleProgress] = useState<{
     passed: number;
     total: number;
+    final_quiz_id?: string | null;
+    final_passed?: boolean;
     submodules?: Array<{
       submodule_id: string;
+      quiz_id?: string | null;
+      requires_quiz?: boolean;
       order?: number;
       passed: boolean;
       best_score: number | null;
@@ -1289,6 +1293,36 @@ export default function SubmodulePage() {
     return "";
   }, [moduleProgress, submoduleId]);
 
+  const finalExamLocked = useMemo(() => {
+    const subs = moduleProgress?.submodules || [];
+    if (!subs.length) return true;
+    return subs.some((s: any) => {
+      const rq = typeof s?.requires_quiz === "boolean" ? Boolean(s.requires_quiz) : true;
+      return rq ? !s?.passed : false;
+    });
+  }, [moduleProgress?.submodules]);
+
+  const nextAction = useMemo(() => {
+    const mid = String(effectiveModuleId || "").trim();
+    if (!mid) return { href: "", label: "" };
+    if (nextSubmoduleId) {
+      return {
+        href: `/submodules/${encodeURIComponent(nextSubmoduleId)}?module=${encodeURIComponent(mid)}`,
+        label: "Следующий урок",
+      };
+    }
+
+    const fqid = String((moduleProgress as any)?.final_quiz_id || "").trim();
+    const fpassed = Boolean((moduleProgress as any)?.final_passed);
+    if (fqid && !finalExamLocked && !fpassed) {
+      return {
+        href: `/quizzes/${encodeURIComponent(fqid)}?module=${encodeURIComponent(mid)}`,
+        label: "Финальный тест",
+      };
+    }
+    return { href: "", label: "" };
+  }, [effectiveModuleId, finalExamLocked, moduleProgress, nextSubmoduleId]);
+
   const theoryDotClass = useMemo(() => {
     return readConfirmed
       ? "bg-[#284e13] shadow-[0_0_8px_rgba(40,78,19,0.25)]"
@@ -1573,11 +1607,11 @@ export default function SubmodulePage() {
                       <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">
                         Этот урок без теста
                       </div>
-                      {effectiveModuleId && nextSubmoduleId ? (
+                      {nextAction.href ? (
                         <div className="mt-4">
-                          <Link href={`/submodules/${encodeURIComponent(nextSubmoduleId)}?module=${encodeURIComponent(effectiveModuleId)}`} className="block">
+                          <Link href={nextAction.href} className="block">
                             <Button className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-[10px]">
-                              Следующий урок
+                              {nextAction.label}
                             </Button>
                           </Link>
                         </div>
@@ -1656,11 +1690,11 @@ export default function SubmodulePage() {
                       : (thisLastQuizPassed ? "Результат засчитан. Можно идти дальше." : "Результат не засчитан. Попробуй еще раз.")}
                   </div>
 
-                  {effectiveModuleId && nextSubmoduleId ? (
+                  {nextAction.href ? (
                     <div className="mt-5">
-                      <Link href={`/submodules/${encodeURIComponent(nextSubmoduleId)}?module=${encodeURIComponent(effectiveModuleId)}`} className="block">
+                      <Link href={nextAction.href} className="block">
                         <Button className="w-full h-12 rounded-xl font-black uppercase tracking-widest text-[10px]">
-                          Следующий урок
+                          {nextAction.label}
                         </Button>
                       </Link>
                     </div>

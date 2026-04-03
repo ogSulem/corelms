@@ -8,6 +8,7 @@ import { cn } from "@/lib/cn";
 const baseItems = [
   { href: "/dashboard", label: "Дашборд" },
   { href: "/modules", label: "Обучение" },
+  { href: "/sales", label: "Продажи" },
   { href: "/account", label: "Кабинет" },
 ];
 

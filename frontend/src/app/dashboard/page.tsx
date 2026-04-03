@@ -41,22 +41,6 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [quoteNonce, setQuoteNonce] = useState(0);
 
-  const telegramSuppliersBaseUrl = String(process.env.NEXT_PUBLIC_TELEGRAM_SUPPLIERS_BASE_URL || "").trim();
-
-  const quickLinks = useMemo(
-    () =>
-      [
-        { title: "Фотографии", url: "https://t.me/+GvD2wEj5AYFiODJi" },
-        { title: "Каталоги", url: "https://t.me/+dcE64UQDXQ42OWUy" },
-        { title: "Новости", url: "https://t.me/+cwhuXn3x2tY3NmJi" },
-        { title: "Договора", url: "https://t.me/+AxOcbXJHVwkxMzAy" },
-        { title: "Постройка домов", url: "https://t.me/+_v0wF5ch8o5mNTFi" },
-        { title: "Фирменные бани", url: "https://t.me/+z_zsUxFI6SZmZDEy" },
-        { title: "Бани Сканди", url: "https://t.me/+Zgmbriz3_t8yMGIy" },
-      ],
-    []
-  );
-
   const loadInFlightRef = useRef(false);
   const lastLoadAtRef = useRef(0);
 
@@ -233,63 +217,10 @@ export default function DashboardPage() {
               <Skeleton className="h-[100px] rounded-[24px] bg-zinc-100" />
             ) : (
               <div className="relative">
-                <div className="mb-4">
-                  <div className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-xl p-4 shadow-2xl shadow-zinc-950/10">
-                    <div className="absolute inset-0 pointer-events-none">
-                      <div className="absolute -top-12 -right-12 h-40 w-40 rounded-full bg-[#229ED9]/18 blur-[70px]" />
-                      <div className="absolute -bottom-12 -left-12 h-44 w-44 rounded-full bg-[#fe9900]/14 blur-[70px]" />
-                    </div>
-
-                    <div className="relative">
-                      <div className="flex items-center justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="text-[10px] font-black uppercase tracking-[0.32em] text-zinc-500">Быстрые ссылки</div>
-                        </div>
-                        <div className="shrink-0 text-[10px] font-black uppercase tracking-[0.32em] text-[#229ED9]">Telegram</div>
-                      </div>
-
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {quickLinks.map((l) => (
-                          <Button
-                            key={l.url}
-                            asChild
-                            variant="outline"
-                            className="h-9 rounded-full border-zinc-200 bg-white/70 hover:bg-white text-zinc-950 px-3"
-                          >
-                            <a href={l.url} target="_blank" rel="noreferrer" className="flex items-center gap-2">
-                              <span className="text-[10px] font-black uppercase tracking-widest">{l.title}</span>
-                              <span className="text-[11px] font-black text-[#229ED9]">↗</span>
-                            </a>
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
                 <div className="pointer-events-none absolute -inset-1 bg-gradient-to-r from-[#fe9900]/25 to-[#284e13]/15 rounded-[32px] blur opacity-25" />
                 <div className="relative border border-zinc-200 bg-white/70 backdrop-blur-xl rounded-[28px] overflow-hidden shadow-2xl shadow-zinc-950/10">
                   <InsightCard nonce={quoteNonce} />
                 </div>
-                {telegramSuppliersBaseUrl ? (
-                  <div className="mt-4">
-                    <Button asChild className="w-full rounded-2xl bg-[#229ED9] hover:bg-[#1b8bbf] text-white gap-2">
-                      <a href={telegramSuppliersBaseUrl} target="_blank" rel="noreferrer">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                          <path
-                            d="M21.8 4.7c.3-1.3-1-2.3-2.2-1.9L3.7 9.2c-1.4.5-1.4 2.4 0 2.9l3.9 1.3 1.5 4.7c.4 1.2 1.9 1.6 2.8.7l2.2-2.1 4.3 3.2c1 .8 2.4.2 2.7-1.1l3.7-14.1Z"
-                            fill="currentColor"
-                            opacity="0.95"
-                          />
-                          <path
-                            d="M9.1 13.1 18.5 6.9c.2-.1.4.2.2.4l-7.8 7.6c-.3.3-.5.7-.6 1.1l-.3 2.4c0 .3-.5.4-.6.1l-1.2-4.1c-.2-.7.1-1.4.8-1.8Z"
-                            fill="currentColor"
-                          />
-                        </svg>
-                        <span>База поставщиков</span>
-                      </a>
-                    </Button>
-                  </div>
-                ) : null}
               </div>
             )}
           </div>
