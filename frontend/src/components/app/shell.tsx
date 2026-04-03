@@ -316,7 +316,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
             </Link>
           </div>
 
-          <div className="hidden sm:flex items-center justify-center">
+          <div className="hidden sm:flex min-w-0 items-center justify-center">
             {!loading && authenticated ? <AppNav role={user?.role} authenticated={authenticated} /> : null}
           </div>
 

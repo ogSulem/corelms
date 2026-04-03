@@ -10,8 +10,10 @@ import {
   salesCatalogsTree,
   salesContractsLinks,
   salesLinksTabs,
+  salesHelpLinks,
   salesPhotosTree,
-  salesTopLinks,
+  salesTgLinks,
+  type SalesLinksTabId,
   type SalesLink,
   type SalesNode,
 } from "@/lib/sales-data";
@@ -224,7 +226,7 @@ function SalesExplorer({
 }
 
 function LinksTabbedModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [tab, setTab] = useState<"houses" | "baths" | "other">("houses");
+  const [tab, setTab] = useState<SalesLinksTabId>("houses");
   const [path, setPath] = useState<string[]>([]);
 
   const currentTab = useMemo(() => salesLinksTabs.find((t) => t.id === tab) || salesLinksTabs[0], [tab]);
@@ -324,7 +326,7 @@ function LinksTabbedModal({ open, onClose }: { open: boolean; onClose: () => voi
             </button>
           ))}
 
-          <LinkBlocks links={links.map((l) => ({ title: l.title, url: l.url }))} />
+          {links.length ? <LinkBlocks links={links.map((l) => ({ title: l.title, url: l.url }))} /> : null}
         </div>
       )}
     </Modal>
@@ -344,8 +346,9 @@ export default function SalesPage() {
         <h1 className="text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-none">Материалы</h1>
 
         <div className="mt-8">
-          <div className="flex flex-wrap items-center gap-2 overflow-x-auto pb-1">
-            {salesTopLinks.map((l) => (
+          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-2">ТГ каналы</div>
+          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+            {salesTgLinks.map((l) => (
               <Button
                 key={l.url}
                 asChild
@@ -358,6 +361,27 @@ export default function SalesPage() {
                 </a>
               </Button>
             ))}
+          </div>
+
+          <div className="mt-5 text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-2">Помощь</div>
+          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+            {salesHelpLinks.length ? (
+              salesHelpLinks.map((l) => (
+                <Button
+                  key={l.url}
+                  asChild
+                  variant="outline"
+                  className="h-10 rounded-full border-zinc-200 bg-white/70 hover:bg-white text-zinc-950 px-4 shrink-0"
+                >
+                  <a href={l.url} target="_blank" rel="noreferrer" className="flex items-center gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest whitespace-nowrap">{l.title}</span>
+                    <span className="text-[11px] font-black text-[#229ED9]">↗</span>
+                  </a>
+                </Button>
+              ))
+            ) : (
+              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Нет ссылок</div>
+            )}
           </div>
         </div>
 
