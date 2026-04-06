@@ -37,8 +37,9 @@ type SalesLinksPayload = {
   blocks: SalesLinksBlock[];
 };
 
-async function fetchSalesLinks() {
-  return apiFetch<SalesLinksPayload>("/sales-links");
+async function fetchSalesLinks(opts?: { bypassCache?: boolean }) {
+  const qs = opts?.bypassCache ? "?bypass_cache=true" : "";
+  return apiFetch<SalesLinksPayload>(`/sales-links${qs}`);
 }
 
 function flattenFolderChildren(nodes: SalesNode[]): SalesNode[] {
@@ -470,6 +471,18 @@ function LinksTabbedModal({ open, onClose, tabs, title }: { open: boolean; onClo
   const [path, setPath] = useState<string[]>([]);
 
   const normalizedTabs = tabs || [];
+  useEffect(() => {
+    if (!open) return;
+    if (!normalizedTabs.length) return;
+
+    // When tabs are loaded async (or changed), ensure we always point to an existing tab.
+    const hasCurrent = normalizedTabs.some((t) => t.id === tab);
+    if (!hasCurrent) {
+      setTab(normalizedTabs[0]?.id || "");
+      setPath([]);
+    }
+  }, [open, normalizedTabs, tab]);
+
   const currentTab = useMemo(() => normalizedTabs.find((t) => t.id === tab) || normalizedTabs[0], [normalizedTabs, tab]);
   const currentTree = useMemo(() => {
     return (currentTab?.links || []).map((l) => ({ kind: "link", title: l.title, url: l.url }) as SalesNode);
@@ -495,6 +508,7 @@ function LinksTabbedModal({ open, onClose, tabs, title }: { open: boolean; onClo
       title={title}
       onClose={() => {
         setPath([]);
+        setTab(normalizedTabs[0]?.id || "");
         onClose();
       }}
       footer={
@@ -583,6 +597,7 @@ export default function SalesPage() {
   const [editMode, setEditMode] = useState(false);
   const [linksLoading, setLinksLoading] = useState(true);
   const [linksData, setLinksData] = useState<SalesLinksPayload>({ blocks: [] });
+  const [linksReloadKey, setLinksReloadKey] = useState(0);
   const [photosOpen, setPhotosOpen] = useState(false);
   const [catalogsOpen, setCatalogsOpen] = useState(false);
   const [openBlockId, setOpenBlockId] = useState<string | null>(null);
@@ -591,7 +606,7 @@ export default function SalesPage() {
     let alive = true;
     (async () => {
       try {
-        const data = await fetchSalesLinks();
+        const data = await fetchSalesLinks({ bypassCache: Boolean(canEdit) });
         if (!alive) return;
         setLinksData({ blocks: data?.blocks || [] });
       } finally {
@@ -601,12 +616,37 @@ export default function SalesPage() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [canEdit, linksReloadKey]);
 
   return (
     <AppShell>
       <div className="mx-auto max-w-7xl px-6 py-10 lg:py-16">
-        <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Продажи</div>
+        <div className="flex items-center justify-between gap-4">
+          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Продажи</div>
+          {canEdit ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                onClick={() => {
+                  setLinksLoading(true);
+                  setLinksReloadKey((x) => x + 1);
+                }}
+              >
+                Обновить ссылки
+              </Button>
+              <Button
+                variant={editMode ? "primary" : "outline"}
+                size="sm"
+                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                onClick={() => setEditMode((v) => !v)}
+              >
+                {editMode ? "Режим редактирования: Вкл" : "Режим редактирования: Выкл"}
+              </Button>
+            </div>
+          ) : null}
+        </div>
         <h1 className="text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-none">Материалы</h1>
 
         {linksData.blocks
