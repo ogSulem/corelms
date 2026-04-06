@@ -128,7 +128,11 @@ def get_sales_links_payload(*, bypass_cache: bool = False) -> dict[str, object]:
                     by_tab[v.tab] = obj
                     tabs.append(obj)
                 try:
-                    (by_tab[v.tab]["links"] or []).append({"title": v.name, "url": v.link})
+                    links = by_tab[v.tab].get("links")
+                    if not isinstance(links, list):
+                        links = []
+                        by_tab[v.tab]["links"] = links
+                    links.append({"title": v.name, "url": v.link})
                 except Exception:
                     by_tab[v.tab]["links"] = [{"title": v.name, "url": v.link}]
 
