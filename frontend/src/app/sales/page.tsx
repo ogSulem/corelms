@@ -1,22 +1,45 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
+import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/lib/hooks/use-auth";
 import {
-  salesCatalogsTree,
-  salesContractsLinks,
-  salesLinksTabs,
-  salesHelpLinks,
-  salesPhotosTree,
-  salesTgLinks,
-  type SalesLinksTabId,
   type SalesLink,
   type SalesNode,
 } from "@/lib/sales-data";
+
+type SalesLinksTab = {
+  id: string;
+  label: string;
+  links: SalesLink[];
+};
+
+type SalesLinksBlock =
+  | {
+      id: string;
+      title: string;
+      kind: "links";
+      links: SalesLink[];
+    }
+  | {
+      id: string;
+      title: string;
+      kind: "video";
+      tabs: SalesLinksTab[];
+    };
+
+type SalesLinksPayload = {
+  blocks: SalesLinksBlock[];
+};
+
+async function fetchSalesLinks() {
+  return apiFetch<SalesLinksPayload>("/sales-links");
+}
 
 function flattenFolderChildren(nodes: SalesNode[]): SalesNode[] {
   return (nodes || []).slice();
@@ -37,6 +60,75 @@ function isImageUrl(url: string): boolean {
   return u.endsWith(".png") || u.endsWith(".jpg") || u.endsWith(".jpeg") || u.endsWith(".webp") || u.endsWith(".gif");
 }
 
+type SalesFilesSection = "photos" | "catalogs";
+
+type SalesFilesEntry = {
+  kind: "folder" | "file";
+  title: string;
+  key: string;
+  size?: number | null;
+  last_modified?: string | null;
+};
+
+async function salesFilesList(section: SalesFilesSection, path: string[]) {
+  const qs = new URLSearchParams({ section });
+  if (path.length) qs.set("path", path.join("/"));
+  return apiFetch<{ prefix: string; path: string; entries: SalesFilesEntry[] }>(`/sales-files/list?${qs.toString()}`);
+}
+
+async function salesFilesPresignDownload(key: string) {
+  const qs = new URLSearchParams({ key });
+  return apiFetch<{ url: string }>(`/sales-files/presign-download?${qs.toString()}`);
+}
+
+async function salesFilesPresignUpload(args: { section: SalesFilesSection; path: string[]; filename: string; contentType: string }) {
+  return apiFetch<{ key: string; upload_url: string }>("/sales-files/presign-upload", {
+    method: "POST",
+    body: JSON.stringify({
+      section: args.section,
+      path: args.path.length ? args.path.join("/") : null,
+      filename: args.filename,
+      content_type: args.contentType,
+    }),
+  } as any);
+}
+
+async function salesFilesMkdir(args: { section: SalesFilesSection; path: string[]; name: string }) {
+  return apiFetch<{ ok: boolean }>("/sales-files/mkdir", {
+    method: "POST",
+    body: JSON.stringify({
+      section: args.section,
+      path: args.path.length ? args.path.join("/") : null,
+      name: args.name,
+    }),
+  } as any);
+}
+
+async function salesFilesDeleteObject(key: string) {
+  const qs = new URLSearchParams({ key });
+  return apiFetch<{ ok: boolean }>(`/sales-files/object?${qs.toString()}`, {
+    method: "DELETE",
+  } as any);
+}
+
+async function salesFilesDeleteFolder(section: SalesFilesSection, path: string[]) {
+  const qs = new URLSearchParams({ section });
+  if (path.length) qs.set("path", path.join("/"));
+  return apiFetch<{ ok: boolean; deleted: number }>(`/sales-files/folder?${qs.toString()}`, {
+    method: "DELETE",
+  } as any);
+}
+
+function openExternalLink(opts: { url: string; title?: string; source?: string }) {
+  const url = String(opts.url || "").trim();
+  if (!url) return;
+  window.open(url, "_blank", "noopener,noreferrer");
+  void apiFetch("/events/external-link", {
+    method: "POST",
+    body: JSON.stringify({ url, title: opts.title || null, source: opts.source || null }),
+  } as any);
+}
+
 function LinkBlocks({ links }: { links: SalesLink[] }) {
   if (!links.length) {
     return (
@@ -49,17 +141,16 @@ function LinkBlocks({ links }: { links: SalesLink[] }) {
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       {links.map((l) => (
-        <a
+        <button
           key={l.url + l.title}
-          href={l.url}
-          target="_blank"
-          rel="noreferrer"
+          type="button"
+          onClick={() => openExternalLink({ url: l.url, title: l.title, source: "sales" })}
           className="group rounded-2xl border border-zinc-200 bg-white/80 p-4 hover:bg-white transition"
         >
           <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Ссылка</div>
           <div className="mt-1 text-sm font-bold text-zinc-950 break-words">{l.title}</div>
           <div className="mt-2 text-[10px] font-black uppercase tracking-widest text-[#229ED9]">Открыть ↗</div>
-        </a>
+        </button>
       ))}
     </div>
   );
@@ -67,42 +158,131 @@ function LinkBlocks({ links }: { links: SalesLink[] }) {
 
 function SalesExplorer({
   title,
-  root,
   open,
   onClose,
   mode,
+  section,
+  editable,
 }: {
   title: string;
-  root: SalesNode[];
   open: boolean;
   onClose: () => void;
   mode: "files" | "links";
+  section?: SalesFilesSection;
+  editable?: boolean;
 }) {
   const [path, setPath] = useState<string[]>([]);
   const [preview, setPreview] = useState<{ title: string; url: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [entries, setEntries] = useState<SalesFilesEntry[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const items = useMemo(() => resolveAtPath(root, path), [root, path]);
-
-  const folders = useMemo(
-    () => items.filter((n) => n.kind === "folder") as Array<Extract<SalesNode, { kind: "folder" }>>,
-    [items]
-  );
-  const links = useMemo(
-    () => items.filter((n) => n.kind === "link") as Array<Extract<SalesNode, { kind: "link" }>>,
-    [items]
-  );
+  const folders = useMemo(() => entries.filter((e) => e.kind === "folder"), [entries]);
+  const files = useMemo(() => entries.filter((e) => e.kind === "file"), [entries]);
 
   const breadcrumbs = useMemo(() => {
     if (!path.length) return ["/"];
     return ["/", ...path];
   }, [path]);
 
-  const openLink = (l: { title: string; url: string }) => {
-    if (mode === "files" && isImageUrl(l.url)) {
-      setPreview({ title: l.title, url: l.url });
+  const refresh = async () => {
+    if (mode !== "files" || !section) return;
+    setLoading(true);
+    try {
+      const r = await salesFilesList(section, path);
+      setEntries(r.entries || []);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    if (mode !== "files" || !section) return;
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, mode, section]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (mode !== "files" || !section) return;
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path]);
+
+  const openFile = async (f: SalesFilesEntry) => {
+    if (!f.key) return;
+    const r = await salesFilesPresignDownload(f.key);
+    const url = String(r.url || "");
+    if (!url) return;
+    if (isImageUrl(url)) {
+      setPreview({ title: f.title, url });
       return;
     }
-    window.open(l.url, "_blank", "noopener,noreferrer");
+    openExternalLink({ url, title: f.title, source: `sales:${title}` });
+  };
+
+  const onUploadPick = async (filesList: FileList | null) => {
+    if (!editable || mode !== "files" || !section) return;
+    const f = filesList && filesList.length ? filesList[0] : null;
+    if (!f) return;
+    setLoading(true);
+    try {
+      const presign = await salesFilesPresignUpload({
+        section,
+        path,
+        filename: f.name,
+        contentType: f.type || "application/octet-stream",
+      });
+      await fetch(String(presign.upload_url), {
+        method: "PUT",
+        headers: {
+          "Content-Type": f.type || "application/octet-stream",
+        },
+        body: f,
+      });
+      await refresh();
+    } finally {
+      setLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const onMkdir = async () => {
+    if (!editable || mode !== "files" || !section) return;
+    const name = window.prompt("Название папки");
+    if (!name) return;
+    setLoading(true);
+    try {
+      await salesFilesMkdir({ section, path, name });
+      await refresh();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onDeleteFile = async (f: SalesFilesEntry) => {
+    if (!editable || mode !== "files") return;
+    if (!window.confirm(`Удалить файл "${f.title}"?`)) return;
+    setLoading(true);
+    try {
+      await salesFilesDeleteObject(f.key);
+      await refresh();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onDeleteFolder = async (folderName: string) => {
+    if (!editable || mode !== "files" || !section) return;
+    if (!window.confirm(`Удалить папку "${folderName}" и всё внутри?`)) return;
+    setLoading(true);
+    try {
+      await salesFilesDeleteFolder(section, path.concat([folderName]));
+      await refresh();
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -145,45 +325,105 @@ function SalesExplorer({
           </div>
         }
       >
-        {!folders.length && !links.length ? (
+        {mode === "files" && section ? (
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+              {loading ? "Загрузка..." : ""}
+            </div>
+            {editable ? (
+              <div className="flex items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  onChange={(e) => void onUploadPick(e.target.files)}
+                />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  Загрузить
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  onClick={() => void onMkdir()}
+                >
+                  Папка
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {mode === "files" && section ? (
+          <div className="hidden" />
+        ) : null}
+
+        {!folders.length && !files.length && mode === "files" && section ? (
           <div className="rounded-2xl border border-zinc-200 bg-white p-6 text-center">
             <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Пусто</div>
           </div>
-        ) : (
+        ) : mode === "files" && section ? (
           <div className="grid gap-3">
             {folders.map((f) => (
-              <button
-                key={`folder:${f.title}`}
-                type="button"
-                onClick={() => setPath((p) => p.concat([f.title]))}
-                className="group flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white/80 p-4 hover:bg-white transition text-left"
-              >
-                <div className="min-w-0">
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Папка</div>
-                  <div className="mt-1 text-sm font-bold text-zinc-950 break-words">{f.title}</div>
-                </div>
-                <div className="shrink-0 text-zinc-400 font-black">→</div>
-              </button>
+              <div key={`folder:${f.title}`} className="flex items-stretch gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPath((p) => p.concat([f.title]));
+                  }}
+                  className="group flex-1 flex items-center justify-between gap-4 rounded-2xl border border-zinc-200 bg-white/80 p-4 hover:bg-white transition text-left"
+                >
+                  <div className="min-w-0">
+                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Папка</div>
+                    <div className="mt-1 text-sm font-bold text-zinc-950 break-words">{f.title}</div>
+                  </div>
+                  <div className="shrink-0 text-zinc-400 font-black">→</div>
+                </button>
+                {editable ? (
+                  <Button
+                    variant="outline"
+                    className="rounded-2xl px-3 font-black uppercase tracking-widest text-[10px]"
+                    onClick={() => void onDeleteFolder(f.title)}
+                  >
+                    Удалить
+                  </Button>
+                ) : null}
+              </div>
             ))}
 
-            {mode === "links" ? (
-              <LinkBlocks links={links.map((l) => ({ title: l.title, url: l.url }))} />
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {links.map((l) => (
+            <div className="grid gap-3 sm:grid-cols-2">
+              {files.map((f) => (
+                <div key={`file:${f.title}:${f.key}`} className="flex items-stretch gap-2">
                   <button
-                    key={`file:${l.title}:${l.url}`}
                     type="button"
-                    onClick={() => openLink(l)}
-                    className="group rounded-2xl border border-zinc-200 bg-white/80 p-4 hover:bg-white transition text-left"
+                    onClick={() => void openFile(f)}
+                    className="group flex-1 rounded-2xl border border-zinc-200 bg-white/80 p-4 hover:bg-white transition text-left"
                   >
                     <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">Файл</div>
-                    <div className="mt-1 text-sm font-bold text-zinc-950 break-words">{l.title}</div>
+                    <div className="mt-1 text-sm font-bold text-zinc-950 break-words">{f.title}</div>
                     <div className="mt-2 text-[10px] font-black uppercase tracking-widest text-[#229ED9]">Открыть ↗</div>
                   </button>
-                ))}
-              </div>
-            )}
+                  {editable ? (
+                    <Button
+                      variant="outline"
+                      className="rounded-2xl px-3 font-black uppercase tracking-widest text-[10px]"
+                      onClick={() => void onDeleteFile(f)}
+                    >
+                      Удалить
+                    </Button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-zinc-200 bg-white p-6 text-center">
+            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Пусто</div>
           </div>
         )}
       </Modal>
@@ -225,12 +465,16 @@ function SalesExplorer({
   );
 }
 
-function LinksTabbedModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [tab, setTab] = useState<SalesLinksTabId>("houses");
+function LinksTabbedModal({ open, onClose, tabs, title }: { open: boolean; onClose: () => void; tabs: SalesLinksTab[]; title: string }) {
+  const [tab, setTab] = useState<string>(tabs[0]?.id || "");
   const [path, setPath] = useState<string[]>([]);
 
-  const currentTab = useMemo(() => salesLinksTabs.find((t) => t.id === tab) || salesLinksTabs[0], [tab]);
-  const items = useMemo(() => resolveAtPath(currentTab?.tree || [], path), [currentTab?.tree, path]);
+  const normalizedTabs = tabs || [];
+  const currentTab = useMemo(() => normalizedTabs.find((t) => t.id === tab) || normalizedTabs[0], [normalizedTabs, tab]);
+  const currentTree = useMemo(() => {
+    return (currentTab?.links || []).map((l) => ({ kind: "link", title: l.title, url: l.url }) as SalesNode);
+  }, [currentTab]);
+  const items = useMemo(() => resolveAtPath(currentTree || [], path), [currentTree, path]);
   const folders = useMemo(
     () => items.filter((n) => n.kind === "folder") as Array<Extract<SalesNode, { kind: "folder" }>>,
     [items]
@@ -248,7 +492,7 @@ function LinksTabbedModal({ open, onClose }: { open: boolean; onClose: () => voi
   return (
     <Modal
       open={open}
-      title="Видео"
+      title={title}
       onClose={() => {
         setPath([]);
         onClose();
@@ -285,7 +529,7 @@ function LinksTabbedModal({ open, onClose }: { open: boolean; onClose: () => voi
       }
     >
       <div className="flex flex-wrap items-center gap-2 mb-6">
-        {salesLinksTabs.map((t) => (
+        {normalizedTabs.map((t) => (
           <button
             key={t.id}
             type="button"
@@ -334,10 +578,30 @@ function LinksTabbedModal({ open, onClose }: { open: boolean; onClose: () => voi
 }
 
 export default function SalesPage() {
+  const { user } = useAuth();
+  const canEdit = user?.role === "superadmin";
+  const [editMode, setEditMode] = useState(false);
+  const [linksLoading, setLinksLoading] = useState(true);
+  const [linksData, setLinksData] = useState<SalesLinksPayload>({ blocks: [] });
   const [photosOpen, setPhotosOpen] = useState(false);
   const [catalogsOpen, setCatalogsOpen] = useState(false);
-  const [contractsOpen, setContractsOpen] = useState(false);
-  const [linksOpen, setLinksOpen] = useState(false);
+  const [openBlockId, setOpenBlockId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const data = await fetchSalesLinks();
+        if (!alive) return;
+        setLinksData({ blocks: data?.blocks || [] });
+      } finally {
+        if (alive) setLinksLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   return (
     <AppShell>
@@ -345,45 +609,35 @@ export default function SalesPage() {
         <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Продажи</div>
         <h1 className="text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-none">Материалы</h1>
 
-        <div className="mt-8">
-          <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-2">ТГ каналы</div>
-          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
-            {salesTgLinks.map((l) => (
-              <Button
-                key={l.url}
-                asChild
-                variant="outline"
-                className="h-10 rounded-full border-zinc-200 bg-white/70 hover:bg-white text-zinc-950 px-4 shrink-0"
-              >
-                <a href={l.url} target="_blank" rel="noreferrer" className="flex items-center gap-2">
-                  <span className="text-[10px] font-black uppercase tracking-widest whitespace-nowrap">{l.title}</span>
-                  <span className="text-[11px] font-black text-[#229ED9]">↗</span>
-                </a>
-              </Button>
-            ))}
-          </div>
-
-          <div className="mt-5 text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-2">Помощь</div>
-          <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
-            {salesHelpLinks.length ? (
-              salesHelpLinks.map((l) => (
-                <Button
-                  key={l.url}
-                  asChild
-                  variant="outline"
-                  className="h-10 rounded-full border-zinc-200 bg-white/70 hover:bg-white text-zinc-950 px-4 shrink-0"
-                >
-                  <a href={l.url} target="_blank" rel="noreferrer" className="flex items-center gap-2">
-                    <span className="text-[10px] font-black uppercase tracking-widest whitespace-nowrap">{l.title}</span>
-                    <span className="text-[11px] font-black text-[#229ED9]">↗</span>
-                  </a>
-                </Button>
-              ))
-            ) : (
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Нет ссылок</div>
-            )}
-          </div>
-        </div>
+        {linksData.blocks
+          .filter((b) => b.kind === "links" && (b.title || "").trim().length)
+          .filter((b) => {
+            const t = (b.title || "").toLowerCase();
+            return t.includes("тг") || t.includes("помощ");
+          })
+          .map((b) => (
+            <div key={b.id} className="mt-8">
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-2">{b.title}</div>
+              <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+                {(b.kind === "links" ? b.links : []).length ? (
+                  (b.kind === "links" ? b.links : []).map((l) => (
+                    <Button
+                      key={l.url}
+                      variant="outline"
+                      className="h-10 rounded-full border-zinc-200 bg-white/70 hover:bg-white text-zinc-950 px-4 shrink-0"
+                    >
+                      <button type="button" onClick={() => openExternalLink({ url: l.url, title: l.title, source: b.title })} className="flex items-center gap-2">
+                        <span className="text-[10px] font-black uppercase tracking-widest whitespace-nowrap">{l.title}</span>
+                        <span className="text-[11px] font-black text-[#229ED9]">↗</span>
+                      </button>
+                    </Button>
+                  ))
+                ) : (
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Нет ссылок</div>
+                )}
+              </div>
+            </div>
+          ))}
 
         <div className="mt-10 grid gap-6 lg:grid-cols-4">
           <button
@@ -406,64 +660,64 @@ export default function SalesPage() {
             <div className="mt-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">Открыть проводник →</div>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setContractsOpen(true)}
-            className="group text-left rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-7 shadow-2xl shadow-zinc-950/10 hover:bg-white transition"
-          >
-            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Блок</div>
-            <div className="mt-2 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Договора</div>
-            <div className="mt-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">Открыть проводник →</div>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setLinksOpen(true)}
-            className="group text-left rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-7 shadow-2xl shadow-zinc-950/10 hover:bg-white transition"
-          >
-            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Блок</div>
-            <div className="mt-2 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Видео</div>
-            <div className="mt-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">Открыть проводник →</div>
-          </button>
+          {linksData.blocks
+            .filter((b) => {
+              const t = (b.title || "").toLowerCase();
+              return !(t.includes("тг") || t.includes("помощ"));
+            })
+            .map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => setOpenBlockId(b.id)}
+                className="group text-left rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-7 shadow-2xl shadow-zinc-950/10 hover:bg-white transition"
+              >
+                <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Блок</div>
+                <div className="mt-2 text-2xl font-black tracking-tighter text-zinc-950 uppercase">{b.title}</div>
+                <div className="mt-3 text-[10px] font-bold uppercase tracking-widest text-zinc-600">Открыть →</div>
+              </button>
+            ))}
         </div>
 
-        <SalesExplorer
-          title="Фотографии"
-          root={flattenFolderChildren(salesPhotosTree)}
-          open={photosOpen}
-          onClose={() => setPhotosOpen(false)}
-          mode="files"
-        />
+        <SalesExplorer title="Фотографии" open={photosOpen} onClose={() => setPhotosOpen(false)} mode="files" section="photos" editable={canEdit && editMode} />
 
-        <SalesExplorer
-          title="Каталоги"
-          root={flattenFolderChildren(salesCatalogsTree)}
-          open={catalogsOpen}
-          onClose={() => setCatalogsOpen(false)}
-          mode="files"
-        />
+        <SalesExplorer title="Каталоги" open={catalogsOpen} onClose={() => setCatalogsOpen(false)} mode="files" section="catalogs" editable={canEdit && editMode} />
 
-        <Modal
-          open={contractsOpen}
-          title="Договора"
-          onClose={() => setContractsOpen(false)}
-          footer={
-            <div className="flex items-center justify-end gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
-                onClick={() => setContractsOpen(false)}
-              >
-                Закрыть
-              </Button>
-            </div>
+        {(() => {
+          const active = linksData.blocks.find((b) => b.id === openBlockId);
+          if (!active) return null;
+          if (active.kind === "video") {
+            return (
+              <LinksTabbedModal
+                open={Boolean(openBlockId)}
+                onClose={() => setOpenBlockId(null)}
+                tabs={active.tabs || []}
+                title={active.title}
+              />
+            );
           }
-        >
-          <LinkBlocks links={salesContractsLinks} />
-        </Modal>
-
-        <LinksTabbedModal open={linksOpen} onClose={() => setLinksOpen(false)} />
+          return (
+            <Modal
+              open={Boolean(openBlockId)}
+              title={active.title}
+              onClose={() => setOpenBlockId(null)}
+              footer={
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                    onClick={() => setOpenBlockId(null)}
+                  >
+                    Закрыть
+                  </Button>
+                </div>
+              }
+            >
+              <LinkBlocks links={active.links || []} />
+            </Modal>
+          );
+        })()}
       </div>
     </AppShell>
   );

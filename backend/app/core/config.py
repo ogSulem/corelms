@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     s3_presign_upload_expires_seconds: int = Field(default=3600, validation_alias="S3_PRESIGN_UPLOAD_EXPIRES_SECONDS")
     s3_presign_multipart_part_expires_seconds: int = Field(default=3600, validation_alias="S3_PRESIGN_MULTIPART_PART_EXPIRES_SECONDS")
 
+    sales_links_spreadsheet_id: str | None = Field(default=None, validation_alias="SALES_LINKS_SPREADSHEET_ID")
+    sales_links_service_account_json: str | None = Field(default=None, validation_alias="SALES_LINKS_SERVICE_ACCOUNT_JSON")
+    sales_links_google_api_key: str | None = Field(default=None, validation_alias="SALES_LINKS_GOOGLE_API_KEY")
+
     s3_connect_timeout_seconds: float = Field(default=3.0, validation_alias="S3_CONNECT_TIMEOUT_SECONDS")
     s3_read_timeout_seconds: float = Field(default=60.0, validation_alias="S3_READ_TIMEOUT_SECONDS")
     s3_max_attempts: int = Field(default=5, validation_alias="S3_MAX_ATTEMPTS")

@@ -9,7 +9,8 @@ export function middleware(req: NextRequest) {
     pathname.startsWith("/api") ||
     pathname.startsWith("/static") ||
     pathname === "/" ||
-    pathname === "/login"
+    pathname === "/login" ||
+    pathname === "/reset-password"
   ) {
     return NextResponse.next();
   }
@@ -17,7 +18,7 @@ export function middleware(req: NextRequest) {
   const token = req.cookies.get("core_token")?.value;
   if (!token) {
     const url = req.nextUrl.clone();
-    url.pathname = "/login";
+    url.pathname = "/";
     url.searchParams.set("redirect", pathname);
     return NextResponse.redirect(url);
   }

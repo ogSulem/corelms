@@ -120,6 +120,13 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   React.useEffect(() => {
     if (loading) return;
+    if (authenticated) return;
+    if (pathname === "/" || pathname === "/login" || pathname === "/reset-password") return;
+    router.replace("/");
+  }, [loading, authenticated, pathname, router]);
+
+  React.useEffect(() => {
+    if (loading) return;
     if (!authenticated) return;
     if (!user) return;
     if (user.must_change_password) return;

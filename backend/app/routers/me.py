@@ -645,6 +645,19 @@ def my_history(
         action = str((meta or {}).get("action") or "").strip().lower() if meta else ""
 
         if t == "submodule_opened":
+            if action == "module_open":
+                mtitle = str((meta or {}).get("module_title") or "").strip() if meta else ""
+                if not mtitle:
+                    mtitle = None
+                return ("event", "Открыт модуль", mtitle, "module_open")
+            if action == "external_link":
+                link_title = str((meta or {}).get("title") or "").strip() if meta else ""
+                source = str((meta or {}).get("source") or "").strip() if meta else ""
+                subtitle_parts: list[str] = []
+                if source:
+                    subtitle_parts.append(source)
+                subtitle = " · ".join(subtitle_parts) if subtitle_parts else None
+                return ("event", "Открыта ссылка", link_title or subtitle, "external_link")
             if action == "read" or (e.meta or "").strip().lower() == "read":
                 return ("lesson", "Теория подтверждена", "Отмечено как прочитано", "submodule_read")
             return ("lesson", "Открыт урок", "Просмотр", "submodule_open")

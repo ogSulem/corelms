@@ -22,7 +22,7 @@ from app.core.client_ip import client_ip_from_request
 from app.core.redis_client import get_redis
 from app.core.queue import get_queue
 from app.services.storage_cleanup_jobs import cleanup_admin_multipart_uploads_job, cleanup_admin_uploads_job
-from app.routers import admin, assets, auth, health, linear, me, modules, progress, quickstart, quizzes, submodules
+from app.routers import admin, assets, auth, events, health, linear, me, modules, progress, quickstart, quizzes, sales_files, sales_links, submodules
 from app.db.session import SessionLocal
 from app.models.user import User, UserRole
 from passlib.context import CryptContext
@@ -188,6 +188,9 @@ def create_app() -> FastAPI:
     app.include_router(assets.router)
     app.include_router(quickstart.router)
     app.include_router(me.router)
+    app.include_router(events.router)
+    app.include_router(sales_files.router)
+    app.include_router(sales_links.router)
     app.include_router(modules.router)
     app.include_router(admin.router)
     app.include_router(progress.router)

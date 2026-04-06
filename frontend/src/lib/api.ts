@@ -49,8 +49,7 @@ async function _refreshSession(): Promise<boolean> {
 
 function _redirectToLogin(): void {
   if (typeof window === "undefined") return;
-  const next = window.location.pathname + window.location.search;
-  window.location.href = `/login?next=${encodeURIComponent(next)}`;
+  window.location.href = "/";
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
