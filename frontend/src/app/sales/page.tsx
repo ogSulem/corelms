@@ -57,7 +57,16 @@ function resolveAtPath(nodes: SalesNode[], path: string[]): SalesNode[] {
 }
 
 function isImageUrl(url: string): boolean {
-  const u = String(url || "").toLowerCase();
+  const raw = String(url || "").trim();
+  if (!raw) return false;
+  let path = raw;
+  try {
+    // Presigned URLs include query params; detect by pathname.
+    path = new URL(raw).pathname || raw;
+  } catch {
+    path = raw.split("?")[0] || raw;
+  }
+  const u = String(path || "").toLowerCase();
   return u.endsWith(".png") || u.endsWith(".jpg") || u.endsWith(".jpeg") || u.endsWith(".webp") || u.endsWith(".gif");
 }
 
@@ -173,10 +182,16 @@ function SalesExplorer({
   editable?: boolean;
 }) {
   const [path, setPath] = useState<string[]>([]);
-  const [preview, setPreview] = useState<{ title: string; url: string } | null>(null);
   const [loading, setLoading] = useState(false);
   const [entries, setEntries] = useState<SalesFilesEntry[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const entriesCacheRef = useRef<Map<string, SalesFilesEntry[]>>(new Map());
+
+  const [lightbox, setLightbox] = useState<{
+    open: boolean;
+    index: number;
+    items: Array<{ title: string; key: string; url: string }>;
+  }>({ open: false, index: 0, items: [] });
 
   const folders = useMemo(() => entries.filter((e) => e.kind === "folder"), [entries]);
   const files = useMemo(() => entries.filter((e) => e.kind === "file"), [entries]);
@@ -186,12 +201,23 @@ function SalesExplorer({
     return ["/", ...path];
   }, [path]);
 
+  const cacheKey = useMemo(() => {
+    if (mode !== "files" || !section) return "";
+    return `${section}:${path.join("/")}`;
+  }, [mode, section, path]);
+
   const refresh = async () => {
     if (mode !== "files" || !section) return;
+    const cached = cacheKey ? entriesCacheRef.current.get(cacheKey) : null;
+    if (cached && cached.length) {
+      setEntries(cached);
+    }
     setLoading(true);
     try {
       const r = await salesFilesList(section, path);
-      setEntries(r.entries || []);
+      const next = r.entries || [];
+      setEntries(next);
+      if (cacheKey) entriesCacheRef.current.set(cacheKey, next);
     } finally {
       setLoading(false);
     }
@@ -211,15 +237,69 @@ function SalesExplorer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
 
+  useEffect(() => {
+    if (!lightbox.open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setLightbox((s) => ({ ...s, open: false }));
+        return;
+      }
+      if (e.key === "ArrowLeft") {
+        setLightbox((s) => {
+          const n = s.items.length;
+          if (!n) return s;
+          return { ...s, index: (s.index - 1 + n) % n };
+        });
+        return;
+      }
+      if (e.key === "ArrowRight") {
+        setLightbox((s) => {
+          const n = s.items.length;
+          if (!n) return s;
+          return { ...s, index: (s.index + 1) % n };
+        });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [lightbox.open]);
+
+  const openLightboxAt = async (startKey: string) => {
+    const curFiles = files || [];
+    const imageCandidates = curFiles.filter((f) => isImageUrl(String(f.title || "")));
+    if (!imageCandidates.length) return;
+
+    setLoading(true);
+    try {
+      const presigned = await Promise.all(
+        imageCandidates.map(async (f) => {
+          try {
+            const r = await salesFilesPresignDownload(f.key);
+            const url = String(r.url || "");
+            return { title: f.title, key: f.key, url };
+          } catch {
+            return { title: f.title, key: f.key, url: "" };
+          }
+        })
+      );
+      const items = presigned.filter((x) => String(x.url || "").trim().length);
+      if (!items.length) return;
+      const idx = Math.max(0, items.findIndex((x) => x.key === startKey));
+      setLightbox({ open: true, index: idx >= 0 ? idx : 0, items });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const openFile = async (f: SalesFilesEntry) => {
     if (!f.key) return;
+    if (isImageUrl(String(f.title || ""))) {
+      await openLightboxAt(f.key);
+      return;
+    }
     const r = await salesFilesPresignDownload(f.key);
     const url = String(r.url || "");
     if (!url) return;
-    if (isImageUrl(url)) {
-      setPreview({ title: f.title, url });
-      return;
-    }
     openExternalLink({ url, title: f.title, source: `sales:${title}` });
   };
 
@@ -293,6 +373,7 @@ function SalesExplorer({
         title={title}
         onClose={() => {
           setPath([]);
+          setLightbox({ open: false, index: 0, items: [] });
           onClose();
         }}
         footer={
@@ -430,35 +511,72 @@ function SalesExplorer({
       </Modal>
 
       <Modal
-        open={Boolean(preview)}
-        title={preview?.title || ""}
-        onClose={() => setPreview(null)}
+        open={Boolean(lightbox.open)}
+        title={lightbox.items[lightbox.index]?.title || ""}
+        onClose={() => setLightbox((s) => ({ ...s, open: false }))}
         footer={
-          <div className="flex items-center justify-end gap-2">
-            {preview?.url ? (
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 truncate">
+              {lightbox.items.length ? `${lightbox.index + 1} / ${lightbox.items.length}` : ""}
+            </div>
+            <div className="flex items-center gap-2">
+              {lightbox.items.length > 1 ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  onClick={() =>
+                    setLightbox((s) => {
+                      const n = s.items.length;
+                      if (!n) return s;
+                      return { ...s, index: (s.index - 1 + n) % n };
+                    })
+                  }
+                >
+                  ←
+                </Button>
+              ) : null}
+              {lightbox.items.length > 1 ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  onClick={() =>
+                    setLightbox((s) => {
+                      const n = s.items.length;
+                      if (!n) return s;
+                      return { ...s, index: (s.index + 1) % n };
+                    })
+                  }
+                >
+                  →
+                </Button>
+              ) : null}
+              {lightbox.items[lightbox.index]?.url ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  onClick={() => window.open(String(lightbox.items[lightbox.index]?.url || ""), "_blank", "noopener,noreferrer")}
+                >
+                  Открыть ↗
+                </Button>
+              ) : null}
               <Button
                 variant="outline"
                 size="sm"
                 className="rounded-xl font-black uppercase tracking-widest text-[10px]"
-                onClick={() => window.open(String(preview.url), "_blank", "noopener,noreferrer")}
+                onClick={() => setLightbox((s) => ({ ...s, open: false }))}
               >
-                Открыть ↗
+                Закрыть
               </Button>
-            ) : null}
-            <Button
-              variant="outline"
-              size="sm"
-              className="rounded-xl font-black uppercase tracking-widest text-[10px]"
-              onClick={() => setPreview(null)}
-            >
-              Закрыть
-            </Button>
+            </div>
           </div>
         }
       >
-        {preview?.url ? (
+        {lightbox.items[lightbox.index]?.url ? (
           <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-            <img src={preview.url} alt="" className="w-full h-auto" />
+            <img src={lightbox.items[lightbox.index].url} alt="" className="w-full h-auto" />
           </div>
         ) : null}
       </Modal>
