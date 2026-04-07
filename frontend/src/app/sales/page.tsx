@@ -57,17 +57,33 @@ function resolveAtPath(nodes: SalesNode[], path: string[]): SalesNode[] {
 }
 
 function isImageUrl(url: string): boolean {
-  const raw = String(url || "").trim();
-  if (!raw) return false;
-  let path = raw;
-  try {
-    // Presigned URLs include query params; detect by pathname.
-    path = new URL(raw).pathname || raw;
-  } catch {
-    path = raw.split("?")[0] || raw;
-  }
-  const u = String(path || "").toLowerCase();
-  return u.endsWith(".png") || u.endsWith(".jpg") || u.endsWith(".jpeg") || u.endsWith(".webp") || u.endsWith(".gif");
+  const clean = String(url || "")
+    .split("?")[0]
+    .split("#")[0]
+    .toLowerCase();
+  return (
+    clean.endsWith(".png") ||
+    clean.endsWith(".jpg") ||
+    clean.endsWith(".jpeg") ||
+    clean.endsWith(".webp") ||
+    clean.endsWith(".gif")
+  );
+}
+
+function isPdfName(name: string): boolean {
+  return String(name || "")
+    .split("?")[0]
+    .split("#")[0]
+    .toLowerCase()
+    .endsWith(".pdf");
+}
+
+function isVideoName(name: string): boolean {
+  const clean = String(name || "")
+    .split("?")[0]
+    .split("#")[0]
+    .toLowerCase();
+  return clean.endsWith(".mp4") || clean.endsWith(".webm") || clean.endsWith(".mov") || clean.endsWith(".m4v");
 }
 
 type SalesFilesSection = "photos" | "catalogs";
@@ -192,6 +208,10 @@ function SalesExplorer({
     index: number;
     items: Array<{ title: string; key: string; url: string }>;
   }>({ open: false, index: 0, items: [] });
+
+  const [fileViewer, setFileViewer] = useState<{ open: boolean; title: string; url: string; name: string }>(
+    { open: false, title: "", url: "", name: "" }
+  );
 
   const [lbZoom, setLbZoom] = useState(1);
   const [lbPan, setLbPan] = useState({ x: 0, y: 0 });
@@ -351,7 +371,7 @@ function SalesExplorer({
     const r = await salesFilesPresignDownload(f.key);
     const url = String(r.url || "");
     if (!url) return;
-    openExternalLink({ url, title: f.title, source: `sales:${title}` });
+    setFileViewer({ open: true, title: f.title, url, name: f.title });
   };
 
   const onUploadPick = async (filesList: FileList | null) => {
@@ -586,7 +606,7 @@ function SalesExplorer({
                   stopPan();
                 }}
               >
-                100%
+                {Math.round(lbZoom * 100)}%
               </Button>
               <Button
                 variant="outline"
@@ -685,6 +705,72 @@ function SalesExplorer({
               }}
             />
           </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(fileViewer.open)}
+        title={fileViewer.title || ""}
+        onClose={() => setFileViewer({ open: false, title: "", url: "", name: "" })}
+        footer={
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 truncate">Файл</div>
+            <div className="flex items-center gap-2">
+              {fileViewer.url ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  onClick={() => window.open(String(fileViewer.url || ""), "_blank", "noopener,noreferrer")}
+                >
+                  Открыть ↗
+                </Button>
+              ) : null}
+              {fileViewer.url ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                  onClick={() => {
+                    const a = document.createElement("a");
+                    a.href = String(fileViewer.url || "");
+                    a.download = "";
+                    a.rel = "noopener";
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                  }}
+                >
+                  Скачать
+                </Button>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                onClick={() => setFileViewer({ open: false, title: "", url: "", name: "" })}
+              >
+                Закрыть
+              </Button>
+            </div>
+          </div>
+        }
+      >
+        {fileViewer.url ? (
+          isVideoName(fileViewer.name) ? (
+            <div className="rounded-2xl border border-zinc-200 bg-black overflow-hidden h-[72vh] flex items-center justify-center">
+              <video src={fileViewer.url} controls className="w-full h-full object-contain" />
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-zinc-200 bg-white overflow-hidden h-[72vh]">
+              <iframe
+                src={fileViewer.url}
+                className="w-full h-full"
+                title={fileViewer.title || "file"}
+                {...(isPdfName(fileViewer.name) ? {} : { sandbox: "allow-same-origin allow-scripts allow-forms allow-downloads" })}
+              />
+            </div>
+          )
         ) : null}
       </Modal>
     </>
