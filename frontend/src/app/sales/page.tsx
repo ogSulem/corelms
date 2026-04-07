@@ -193,6 +193,16 @@ function SalesExplorer({
     items: Array<{ title: string; key: string; url: string }>;
   }>({ open: false, index: 0, items: [] });
 
+  const [lbZoom, setLbZoom] = useState(1);
+  const [lbPan, setLbPan] = useState({ x: 0, y: 0 });
+  const dragRef = useRef<{ active: boolean; sx: number; sy: number; px: number; py: number }>({
+    active: false,
+    sx: 0,
+    sy: 0,
+    px: 0,
+    py: 0,
+  });
+
   const folders = useMemo(() => entries.filter((e) => e.kind === "folder"), [entries]);
   const files = useMemo(() => entries.filter((e) => e.kind === "file"), [entries]);
 
@@ -263,6 +273,47 @@ function SalesExplorer({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [lightbox.open]);
+
+  useEffect(() => {
+    if (!lightbox.open) return;
+    setLbZoom(1);
+    setLbPan({ x: 0, y: 0 });
+  }, [lightbox.open, lightbox.index]);
+
+  const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
+  const stopPan = () => {
+    dragRef.current.active = false;
+  };
+
+  const onWheelZoom = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const delta = e.deltaY;
+    setLbZoom((z) => {
+      const next = delta > 0 ? z / 1.12 : z * 1.12;
+      return clamp(next, 1, 6);
+    });
+  };
+
+  const onMouseDownPan = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (lbZoom <= 1) return;
+    e.preventDefault();
+    dragRef.current = {
+      active: true,
+      sx: e.clientX,
+      sy: e.clientY,
+      px: lbPan.x,
+      py: lbPan.y,
+    };
+  };
+
+  const onMouseMovePan = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!dragRef.current.active) return;
+    e.preventDefault();
+    const dx = e.clientX - dragRef.current.sx;
+    const dy = e.clientY - dragRef.current.sy;
+    setLbPan({ x: dragRef.current.px + dx, y: dragRef.current.py + dy });
+  };
 
   const openLightboxAt = async (startKey: string) => {
     const curFiles = files || [];
@@ -513,13 +564,46 @@ function SalesExplorer({
       <Modal
         open={Boolean(lightbox.open)}
         title={lightbox.items[lightbox.index]?.title || ""}
-        onClose={() => setLightbox((s) => ({ ...s, open: false }))}
+        onClose={() => {
+          setLightbox((s) => ({ ...s, open: false }));
+          setLbZoom(1);
+          setLbPan({ x: 0, y: 0 });
+          stopPan();
+        }}
         footer={
           <div className="flex items-center justify-between gap-3">
             <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500 truncate">
               {lightbox.items.length ? `${lightbox.index + 1} / ${lightbox.items.length}` : ""}
             </div>
             <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                onClick={() => {
+                  setLbZoom(1);
+                  setLbPan({ x: 0, y: 0 });
+                  stopPan();
+                }}
+              >
+                100%
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                onClick={() => setLbZoom((z) => clamp(z / 1.2, 1, 6))}
+              >
+                –
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                onClick={() => setLbZoom((z) => clamp(z * 1.2, 1, 6))}
+              >
+                +
+              </Button>
               {lightbox.items.length > 1 ? (
                 <Button
                   variant="outline"
@@ -566,7 +650,12 @@ function SalesExplorer({
                 variant="outline"
                 size="sm"
                 className="rounded-xl font-black uppercase tracking-widest text-[10px]"
-                onClick={() => setLightbox((s) => ({ ...s, open: false }))}
+                onClick={() => {
+                  setLightbox((s) => ({ ...s, open: false }));
+                  setLbZoom(1);
+                  setLbPan({ x: 0, y: 0 });
+                  stopPan();
+                }}
               >
                 Закрыть
               </Button>
@@ -575,8 +664,26 @@ function SalesExplorer({
         }
       >
         {lightbox.items[lightbox.index]?.url ? (
-          <div className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-            <img src={lightbox.items[lightbox.index].url} alt="" className="w-full h-auto" />
+          <div
+            className="rounded-2xl border border-zinc-200 bg-black/90 overflow-hidden h-[72vh] flex items-center justify-center select-none"
+            onWheel={onWheelZoom}
+            onMouseDown={onMouseDownPan}
+            onMouseMove={onMouseMovePan}
+            onMouseUp={stopPan}
+            onMouseLeave={stopPan}
+          >
+            <img
+              src={lightbox.items[lightbox.index].url}
+              alt=""
+              draggable={false}
+              className="max-h-full max-w-full object-contain"
+              style={{
+                transform: `translate3d(${lbPan.x}px, ${lbPan.y}px, 0) scale(${lbZoom})`,
+                transformOrigin: "center center",
+                cursor: lbZoom > 1 ? (dragRef.current.active ? "grabbing" : "grab") : "default",
+                transition: dragRef.current.active ? "none" : "transform 120ms ease-out",
+              }}
+            />
           </div>
         ) : null}
       </Modal>
