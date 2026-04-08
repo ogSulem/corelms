@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Globe, HelpCircle, Send, Youtube } from "lucide-react";
 
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
@@ -118,21 +117,6 @@ async function salesFilesPresignUpload(args: { section: SalesFilesSection; path:
       content_type: args.contentType,
     }),
   } as any);
-}
-
-function SocialIconLink({ href, label, children }: { href: string; label: string; children: React.ReactNode }) {
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      aria-label={label}
-      title={label}
-      className="h-10 w-10 rounded-2xl border border-zinc-200 bg-white/70 hover:bg-white transition flex items-center justify-center"
-    >
-      {children}
-    </a>
-  );
 }
 
 async function salesFilesMkdir(args: { section: SalesFilesSection; path: string[]; name: string }) {
@@ -928,21 +912,6 @@ export default function SalesPage() {
   const [photosOpen, setPhotosOpen] = useState(false);
   const [catalogsOpen, setCatalogsOpen] = useState(false);
   const [openBlockId, setOpenBlockId] = useState<string | null>(null);
-  const [supportOpen, setSupportOpen] = useState(false);
-
-  const supportBlock = useMemo(() => {
-    const blocks = linksData.blocks || [];
-    return (
-      blocks.find((b) => (b.title || "").toLowerCase().includes("помощ")) ||
-      blocks.find((b) => (b.title || "").toLowerCase().includes("faq")) ||
-      null
-    );
-  }, [linksData.blocks]);
-
-  const supportLinks = useMemo(() => {
-    if (!supportBlock) return [];
-    return supportBlock.kind === "links" ? supportBlock.links || [] : [];
-  }, [supportBlock]);
 
   useEffect(() => {
     let alive = true;
@@ -965,45 +934,65 @@ export default function SalesPage() {
       <div className="mx-auto max-w-7xl px-6 py-10 lg:py-16">
         <div className="flex items-center justify-between gap-4">
           <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Продажи</div>
-          <div className="flex items-center gap-2">
-            <SocialIconLink href="https://t.me/KarkasTaygiTg" label="Telegram">
-              <Send className="h-4 w-4" />
-            </SocialIconLink>
-            <SocialIconLink href="https://vk.com/kt320" label="ВКонтакте">
-              <span className="text-[11px] font-black tracking-widest">VK</span>
-            </SocialIconLink>
-            <SocialIconLink href="http://каркас-тайги.рф" label="Сайт">
-              <Globe className="h-4 w-4" />
-            </SocialIconLink>
-            <SocialIconLink href="https://youtube.com/@karkas_t?si=EBpMsSKRLSwAYOgZ" label="YouTube">
-              <Youtube className="h-4 w-4" />
-            </SocialIconLink>
-            {canEdit ? (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
-                  onClick={() => {
-                    setLinksLoading(true);
-                    setLinksReloadKey((x) => x + 1);
-                  }}
-                >
-                  Обновить ссылки
-                </Button>
-                <Button
-                  variant={editMode ? "primary" : "outline"}
-                  size="sm"
-                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
-                  onClick={() => setEditMode((v) => !v)}
-                >
-                  {editMode ? "Режим редактирования: Вкл" : "Режим редактирования: Выкл"}
-                </Button>
-              </>
-            ) : null}
-          </div>
+          {canEdit ? (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                onClick={() => {
+                  setLinksLoading(true);
+                  setLinksReloadKey((x) => x + 1);
+                }}
+              >
+                Обновить ссылки
+              </Button>
+              <Button
+                variant={editMode ? "primary" : "outline"}
+                size="sm"
+                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
+                onClick={() => setEditMode((v) => !v)}
+              >
+                {editMode ? "Режим редактирования: Вкл" : "Режим редактирования: Выкл"}
+              </Button>
+            </div>
+          ) : null}
         </div>
         <h1 className="text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-none">Материалы</h1>
+
+        {linksData.blocks
+          .filter((b) => b.kind === "links" && (b.title || "").trim().length)
+          .filter((b) => {
+            const t = (b.title || "").toLowerCase();
+            return t.includes("тг") || t.includes("помощ");
+          })
+          .map((b) => (
+            <div key={b.id} className="mt-8">
+              <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500 mb-2">{b.title}</div>
+              <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+                {(b.kind === "links" ? b.links : []).length ? (
+                  (b.kind === "links" ? b.links : []).map((l) => (
+                    <Button
+                      key={l.url}
+                      variant="outline"
+                      className="h-10 rounded-full border-zinc-200 bg-white/70 hover:bg-white text-zinc-950 px-4 shrink-0"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => openExternalLink({ url: l.url, title: l.title, source: b.title })}
+                        className="flex items-center gap-2"
+                      >
+                        <span className="text-[10px] font-black uppercase tracking-widest whitespace-nowrap">{l.title}</span>
+                        <span className="text-[11px] font-black text-[#229ED9]">↗</span>
+                      </button>
+                    </Button>
+                  ))
+                ) : (
+                  <div className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Нет ссылок</div>
+                )}
+              </div>
+            </div>
+          ))}
 
         <div className="mt-10 grid gap-6 lg:grid-cols-4">
           <button
@@ -1048,42 +1037,6 @@ export default function SalesPage() {
         <SalesExplorer title="Фотографии" open={photosOpen} onClose={() => setPhotosOpen(false)} mode="files" section="photos" editable={canEdit && editMode} />
 
         <SalesExplorer title="Каталоги" open={catalogsOpen} onClose={() => setCatalogsOpen(false)} mode="files" section="catalogs" editable={canEdit && editMode} />
-
-        <button
-          type="button"
-          onClick={() => setSupportOpen(true)}
-          className="fixed bottom-6 right-6 z-50 h-14 w-14 rounded-[18px] border border-zinc-200 bg-white/90 backdrop-blur-md shadow-2xl shadow-zinc-950/15 hover:bg-white transition flex items-center justify-center"
-          aria-label="Помощь"
-          title="Помощь"
-        >
-          <HelpCircle className="h-6 w-6" />
-        </button>
-
-        <Modal
-          open={supportOpen}
-          title={supportBlock?.title || "Помощь"}
-          onClose={() => setSupportOpen(false)}
-          footer={
-            <div className="flex items-center justify-end gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-xl font-black uppercase tracking-widest text-[10px]"
-                onClick={() => setSupportOpen(false)}
-              >
-                Закрыть
-              </Button>
-            </div>
-          }
-        >
-          {supportLinks.length ? (
-            <LinkBlocks links={supportLinks} />
-          ) : (
-            <div className="rounded-2xl border border-zinc-200 bg-white p-6 text-center">
-              <div className="text-[10px] font-black uppercase tracking-widest text-zinc-600">Нет ссылок</div>
-            </div>
-          )}
-        </Modal>
 
         {(() => {
           const active = linksData.blocks.find((b) => b.id === openBlockId);
