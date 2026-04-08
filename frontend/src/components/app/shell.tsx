@@ -259,15 +259,15 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       ) : null}
 
       <header className="sticky top-0 z-20 border-b border-zinc-200/80 bg-white/80 backdrop-blur-xl shadow-sm shadow-zinc-950/5">
-        <div className="mx-auto grid max-w-7xl grid-cols-3 items-center px-6 py-4">
-          <div className="flex items-center justify-start gap-5">
+        <div className="mx-auto grid max-w-7xl grid-cols-[auto_1fr_auto] items-center gap-4 px-6 py-4">
+          <div className="flex items-center justify-start gap-2">
             <a
               href="https://t.me/KarkasTaygiTg"
               target="_blank"
               rel="noopener noreferrer"
               aria-label="Telegram"
               title="Telegram"
-              className="grid h-11 w-11 place-items-center rounded-2xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
+              className="grid h-9 w-9 place-items-center rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
             >
               <Send className="h-4 w-4" />
             </a>
@@ -277,7 +277,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               rel="noopener noreferrer"
               aria-label="ВКонтакте"
               title="ВКонтакте"
-              className="grid h-11 w-11 place-items-center rounded-2xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
+              className="grid h-9 w-9 place-items-center rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
             >
               <span className="text-[11px] font-black tracking-widest">VK</span>
             </a>
@@ -287,7 +287,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               rel="noopener noreferrer"
               aria-label="Сайт"
               title="Сайт"
-              className="grid h-11 w-11 place-items-center rounded-2xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
+              className="grid h-9 w-9 place-items-center rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
             >
               <Globe className="h-4 w-4" />
             </a>
@@ -297,7 +297,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               rel="noopener noreferrer"
               aria-label="YouTube"
               title="YouTube"
-              className="grid h-11 w-11 place-items-center rounded-2xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
+              className="grid h-9 w-9 place-items-center rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
             >
               <Youtube className="h-4 w-4" />
             </a>
