@@ -27,6 +27,8 @@ let meInFlight = false;
 let lastMeAt = 0;
 let hasLoadedOnce = false;
 
+let retryTimer: any = null;
+
 function emitAuth() {
   for (const cb of Array.from(authSubscribers)) {
     try {
@@ -58,7 +60,7 @@ async function sharedFetchMe(force: boolean = false) {
         authSnapshot = { user: null, loading: false, error: null };
       }
     } else {
-      authSnapshot = { ...authSnapshot, loading: false, error: null };
+      authSnapshot = { ...authSnapshot, loading: false, error: new Error(`auth_me_http_${res.status}`) };
     }
   } catch (err) {
     authSnapshot = { ...authSnapshot, loading: false, error: err as Error };
@@ -66,6 +68,18 @@ async function sharedFetchMe(force: boolean = false) {
     hasLoadedOnce = true;
     meInFlight = false;
     emitAuth();
+
+    if (authSnapshot.error) {
+      try {
+        if (retryTimer) clearTimeout(retryTimer);
+      } catch {
+        // ignore
+      }
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void sharedFetchMe(true);
+      }, 3000);
+    }
   }
 }
 

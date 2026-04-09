@@ -10,7 +10,7 @@ import { AppNav } from "@/components/app/nav";
 import { useAuth } from "@/lib/hooks/use-auth";
 
 export function AppShell({ children }: { children?: React.ReactNode }) {
-  const { user, loading, refresh } = useAuth();
+  const { user, loading, error, refresh } = useAuth();
   const authenticated = !!user;
   const homeHref = authenticated ? "/dashboard" : "/";
   const pathname = usePathname();
@@ -121,10 +121,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   React.useEffect(() => {
     if (loading) return;
+    if (error) return;
     if (authenticated) return;
     if (pathname === "/" || pathname === "/login" || pathname === "/reset-password") return;
     router.replace("/");
-  }, [loading, authenticated, pathname, router]);
+  }, [loading, authenticated, pathname, router, error]);
 
   React.useEffect(() => {
     if (loading) return;
