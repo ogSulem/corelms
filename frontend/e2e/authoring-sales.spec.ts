@@ -36,6 +36,9 @@ test("one editor: legacy redirect, structured test, unsaved guard, learner gradi
   await page.goto(`/admin/modules?mid=${moduleId}&sid=${lessonId}`);
   await expect(page).toHaveURL(new RegExp(`/admin/modules/${moduleId}\\?tab=tests&lesson=`));
   await expect(page.getByRole("heading", { name: "Проверка знаний", exact: true })).toBeVisible();
+  // A disposable stand without an AI key must still support fully manual authoring.
+  await expect(page.getByText(/AI-провайдер не настроен/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Только без тестов", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Добавить вопрос", exact: true }).click();
   await page.getByLabel("Формулировка вопроса 1", { exact: true }).fill("Что сначала уточняет консультант?");
   await page.getByLabel("Вопрос 1: вариант A", { exact: true }).fill("Задачу клиента");
@@ -61,12 +64,29 @@ test("one editor: legacy redirect, structured test, unsaved guard, learner gradi
   await expect(learner.getByRole("heading", { name: "Тест пройден!", exact: true })).toBeVisible();
   await learner.getByRole("button", { name: "Посмотреть ответы", exact: true }).click();
   await expect(learner.getByText("Сначала выясняют задачу, чтобы подобрать подходящий продукт.", { exact: true })).toBeVisible();
+  await expect(learner.getByRole("link", { name: /К списку модулей/ })).toBeVisible();
   const latest = await api("GET", `/quizzes/${quizId}/attempts/latest`, undefined, student);
   expect(latest.can_review).toBe(true);
   await page.setViewportSize({ width: 320, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await learner.setViewportSize({ width: 320, height: 844 });
   expect(await learner.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("new lesson from one file is immediately readable and editable", async () => {
+  const page = await admin.newPage(); page.on("pageerror", e => errors.push(e.message));
+  await page.goto(`/admin/modules/${moduleId}`);
+  await page.getByLabel("Загрузить файл как новый урок", { exact: true }).setInputFiles(file("guide.docx"));
+  await expect.poll(async () => (await state()).lessons.length).toBe(2);
+  const workspace = await state();
+  const created = workspace.lessons.find((lesson: { title: string }) => lesson.title === "guide");
+  expect(created?.primary_asset_id).toBeTruthy();
+  expect(created?.requires_quiz).toBe(false);
+  await expect(page.getByRole("heading", { name: "guide", exact: true })).toBeVisible();
+  const learner = await student.newPage(); learner.on("pageerror", e => errors.push(e.message));
+  await learner.goto(`/modules/${moduleId}?lesson=${created.id}`);
+  await expect(learner.getByRole("region", { name: "Содержимое урока", exact: true })).toBeVisible();
+  await expect(learner.locator('iframe[src*="officeapps"]')).toHaveCount(0);
 });
 
 test("presentation: author and learner share material/text/files tabs and primary-file selection", async () => {

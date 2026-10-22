@@ -23,8 +23,9 @@ from app.models.asset import AssetRevision, ContentAsset
 from app.models.module import Module, Submodule
 from app.models.lesson_revision import LessonRevision
 from app.models.quiz import Question, QuestionType, Quiz, QuizType
-from app.schemas.authoring import FinalQuizSave, GenerateDraft, QuizSave
-from app.services.authoring import format_prompt, generate_quiz_draft_job, question_payload, quiz_payload
+from app.schemas.authoring import FinalQuizSave, GenerateDraft, GenerateModuleDrafts, QuizSave
+from app.services.quiz_drafts import prepare_module_drafts, module_draft_status
+from app.services.authoring import format_prompt, generate_quiz_draft_job, question_payload, quiz_payload, source_revision, request_signature
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.tag import ModuleTagMap, Tag
 from app.services.media import stage_rendition
@@ -269,10 +270,13 @@ def _inspect_upload(file: UploadFile, *, max_bytes: int) -> tuple[str, int, str]
 def upload_asset(
     module_id: uuid.UUID, request: Request, file: UploadFile = File(...), revision: int = Form(..., ge=1),
     submodule_id: uuid.UUID | None = Form(default=None), replace_asset_id: uuid.UUID | None = Form(default=None),
+    create_lesson: bool = Form(default=False),
     db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="content_upload", limit=120, window_seconds=60),
 ):
     filename, size, checksum = _inspect_upload(file, max_bytes=int(getattr(settings, "content_upload_max_bytes", 512 * 1024 * 1024)))
+    if create_lesson and (submodule_id or replace_asset_id):
+        raise HTTPException(422, "Создание урока нельзя объединять с заменой или перемещением файла")
     # Validate before transferring bytes, then recheck revision under lock after upload.
     module = db.get(Module, module_id)
     if module is None:
@@ -287,7 +291,7 @@ def upload_asset(
     if asset:
         # A replace keeps the logical location and display name, not a client-supplied move.
         submodule_id = db.scalar(select(SubmoduleAssetMap.submodule_id).where(SubmoduleAssetMap.asset_id == asset.id))
-    else:
+    elif not create_lesson:
         ensure_filename_available(db, module, filename, submodule_id)
     key = storage_key(module, filename)
     mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -295,9 +299,24 @@ def upload_asset(
     s3 = get_s3_client()
     bucket = effective_bucket()
     commit_attempted = False
+    created_lesson = None
     try:
         upload_fileobj_with_retry(s3=s3, object_key=key, fileobj=file.file, content_type=mime, size_bytes=size)
         module = _editable(db, module_id, revision)
+        if create_lesson:
+            preserve_progress(db, module)
+            title = pathlib.PurePosixPath(filename).stem.strip()[:280] or "Новый урок"
+            names = {name.casefold() for name in db.scalars(select(Submodule.title).where(Submodule.module_id == module.id, Submodule.is_archived.is_(False)))}
+            original_title, suffix = title, 2
+            while title.casefold() in names:
+                title = f"{original_title} ({suffix})"; suffix += 1
+            quiz = Quiz(type=QuizType.submodule, pass_threshold=70, attempts_limit=0)
+            db.add(quiz); db.flush()
+            created_lesson = Submodule(module_id=module.id, title=title, content="", order=next_lesson_order(db, module),
+                quiz_id=quiz.id, requires_quiz=False, is_folder=False, presentation_mode="material", content_mode="manual")
+            db.add(created_lesson); db.flush()
+            submodule_id = created_lesson.id
+            remember_quiz_version(db, created_lesson)
         if submodule_id and require_lesson(db, module, submodule_id).is_archived:
             raise HTTPException(409, "Урок перемещён в архив")
         if replace_asset_id:
@@ -319,6 +338,8 @@ def upload_asset(
             if submodule_id:
                 position = int(db.scalar(select(func.max(SubmoduleAssetMap.order)).where(SubmoduleAssetMap.submodule_id == submodule_id)) or 0) + 1
                 db.add(SubmoduleAssetMap(submodule_id=submodule_id, asset_id=asset.id, order=position))
+        if created_lesson:
+            created_lesson.primary_asset_id = asset.id
         db.flush()
         stage_rendition(db, asset)
         # File changes alone do not change required learning steps.
@@ -328,7 +349,10 @@ def upload_asset(
         commit_attempted = True
         db.commit()
         modules_bump_rev(reason="content_asset_changed")
-        return workspace(db, module)
+        state = workspace(db, module)
+        if created_lesson:
+            state["created_lesson_id"] = str(created_lesson.id)
+        return state
     except Exception:
         db.rollback()
         if not commit_attempted:
@@ -604,21 +628,23 @@ def create_quiz_draft(module_id: uuid.UUID, lesson_id: uuid.UUID, body: Generate
         raise HTTPException(409, "Выберите активный урок")
     if not str(settings.openrouter_api_key or "").strip():
         raise HTTPException(503, "AI-провайдер не настроен. Добавьте вопросы вручную или настройте OPENROUTER_API_KEY на сервере.")
+    fingerprint = source_revision(db, lesson)
+    signature = request_signature(fingerprint, body.count, body.source_text)
     key = _draft_key(module.id, lesson.id)
     job_id = uuid.uuid4().hex
     try:
         redis = get_redis()
         old_id = redis.get(key)
         old = fetch_job(old_id.decode() if isinstance(old_id, bytes) else str(old_id), strict=True) if old_id else None
-        if old and get_job_status(old) in {"queued", "started", "scheduled", "deferred"}:
+        if old and (old.meta or {}).get("request_signature") == signature and get_job_status(old) in {"queued", "started", "scheduled", "deferred"}:
             return {"id": str(old.id), "status": get_job_status(old), "existing": True}
         # Persist the known ID first: a lost enqueue reply must remain recoverable.
         redis.setex(key, 7 * 86400, job_id)
         job = get_queue(settings.rq_queue_regen).enqueue(generate_quiz_draft_job, str(module.id), str(lesson.id),
-            module.content_revision, body.count, body.source_text, job_id=job_id, job_timeout=300,
+            module.content_revision, body.count, body.source_text, source_fingerprint=fingerprint, job_id=job_id, job_timeout=300,
             result_ttl=7 * 86400, failure_ttl=7 * 86400,
             meta={"job_kind": "quiz_draft", "module_id": str(module.id), "lesson_id": str(lesson.id),
-                  "actor_user_id": str(user.id), "revision": module.content_revision})
+                  "actor_user_id": str(user.id), "revision": module.content_revision, "source_revision": fingerprint, "request_signature": signature})
     except Exception as exc:
         raise HTTPException(503, "Не удалось подтвердить запуск AI. Действующие вопросы не изменены. Обновите статус перед повтором.") from exc
     audit_log(db=db, request=request, actor_user_id=user.id, event_type="content_quiz_draft_requested",
@@ -632,7 +658,7 @@ def get_quiz_draft(module_id: uuid.UUID, lesson_id: uuid.UUID, job_id: str | Non
     module = db.get(Module, module_id)
     if not module:
         raise HTTPException(404, "Модуль не найден")
-    require_lesson(db, module, lesson_id)
+    lesson = require_lesson(db, module, lesson_id)
     if job_id is None:
         try:
             job_id = get_redis().get(_draft_key(module_id, lesson_id))
@@ -655,5 +681,30 @@ def get_quiz_draft(module_id: uuid.UUID, lesson_id: uuid.UUID, job_id: str | Non
     except Exception as exc:
         raise HTTPException(503, "Результат AI временно недоступен. Повторите проверку позже.") from exc
     return {"id": str(job.id), "status": status, "result": result,
-            "stale": (job.meta or {}).get("revision") != module.content_revision,
+            "stale": module.is_archived or lesson.is_archived or ((job.meta or {}).get("source_revision") != source_revision(db, lesson) if (job.meta or {}).get("source_revision") else (job.meta or {}).get("revision") != module.content_revision),
             "error": "Обработчик прервал подготовку. Действующий тест не изменён." if status in {"failed", "stopped", "canceled"} else None}
+
+
+@router.post("/{module_id}/quiz-drafts", status_code=202)
+def create_module_quiz_drafts(module_id: uuid.UUID, body: GenerateModuleDrafts, request: Request,
+                               db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin)),
+                               _: object = rate_limit(key_prefix="module_quiz_drafts", limit=3, window_seconds=60)):
+    module = _editable(db, module_id, body.revision)
+    receipt = prepare_module_drafts(db, module, actor_id=user.id, count=body.count,
+        only_missing=body.only_missing, lesson_ids=body.lesson_ids)
+    audit_log(db=db, request=request, actor_user_id=user.id, event_type="content_module_quiz_drafts_requested",
+              meta={"module_id": str(module.id), "batch_id": receipt.get("id"), "lessons": len(receipt.get("items", []))})
+    db.commit()
+    if not receipt.get("id"):
+        return receipt
+    return {**receipt, "working": True, "counts": {"queued": len(receipt["items"])},
+            "items": [{"lesson_id": item["lesson_id"], "title": item["title"], "status": "queued", "questions": 0,
+                       "current_questions": 0, "required": False, "error": None} for item in receipt["items"]]}
+
+
+@router.get("/{module_id}/quiz-drafts")
+def get_module_quiz_drafts(module_id: uuid.UUID, batch_id: uuid.UUID | None = None, db: Session = Depends(get_db)):
+    module = db.get(Module, module_id)
+    if not module:
+        raise HTTPException(404, "Модуль не найден")
+    return module_draft_status(db, module, batch_id.hex if batch_id else None)

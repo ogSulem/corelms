@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 import io
 import logging
 import uuid
@@ -62,10 +64,36 @@ def question_payload(question) -> dict:
     return {**data, "valid": valid}
 
 
+def source_revision(db, lesson: Submodule) -> str:
+    """Only changes relevant to this lesson invalidate a reviewed AI draft.
+
+    Quiz edits, module publication, a different lesson and completed renditions
+    do not change the immutable source identity.
+    """
+    assets = list(db.execute(select(ContentAsset, SubmoduleAssetMap.order)
+        .join(SubmoduleAssetMap, SubmoduleAssetMap.asset_id == ContentAsset.id)
+        .where(SubmoduleAssetMap.submodule_id == lesson.id, ContentAsset.is_archived.is_(False))
+        .order_by(case((ContentAsset.id == lesson.primary_asset_id, 0), else_=1), SubmoduleAssetMap.order, ContentAsset.id).limit(5)))
+    value = {
+        "version": 1, "module": str(lesson.module_id), "lesson": str(lesson.id), "title": lesson.title,
+        "text": hashlib.sha256((lesson.content or "").encode()).hexdigest(), "text_version": lesson.content_version,
+        "text_key": lesson.content_object_key, "presentation": lesson.presentation_mode,
+        "primary": str(lesson.primary_asset_id) if lesson.primary_asset_id else None,
+        "archived": lesson.is_archived, "folder": lesson.is_folder,
+        "assets": [(str(asset.id), asset.version, asset.bucket, asset.object_key, asset.original_filename,
+                    asset.checksum_sha256, position) for asset, position in assets],
+    }
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def request_signature(source: str, count: int, text: str | None = None) -> str:
+    return hashlib.sha256(json.dumps([source, count, text], ensure_ascii=False).encode()).hexdigest()
+
+
 def quiz_payload(db, module: Module, lesson: Submodule) -> dict:
     quiz = db.get(Quiz, lesson.quiz_id)
     questions = list(db.scalars(select(Question).where(Question.quiz_id == quiz.id).order_by(Question.position, Question.id)))
-    return {"revision": module.content_revision, "lesson_id": str(lesson.id), "quiz_id": str(quiz.id),
+    return {"revision": module.content_revision, "source_revision": source_revision(db, lesson), "lesson_id": str(lesson.id), "quiz_id": str(quiz.id),
             "enabled": lesson.requires_quiz, "pass_threshold": quiz.pass_threshold,
             "time_limit": quiz.time_limit, "attempts_limit": quiz.attempts_limit,
             "questions": [question_payload(q) for q in questions]}
@@ -81,7 +109,7 @@ def _source_text(db, lesson: Submodule) -> tuple[str, str]:
         return text[:60000], "Текст урока (открывается первым)"
     assets = list(db.scalars(select(ContentAsset).join(SubmoduleAssetMap, SubmoduleAssetMap.asset_id == ContentAsset.id)
         .where(SubmoduleAssetMap.submodule_id == lesson.id, ContentAsset.is_archived.is_(False))
-        .order_by(case((ContentAsset.id == lesson.primary_asset_id, 0), else_=1), SubmoduleAssetMap.order).limit(5)))
+        .order_by(case((ContentAsset.id == lesson.primary_asset_id, 0), else_=1), SubmoduleAssetMap.order, ContentAsset.id).limit(5)))
     for asset in assets:
         current = current_rendition(db, asset)
         if current and is_useful_quiz_text(current.text_content or ""):
@@ -120,7 +148,7 @@ def _source_text(db, lesson: Submodule) -> tuple[str, str]:
     return (text[:60000], "Конспект / текст урока") if is_useful_quiz_text(text) else ("", "Нет доступного текста")
 
 
-def generate_quiz_draft_job(module_id: str, lesson_id: str, revision: int, count: int, source_text: str | None = None) -> dict:
+def generate_quiz_draft_job(module_id: str, lesson_id: str, revision: int, count: int, source_text: str | None = None, source_fingerprint: str | None = None) -> dict:
     job = get_current_job()
     if job:
         job.meta.update(stage="draft_source", module_id=module_id, lesson_id=lesson_id)
@@ -128,13 +156,15 @@ def generate_quiz_draft_job(module_id: str, lesson_id: str, revision: int, count
     try:
         with SessionLocal() as db:
             module, lesson = db.get(Module, uuid.UUID(module_id)), db.get(Submodule, uuid.UUID(lesson_id))
-            if (not module or not lesson or module.content_revision != revision or lesson.module_id != module.id
+            if (not module or not lesson or (not source_fingerprint and module.content_revision != revision) or lesson.module_id != module.id
                     or module.is_archived or lesson.is_archived or lesson.is_folder):
                 return {"ok": False, "error": "Материалы изменены или недоступны. Обновите редактор и создайте новый черновик."}
+            if source_fingerprint and source_revision(db, lesson) != source_fingerprint:
+                return {"ok": False, "error": "Материалы этого урока изменены. Создайте новый черновик."}
             title = lesson.title
             text, source_label = (source_text.strip(), "Текст, вставленный автором") if source_text is not None else _source_text(db, lesson)
         if not is_useful_quiz_text(text):
-            return {"ok": False, "error": "Недостаточно содержательного текста. Добавьте конспект или вставьте текст для генерации. Видео автоматически не расшифровывается."}
+            return {"ok": False, "error_code": "insufficient_source", "error": "Недостаточно содержательного текста. Добавьте конспект или вставьте текст для генерации. Видео автоматически не расшифровывается."}
         if job:
             job.refresh()
             if job.meta.get("cancel_requested"):
@@ -154,7 +184,7 @@ def generate_quiz_draft_job(module_id: str, lesson_id: str, revision: int, count
         if not questions:
             return {"ok": False, "error": "AI не вернул проверяемые вопросы. Ничего не опубликовано. Повторите позже или добавьте вопросы вручную."}
         return {"ok": True, "module_id": module_id, "lesson_id": lesson_id, "revision": revision,
-                "questions": questions[:count], "needs_review": True, "source_label": source_label, "source_chars": len(text),
+                "questions": questions[:count], "source_revision": source_fingerprint, "needs_review": True, "source_label": source_label, "source_chars": len(text),
                 "source_total_chars": source_length,
                 "notice": "Использованы первые 12 000 символов источника. Для других разделов вставьте нужный фрагмент в поле генерации и добавьте новые вопросы к существующим." if source_length > 12000 else None}
     except Exception:

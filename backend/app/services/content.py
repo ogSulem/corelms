@@ -10,10 +10,12 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.media import AssetRendition
 from app.models.tag import ModuleTagMap
 from app.models.asset import AssetRevision, ContentAsset
 from app.models.module import Module, Submodule
+from app.models.quiz import Question
 from app.models.lesson_revision import LessonRevision
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.services.learning import LearningService
@@ -173,8 +175,11 @@ def serialize_asset(asset: ContentAsset, *, submodule_id: uuid.UUID | None = Non
 def workspace(db: Session, module: Module) -> dict:
     subs = list(db.scalars(select(Submodule).where(Submodule.module_id == module.id).order_by(Submodule.order)))
     assets = module_assets(db, module.id)
+    question_counts = dict(db.execute(select(Question.quiz_id, func.count()).where(Question.quiz_id.in_([s.quiz_id for s in subs])).group_by(Question.quiz_id)).all())
     links = dict(db.execute(select(SubmoduleAssetMap.asset_id, SubmoduleAssetMap.submodule_id).where(SubmoduleAssetMap.submodule_id.in_([s.id for s in subs]))).all())
     return {
+        "capabilities": {"ai_configured": bool(str(settings.openrouter_api_key or "").strip()),
+                         "upload_max_bytes": settings.content_upload_max_bytes},
         "module": {
             "id": str(module.id), "title": module.title, "description": module.description,
             "category": module.category, "difficulty": module.difficulty,
@@ -192,7 +197,7 @@ def workspace(db: Session, module: Module) -> dict:
             "content_mode": s.content_mode, "content_version": s.content_version,
             "has_external_content": len(s.content or "") > 4000 or bool(s.content_object_key and not str(s.content or "").strip()),
             "order": s.order, "is_folder": s.is_folder, "is_archived": s.is_archived,
-            "requires_quiz": s.requires_quiz, "quiz_id": str(s.quiz_id),
+            "requires_quiz": s.requires_quiz, "quiz_id": str(s.quiz_id), "question_count": question_counts.get(s.quiz_id, 0),
             "outline_path": s.outline_path, "source_path": s.source_path,
         } for s in subs],
         "assets": [serialize_asset(a, submodule_id=links.get(a.id)) for a in assets],

@@ -51,52 +51,27 @@ def _map_option_letter(ch: str) -> str:
     return c
 
 
-def _normalize_single(answer: str) -> str:
-    # Accept formats like: "A", "a", "A)", "answer: a", "(b)".
-    # We extract the FIRST option letter A-D from the string.
-    m = re.search(r"[A-Ea-eАБВГДабвгд]", (answer or ""))
-    return (_map_option_letter(m.group(0)) if m else "")
-
-
-def _normalize_multi(answer: str) -> str:
-    # Accept formats like: "A,B,D", "ABD", "a b d".
-    # We treat the answer as a set of option letters.
-    letters = re.findall(r"[A-Ea-eАБВГДабвгд]", (answer or ""))
-    norm = sorted({_map_option_letter(ch) for ch in letters if _map_option_letter(ch)})
-    return ",".join(norm)
-
-
-def _looks_like_multi(answer: str) -> bool:
-    try:
-        letters = {_map_option_letter(ch) for ch in re.findall(r"[A-Ea-eАБВГДабвгд]", (answer or ""))}
-        return len(letters) >= 2
-    except Exception:
-        return False
+def _answer_letters(answer: str) -> list[str] | None:
+    value = str(answer or "").strip().upper().translate(str.maketrans("АБВГД", "ABCDE"))
+    # Ignore cosmetic wrappers such as "(A)", " A. ", comma/space/slash separators.
+    compact = re.sub(r"[\s.,;/()]+", "", value)
+    if not compact or not re.fullmatch(r"[A-E]+", compact):
+        return None
+    letters = list(compact)
+    return letters if len(letters) == len(set(letters)) else None
 
 
 def _is_correct(*, question: Question, answer: str) -> bool:
-    expected = (question.correct_answer or "").strip()
-    got = (answer or "").strip()
-
-    if question.type.value == "case":
-        # Free text is never graded as correct merely because it is non-empty.
+    expected, got = (question.correct_answer or "").strip(), (answer or "").strip()
+    kind = str(getattr(question.type, "value", question.type))
+    if kind == "case":
         return bool(got and expected and expected.upper() != "ANY" and " ".join(expected.casefold().split()) == " ".join(got.casefold().split()))
-
-    if question.type.value == "multi":
-        return _normalize_multi(expected) == _normalize_multi(got)
-
-    # single (and any other non-multi option-based type)
-    # Accept any casing/separators by extracting option letters.
-    # Be forgiving: if user/admin supplied multiple letters for a single-type question,
-    # evaluate it as a multi-set comparison.
-    if _looks_like_multi(expected) or _looks_like_multi(got):
-        return _normalize_multi(expected) == _normalize_multi(got)
-
-    exp = _normalize_single(expected)
-    if exp:
-        return exp == _normalize_single(got)
-
-    return expected.lower() == got.lower()
+    wanted, selected = _answer_letters(expected), _answer_letters(got)
+    if not wanted or not selected:
+        return False
+    if kind == "multi":
+        return set(wanted) == set(selected)
+    return kind == "single" and len(wanted) == len(selected) == 1 and wanted == selected
 
 
 def _is_final_quiz(quiz: Quiz) -> bool:
@@ -225,14 +200,24 @@ def quiz_context(quiz_id: uuid.UUID, db: Session = Depends(get_db), user: User =
             active_session = False
     except Exception:
         pass
-    blocked = ("Итоговый тест отключён администратором." if lesson is None and not module.final_quiz_enabled else
+    blocked = ("Тест обновлён. Для новой попытки откройте актуальную версию." if lesson and lesson.quiz_id != quiz.id else
+               "Итоговый тест отключён администратором." if lesson is None and not module.final_quiz_enabled else
                "Лимит попыток исчерпан. Доступен разбор ответов; для новых попыток обратитесь к администратору." if remaining == 0 and not is_admin(user) else
                "Сначала завершите все уроки модуля." if lesson is None and not ready and not is_admin(user) else
                "Откройте материал урока и подтвердите его изучение." if not ready and not is_admin(user) else None)
+    next_step = {"kind": "completed", "href": "/modules", "label": "К списку модулей", "title": "Модуль завершён"}
+    unfinished = next((step for step in progress["submodules"] if not step["completed"]), None)
+    if unfinished:
+        test_ready = unfinished["read"] and unfinished["requires_quiz"]
+        next_step = {"kind": "quiz" if test_ready else "lesson", "title": unfinished["title"],
+                     "label": "Следующий тест" if test_ready else "Следующий урок",
+                     "href": f"/quizzes/{unfinished['quiz_id']}" if test_ready else f"/modules/{module.id}?lesson={unfinished['submodule_id']}"}
+    elif progress["final_quiz_id"] and not progress["final_passed"]:
+        next_step = {"kind": "final", "href": f"/quizzes/{progress['final_quiz_id']}", "label": "Итоговый тест", "title": module.title}
     return {"module_id": str(module.id), "module_title": module.title,
             "submodule_id": str(lesson.id) if lesson else None, "title": lesson.title if lesson else "Итоговый тест",
             "current_quiz_id": str(lesson.quiz_id) if lesson else str(quiz.id),
-            "is_final": lesson is None, "can_start": blocked is None or active_session, "can_resume": active_session, "start_blocked_reason": blocked if not active_session else None,
+            "next_step": next_step, "is_final": lesson is None, "can_start": blocked is None or active_session, "can_resume": active_session, "start_blocked_reason": blocked if not active_session else None,
             "attempts_used": attempts_used, "attempts_remaining": remaining,
             "passed": status["passed"] if status else progress["final_passed"],
             "best_score": status["best_score"] if status else progress["final_best_score"],

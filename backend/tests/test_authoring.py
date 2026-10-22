@@ -1,3 +1,4 @@
+import io
 import json
 import time
 import uuid
@@ -9,9 +10,10 @@ from sqlalchemy import func, select
 from app.models.asset import ContentAsset
 from app.models.attempt import QuizAttemptAnswer
 from app.models.module import Module, Submodule
-from app.models.quiz import Question, QuestionType, Quiz
+from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.tag import Tag, UserTagMap
+from app.core.config import settings
 from app.services import authoring
 from test_quiz_lifecycle import start, submit
 
@@ -254,3 +256,123 @@ def test_provider_validation_never_invents_an_explanation():
     question = OpenRouterQuestion(type='single', prompt='Что нужно уточнить у клиента?\nA) Задачу\nB) Погоду\nC) Цвет папки\nD) День недели', correct_answer='A')
     assert _is_good_question(question, seen_prompts=set())
     assert question.explanation is None
+
+
+def test_module_batch_reports_automation_in_one_transaction(redis_memory, monkeypatch, db, make_module):
+    import rq
+    from app.services import quiz_drafts
+    module, first, _ = make_module()
+    second_quiz = Quiz(type=QuizType.submodule)
+    db.add(second_quiz); db.flush()
+    second = Submodule(module_id=module.id, title='Второй урок', order=2, quiz_id=second_quiz.id, requires_quiz=False)
+    db.add(second); db.commit()
+    # RQ stores binary job hashes: use a non-decoding connection, as production does.
+    import fakeredis
+    raw = fakeredis.FakeRedis()
+    queue = rq.Queue('test-batch', connection=raw)
+    monkeypatch.setattr(quiz_drafts, 'get_queue', lambda _name: queue)
+    monkeypatch.setattr(quiz_drafts, 'get_redis', lambda: raw)
+    monkeypatch.setattr(settings, 'openrouter_api_key', 'synthetic-key-for-tests')
+    missing = quiz_drafts.prepare_module_drafts(db, module, actor_id=uuid.uuid4(), count=4, only_missing=True)
+    assert len(missing['items']) == 1 and missing['items'][0]['lesson_id'] == str(second.id)
+    receipt = quiz_drafts.prepare_module_drafts(db, module, actor_id=uuid.uuid4(), count=4, only_missing=False)
+    assert len(receipt['items']) == 2 and receipt['remaining'] == 0
+    assert raw.get(f"authoring:batch:{module.id}:latest").decode() == receipt['id']
+    for item in receipt['items']:
+        assert raw.get(f"authoring:draft:{module.id}:{item['lesson_id']}").decode() == item['job_id']
+    status = quiz_drafts.module_draft_status(db, module)
+    assert status['working'] is True and status['counts'] == {'queued': 1, 'configured': 1}
+    # Re-running with the same source does not enqueue duplicate AI work.
+    again = quiz_drafts.prepare_module_drafts(db, module, actor_id=uuid.uuid4(), count=4, only_missing=False)
+    assert all(item['reused'] for item in again['items']) and len(again['items']) == 2
+
+
+def test_editing_another_lesson_or_the_bank_does_not_invalidate_source_fingerprint(db, make_module, storage):
+    from app.services.authoring import source_revision
+    module, lesson, quiz = make_module(required=True)
+    other_quiz = Quiz(type=QuizType.submodule)
+    db.add(other_quiz); db.flush()
+    other = Submodule(module_id=module.id, title='Другой', order=2, quiz_id=other_quiz.id)
+    db.add(other); db.commit()
+    before = source_revision(db, lesson)
+    other.content = 'Изменился только другой урок'
+    quiz.pass_threshold = 90
+    module.is_active = False
+    module.content_revision += 5
+    db.commit()
+    assert source_revision(db, lesson) == before
+    lesson.presentation_mode = 'text'
+    db.commit()
+    assert source_revision(db, lesson) != before
+
+
+def test_new_lesson_from_a_file_is_ready_to_read(client, db, admin_headers, make_module, storage):
+    module, _, _ = make_module()
+    response = client.post(f'/admin/content/modules/{module.id}/assets', headers=admin_headers,
+        data={'revision': str(module.content_revision), 'create_lesson': 'true'},
+        files={'file': ('Регламент продаж.docx', io.BytesIO(b'PK\x03\x04synthetic'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')})
+    assert response.status_code == 201, response.text
+    state = response.json()
+    lesson = db.get(Submodule, uuid.UUID(state['created_lesson_id']))
+    assert lesson.title == 'Регламент продаж' and lesson.presentation_mode == 'material' and lesson.requires_quiz is False
+    assert str(lesson.primary_asset_id) == state['assets'][0]['asset_id']
+
+
+def test_grading_requires_exact_option_letters(client, db, make_module, make_user):
+    from app.routers.quizzes import _is_correct
+    _, lesson, quiz = make_module(required=True)
+    question = db.scalar(select(Question).where(Question.quiz_id == quiz.id))
+    assert _is_correct(question=question, answer='A')
+    assert _is_correct(question=question, answer='а)')
+    assert _is_correct(question=question, answer=' (A). ')
+    assert not _is_correct(question=question, answer='A1 склад')
+    assert not _is_correct(question=question, answer='AB')
+    assert not _is_correct(question=question, answer='')
+
+
+def test_context_suggests_the_next_real_step(client, db, admin_headers, make_module, make_user):
+    module, lesson, quiz = make_module(required=True)
+    _, headers = make_user()
+    assert client.get(f'/quizzes/{quiz.id}/context', headers=headers).json()['next_step']['kind'] == 'lesson'
+    assert client.post(f'/submodules/{lesson.id}/read', headers=headers).status_code == 200
+    context = client.get(f'/quizzes/{quiz.id}/context', headers=headers).json()
+    assert context['next_step']['kind'] == 'quiz' and context['next_step']['href'] == f'/quizzes/{quiz.id}'
+
+
+def test_historical_quiz_context_never_offers_a_new_attempt_after_bank_replacement(client, db, admin_headers, make_module, make_user):
+    module, lesson, old = make_module(required=True)
+    _, headers = make_user()
+    client.post(f'/submodules/{lesson.id}/read', headers=headers)
+    saved = client.put(f'/admin/content/modules/{module.id}/lessons/{lesson.id}/quiz', headers=admin_headers,
+                       json=quiz_body(module.content_revision))
+    assert saved.status_code == 200
+    context = client.get(f'/quizzes/{old.id}/context', headers=headers).json()
+    assert context['can_start'] is False and 'актуальную' in (context['start_blocked_reason'] or '')
+
+
+def test_draft_is_stale_only_when_this_lessons_materials_change(client, db, admin_headers, make_module, redis_memory, monkeypatch):
+    from app.routers import content
+    from app.services.authoring import source_revision
+    module, lesson, _ = make_module()
+    other_quiz = Quiz(type=QuizType.submodule)
+    db.add(other_quiz); db.flush()
+    other = Submodule(module_id=module.id, title='Другой', order=2, quiz_id=other_quiz.id)
+    db.add(other); db.commit()
+    job = SimpleNamespace(id='synthetic-job', meta={'job_kind': 'quiz_draft', 'module_id': str(module.id),
+        'lesson_id': str(lesson.id), 'source_revision': source_revision(db, lesson), 'revision': module.content_revision},
+        result={'ok': True, 'questions': []}, get_status=lambda **kwargs: 'finished')
+    monkeypatch.setattr(content, 'get_redis', lambda: redis_memory)
+    monkeypatch.setattr(content, 'fetch_job', lambda job_id, **kwargs: job)
+    redis_memory.set(f'authoring:draft:{module.id}:{lesson.id}', 'synthetic-job')
+    url = f'/admin/content/modules/{module.id}/lessons/{lesson.id}/quiz-draft'
+    assert client.get(url, headers=admin_headers).json()['stale'] is False
+    revision = client.get(f'/admin/content/modules/{module.id}', headers=admin_headers).json()['module']['content_revision']
+    edited_other = client.patch(f'/admin/content/modules/{module.id}/lessons/{other.id}', headers=admin_headers,
+        json={'revision': revision, 'content': 'Изменены только материалы другого урока'})
+    assert edited_other.status_code == 200
+    assert client.get(url, headers=admin_headers).json()['stale'] is False
+    revision = edited_other.json()['module']['content_revision']
+    edited_own = client.patch(f'/admin/content/modules/{module.id}/lessons/{lesson.id}', headers=admin_headers,
+        json={'revision': revision, 'content': 'Теперь изменился сам источник черновика'})
+    assert edited_own.status_code == 200
+    assert client.get(url, headers=admin_headers).json()['stale'] is True

@@ -9,14 +9,19 @@ import type { EditorLesson, Workspace } from "./editor-types";
 
 type Question = { id?: string | null; type: string; stem: string; options: string[]; correct: number[]; explanation: string; valid?: boolean };
 type Quiz = { revision: number; quiz_id?: string; enabled: boolean; pass_threshold: number; time_limit: number | null; attempts_limit: number; questions: Question[]; source_lessons?: number };
-type DraftJob = { id: string | null; status: string; error?: string; stale?: boolean; result?: { ok: boolean; revision: number; error?: string; questions?: Question[]; notice?: string | null; source_label?: string; source_chars?: number } };
+type BatchItem = { lesson_id: string; title: string; status: string; questions: number; current_questions: number; required: boolean; error: string | null };
+type Batch = { id: string | null; items: BatchItem[]; working: boolean; counts: Record<string, number>; remaining: number; message?: string };
+type DraftJob = { id: string | null; status: string; error?: string; stale?: boolean; result?: { ok: boolean; revision: number; source_revision?: string; error?: string; questions?: Question[]; notice?: string | null; source_label?: string; source_chars?: number } };
 const btn = "gap-2 rounded-xl text-sm font-medium normal-case tracking-normal";
 const field = "w-full min-w-0 rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100 disabled:bg-zinc-50";
 const normalize = (quiz: Quiz): Quiz => ({ ...quiz, questions: quiz.questions || [] });
 const running = (job: DraftJob | null) => !!job?.id && ["queued", "started", "scheduled", "deferred"].includes(job.status);
 
-export function ModuleQuizEditor({ moduleId, revision, lessons, initialLessonId, locked, onWorkspace, onDirtyChange, onBusyChange }: {
-  moduleId: string; revision: number; lessons: EditorLesson[]; initialLessonId: string | null; locked: boolean;
+const stateLabel = (state: string) => state === "configured" ? "Уже есть тест" : state === "ready" ? "Черновик готов" : ["queued", "started", "scheduled", "deferred"].includes(state) ? "Готовится" : state === "needs_source" ? "Нужен текст" : state === "stale" ? "Материалы изменены" : state === "failed" ? "Ошибка" : "Не начато";
+const batchLabel = (item: BatchItem) => item.status === "configured" ? `Готово: ${item.current_questions}` : item.status === "ready" ? `Черновик: ${item.questions}` : item.status === "queued" || item.status === "started" || item.status === "scheduled" || item.status === "deferred" ? "Готовится…" : item.status === "needs_source" ? "Нужен текст" : item.status === "stale" ? "Материалы изменены" : item.status === "failed" ? "Ошибка" : "Не начато";
+
+export function ModuleQuizEditor({ moduleId, revision, lessons, initialLessonId, locked, aiConfigured, onWorkspace, onDirtyChange, onBusyChange }: {
+  moduleId: string; revision: number; lessons: EditorLesson[]; initialLessonId: string | null; locked: boolean; aiConfigured: boolean;
   onWorkspace: (next: Workspace) => void; onDirtyChange: (dirty: boolean) => void; onBusyChange: (busy: boolean) => void;
 }) {
   const available = lessons.filter(l => !l.is_folder && !l.is_archived);
@@ -32,6 +37,9 @@ export function ModuleQuizEditor({ moduleId, revision, lessons, initialLessonId,
   const [showAI, setShowAI] = useState(false);
   const [source, setSource] = useState("");
   const [count, setCount] = useState(5);
+  const [batch, setBatch] = useState<Batch | null>(null);
+  const [batchLoading, setBatchLoading] = useState(true);
+  const [batchTick, setBatchTick] = useState(0);
   const inFlight = useRef(false);
   const dirtyRef = useRef(false);
   const loadedPath = useRef("");
@@ -83,6 +91,39 @@ export function ModuleQuizEditor({ moduleId, revision, lessons, initialLessonId,
     return () => { controller.abort(); clearTimeout(timer); };
   }, [job?.id, job?.status, draftPath]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const next = await apiFetch<Batch>(`${base}/quiz-drafts`, { signal: controller.signal });
+        if (stopped) return;
+        setBatch(next); setBatchLoading(false);
+        if (!next.working) return;
+      } catch (e) {
+        if (stopped) return;
+        setBatchLoading(false);
+        if (!controller.signal.aborted) setError(previous => previous || (e instanceof Error ? e.message : "Статус общей подготовки недоступен"));
+      }
+      if (!stopped) timer = setTimeout(poll, document.hidden ? 15000 : 4000);
+    };
+    void poll();
+    return () => { stopped = true; controller.abort(); clearTimeout(timer); };
+  }, [base, revision, batchTick]);
+  async function startBatch(onlyMissing = true) {
+    if (inFlight.current || !available.length) return;
+    inFlight.current = true; setBusy(true); setError(null); setMessage(null);
+    try {
+      const next = await apiFetch<Batch>(`${base}/quiz-drafts`, { method: "POST", body: JSON.stringify({ revision, count, only_missing: onlyMissing }) });
+      setBatch(next); setBatchTick(n => n + 1);
+      if (next.id) {
+        setMessage("AI готовит тесты в фоне. Можно продолжать работу; результаты сохранятся на 7 дней и не изменят действующие тесты.");
+        window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Тесты готовятся", description: "Проверьте их перед включением" } }));
+      }
+    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось запустить подготовку тестов"); }
+    finally { inFlight.current = false; setBusy(false); }
+  }
   const edit = useCallback((update: Partial<Quiz>) => { setQuiz(old => old ? { ...old, ...update } : old); setMessage(null); }, []);
   function changeQuestion(index: number, update: Partial<Question>) {
     if (!quiz) return;
@@ -135,12 +176,27 @@ export function ModuleQuizEditor({ moduleId, revision, lessons, initialLessonId,
     } catch (e) { setError(e instanceof Error ? e.message : "Не удалось запустить AI"); }
     finally { inFlight.current = false; setBusy(false); }
   }
-  const staleDraft = !!job?.stale || (!!job?.result?.revision && job.result.revision !== quiz?.revision);
+  // The server fingerprints only this lesson's materials, so editing another
+  // lesson or publishing the module cannot invalidate a reviewed draft.
+  const staleDraft = !!job?.stale;
 
   return <div className="mt-6 space-y-5">
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 sm:p-6">
       <div className="mb-5 flex items-start gap-3"><GraduationCap size={23} className="mt-1 shrink-0 text-amber-700" /><div><h2 className="text-lg font-semibold">Проверка знаний</h2><p className="mt-1 text-sm leading-7 text-zinc-500">Вопросы, правильные ответы и правила прохождения — здесь. AI создаёт только черновик, который вы проверяете перед сохранением.</p></div></div>
-      <label className="block space-y-2 text-sm font-medium">Какой тест редактируем<select aria-label="Тест для редактирования" className={field} value={selected} disabled={busy} onChange={e => { if ((!dirty && !sourceDirty) || window.confirm("Переключить тест без сохранения изменений?")) setSelected(e.target.value); }}>{available.map(l => <option key={l.id} value={l.id}>{l.title}{l.requires_quiz ? " · обязателен" : " · без обязательного теста"}</option>)}<option value="final">Итоговый тест модуля</option></select></label>
+      {!!available.length && <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/60 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0"><p className="text-sm font-medium">Подготовить тесты для всех уроков</p><p className="mt-1 text-xs leading-6 text-zinc-500">{batch?.items.length ? batch.items.filter(item => item.status !== "configured").length : available.filter(lesson => !lesson.question_count).length} из {available.length} уроков пока без готового теста. Один запуск создаёт черновики; действующие тесты не меняются.</p></div>
+          <div className="flex flex-wrap gap-2"><label className="flex items-center gap-2 text-xs text-zinc-500">Вопросов на урок<input type="number" min={1} max={10} aria-label="Вопросов на урок" className={`${field} !w-20`} value={count} onChange={e => setCount(Number(e.target.value))} /></label>
+            <Button className={btn} disabled={locked || busy || !aiConfigured} onClick={() => void startBatch(true)}><Sparkles size={16} />Только без тестов</Button>
+            <Button variant="outline" className={btn} disabled={locked || busy || !aiConfigured} onClick={() => void startBatch(false)}>Все уроки</Button></div></div>
+        {!aiConfigured && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs leading-6 text-amber-900">AI-провайдер не настроен на сервере. Создайте вопросы вручную — всё остальное работает без AI.</p>}
+        {batchLoading ? <p role="status" className="mt-3 text-xs text-zinc-500">Проверяем общую подготовку…</p> : batch && (batch.items.length > 0 || batch.message) && <div className="mt-3 space-y-2">
+          {!!batch.items.length && <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500"><span>{batch.working ? "Идёт подготовка." : "Подготовка завершена."}</span>{Object.entries(batch.counts || {}).filter(([, n]) => n > 0).map(([state, n]) => <span key={state} className={cn("rounded-full px-2 py-0.5", state === "failed" || state === "needs_source" || state === "stale" ? "bg-amber-100 text-amber-900" : "bg-white text-zinc-600")}>{stateLabel(state)} · {n}</span>)}</div>}
+          {!!batch.remaining && <p className="text-xs leading-6 text-zinc-500">Ещё {batch.remaining} уроков не вошли в один запуск (до 50 за раз). Запустите подготовку повторно после проверки.</p>}
+          {batch.message && <p className="text-xs leading-6 text-zinc-500">{batch.message}</p>}
+          {batch.items.length > 0 && <ul className="grid gap-1.5 sm:grid-cols-2">{batch.items.map(item => <li key={item.lesson_id} className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs"><span className="min-w-0 flex-1 break-words">{item.title}</span><span className={cn("shrink-0 rounded-full px-2 py-0.5", item.status === "configured" ? "bg-emerald-50 text-emerald-800" : ["queued", "started", "scheduled", "deferred"].includes(item.status) ? "bg-zinc-100 text-zinc-600" : "bg-amber-50 text-amber-900")}>{batchLabel(item)}</span><button type="button" className="shrink-0 font-medium text-amber-800 underline" onClick={() => { if ((!dirty && !sourceDirty) || window.confirm("Переключить тест без сохранения изменений?")) { setSelected(item.lesson_id); setShowAI(false); } }}>Открыть</button></li>)}</ul>}
+        </div>}
+      </div>}
+      <label className="mt-5 block space-y-2 text-sm font-medium">Какой тест редактируем<select aria-label="Тест для редактирования" className={field} value={selected} disabled={busy} onChange={e => { if ((!dirty && !sourceDirty) || window.confirm("Переключить тест без сохранения изменений?")) setSelected(e.target.value); }}>{available.map(l => <option key={l.id} value={l.id}>{l.question_count ? `${l.title} · ${l.question_count} вопр.` : `${l.title} · без вопросов`}{l.requires_quiz ? " · обязателен" : ""}</option>)}<option value="final">Итоговый тест модуля</option></select></label>
     </section>
     {error && <div role="alert" className="space-y-2 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"><p>{error}</p><button type="button" className="font-medium underline" onClick={() => { if ((!dirty && !sourceDirty) || window.confirm("Загрузить текущую версию с сервера без сохранения черновика?")) setRefresh(n => n + 1); }}>Обновить тест с сервера</button></div>}
     {loading ? <p role="status" className="flex items-center justify-center gap-2 py-12 text-sm text-zinc-500"><Loader2 className="animate-spin" size={20} />Загружаем вопросы…</p> : quiz && <>
@@ -154,10 +210,10 @@ export function ModuleQuizEditor({ moduleId, revision, lessons, initialLessonId,
         {isFinal && <p className="mt-4 rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-600">Источник — обязательные тесты {quiz.source_lessons || 0} уроков. Отдельного дублирующего банка у итогового теста нет. Изменения правил не меняют условия уже начатой попытки.</p>}
       </section>
       {!isFinal && <>
-        <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-base font-semibold">Вопросы · {quiz.questions.length}</h3><div className="flex flex-wrap gap-2"><Button variant="outline" className={btn} disabled={locked || running(job)} onClick={() => setShowAI(v => !v)}><Sparkles size={16} />AI-черновик<ChevronDown size={14} /></Button><Button variant="outline" className={btn} disabled={locked || quiz.questions.length >= 100} onClick={() => edit({ questions: [...quiz.questions, { type: "single", stem: "", options: ["", ""], correct: [], explanation: "" }] })}><Plus size={16} />Добавить вопрос</Button></div></div>
+        <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-base font-semibold">Вопросы · {quiz.questions.length}</h3><div className="flex flex-wrap gap-2"><Button variant="outline" className={btn} disabled={locked || !aiConfigured || running(job)} onClick={() => setShowAI(v => !v)}><Sparkles size={16} />AI-черновик<ChevronDown size={14} /></Button><Button variant="outline" className={btn} disabled={locked || quiz.questions.length >= 100} onClick={() => edit({ questions: [...quiz.questions, { type: "single", stem: "", options: ["", ""], correct: [], explanation: "" }] })}><Plus size={16} />Добавить вопрос</Button></div></div>
         {showAI && <section className="space-y-4 rounded-2xl border border-amber-200 bg-amber-50/50 p-5 sm:p-6"><h3 className="flex items-center gap-2 font-medium"><Sparkles size={18} />Черновик по материалам урока</h3><p className="text-xs leading-6 text-zinc-600">Текст отправится настроенному AI-провайдеру. Пустое поле — использовать основной документ, а если извлечь текст нельзя — конспект урока. При показе текста первым источником будет текст урока. Для видео нужен конспект: автоматической расшифровки речи нет. За один черновик используется до 12 000 символов. Для длинного урока выбирайте нужный раздел. Существующие вопросы не изменятся.</p><label className="block space-y-2 text-sm font-medium">Текст для генерации <span className="font-normal text-zinc-400">(необязательно)</span><textarea rows={6} maxLength={60000} className={field} value={source} onChange={e => setSource(e.target.value)} placeholder={`Содержательные материалы урока «${currentLesson?.title || ""}»…`} /></label><div className="flex flex-wrap items-center gap-3"><label className="flex items-center gap-2 text-sm">Вопросов<input type="number" min={1} max={10} className={`${field} !w-20`} value={count} onChange={e => setCount(Number(e.target.value))} /></label><Button className={btn} disabled={locked || count < 1 || count > 10} onClick={() => void generate()}><Sparkles size={16} />Создать черновик</Button></div></section>}
         {running(job) && <p role="status" className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><Loader2 className="shrink-0 animate-spin" size={18} />AI готовит черновик. Можно продолжать работу или закрыть страницу — результат хранится 7 дней.</p>}
-        {job?.result?.ok && <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><p><strong>Черновик готов: {job.result.questions?.length || 0} вопросов.</strong> Проверьте факты, однозначность вариантов и отмеченные правильные ответы.</p>{job.result.source_label && <p className="text-xs leading-6">Источник: {job.result.source_label} · {job.result.source_chars?.toLocaleString("ru-RU")} символов. Проверьте, что это нужный материал.</p>}{job.result.notice && <p className="text-xs leading-6">{job.result.notice}</p>}{staleDraft ? <p>Модуль уже изменён. Создайте новый черновик по актуальным материалам.</p> : <div className="flex flex-wrap gap-2">{quiz.questions.length > 0 && <Button variant="outline" className={btn} disabled={locked || quiz.questions.length + (job.result.questions?.length || 0) > 100} onClick={() => { edit({ questions: [...quiz.questions, ...(job.result!.questions || [])] }); setMessage("Новые вопросы добавлены к черновику. Проверьте их перед сохранением."); }}><Plus size={16} />Добавить к вопросам</Button>}<Button variant="outline" className={btn} disabled={locked} onClick={() => { if ((!quiz.questions.length && !dirty) || window.confirm("Заменить вопросы в редакторе AI-черновиком? Действующий тест изменится только после вашего сохранения.")) { edit({ questions: job.result!.questions || [] }); setMessage("Черновик перенесён в редактор, но ещё не сохранён. Проверьте каждый вопрос."); } }}><Check size={16} />Подставить в редактор для проверки</Button></div>}</div>}
+        {job?.result?.ok && <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><p><strong>Черновик готов: {job.result.questions?.length || 0} вопросов.</strong> Проверьте факты, однозначность вариантов и отмеченные правильные ответы.</p>{job.result.source_label && <p className="text-xs leading-6">Источник: {job.result.source_label} · {job.result.source_chars?.toLocaleString("ru-RU")} символов. Проверьте, что это нужный материал.</p>}{job.result.notice && <p className="text-xs leading-6">{job.result.notice}</p>}{staleDraft ? <p>Материалы этого урока изменены. Создайте новый черновик — остальные уроки и действующие тесты не затронуты.</p> : <div className="flex flex-wrap gap-2">{quiz.questions.length > 0 && <Button variant="outline" className={btn} disabled={locked || quiz.questions.length + (job.result.questions?.length || 0) > 100} onClick={() => { edit({ questions: [...quiz.questions, ...(job.result!.questions || [])] }); setMessage("Новые вопросы добавлены к черновику. Проверьте их перед сохранением."); }}><Plus size={16} />Добавить к вопросам</Button>}<Button variant="outline" className={btn} disabled={locked} onClick={() => { if ((!quiz.questions.length && !dirty) || window.confirm("Заменить вопросы в редакторе AI-черновиком? Действующий тест изменится только после вашего сохранения.")) { edit({ questions: job.result!.questions || [] }); setMessage("Черновик перенесён в редактор, но ещё не сохранён. Проверьте каждый вопрос."); } }}><Check size={16} />Подставить в редактор для проверки</Button></div>}</div>}
         {(job?.error || job?.result?.error) && <p role="alert" className="rounded-xl bg-amber-50 p-4 text-sm leading-7 text-amber-900">{job.error || job.result?.error}</p>}
         {!quiz.questions.length && <div className="rounded-2xl border border-dashed border-zinc-300 p-8 text-center text-sm leading-7 text-zinc-500">Пока нет вопросов. Добавьте первый вручную или создайте AI-черновик.<br />Пустые и непроверенные вопросы не публикуются автоматически.</div>}
         {quiz.questions.map((question, index) => <section key={question.id || `draft-${index}`} className="min-w-0 space-y-4 rounded-2xl border border-zinc-200 bg-white p-5 sm:p-6">

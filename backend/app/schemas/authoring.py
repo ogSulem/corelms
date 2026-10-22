@@ -65,3 +65,9 @@ class FinalQuizSave(QuizSettings, RevisionRequest):
 class GenerateDraft(RevisionRequest):
     count: int = Field(default=5, ge=1, le=10)
     source_text: str | None = Field(default=None, max_length=60000)
+
+
+class GenerateModuleDrafts(RevisionRequest):
+    count: int = Field(default=5, ge=1, le=10)
+    only_missing: bool = True
+    lesson_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=50)
