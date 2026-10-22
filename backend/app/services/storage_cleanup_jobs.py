@@ -4,22 +4,22 @@ from datetime import datetime, timedelta, timezone
 import logging
 
 from rq import get_current_job
-from sqlalchemy import delete
 
 from app.core.config import settings
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal
-from app.models.asset import ContentAsset
+from app.services.content import referenced_storage_keys
 from app.services.storage import ensure_bucket_exists, get_s3_client
 
 
 log = logging.getLogger(__name__)
 
 
-def cleanup_admin_uploads_job(*, prefix: str = "uploads/", ttl_hours: int | None = None) -> dict:
-    """Best-effort cleanup of large uploaded ZIP artifacts.
+def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int | None = None) -> dict:
+    """Report candidates only; reference snapshots cannot authorize deletion.
 
-    Deletes objects under `prefix` older than TTL. Designed to be safe to run repeatedly.
+    Kept as a compatible RQ entry point for old scheduled jobs. Physical object
+    retention must be managed offline, with a backup and all writers stopped.
     """
 
     try:
@@ -33,9 +33,20 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/", ttl_hours: int | None
     ttl = int(ttl_hours if ttl_hours is not None else getattr(settings, "uploads_admin_ttl_hours", 24))
     cutoff = datetime.now(timezone.utc) - timedelta(hours=ttl)
 
+    # Never delete referenced learning files or source archives, including archived
+    # modules and historical versions. A storage listing is not a source of truth.
+    with SessionLocal() as db:
+        protected = referenced_storage_keys(db)
+    if prefix != "uploads/admin/":
+        raise ValueError("Automatic cleanup is restricted to uploads/admin/")
+    # Source ZIPs may be waiting for a worker or a manual retry. Keep them even
+    # before the import transaction attaches them to a module.
+
     deleted_objects = 0
     deleted_bytes = 0
     deleted_asset_rows = 0
+    candidate_objects = 0
+    candidate_bytes = 0
 
     token: str | None = None
     while True:
@@ -53,7 +64,7 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/", ttl_hours: int | None
         to_delete: list[dict[str, str]] = []
         for obj in contents:
             key = obj.get("Key")
-            if not key:
+            if not key or key in protected or str(key).lower().endswith(".zip") or str(key).startswith("uploads/quickstart/"):
                 continue
             lm = obj.get("LastModified")
             if not isinstance(lm, datetime):
@@ -63,42 +74,11 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/", ttl_hours: int | None
             if lm <= cutoff:
                 to_delete.append({"Key": str(key)})
                 try:
-                    deleted_bytes += int(obj.get("Size") or 0)
+                    candidate_bytes += int(obj.get("Size") or 0)
                 except Exception:
                     pass
 
-        if to_delete:
-            try:
-                s3.delete_objects(Bucket=settings.s3_bucket, Delete={"Objects": to_delete, "Quiet": True})
-                deleted_objects += len(to_delete)
-
-                # Product hardening: also remove ContentAsset rows for admin upload artifacts.
-                # These objects are temporary and must not bloat the DB over time.
-                try:
-                    keys = [str(x.get("Key") or "").strip() for x in to_delete]
-                    keys = [k for k in keys if k]
-                    if keys:
-                        db = SessionLocal()
-                        try:
-                            # Safety: keep it scoped strictly to the admin uploads prefix.
-                            safe_keys = [k for k in keys if k.startswith(prefix)]
-                            if safe_keys:
-                                # Chunk to avoid large IN clauses.
-                                step = 500
-                                for i in range(0, len(safe_keys), step):
-                                    chunk = safe_keys[i : i + step]
-                                    res = db.execute(delete(ContentAsset).where(ContentAsset.object_key.in_(chunk)))
-                                    try:
-                                        deleted_asset_rows += int(res.rowcount or 0)
-                                    except Exception:
-                                        pass
-                                db.commit()
-                        finally:
-                            db.close()
-                except Exception:
-                    log.exception("cleanup_admin_uploads_job: failed to delete ContentAsset rows")
-            except Exception:
-                log.exception("cleanup_admin_uploads_job: delete_objects failed")
+        candidate_objects += len(to_delete)
 
         if not resp.get("IsTruncated"):
             break
@@ -112,6 +92,8 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/", ttl_hours: int | None
         "deleted_objects": int(deleted_objects),
         "deleted_bytes": int(deleted_bytes),
         "deleted_asset_rows": int(deleted_asset_rows),
+        "candidate_objects": candidate_objects, "candidate_bytes": candidate_bytes,
+        "retention_policy": "report_only",
     }
 
     if job is not None:
@@ -137,7 +119,7 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/", ttl_hours: int | None
 
 def cleanup_admin_multipart_uploads_job(
     *,
-    prefix: str = "uploads/",
+    prefix: str = "uploads/admin/",
     ttl_hours: int | None = None,
     max_to_abort: int | None = None,
 ) -> dict:

@@ -76,7 +76,7 @@ def generate_quiz_questions_ai(
 
     def _is_valid_question(q: Any, *, seen_prompts: set[str]) -> bool:
         raw_type = _clean(getattr(q, "type", "") or "single").lower()
-        if raw_type not in {"single", "multi", "case"}:
+        if raw_type not in {"single", "multi"}:
             return False
 
         prompt = str(getattr(q, "prompt", "") or "").strip()
@@ -109,20 +109,8 @@ def generate_quiz_questions_ai(
             if _norm_correct_answer(ca_raw) not in {"A", "B", "C", "D"}:
                 return False
 
-        # Explanation is allowed to be missing/short; we'll auto-fill it.
-        # Keeping this permissive dramatically improves yield for some providers.
-        try:
-            exp = _clean(getattr(q, "explanation", ""))
-            if len(exp) < 6:
-                setattr(q, "explanation", "Пояснение: правильный ответ следует из текста урока.")
-                if debug_out is not None:
-                    debug_out.setdefault("explanation_autofill", 0)
-                    try:
-                        debug_out["explanation_autofill"] = int(debug_out.get("explanation_autofill") or 0) + 1
-                    except Exception:
-                        debug_out["explanation_autofill"] = 1
-        except Exception:
-            pass
+        # Missing reasoning is not evidence. Leave it empty for author review;
+        # do not fabricate a claim that the answer follows from the source.
 
         seen_prompts.add(norm_p)
         return True

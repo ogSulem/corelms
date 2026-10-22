@@ -36,6 +36,7 @@ class Question(Base):
     quiz_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("quizzes.id"), index=True)
 
     type: Mapped[QuestionType] = mapped_column(Enum(QuestionType), index=True)
+    position: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     difficulty: Mapped[int] = mapped_column(Integer, default=1)
 
     prompt: Mapped[str] = mapped_column(String, default="")

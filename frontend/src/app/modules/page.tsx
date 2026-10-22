@@ -6,7 +6,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/app/shell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/hooks/use-auth";
 
@@ -23,6 +22,8 @@ type ModuleItem = {
     passed_count: number;
     final_passed: boolean;
     completed: boolean;
+    current_completed?: boolean;
+    has_updates?: boolean;
   };
 };
 
@@ -212,7 +213,7 @@ export default function ModulesPage() {
         </div>
 
         {error && (
-          <div className="mt-6 rounded-2xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+          <div role="alert" className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
             {error}
           </div>
         )}
@@ -223,6 +224,7 @@ export default function ModulesPage() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              aria-label="Поиск модулей"
               placeholder="Название или описание"
               className="mt-2 h-12 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-black uppercase tracking-widest text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15"
             />
@@ -274,11 +276,11 @@ export default function ModulesPage() {
             >
                 <div className="absolute left-0 top-0 h-full w-[4px] bg-[#fe9900] opacity-0 group-hover:opacity-100 transition-opacity" />
                 <CardHeader className="p-8 pb-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <CardTitle className="text-2xl font-black text-zinc-950 transition-colors leading-tight tracking-tighter">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <CardTitle className="min-w-0 flex-1 basis-52 break-words text-2xl font-black text-zinc-950 transition-colors leading-tight tracking-tighter">
                       {m.title.toUpperCase()}
                     </CardTitle>
-                    <div
+                    <div role="status" aria-label="Статус модуля"
                       className={
                         "shrink-0 rounded-full px-4 py-1.5 text-[10px] font-black uppercase tracking-widest " +
                         (m.progress?.completed
@@ -286,7 +288,7 @@ export default function ModulesPage() {
                           : "bg-zinc-100 text-zinc-600 border border-zinc-200")
                       }
                     >
-                      {m.progress?.completed ? "ЗАВЕРШЕНО" : "В ПРОЦЕССЕ"}
+                      {m.progress?.completed ? "ЗАВЕРШЕНО" : m.progress?.read_count || m.progress?.passed_count ? "В ПРОЦЕССЕ" : "НЕ НАЧАТО"}
                     </div>
                   </div>
                 </CardHeader>
@@ -297,19 +299,20 @@ export default function ModulesPage() {
                     </div>
                   ) : null}
 
+                  {m.progress?.completed && (m.progress.has_updates || m.progress.current_completed === false) && <p className="mt-4 rounded-lg bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">В модуле есть обновления. Ваш зачёт сохранён — обновления можно изучить отдельно.</p>}
                   {m.progress ? (
                     <div className="mt-10 space-y-4">
                       <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-[0.2em] text-zinc-600">
-                        <span>Аттестация</span>
+                        <span>{m.progress.completed ? "Зачёт сохранён" : "Прогресс"}</span>
                         <span className="text-zinc-950 tabular-nums">
-                          {m.progress.passed_count} / {m.progress.total_lessons}
+                          {m.progress.completed ? "100%" : `${m.progress.passed_count} / ${m.progress.total_lessons}`}
                         </span>
                       </div>
                       <div className="h-1.5 w-full rounded-full bg-zinc-200 overflow-hidden">
                         <div 
                           className="h-full bg-[#fe9900] transition-all duration-1000"
                           style={{
-                            width: `${m.progress.total_lessons > 0
+                            width: `${m.progress.completed ? 100 : m.progress.total_lessons > 0
                               ? Math.round((m.progress.passed_count / m.progress.total_lessons) * 100)
                               : 0}%`
                           }}
@@ -319,41 +322,23 @@ export default function ModulesPage() {
                   ) : null}
 
                   <div className="mt-10">
-                    <Link href={`/modules/${m.id}`}>
-                      <Button className="w-full h-14 rounded-2xl" variant={m.progress?.completed ? "outline" : "primary"}>
-                        {m.progress?.completed ? "Повторить" : "Продолжить"}
-                      </Button>
-                    </Link>
+                    <Button asChild className="w-full h-14 rounded-2xl" variant={m.progress?.completed ? "outline" : "primary"}>
+                      <Link href={`/modules/${m.id}`}>
+                        {m.progress?.completed ? (m.progress.has_updates || m.progress.current_completed === false) ? "Открыть обновления" : "Повторить" : !m.progress?.total_lessons ? "Открыть материалы" : m.progress.read_count || m.progress.passed_count ? "Продолжить" : "Начать"}
+                      </Link>
+                    </Button>
                   </div>
                 </CardContent>
             </Card>
           ))}
         </div>
 
-        {!loading && filteredItems.length === 0 ? (
-          <div className="mt-10 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-12 text-center shadow-2xl shadow-zinc-950/10">
-            <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-4">Контент</div>
-            <div className="text-2xl font-black tracking-tighter text-zinc-950 uppercase">Модулей пока нет</div>
-            {isAdmin ? (
-              <>
-                <div className="mt-4 text-sm text-zinc-600 font-medium uppercase tracking-tight">
-                  Добавьте первый модуль через админ‑центр (импорт ZIP).
-                </div>
-                <div className="mt-8">
-                  <Link href="/adminpanel">
-                    <Button className="h-14 px-10 rounded-2xl">
-                      Открыть админ‑центр
-                    </Button>
-                  </Link>
-                </div>
-              </>
-            ) : (
-              <div className="mt-4 text-sm text-zinc-600 font-medium uppercase tracking-tight">
-                Модули появятся здесь после публикации. Если нужно — обратитесь к администратору.
-              </div>
-            )}
-          </div>
-        ) : null}
+        {!loading && !error && filteredItems.length === 0 && <div className="mt-10 rounded-[28px] border border-zinc-200 bg-white/70 p-6 text-center sm:p-12">
+          <h2 className="text-2xl font-semibold tracking-tight text-zinc-950">{query.trim() ? "Ничего не найдено" : "Модулей пока нет"}</h2>
+          <p className="mt-4 text-sm leading-7 text-zinc-600">{query.trim() ? "Попробуйте другой запрос или сбросьте поиск — ваши модули остаются на месте." : isAdmin ? "Создайте модуль в редакторе или импортируйте ZIP, затем опубликуйте его." : "Опубликованные для вас модули появятся здесь. Если ожидаете доступ, обратитесь к администратору."}</p>
+          {query.trim() ? <Button variant="outline" className="mt-6 rounded-xl" onClick={() => setQuery("")}>Сбросить поиск</Button> : isAdmin && <Button asChild className="mt-6 rounded-xl"><Link href="/admin/modules">Открыть библиотеку</Link></Button>}
+        </div>}
+
       </div>
     </AppShell>
   );

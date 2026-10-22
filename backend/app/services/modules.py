@@ -16,6 +16,7 @@ from app.models.user import User
 from app.models.user import UserRole
 
 from app.services.learning import LearningService
+from app.services.storage import s3_invalidate_common_prefixes, s3_invalidate_prefix_has_objects
 
 
 def modules_get_rev() -> int:
@@ -86,39 +87,9 @@ class ModuleService:
         return xs
 
     def _get_accessible_modules(self, user: User) -> list[Module]:
-        # Admin sees all active modules.
-        if getattr(user, "role", None) in {UserRole.admin, UserRole.superadmin}:
-            mods = self.db.scalars(select(Module).where(Module.is_active == True)).all()  # noqa: E712
-            return self._sort_modules(mods)
-
-        tag_ids = [
-            tid
-            for (tid,) in self.db.execute(select(UserTagMap.tag_id).where(UserTagMap.user_id == user.id)).all()
-            if tid is not None
-        ]
-
-        # Public modules are accessible by default.
-        public_q = (Module.is_active == True) & (Module.visibility == "public")  # noqa: E712
-
-        if not tag_ids:
-            mods = self.db.scalars(select(Module).where(public_q)).all()
-            return self._sort_modules(mods)
-
-        # Restricted modules are accessible if they share at least one tag with the user.
-        restricted_q = (Module.is_active == True) & (Module.visibility == "restricted")  # noqa: E712
-
-        stmt = (
-            select(Module)
-            .where(public_q)
-            .union(
-                select(Module)
-                .join(ModuleTagMap, ModuleTagMap.module_id == Module.id)
-                .where(restricted_q)
-                .where(ModuleTagMap.tag_id.in_(tag_ids))
-            )
-        )
-        rows = self.db.execute(stmt).scalars().all()
-        return self._sort_modules(list(rows or []))
+        from app.services.access import accessible_modules_clause
+        mods = self.db.scalars(select(Module).where(accessible_modules_clause(user), Module.is_active.is_(True))).all()
+        return self._sort_modules(mods)
 
     def get_modules_overview(self, user: User) -> List[Dict[str, Any]]:
         """
@@ -161,6 +132,10 @@ class ModuleService:
                     "passed_count": int(prog.get("passed_count", 0) or 0),
                     "final_passed": bool(prog.get("final_passed", False)),
                     "completed": bool(prog.get("completed", False)),
+                    "current_completed": bool(prog.get("current_completed", False)),
+                    "has_updates": bool(prog.get("has_updates", False)),
+                    "completed_at": prog.get("completed_at"),
+                    "content_revision": m.content_revision,
                 }
             })
             

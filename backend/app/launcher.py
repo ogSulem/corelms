@@ -158,6 +158,7 @@ def main(argv: list[str] | None = None) -> None:
             str(settings.rq_queue_regen),
             str(settings.rq_queue_cleanup),
             str(settings.rq_queue_default),
+            str(settings.rq_queue_media),
         ]
 
     _start_worker(redis_url=redis_url, queues=queues)

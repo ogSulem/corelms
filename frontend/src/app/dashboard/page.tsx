@@ -121,14 +121,14 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
-      <div className="flex flex-col mx-auto max-w-7xl px-6 py-6 lg:py-10">
+      <div className="flex w-full min-w-0 flex-col mx-auto max-w-7xl px-6 py-6 lg:py-10">
         {error ? (
           <div className="mb-6 rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 text-sm text-rose-400 font-bold uppercase tracking-widest text-center">
             {error}
           </div>
         ) : null}
         {/* Top Section: Profile & Quote */}
-        <div className="grid lg:grid-cols-12 gap-6 items-end mb-8">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-end mb-8">
           <div className="lg:col-span-7">
             <div className="mb-4">
               <div className="flex flex-wrap items-center gap-3">
@@ -159,7 +159,7 @@ export default function DashboardPage() {
                 </Button>
               </div>
             </div>
-            <h1 className="text-6xl font-black tracking-tighter text-zinc-950 leading-none uppercase">
+            <h1 className="break-words text-5xl sm:text-6xl font-black tracking-tighter text-zinc-950 leading-none uppercase">
               {user?.name ? user.name.split(' ')[0] : "TEAM"}
             </h1>
             {loading ? (
@@ -179,10 +179,10 @@ export default function DashboardPage() {
                       <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.32em] text-zinc-500">Общий прогресс</div>
                         <div className="mt-2 text-sm font-black uppercase tracking-tight text-zinc-950">
-                          {progress ? `${Number(progress.steps_completed || 0)} / ${Number(progress.steps_total || 0)} шагов` : "—"}
+                          {progress ? `${Number(progress.modules_completed || 0)} / ${Number(progress.modules_total || 0)} модулей зачтено` : "—"}
                         </div>
                         <div className="mt-1 text-[11px] font-bold text-zinc-600">
-                          {progress ? `${Number(progress.modules_completed || 0)} / ${Number(progress.modules_total || 0)} модулей` : ""}
+                          {progress ? `Актуальные материалы: ${Number(progress.steps_completed || 0)} / ${Number(progress.steps_total || 0)} шагов` : ""}
                         </div>
                       </div>
 
@@ -246,7 +246,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Main Grid: Continue & Boost */}
-        <div className="grid lg:grid-cols-2 gap-6 flex-1 min-h-0">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0">
           {/* Left: Continue Learning */}
           <div className="h-full">
             {loading ? (
@@ -258,20 +258,20 @@ export default function DashboardPage() {
 
           {/* Right: Career Boost / Daily Goal */}
           <div className="h-full">
-            <div className="relative h-full overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 p-10 flex flex-col justify-between group shadow-2xl shadow-zinc-950/10">
+            <div className="relative h-full overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 p-6 sm:p-10 flex flex-col justify-between group shadow-2xl shadow-zinc-950/10">
               <div className="absolute -bottom-8 -right-8 text-[120px] font-black italic text-zinc-950/[0.03] pointer-events-none group-hover:text-[#fe9900]/[0.07] transition-all duration-700 select-none">
                 ЦЕЛЬ
               </div>
               
               <div>
                 <div className="text-[10px] font-black text-[#fe9900] uppercase tracking-[0.4em] mb-4">Ежедневный импульс</div>
-                <h3 className="text-4xl font-black text-zinc-950 tracking-tighter uppercase leading-tight max-w-xs">
+                <h3 className="break-words text-3xl sm:text-4xl font-black text-zinc-950 tracking-tighter uppercase leading-tight max-w-xs">
                   Твоя цель на сегодня
                 </h3>
               </div>
 
-              <div className="flex items-center justify-between mt-auto">
-                <div className="max-w-[200px]">
+              <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
+                <div className="min-w-0 max-w-[200px] flex-1 basis-28">
                   <p className="text-xs font-bold text-zinc-500 uppercase leading-relaxed tracking-wider">
                     {didSomethingToday 
                       ? "Цель достигнута. Твои навыки растут прямо сейчас." 

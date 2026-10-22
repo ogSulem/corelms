@@ -15,6 +15,8 @@ from app.models.audit import LearningEvent, LearningEventType
 from app.models.module import Submodule
 from app.models.user import User
 from app.services.skills import award_xp, record_activity_and_award_xp
+from app.services.access import require_submodule_access
+from app.services.learning import LearningService
 from app.services.storage import get_s3_client
 from app.core.config import settings
 
@@ -53,6 +55,7 @@ def open_submodule(
     sub = db.scalar(select(Submodule).where(Submodule.id == sid))
     if sub is None:
         raise HTTPException(status_code=404, detail="submodule not found")
+    module = require_submodule_access(db, user, sub, lock=True)
 
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
     db.add(
@@ -74,24 +77,19 @@ def get_submodule(submodule_id: str, db: Session = Depends(get_db), user: User =
     sub = db.scalar(select(Submodule).where(Submodule.id == sid))
     if sub is None:
         raise HTTPException(status_code=404, detail="submodule not found")
+    module = require_submodule_access(db, user, sub, lock=False)
 
-    content = sub.content
-    if sub.content_object_key and (not str(content or "").strip()):
-        try:
-            s3 = get_s3_client()
-            obj = s3.get_object(Bucket=settings.s3_bucket, Key=sub.content_object_key)
-            body = obj.get("Body")
-            if body is not None:
-                data = body.read()
-                content = data.decode("utf-8", errors="ignore")
-        except Exception:
-            content = sub.content
+    from app.services.content import read_lesson_text
+    content = read_lesson_text(sub.content, sub.content_object_key)
 
     return {
         "id": str(sub.id),
         "module_id": str(sub.module_id),
         "title": sub.title,
         "content": content,
+        "content_mode": sub.content_mode,
+        "presentation_mode": sub.presentation_mode,
+        "primary_asset_id": str(sub.primary_asset_id) if sub.primary_asset_id else None,
         "order": int(sub.order),
         "quiz_id": str(sub.quiz_id),
         "requires_quiz": bool(getattr(sub, "requires_quiz", True)),
@@ -111,6 +109,7 @@ def read_submodule(
     sub = db.scalar(select(Submodule).where(Submodule.id == sid))
     if sub is None:
         raise HTTPException(status_code=404, detail="submodule not found")
+    module = require_submodule_access(db, user, sub, lock=True)
 
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
 
@@ -134,13 +133,14 @@ def read_submodule(
                 LearningEvent.meta.is_not(None),
             )
             .order_by(LearningEvent.created_at.desc())
-            .limit(10)
         ).all()
         if any(_meta_action_is_read(m) for m in (existing or [])):
+            LearningService(db).remember_completions(module, user)
+            db.commit()
             return {"ok": True, "xp_awarded": 0}
 
     # Legacy compatibility: keep meta=="read" in addition to JSON.
-    meta_value = json.dumps({"action": "read"}, ensure_ascii=False)
+    meta_value = "read"
 
     db.add(LearningEvent(user_id=user.id, type=LearningEventType.submodule_opened, ref_id=sub.id, meta=meta_value))
     try:
@@ -150,6 +150,7 @@ def read_submodule(
         return {"ok": True, "xp_awarded": 0}
 
     award_xp(db, user_id=str(user.id), xp=5)
+    LearningService(db).remember_completions(module, user)
     db.commit()
     return {"ok": True, "xp_awarded": 5}
 
@@ -157,6 +158,10 @@ def read_submodule(
 @router.get("/{submodule_id}/read-status")
 def read_status(submodule_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     sid = _uuid(submodule_id, field="submodule_id")
+    sub = db.get(Submodule, sid)
+    if sub is None:
+        raise HTTPException(404, "Материал не найден")
+    require_submodule_access(db, user, sub)
     metas = db.scalars(
         select(LearningEvent.meta)
         .where(
@@ -166,6 +171,5 @@ def read_status(submodule_id: str, db: Session = Depends(get_db), user: User = D
             LearningEvent.meta.is_not(None),
         )
         .order_by(LearningEvent.created_at.desc())
-        .limit(20)
     ).all()
     return {"read": bool(any(_meta_action_is_read(m) for m in (metas or [])))}

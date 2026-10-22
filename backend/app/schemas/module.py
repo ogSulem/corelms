@@ -30,6 +30,7 @@ class AssetPublic(BaseModel):
     mime_type: str | None
     size_bytes: int | None = None
     order: int
+    version: int = 1
 
 
 class SubmoduleAssetsResponse(BaseModel):

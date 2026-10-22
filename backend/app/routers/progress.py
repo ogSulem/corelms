@@ -11,6 +11,7 @@ from app.db.session import get_db
 from app.models.user import User
 from app.schemas.progress import ModuleProgressResponse
 from app.services.learning import LearningService
+from app.services.access import require_module_access
 
 router = APIRouter(prefix="/progress", tags=["progress"])
 
@@ -22,6 +23,7 @@ def module_progress(module_id: str, db: Session = Depends(get_db), user: User = 
     except ValueError as e:
         raise HTTPException(status_code=400, detail="invalid module_id") from e
         
+    require_module_access(db, user, mid)
     service = LearningService(db)
     progress = service.get_module_progress(user, mid)
     

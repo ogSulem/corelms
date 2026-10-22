@@ -23,16 +23,21 @@ from passlib.context import CryptContext
 from sqlalchemy import and_, bindparam, case, delete, func, or_, select, text
 from sqlalchemy.orm import Session
 
+from app.core.queue import get_job_status, normalize_job_status, release_job_lock
+from app.services.content import require_unused_temporary_object
+from app.services.quiz_versions import version_quiz_for_edit, question_id_map
+from app.services.learning import remember_quiz_version
 from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.core.security import require_roles
 from app.core.security_audit_log import audit_log
 from app.core.redis_client import get_redis
-from app.db.session import get_db
+from app.db.session import SessionLocal, get_db
 from app.models.assignment import Assignment, AssignmentStatus, AssignmentType
 from app.models.attempt import QuizAttempt
 from app.models.attempt import QuizAttemptAnswer
 from app.models.audit import LearningEvent, LearningEventType
+from app.models.completion import LessonQuizVersion
 from app.models.asset import ContentAsset
 from app.models.module import Module, Submodule
 from app.models.quiz import Question, Quiz
@@ -86,13 +91,12 @@ log = logging.getLogger(__name__)
 from app.schemas.me import HistoryResponse
 
 from app.services.learning import LearningService
+from app.services.content import lock_module, preserve_progress
 from app.core.queue import fetch_job, get_queue
 from app.services.module_import_jobs import import_module_zip_job
 from app.services.modules import modules_bump_rev, modules_invalidate_storage_cache
 from app.services.content_migration_jobs import migrate_legacy_submodule_content_job
 from app.services.module_storage_prefix_jobs import backfill_module_storage_prefix_job
-from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job, regenerate_submodule_quiz_job
-from app.services.video_transcode_jobs import transcode_all_videos_job
 from app.services.llm_handler import generate_quiz_questions_ai
 from app.services.storage import (
     ensure_bucket_exists,
@@ -214,60 +218,11 @@ def _admin_jobs_build_lane(*, kind: str, listing: dict) -> dict:
 
 @router.post("/transcode/videos/enqueue")
 def enqueue_transcode_videos(
+    after_asset_id: uuid.UUID | None = None,
     limit: int = Query(default=5000, ge=1, le=20000),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
-    # Batch transcode existing non-mp4 videos into mp4 (H.264/AAC) to ensure stable browser playback.
-    # Runs in RQ worker; uses 1 worker concurrency by your ops choice.
-    try:
-        q = get_queue(str(settings.rq_queue_import))
-        job = q.enqueue(
-            transcode_all_videos_job,
-            limit=int(limit),
-            delete_original=True,
-            job_timeout=60 * 60 * 24,
-            result_ttl=60 * 60 * 24 * 7,
-            failure_ttl=60 * 60 * 24 * 7,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail="failed to enqueue transcode job") from e
-
-    # Register in admin import lane so it shows up in /admin/jobs immediately.
-    try:
-        jm = dict(job.meta or {})
-        jm["job_kind"] = "import"
-        jm["job_subkind"] = "transcode_videos"
-        jm["limit"] = int(limit)
-        jm["stage"] = "queued"
-        jm["detail"] = "transcode_videos"
-        job.meta = jm
-        job.save_meta()
-    except Exception:
-        pass
-
-    try:
-        r = get_redis()
-        meta = {
-            "job_id": str(job.id),
-            "job_kind": "import",
-            "job_subkind": "transcode_videos",
-            "created_at": datetime.utcnow().isoformat(),
-            "status": "queued",
-            "stage": "queued",
-            "detail": "transcode_videos",
-            "limit": int(limit),
-            "module_id": "",
-            "module_title": "ТРАНСКОДИРОВАНИЕ ВИДЕО (BATCH)",
-        }
-        r.lpush("admin:import_jobs", json.dumps(meta, ensure_ascii=False))
-        r.ltrim("admin:import_jobs", 0, 49)
-        r.expire("admin:import_jobs", 60 * 60 * 24 * 30)
-        _admin_jobs_bump_rev()
-        r.publish("admin:jobs:changed", str(job.id))
-    except Exception:
-        pass
-
-    return {"ok": True, "job_id": str(job.id)}
+    raise HTTPException(410, "Видео обрабатываются автоматически отдельным media-worker. Для старого файла откройте просмотр; повтор подготовки доступен там же. Исходники не заменяются.")
 
 
 @router.get("/jobs/model")
@@ -544,29 +499,6 @@ def _looks_like_uuid(s: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", s, re.IGNORECASE))
 
 
-def _delete_s3_prefix_best_effort(*, prefix: str) -> None:
-    try:
-        s3 = get_s3_client()
-        token: str | None = None
-        while True:
-            kwargs: dict[str, object] = {
-                "Bucket": settings.s3_bucket,
-                "Prefix": prefix,
-                "MaxKeys": 1000,
-            }
-            if token:
-                kwargs["ContinuationToken"] = token
-            resp = s3.list_objects_v2(**kwargs)
-            contents = resp.get("Contents") or []
-            if contents:
-                keys = [{"Key": str(o.get("Key"))} for o in contents if o.get("Key")]
-                if keys:
-                    s3.delete_objects(Bucket=settings.s3_bucket, Delete={"Objects": keys, "Quiet": True})
-            if not resp.get("IsTruncated"):
-                break
-            token = str(resp.get("NextContinuationToken") or "") or None
-    except Exception:
-        return
 
 
 @router.get("/system/status")
@@ -919,6 +851,9 @@ def update_module(
     if m is None:
         raise HTTPException(status_code=404, detail="module not found")
 
+    m = lock_module(db, mid)
+    m.content_revision += 1
+
     changed: dict[str, object] = {}
 
     if body.title is not None:
@@ -957,6 +892,7 @@ def update_module(
         modules_bump_rev(reason="module_updated")
     except Exception:
         pass
+    db.commit()
     return {"ok": True, "module_id": str(m.id), "title": m.title}
 
 
@@ -1183,93 +1119,7 @@ def purge_modules_missing_storage(
             "items": [{"id": str(m.id), "title": str(m.title or "")} for m in missing[:50]],
         }
 
-    deleted = 0
-    for m in missing:
-        mid = m.id
-        try:
-            sub_ids = list(db.scalars(select(Submodule.id).where(Submodule.module_id == mid)).all())
-            quiz_ids = list(db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == mid)).all())
-            if m.final_quiz_id:
-                quiz_ids.append(m.final_quiz_id)
-            quiz_ids = [qid for qid in quiz_ids if qid is not None]
-            quiz_ids = list({qid for qid in quiz_ids})
-
-            asset_ids: set[uuid.UUID] = set()
-            if sub_ids:
-                rows = db.scalars(select(SubmoduleAssetMap.asset_id).where(SubmoduleAssetMap.submodule_id.in_(sub_ids))).all()
-                for aid in rows:
-                    if aid:
-                        asset_ids.add(aid)
-
-            pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{str(m.id)}/"
-            if pfx and (not pfx.endswith("/")):
-                pfx = pfx + "/"
-            prefix = f"{pfx}_module/"
-            module_level_assets = db.scalars(select(ContentAsset.id).where(ContentAsset.object_key.like(prefix + "%"))).all()
-            for aid in module_level_assets:
-                if aid:
-                    asset_ids.add(aid)
-
-            # Break FK module.final_quiz_id -> quizzes
-            m.final_quiz_id = None
-            db.flush()
-
-            if asset_ids:
-                db.execute(delete(LearningEvent).where(LearningEvent.ref_id.in_(list(asset_ids))))
-
-            if sub_ids:
-                db.execute(delete(LearningEvent).where(LearningEvent.ref_id.in_(sub_ids)))
-                db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.submodule_id.in_(sub_ids)))
-                db.execute(text("DELETE FROM submodules WHERE module_id = :mid"), {"mid": str(mid)})
-
-            if quiz_ids:
-                attempt_ids = list(db.scalars(select(QuizAttempt.id).where(QuizAttempt.quiz_id.in_(quiz_ids))).all())
-                if attempt_ids:
-                    db.execute(
-                        text("DELETE FROM quiz_attempt_answers WHERE attempt_id IN :ids").bindparams(
-                            bindparam("ids", expanding=True, value=attempt_ids)
-                        )
-                    )
-                db.execute(delete(QuizAttempt).where(QuizAttempt.quiz_id.in_(quiz_ids)))
-                db.execute(delete(Question).where(Question.quiz_id.in_(quiz_ids)))
-                db.execute(delete(Quiz).where(Quiz.id.in_(quiz_ids)))
-
-            if asset_ids:
-                db.execute(delete(ContentAsset).where(ContentAsset.id.in_(list(asset_ids))))
-
-            db.execute(text("DELETE FROM module_skill_map WHERE module_id = :mid"), {"mid": str(mid)})
-            db.execute(text("DELETE FROM modules WHERE id = :mid"), {"mid": str(mid)})
-
-            audit_log(
-                db=db,
-                request=request,
-                event_type="admin_purge_module_missing_storage",
-                actor_user_id=current.id,
-                meta={"module_id": str(mid), "module_title": m.title},
-            )
-
-            deleted += 1
-        except Exception:
-            db.rollback()
-            continue
-
-    db.commit()
-    # Event-driven refresh: modules list changed.
-    try:
-        modules_invalidate_storage_cache()
-    except Exception:
-        log.debug("maintenance: modules_invalidate_storage_cache failed (purge_missing_storage)", exc_info=True)
-    try:
-        modules_bump_rev(reason="purge_missing_storage")
-    except Exception:
-        log.debug("maintenance: modules_bump_rev failed (purge_missing_storage)", exc_info=True)
-    return {
-        "ok": True,
-        "dry_run": False,
-        "scanned": len(mods),
-        "missing_count": len(missing),
-        "deleted": deleted,
-    }
+    raise HTTPException(409, "Автоматическое удаление модулей отключено: недоступность S3 не означает потерю данных. Используйте архив модуля.")
 
 
 @router.get("/maintenance/modules/storage-scan")
@@ -1505,39 +1355,11 @@ def maintenance_storage_purge_orphan_module_prefixes(
     limit: int = Query(default=200),
     _: object = rate_limit(key_prefix="admin_purge_orphan_module_prefixes", limit=10, window_seconds=60),
 ):
+    if not dry_run:
+        raise HTTPException(409, "Физическая очистка отключена: файлы могут принадлежать истории версий или выполняющемуся импорту. Используйте архив модулей.")
     res = maintenance_storage_orphan_module_prefixes(db=db, limit=int(limit or 200), sample_keys=0)
-    items = list(res.get("items") or [])
-    prefixes = [str(it.get("prefix") or "").strip() for it in items if str(it.get("prefix") or "").strip()]
-
-    if dry_run:
-        return {"ok": True, "dry_run": True, "count": int(len(prefixes)), "items": prefixes[:50]}
-
-    deleted = 0
-    for p in prefixes:
-        try:
-            _delete_s3_prefix_best_effort(prefix=p)
-            deleted += 1
-        except Exception:
-            continue
-
-    audit_log(
-        db=db,
-        request=request,
-        event_type="admin_purge_orphan_module_prefixes",
-        actor_user_id=current.id,
-        meta={"deleted": int(deleted), "scanned": int(len(prefixes))},
-    )
-    db.commit()
-    # Event-driven refresh: storage changed; make lists refresh.
-    try:
-        modules_invalidate_storage_cache()
-    except Exception:
-        pass
-    try:
-        modules_bump_rev(reason="purge_orphan_storage")
-    except Exception:
-        pass
-    return {"ok": True, "dry_run": False, "deleted": int(deleted), "scanned": int(len(prefixes))}
+    prefixes = [str(it.get("prefix") or "") for it in res.get("items", [])]
+    return {"ok": True, "dry_run": True, "count": len(prefixes), "items": prefixes[:50]}
 
 
 @router.post("/maintenance/modules/{module_id}/purge-db-only")
@@ -1548,36 +1370,7 @@ def maintenance_purge_module_db_only(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_purge_module_db_only", limit=10, window_seconds=60),
 ):
-    """Force delete a module from DB only (e.g. if storage is already gone)."""
-    mid = _uuid(module_id, field="module_id")
-    m = db.scalar(select(Module).where(Module.id == mid))
-    if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
-
-    title = m.title
-    module_storage_prefix = str(getattr(m, "storage_prefix", "") or "").strip() or None
-    # We use the same logic but ignore storage errors or just don't care about prefix
-    _delete_module_logic(db, m)
-
-    audit_log(
-        db=db,
-        request=request,
-        event_type="admin_purge_module_db_only",
-        actor_user_id=current.id,
-        meta={"module_id": str(mid), "module_title": title},
-    )
-    db.commit()
-
-    # Event-driven refresh: make admin + learners update immediately.
-    try:
-        modules_invalidate_storage_cache(module_storage_prefix=module_storage_prefix)
-    except Exception:
-        pass
-    try:
-        modules_bump_rev(reason="module_deleted")
-    except Exception:
-        pass
-    return {"ok": True}
+    raise HTTPException(409, "Безвозвратное удаление из интерфейса отключено. Переместите модуль в архив — история обучения сохранится.")
 
 
 @router.patch("/users/{user_id}", response_model=UserUpdateResponse)
@@ -1638,8 +1431,6 @@ def admin_update_user(
 
     if body.must_change_password is not None:
         u.must_change_password = bool(body.must_change_password)
-        if u.must_change_password:
-            u.password_changed_at = None
 
     db.add(u)
     db.commit()
@@ -1682,7 +1473,6 @@ def admin_force_password_change(
             raise HTTPException(status_code=403, detail="cannot modify admin user")
 
     u.must_change_password = True
-    u.password_changed_at = None
     db.add(u)
     db.commit()
 
@@ -1852,11 +1642,11 @@ async def import_module_zip(
                 },
             )
 
-    # Canonical storage key: stable by title/filename (no UUID spam in storage).
+    # Source objects are immutable; same-named uploads never overwrite a previous ZIP.
     base_for_key = _normalize_import_text(str(effective_title or "").strip() or str(file.filename or "").strip())
     base_for_key = re.sub(r"\.zip$", "", base_for_key, flags=re.IGNORECASE).strip() or "module"
     safe = _slugify_s3_segment(base_for_key)
-    canonical_object_key = f"uploads/{safe}.zip"
+    canonical_object_key = f"uploads/sources/{uuid.uuid4().hex}/{safe}.zip"
 
     ensure_bucket_exists()
     s3 = get_s3_client()
@@ -2089,6 +1879,8 @@ def abort_import_zip(
     if not object_key:
         raise HTTPException(status_code=400, detail="missing object_key")
 
+    require_unused_temporary_object(db, object_key)
+
     fingerprint = ""
     try:
         ensure_bucket_exists()
@@ -2119,14 +1911,6 @@ def abort_import_zip(
             existing = str(r.get(k) or "").strip()
             if existing == object_key:
                 r.delete(k)
-        except Exception:
-            pass
-
-    # Best-effort release fingerprint dedupe key (if any).
-    if fingerprint:
-        try:
-            r = get_redis()
-            r.delete(f"admin:import_enqueued_by_fingerprint:{fingerprint}")
         except Exception:
             pass
 
@@ -2485,33 +2269,7 @@ def delete_storage_object(
     if not object_key.startswith("uploads/"):
         raise HTTPException(status_code=400, detail="only uploads/ keys can be deleted")
 
-    # Do not allow deleting a ZIP that is already attached to a module.
-    try:
-        in_db = db.scalar(select(func.count()).select_from(Module).where(Module.import_object_key == object_key))
-        if int(in_db or 0) > 0:
-            raise HTTPException(status_code=409, detail="object_key is used by a module")
-    except HTTPException:
-        raise
-    except Exception:
-        log.debug("admin delete storage: DB check failed", exc_info=True)
-
-    # Do not allow deleting a ZIP currently in the active import queue.
-    try:
-        r = get_redis()
-        raw = r.lrange("admin:import_jobs", 0, 500)
-        for s in list(raw or []):
-            try:
-                obj = json.loads(s)
-                if isinstance(obj, dict) and str(obj.get("object_key") or "").strip() == object_key:
-                    raise HTTPException(status_code=409, detail="object_key is in active import queue")
-            except HTTPException:
-                raise
-            except Exception:
-                continue
-    except HTTPException:
-        raise
-    except Exception:
-        log.debug("admin delete storage: redis queue check failed", exc_info=True)
+    require_unused_temporary_object(db, object_key)
 
     ensure_bucket_exists()
     s3 = get_s3_client()
@@ -2633,22 +2391,9 @@ def presign_import_zip(
     if not fn.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="only .zip is supported")
 
-    # Dedupe: if a ZIP with the same fingerprint was already uploaded, reuse it.
-    # This allows resume without re-upload (upload to storage first, then enqueue processing).
+    # Metadata (filename, size, mtime) is not a content hash. Always allocate a
+    # fresh source key; actual ZIP-byte deduplication happens inside the worker.
     norm_fn = re.sub(r"\s+", " ", fn).strip().lower()
-    sz = None
-    lm = None
-    try:
-        if body.size_bytes is not None:
-            sz = int(body.size_bytes)
-    except Exception:
-        sz = None
-    try:
-        if body.last_modified_ms is not None:
-            lm = int(body.last_modified_ms)
-    except Exception:
-        lm = None
-
     raw_title = _normalize_import_text(str(body.title or "")).strip()
 
     try:
@@ -2679,45 +2424,7 @@ def presign_import_zip(
         raise
     except Exception:
         pass
-    base_for_fp = norm_fn
-    if base_for_fp.endswith(".zip"):
-        base_for_fp = base_for_fp[: -len(".zip")]
-
-    # If client does not provide size/mtime, fallback to legacy behavior (base-only).
-    fp = f"{base_for_fp}:{sz}:{lm}" if (sz is not None and lm is not None) else base_for_fp
-    try:
-        r = get_redis()
-        existing_key = str(r.get(f"admin:import_zip_by_fingerprint:{fp}") or "").strip()
-    except Exception:
-        existing_key = ""
-
-    if existing_key:
-        try:
-            ensure_bucket_exists()
-            s3 = get_s3_client()
-            s3.head_object(Bucket=settings.s3_bucket, Key=existing_key)
-            from app.models.module import Module
-            from sqlalchemy import select
-
-            existing_module = db.scalar(select(Module).where(Module.import_object_key == existing_key))
-            if existing_module:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error_code": "module_already_exists",
-                        "error_message": f"Модуль '{existing_module.title}' уже импортирован из этого файла.",
-                        "module_id": str(existing_module.id),
-                    },
-                )
-
-            return {"ok": True, "object_key": existing_key, "upload_url": None, "reused": True}
-        except HTTPException:
-            raise
-        except Exception:
-            # If object is missing, fall through to generating a new presign.
-            pass
-
-    object_key = f"uploads/{_sanitize_uploads_zip_filename(fn)}"
+    object_key = f"uploads/sources/{uuid.uuid4().hex}/{_sanitize_uploads_zip_filename(fn)}"
     out_headers: dict[str, str] | None = None
     try:
         alg = str(getattr(settings, "s3_sse_algorithm", None) or "").strip()
@@ -2738,13 +2445,6 @@ def presign_import_zip(
         url = presign_put(object_key=object_key, content_type=None)
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to presign upload url") from e
-
-    try:
-        r = get_redis()
-        r.set(f"admin:import_zip_by_fingerprint:{fp}", object_key)
-        r.expire(f"admin:import_zip_by_fingerprint:{fp}", 60 * 60 * 24 * 30)
-    except Exception:
-        pass
 
     audit_log(
         db=db,
@@ -2770,61 +2470,15 @@ def multipart_import_create(
     if not fn.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="only .zip is supported")
 
-    norm_fn = re.sub(r"\s+", " ", fn).strip().lower()
-    sz = None
-    lm = None
-    try:
-        if body.size_bytes is not None:
-            sz = int(body.size_bytes)
-    except Exception:
-        sz = None
-    try:
-        if body.last_modified_ms is not None:
-            lm = int(body.last_modified_ms)
-    except Exception:
-        lm = None
-
-    raw_title = _normalize_import_text(str(body.title or "")).strip()
-    base_for_fp = norm_fn
-    if base_for_fp.endswith(".zip"):
-        base_for_fp = base_for_fp[: -len(".zip")]
-
-    fp = f"{base_for_fp}:{sz}:{lm}" if (sz is not None and lm is not None) else base_for_fp
-    sess_key = f"admin:import_multipart_by_fingerprint:{fp}"
-    try:
-        r = get_redis()
-        raw = str(r.get(sess_key) or "").strip()
-    except Exception:
-        raw = ""
-
-    if raw:
-        try:
-            obj = json.loads(raw)
-            object_key = str((obj or {}).get("object_key") or "").strip()
-            upload_id = str((obj or {}).get("upload_id") or "").strip()
-            if object_key and upload_id:
-                # Validate that the multipart session still exists. If not, create a new one.
-                if multipart_upload_exists(object_key=object_key, upload_id=upload_id):
-                    _multipart_touch(object_key=object_key, upload_id=upload_id)
-                    return {"ok": True, "object_key": object_key, "upload_id": upload_id, "reused": True}
-        except Exception:
-            pass
-
-    # Keep object keys human-readable: derive a slug from the filename *without* the .zip suffix,
-    # and store uploads under a folder matching the slug.
-    object_key = f"uploads/{_sanitize_uploads_zip_filename(fn)}"
+    # A fresh create request is a fresh upload, even for identical names/mtime.
+    # Explicit resume uses the returned object_key/upload_id with list-parts
+    # and presign-part. Never silently share a multipart session across tabs.
+    object_key = f"uploads/sources/{uuid.uuid4().hex}/{_sanitize_uploads_zip_filename(fn)}"
     upload_id = multipart_create(object_key=object_key, content_type=str(body.content_type or "").strip() or None)
     if not upload_id:
         raise HTTPException(status_code=500, detail="failed to create multipart upload")
 
     _multipart_touch(object_key=object_key, upload_id=upload_id)
-
-    try:
-        r = get_redis()
-        r.set(sess_key, json.dumps({"object_key": object_key, "upload_id": upload_id}, ensure_ascii=False))
-        r.expire(sess_key, 60 * 60 * 24 * 30)
-    except Exception:
-        pass
 
     audit_log(
         db=db,
@@ -2981,7 +2635,7 @@ def enqueue_import_zip(
                     r.delete(lock_key)
                     existing_job_id = ""
                 else:
-                    st = str(j.get_status(refresh=True) or "").strip().lower()
+                    st = get_job_status(j)
                     if st in {"finished", "failed", "canceled"}:
                         r.delete(lock_key)
                         existing_job_id = ""
@@ -3007,7 +2661,7 @@ def enqueue_import_zip(
                         r.delete(fp_key)
                         existing_fp_job_id = ""
                     else:
-                        st = str(j.get_status(refresh=True) or "").strip().lower()
+                        st = get_job_status(j)
                         if st in {"finished", "failed", "canceled"}:
                             r.delete(fp_key)
                             existing_fp_job_id = ""
@@ -3102,7 +2756,7 @@ def enqueue_import_zip(
                         r.delete(title_lock_key)
                         existing_title_job_id = ""
                     else:
-                        st = str(j.get_status(refresh=True) or "").strip().lower()
+                        st = get_job_status(j)
                         if st in {"finished", "failed", "canceled"}:
                             r.delete(title_lock_key)
                             existing_title_job_id = ""
@@ -3117,6 +2771,8 @@ def enqueue_import_zip(
 
     if not fingerprint:
         raise HTTPException(status_code=404, detail="source zip not found in s3")
+
+    db.commit()
 
     try:
         q = get_queue(str(settings.rq_queue_import))
@@ -3333,7 +2989,7 @@ def _admin_list_import_jobs(*, limit: int = 20, include_terminal: bool = False) 
             obj["error"] = obj.get("error") or "job not found"
             return obj, True
 
-        st = str(job.get_status(refresh=True) or "").strip().lower()
+        st = get_job_status(job)
         if job_id and job_id in started_ids:
             st = "started"
         meta = dict(job.meta or {})
@@ -3410,7 +3066,7 @@ def _admin_list_import_jobs(*, limit: int = 20, include_terminal: bool = False) 
             job = fetch_job(jj)
             if job is None:
                 continue
-            st = str(job.get_status(refresh=True) or "").strip().lower()
+            st = get_job_status(job)
             if jj in started_ids:
                 st = "started"
             meta = dict(job.meta or {})
@@ -3459,7 +3115,7 @@ def _admin_list_import_jobs(*, limit: int = 20, include_terminal: bool = False) 
             job = fetch_job(jj)
             if job is None:
                 continue
-            st = str(job.get_status(refresh=True) or "queued").strip().lower()
+            st = get_job_status(job)
             meta = dict(job.meta or {})
             kind = str(meta.get("job_kind") or "").strip().lower()
             if kind and kind != "import":
@@ -3552,6 +3208,10 @@ def retry_import_job(
     db: Session = Depends(get_db),
     current: User = Depends(require_roles(UserRole.admin)),
 ):
+    previous_job = fetch_job(job_id)
+    previous_meta = dict(previous_job.meta or {}) if previous_job else {}
+    if previous_meta.get("reimport_existing"):
+        raise HTTPException(409, "Повторите обновление из редактора этого модуля: требуется подтвердить его текущую версию.")
     # Find import meta in Redis history by job_id.
     try:
         r = get_redis()
@@ -3571,6 +3231,8 @@ def retry_import_job(
         except Exception:
             continue
 
+    if meta and (meta.get("reimport_existing") or "/_sources/" in str(meta.get("object_key") or "")):
+        raise HTTPException(409, "Повторите обновление из редактора модуля. Новый модуль не создаётся.")
     if not meta:
         raise HTTPException(status_code=404, detail="import job meta not found")
 
@@ -3592,41 +3254,26 @@ def retry_import_job(
 
     title = str(meta.get("title") or "").strip() or None
 
-    # Product rule: module should appear immediately in list as hidden while import/regen runs.
-    stub_module = None
-    try:
-        src_fn = str(meta.get("source_filename") or "").strip() or ""
-        stub_title = str(title or "").strip() or src_fn or "Модуль"
-        if stub_title.lower().endswith(".zip"):
-            stub_title = stub_title[:-4]
-        stub_title = stub_title.strip() or "Модуль"
-
-        final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
-        db.add(final_quiz)
-        db.flush()
-        stub_module = Module(
-            title=stub_title,
-            description=f"Материалы модуля «{stub_title}».",
-            difficulty=1,
-            category="Обучение",
-            is_active=False,
-            final_quiz_id=final_quiz.id,
-        )
-        db.add(stub_module)
-        db.flush()
-        db.commit()
-    except Exception:
-        db.rollback()
-        stub_module = None
+    target_id = str(meta.get("module_id") or previous_meta.get("module_id") or "").strip()
+    if not target_id:
+        raise HTTPException(409, "Не удалось определить модуль задачи. Откройте редактор нужного модуля и обновите его из ZIP.")
+    stub_module = lock_module(db, _uuid(target_id, field="module_id"))
+    if stub_module.is_archived:
+        raise HTTPException(409, "Сначала восстановите модуль из архива")
+    expected_revision = stub_module.content_revision
+    if expected_revision != 1:
+        raise HTTPException(409, "Модуль уже изменён. Повторите обновление из его редактора.")
+    db.commit()
 
     q = get_queue(settings.rq_queue_import)
     job = q.enqueue(
         import_module_zip_job,
+        meta={"job_kind": "import", "module_id": str(stub_module.id), "module_title": stub_module.title, "import_object_key": object_key},
         s3_object_key=object_key,
         title=title,
         source_filename=(str(meta.get("source_filename") or "").strip() or None),
         actor_user_id=str(current.id),
-        module_id=str(stub_module.id) if stub_module is not None else None,
+        module_id=str(stub_module.id), expected_revision=expected_revision,
         job_timeout=60 * 60 * 3,
         result_ttl=60 * 60 * 24 * 7,
         failure_ttl=60 * 60 * 24 * 7,
@@ -3681,7 +3328,9 @@ def cancel_job(
     if kind and kind not in {"regen", "import"}:
         raise HTTPException(status_code=409, detail="job is not cancellable")
 
-    prev_status = job.get_status(refresh=True)
+    prev_status = get_job_status(job)
+    if str(prev_status) in {"finished", "failed", "canceled", "stopped"}:
+        return {"ok": True, "status": prev_status, "job_id": job.id}
 
     # Product rule:
     # - Import jobs: cancellable anytime (best-effort), worker will stop at checkpoints.
@@ -3693,93 +3342,38 @@ def cancel_job(
         meta["cancel_requested_at"] = datetime.utcnow().isoformat()
         job.meta = meta
         job.save_meta()
-    except Exception:
-        pass
+    except Exception as exc:
+        raise HTTPException(503, "Не удалось передать запрос на отмену. Повторите действие.") from exc
 
     # Best-effort immediate cancel (works for queued; may be ignored for started depending on backend).
     try:
-        job.cancel()
+        if str(prev_status) != "started":
+            job.cancel()
     except Exception:
         pass
 
-    # Release import enqueue locks so the user can re-enqueue immediately.
-    try:
-        r = get_redis()
-        meta = dict(job.meta or {})
-        obj_key = str(meta.get("import_object_key") or "").strip()
-        if obj_key:
-            r.delete(f"admin:import_enqueued_by_object_key:{obj_key}")
-        norm_title = str(meta.get("import_title_norm") or "").strip()
-        if norm_title:
-            r.delete(f"admin:import_enqueued_by_title:{norm_title}")
-        fp = str(meta.get("import_fingerprint") or "").strip()
-        if fp:
-            r.delete(f"admin:import_enqueued_by_fingerprint:{fp}")
-    except Exception:
-        pass
+    # A running worker still owns its lease until it reaches a checkpoint.
+    if prev_status != "started":
+        try:
+            r = get_redis()
+            meta = dict(job.meta or {})
+            for suffix, value in {
+                "object_key": meta.get("import_object_key"), "title": meta.get("import_title_norm"),
+                "fingerprint": meta.get("import_fingerprint"),
+            }.items():
+                if value:
+                    release_job_lock(r, f"admin:import_enqueued_by_{suffix}:{value}", job.id)
+            if meta.get("module_id"):
+                release_job_lock(r, f"content:import:{meta['module_id']}", job.id)
+        except Exception:
+            pass
 
     # IMPORTANT: do NOT delete the source ZIP from storage on cancel.
     # Product requirement: upload to storage first, then allow resume/enqueue without re-upload.
 
-    # Best-effort cleanup of any objects uploaded by the job during import.
-    try:
-        uploaded_keys = list((job.meta or {}).get("uploaded_keys") or [])
-    except Exception:
-        uploaded_keys = []
-    if uploaded_keys:
-        try:
-            ensure_bucket_exists()
-            s3 = get_s3_client()
-            for k in uploaded_keys:
-                try:
-                    kk = str(k or "").strip()
-                    if kk:
-                        s3.delete_object(Bucket=settings.s3_bucket, Key=kk)
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    # Best-effort: if this is an import job, remove the stub/partial module from DB and its storage prefix.
-    try:
-        if kind == "import":
-            meta = dict(job.meta or {})
-            mid = str(meta.get("module_id") or "").strip()
-            if mid:
-                try:
-                    muid = uuid.UUID(mid)
-                except Exception:
-                    muid = None
-                if muid is not None:
-                    m = db.scalar(select(Module).where(Module.id == muid))
-                else:
-                    m = None
-                if m is not None:
-                    try:
-                        _delete_module_logic(db, m)
-                        db.commit()
-                    except Exception:
-                        try:
-                            db.rollback()
-                        except Exception:
-                            pass
-    except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            pass
-
-    # Optional: delete the source ZIP itself (uploads/...).
-    try:
-        if kind == "import" and bool(delete_source_zip):
-            meta = dict(job.meta or {})
-            obj_key = str(meta.get("import_object_key") or "").strip()
-            if obj_key:
-                ensure_bucket_exists()
-                s3 = get_s3_client()
-                s3.delete_object(Bucket=settings.s3_bucket, Key=obj_key)
-    except Exception:
-        pass
+    # Only the worker knows whether its DB transaction committed. Deleting S3 keys
+    # or the module here races that commit and can destroy published material.
+    # Cancellations are cooperative; keep source ZIPs and completed content intact.
 
     return {"ok": True, "status": prev_status, "job_id": job.id}
 
@@ -3792,19 +3386,7 @@ def migrate_legacy_content(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_migrate_legacy_content", limit=10, window_seconds=60),
 ):
-    q = get_queue(str(settings.rq_queue_default))
-    job = q.enqueue(migrate_legacy_submodule_content_job, limit=int(limit or 200))
-
-    audit_log(
-        db=db,
-        request=request,
-        event_type="admin_migrate_legacy_content",
-        actor_user_id=current.id,
-        meta={"job_id": job.id, "limit": int(limit or 200)},
-    )
-    db.commit()
-
-    return {"ok": True, "job_id": job.id}
+    raise HTTPException(409, "Перенос текста в позиционные S3-ключи больше не используется. Редактируйте материал в редакторе модуля.")
 
 
 @router.post("/modules/storage-prefix/backfill")
@@ -3870,134 +3452,6 @@ def create_module(
     )
 
 
-def _delete_module_logic(db: Session, m: Module) -> None:
-    mid = m.id
-    sub_ids = list(db.scalars(select(Submodule.id).where(Submodule.module_id == mid)).all())
-    quiz_ids = list(db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == mid)).all())
-    if m.final_quiz_id:
-        quiz_ids.append(m.final_quiz_id)
-
-    quiz_ids = [qid for qid in quiz_ids if qid is not None]
-    quiz_ids = list({qid for qid in quiz_ids})
-
-    # Asset ids: linked lesson assets + module-level assets by convention.
-    asset_ids: set[uuid.UUID] = set()
-    if sub_ids:
-        rows = db.scalars(select(SubmoduleAssetMap.asset_id).where(SubmoduleAssetMap.submodule_id.in_(sub_ids))).all()
-        for aid in rows:
-            if aid:
-                asset_ids.add(aid)
-
-    pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{str(mid)}/"
-    if pfx and (not pfx.endswith("/")):
-        pfx = pfx + "/"
-
-    prefix = f"{pfx}_module/"
-    module_level_assets = db.scalars(select(ContentAsset.id).where(ContentAsset.object_key.like(prefix + "%"))).all()
-    for aid in module_level_assets:
-        if aid:
-            asset_ids.add(aid)
-
-    # Break FK module.final_quiz_id -> quizzes
-    m.final_quiz_id = None
-    db.flush()
-
-    if asset_ids:
-        db.execute(delete(LearningEvent).where(LearningEvent.ref_id.in_(list(asset_ids))))
-
-    if sub_ids:
-        db.execute(delete(LearningEvent).where(LearningEvent.ref_id.in_(sub_ids)))
-        db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.submodule_id.in_(sub_ids)))
-
-        # submodules.quiz_id is NOT NULL in some DB schemas. We must delete submodules
-        # before deleting quizzes to avoid FK violations.
-        db.execute(text("DELETE FROM submodules WHERE module_id = :mid"), {"mid": str(mid)})
-
-    if quiz_ids:
-        attempt_ids = list(db.scalars(select(QuizAttempt.id).where(QuizAttempt.quiz_id.in_(quiz_ids))).all())
-        if attempt_ids:
-            db.execute(
-                text("DELETE FROM quiz_attempt_answers WHERE attempt_id IN :ids").bindparams(
-                    bindparam("ids", expanding=True, value=attempt_ids)
-                )
-            )
-        db.execute(delete(QuizAttempt).where(QuizAttempt.quiz_id.in_(quiz_ids)))
-
-        db.execute(delete(Question).where(Question.quiz_id.in_(quiz_ids)))
-        db.execute(delete(Quiz).where(Quiz.id.in_(quiz_ids)))
-
-    if asset_ids:
-        db.execute(delete(ContentAsset).where(ContentAsset.id.in_(list(asset_ids))))
-
-    # Legacy table still exists in DB.
-    db.execute(text("DELETE FROM module_skill_map WHERE module_id = :mid"), {"mid": str(mid)})
-    db.execute(text("DELETE FROM modules WHERE id = :mid"), {"mid": str(mid)})
-
-    # Best-effort: release Redis keys
-    try:
-        r = get_redis()
-        fp = str(r.get(f"admin:import_fingerprint_by_module_id:{str(mid)}") or "").strip()
-        if fp:
-            r.delete(f"admin:import_enqueued_by_fingerprint:{fp}")
-        r.delete(f"admin:import_fingerprint_by_module_id:{str(mid)}")
-
-        sh = str(r.get(f"admin:import_zip_sha256_by_module_id:{str(mid)}") or "").strip()
-        if sh:
-            r.delete(f"admin:import_zip_sha256_to_module_id:{sh}")
-        r.delete(f"admin:import_zip_sha256_by_module_id:{str(mid)}")
-
-        ok = str(r.get(f"admin:import_object_key_by_module_id:{str(mid)}") or "").strip()
-        if ok:
-            r.delete(f"admin:import_enqueued_by_object_key:{ok}")
-        r.delete(f"admin:import_object_key_by_module_id:{str(mid)}")
-
-        # Also remove fingerprint->object_key mappings that point to this module's import ZIP.
-        # This prevents stale dedupe state from affecting future uploads/reimports.
-        try:
-            obj_key_for_cleanup = str(getattr(m, "import_object_key", "") or "").strip() or ok
-            if obj_key_for_cleanup:
-                for k in r.scan_iter(match="admin:import_zip_by_fingerprint:*"):
-                    try:
-                        ks = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                        v = str(r.get(ks) or "").strip()
-                        if v == obj_key_for_cleanup:
-                            r.delete(ks)
-                    except Exception:
-                        continue
-                for k in r.scan_iter(match="admin:import_multipart_by_fingerprint:*"):
-                    try:
-                        ks = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                        raw = str(r.get(ks) or "").strip()
-                        if not raw:
-                            continue
-                        obj = json.loads(raw)
-                        v = str((obj or {}).get("object_key") or "").strip()
-                        if v == obj_key_for_cleanup:
-                            r.delete(ks)
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-
-        # Also release "used" ZIP keys so deleted modules can be re-imported from the storage picker.
-        used_keys: set[str] = set()
-        raw = r.lrange("admin:import_jobs", 0, 200)
-        raw_hist = r.lrange("admin:import_jobs_history", 0, 500)
-        for s in list(raw or []) + list(raw_hist or []):
-            try:
-                obj = json.loads(s)
-                if isinstance(obj, dict) and str(obj.get("module_id") or "").strip() == str(mid):
-                    k = str(obj.get("object_key") or "").strip()
-                    if k:
-                        used_keys.add(k)
-            except Exception:
-                continue
-        if used_keys:
-            r.srem("admin:import_used_object_keys", *list(used_keys))
-    except Exception:
-        pass
-
-    _delete_s3_prefix_best_effort(prefix=pfx)
 
 
 @router.delete("/modules/{module_id}")
@@ -4013,14 +3467,18 @@ def delete_module(
     if m is None:
         raise HTTPException(status_code=404, detail="module not found")
 
+    m = lock_module(db, mid)
+    preserve_progress(db, m)
     module_title = m.title
-    module_storage_prefix = str(getattr(m, "storage_prefix", "") or "").strip() or None
-    _delete_module_logic(db, m)
+    module_storage_prefix = m.storage_prefix
+    m.is_archived = True
+    m.is_active = False
+    m.content_revision += 1
 
     audit_log(
         db=db,
         request=request,
-        event_type="admin_delete_module",
+        event_type="admin_archive_module",
         actor_user_id=current.id,
         meta={"module_id": str(mid), "module_title": module_title},
     )
@@ -4034,7 +3492,7 @@ def delete_module(
         modules_bump_rev(reason="module_deleted")
     except Exception:
         pass
-    return {"ok": True}
+    return {"ok": True, "archived": True}
 
 
 
@@ -4043,7 +3501,7 @@ def list_modules_admin(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
-    mods = db.scalars(select(Module).order_by(Module.title)).all()
+    mods = db.scalars(select(Module).where(Module.is_archived.is_(False)).order_by(Module.title)).all()
 
     module_tag_rows = db.execute(select(ModuleTagMap.module_id, ModuleTagMap.tag_id)).all()
     tag_ids_by_module: dict[uuid.UUID, list[str]] = defaultdict(list)
@@ -4137,6 +3595,8 @@ def list_modules_admin(
                 "import_object_key": str(getattr(m, "import_object_key", "") or "").strip() or None,
                 "storage_prefix": pfx,
                 "storage_ok": True,
+                "content_revision": m.content_revision,
+                "is_archived": m.is_archived,
                 "question_quality": stats_by_module.get(
                     mid,
                     {
@@ -4167,6 +3627,8 @@ def set_module_access(
     if m is None:
         raise HTTPException(status_code=404, detail="module not found")
 
+    m = lock_module(db, m.id)
+    m.content_revision += 1
     if body.visibility is not None:
         vis = str(body.visibility).strip().lower()
         if vis not in {"public", "hidden", "restricted"}:
@@ -4407,46 +3869,13 @@ def set_module_visibility(
 
     target = bool(body.is_active)
 
+    m = lock_module(db, mid)
+    if m.is_archived:
+        raise HTTPException(409, "Сначала восстановите модуль из архива")
     if target:
-        try:
-            pfx = str(getattr(m, "storage_prefix", "") or "").strip()
-            has_content = bool(s3_prefix_has_objects(prefix=pfx or f"modules/{str(m.id)}/", bypass_cache=True))
-        except Exception:
-            has_content = False
-        if not has_content:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error_code": "MODULE_CONTENT_NOT_READY",
-                    "error_message": "module content is not in storage yet",
-                    "error_hint": "Сотрудники видят только опубликованные модули с готовым контентом. Дождитесь завершения импорта (появятся файлы в storage modules/<id>/) и попробуйте снова.",
-                },
-            )
-
-        needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
-        lesson_quiz_ids = list(
-            db.scalars(select(Submodule.quiz_id).where(Submodule.module_id == m.id).where(Submodule.quiz_id.is_not(None))).all()
-        )
-        if getattr(m, "final_quiz_id", None):
-            lesson_quiz_ids.append(m.final_quiz_id)
-        lesson_quiz_ids = [qid for qid in lesson_quiz_ids if qid is not None]
-
-        needs = 0
-        if lesson_quiz_ids:
-            needs = int(
-                db.scalar(select(func.count()).select_from(Question).where(Question.quiz_id.in_(lesson_quiz_ids)).where(needs_regen_cond))
-                or 0
-            )
-        if needs > 0:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error_code": "MODULE_NOT_READY",
-                    "error_message": "module has needs_regen questions",
-                    "error_hint": "Нельзя показать модуль, пока тесты не сгенерированы нейросетью и есть NEEDS REGEN. Запустите РЕГЕН ТЕСТОВ и дождитесь завершения.",
-                    "needs_regen": needs,
-                },
-            )
+        from app.routers.content import _check_publishable
+        _check_publishable(db, m)
+    m.content_revision += 1
 
     m.is_active = target
 
@@ -4468,228 +3897,13 @@ def set_module_visibility(
 
 
 @router.post("/modules/{module_id}/regenerate-quizzes")
-def regenerate_module_quizzes(
-    request: Request,
-    module_id: str,
-    db: Session = Depends(get_db),
-    current: User = Depends(require_roles(UserRole.admin)),
-    _: object = rate_limit(key_prefix="admin_regenerate_module_quizzes", limit=30, window_seconds=60),
-):
-    mid = _uuid(module_id, field="module_id")
-    m = db.scalar(select(Module).where(Module.id == mid))
-    if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
-
-    # Product rule: each lesson quiz always has exactly 5 questions.
-    tq = 5
-
-    regen_queue_name = str(settings.rq_queue_regen or "").strip() or "corelms_regen"
-    import_queue_name = str(settings.rq_queue_import or "").strip() or "corelms_import"
-    if regen_queue_name == import_queue_name:
-        regen_queue_name = "corelms_regen"
-
-    # Dedupe: do not enqueue multiple regen jobs for the same module.
-    # This avoids the UX bug where the same module appears both in queue and as current (different job_ids).
-    try:
-        r = get_redis()
-        dedupe_key = f"admin:regen_job_id_by_module_id:{str(mid)}"
-        existing_job_id = str(r.get(dedupe_key) or "").strip()
-    except Exception:
-        existing_job_id = ""
-
-    if existing_job_id:
-        try:
-            ej = fetch_job(existing_job_id)
-        except Exception:
-            ej = None
-        if ej is not None:
-            try:
-                st = str(ej.get_status(refresh=True) or "").strip().lower()
-            except Exception:
-                st = ""
-            if st in {"queued", "started", "deferred", "scheduled"}:
-                return {"ok": True, "job_id": existing_job_id, "module_id": str(mid), "target_questions": tq, "deduped": True}
-
-    q = get_queue(regen_queue_name)
-    job = q.enqueue(
-        regenerate_module_quizzes_job,
-        module_id=str(mid),
-        target_questions=tq,
-        only_missing=False,
-        job_timeout=60 * 60 * 2,
-        result_ttl=60 * 60 * 24 * 7,
-        failure_ttl=60 * 60 * 24 * 7,
-    )
-
-    # Enrich meta for a better admin UX (/admin/jobs/{id} and unified task panels).
-    try:
-        meta = dict(job.meta or {})
-        meta["job_kind"] = "regen"
-        meta["module_id"] = str(mid)
-        meta["module_title"] = str(m.title)
-        meta["target_questions"] = int(tq)
-        job.meta = meta
-        job.save_meta()
-    except Exception:
-        pass
-
-    try:
-        r = get_redis()
-        dedupe_key = f"admin:regen_job_id_by_module_id:{str(mid)}"
-        r.set(dedupe_key, str(job.id))
-        r.expire(dedupe_key, 60 * 60 * 6)
-    except Exception:
-        pass
-
-    audit_log(
-        db=db,
-        request=request,
-        event_type="admin_regenerate_module_quizzes",
-        actor_user_id=current.id,
-        meta={"job_id": job.id, "module_id": str(mid), "target_questions": tq},
-    )
-    db.commit()
-
-    try:
-        r = get_redis()
-        meta = {
-            "job_id": job.id,
-            "module_id": str(mid),
-            "module_title": str(m.title),
-            "target_questions": int(tq),
-            "created_at": datetime.utcnow().isoformat(),
-            "actor_user_id": str(current.id),
-        }
-        r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
-        r.ltrim("admin:regen_jobs", 0, 49)
-        r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
-        _admin_jobs_bump_rev()
-        r.publish("admin:jobs:changed", str(job.id))
-    except Exception:
-        pass
-
-    return {"ok": True, "job_id": job.id, "module_id": str(mid), "target_questions": tq}
+def regenerate_module_quizzes(module_id: str, current: User = Depends(require_roles(UserRole.admin))):
+    raise HTTPException(410, "Создайте и проверьте AI-черновик в редакторе модуля → Тесты. Автоматическая публикация вопросов отключена.")
 
 
 @router.post("/submodules/{submodule_id}/regenerate-quiz")
-def regenerate_submodule_quiz(
-    request: Request,
-    submodule_id: str,
-    db: Session = Depends(get_db),
-    current: User = Depends(require_roles(UserRole.admin)),
-    _: object = rate_limit(key_prefix="admin_regenerate_submodule_quiz", limit=60, window_seconds=60),
-):
-    sid = _uuid(submodule_id, field="submodule_id")
-    sub = db.scalar(select(Submodule).where(Submodule.id == sid))
-    if sub is None:
-        raise HTTPException(status_code=404, detail="submodule not found")
-
-    # Hard rule: do not regenerate quizzes for folder lessons or file-only lessons.
-    # Folder lessons represent a catalog of assets; file lessons have no meaningful theory text.
-    try:
-        if bool(getattr(sub, "is_folder", False)):
-            return {"ok": True, "skipped": True, "skip_reason": "folder_lesson", "submodule_id": str(sub.id), "module_id": str(sub.module_id)}
-    except Exception:
-        pass
-    try:
-        if not bool(getattr(sub, "requires_quiz", True)):
-            return {"ok": True, "skipped": True, "skip_reason": "file_lesson", "submodule_id": str(sub.id), "module_id": str(sub.module_id)}
-    except Exception:
-        pass
-
-    m = db.scalar(select(Module).where(Module.id == sub.module_id))
-    if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
-
-    tq = 5
-
-    regen_queue_name = str(settings.rq_queue_regen or "").strip() or "corelms_regen"
-    import_queue_name = str(settings.rq_queue_import or "").strip() or "corelms_import"
-    if regen_queue_name == import_queue_name:
-        regen_queue_name = "corelms_regen"
-
-    # Dedupe per module: avoid enqueuing another regen job while one is active for this module.
-    try:
-        r = get_redis()
-        dedupe_key = f"admin:regen_job_id_by_module_id:{str(m.id)}"
-        existing_job_id = str(r.get(dedupe_key) or "").strip()
-    except Exception:
-        existing_job_id = ""
-    if existing_job_id:
-        try:
-            ej = fetch_job(existing_job_id)
-        except Exception:
-            ej = None
-        if ej is not None:
-            try:
-                st = str(ej.get_status(refresh=True) or "").strip().lower()
-            except Exception:
-                st = ""
-            if st in {"queued", "started", "deferred", "scheduled"}:
-                return {"ok": True, "job_id": existing_job_id, "module_id": str(m.id), "submodule_id": str(sub.id), "target_questions": tq, "deduped": True}
-
-    q = get_queue(regen_queue_name)
-    job = q.enqueue(
-        regenerate_submodule_quiz_job,
-        submodule_id=str(sid),
-        target_questions=tq,
-        job_timeout=60 * 60,
-        result_ttl=60 * 60 * 24 * 7,
-        failure_ttl=60 * 60 * 24 * 7,
-    )
-
-    try:
-        meta = dict(job.meta or {})
-        meta["job_kind"] = "regen"
-        meta["module_id"] = str(m.id)
-        meta["module_title"] = str(m.title)
-        meta["submodule_id"] = str(sub.id)
-        meta["submodule_title"] = str(sub.title or "")
-        meta["target_questions"] = int(tq)
-        job.meta = meta
-        job.save_meta()
-    except Exception:
-        pass
-
-    try:
-        r = get_redis()
-        dedupe_key = f"admin:regen_job_id_by_module_id:{str(m.id)}"
-        r.set(dedupe_key, str(job.id))
-        r.expire(dedupe_key, 60 * 60 * 6)
-    except Exception:
-        pass
-
-    audit_log(
-        db=db,
-        request=request,
-        event_type="admin_regenerate_submodule_quiz",
-        actor_user_id=current.id,
-        meta={"job_id": job.id, "module_id": str(m.id), "submodule_id": str(sub.id), "target_questions": tq},
-    )
-    db.commit()
-
-    try:
-        r = get_redis()
-        meta = {
-            "job_id": job.id,
-            "module_id": str(m.id),
-            "module_title": str(m.title),
-            "submodule_id": str(sub.id),
-            "submodule_title": str(sub.title or ""),
-            "target_questions": int(tq),
-            "created_at": datetime.utcnow().isoformat(),
-            "actor_user_id": str(current.id),
-            "source": "submodule_button",
-        }
-        r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
-        r.ltrim("admin:regen_jobs", 0, 49)
-        r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
-        _admin_jobs_bump_rev()
-        r.publish("admin:jobs:changed", str(job.id))
-    except Exception:
-        pass
-
-    return {"ok": True, "job_id": job.id, "module_id": str(m.id), "submodule_id": str(sub.id), "target_questions": tq}
+def regenerate_submodule_quiz(submodule_id: str, current: User = Depends(require_roles(UserRole.admin))):
+    raise HTTPException(410, "Создайте и проверьте AI-черновик в редакторе модуля → Тесты. Автоматическая публикация вопросов отключена.")
 
 
 @router.get("/regen-jobs")
@@ -4809,7 +4023,7 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
                 terminal_moved.append(obj)
                 continue
 
-            st = str(job.get_status(refresh=True) or "").strip().lower()
+            st = get_job_status(job)
             if job_id and job_id in started_ids:
                 st = "started"
             # RQ registries can lag; started_at is a strong signal that the job is actually running.
@@ -4849,16 +4063,6 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
             obj["module_title"] = obj.get("module_title") or meta.get("module_title") or ""
             obj["submodule_id"] = obj.get("submodule_id") or meta.get("submodule_id") or ""
             obj["submodule_title"] = obj.get("submodule_title") or meta.get("submodule_title") or ""
-            # Prevent UUID from being shown as module_title
-            if not obj["module_title"] or _looks_like_uuid(obj["module_title"]):
-                mid = obj.get("module_id") or meta.get("module_id")
-                if mid:
-                    try:
-                        mod = db.scalar(select(Module).where(Module.id == mid))
-                        if mod and mod.title:
-                            obj["module_title"] = mod.title
-                    except Exception:
-                        pass
             try:
                 if st == "failed":
                     err = str(meta.get("error_message") or "").strip() or str(job.exc_info or "").strip()
@@ -4896,7 +4100,7 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
             if job is None:
                 continue
 
-            st = str(job.get_status(refresh=True) or "").strip().lower()
+            st = get_job_status(job)
             if jj in started_ids:
                 st = "started"
             try:
@@ -4976,7 +4180,7 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
             if job is None:
                 continue
 
-            st0 = str(job.get_status(refresh=True) or "queued").strip().lower()
+            st0 = get_job_status(job)
             try:
                 if st0 in {"queued", "deferred", "scheduled"} and getattr(job, "started_at", None) is not None:
                     st0 = "started"
@@ -5295,7 +4499,7 @@ def job_status(
                     meta = obj.get("meta") if isinstance(obj.get("meta"), dict) else {}
                     return {
                         "id": str(obj.get("id") or job_id),
-                        "status": str(obj.get("status") or "missing"),
+                        "status": normalize_job_status(obj.get("status") or "missing"),
                         "queue": obj.get("queue"),
                         "enqueued_at": obj.get("enqueued_at"),
                         "started_at": obj.get("started_at"),
@@ -5349,7 +4553,7 @@ def job_status(
             "error": "job not found",
         }
 
-    status = job.get_status(refresh=True)
+    status = get_job_status(job)
     meta = dict(job.meta or {})
     # Restore key meta fields from kwargs for resilience.
     try:
@@ -5562,6 +4766,7 @@ def create_question(
 
     correct_answer = _normalize_correct_answer_for_type(qtype=getattr(t, "value", str(t)), raw=str(body.correct_answer))
 
+    quiz, mapping = version_quiz_for_edit(db, quiz.id)
     question = Question(
         quiz_id=quiz.id,
         type=t,
@@ -5573,8 +4778,7 @@ def create_question(
         variant_group=body.variant_group,
     )
     db.add(question)
-    db.commit()
-    db.refresh(question)
+    db.flush()
     audit_log(
         db=db,
         request=request,
@@ -5583,7 +4787,8 @@ def create_question(
         meta={"quiz_id": str(quiz.id), "question_id": str(question.id), "type": getattr(question.type, "value", str(question.type))},
     )
     db.commit()
-    return {"id": str(question.id)}
+    modules_bump_rev(reason="question_created")
+    return {"id": str(question.id), "quiz_id": str(quiz.id), "id_map": question_id_map(mapping)}
 
 
 @router.get("/quizzes/{quiz_id}/questions", response_model=QuestionsListResponse)
@@ -5672,6 +4877,8 @@ def update_question(
     if q is None:
         raise HTTPException(status_code=404, detail="question not found")
 
+    _, mapping = version_quiz_for_edit(db, q.quiz_id)
+    q = mapping[q.id]
     before = {
         "type": getattr(getattr(q, "type", None), "value", str(getattr(q, "type", ""))),
         "difficulty": int(getattr(q, "difficulty", 1) or 1),
@@ -5691,6 +4898,8 @@ def update_question(
         q.difficulty = max(1, int(body.difficulty))
     if body.prompt is not None:
         q.prompt = str(body.prompt)
+        if str(q.concept_tag or "").startswith("needs_regen:") and body.prompt.strip() and not body.prompt.startswith("Новый вопрос"):
+            q.concept_tag = None
     if body.correct_answer is not None:
         raw = str(body.correct_answer)
         # Product UX: accept any separators/case/order and store canonical form.
@@ -5720,8 +4929,7 @@ def update_question(
         q.variant_group = body.variant_group
 
     db.add(q)
-    db.commit()
-    db.refresh(q)
+    db.flush()
 
     after = {
         "type": getattr(getattr(q, "type", None), "value", str(getattr(q, "type", ""))),
@@ -5742,8 +4950,10 @@ def update_question(
     )
     db.commit()
 
+    modules_bump_rev(reason="question_updated")
     return {
         "ok": True,
+        "id_map": question_id_map(mapping),
         "item": {
             "id": str(q.id),
             "quiz_id": str(q.quiz_id),
@@ -5771,21 +4981,14 @@ def delete_question(
     if q is None:
         raise HTTPException(status_code=404, detail="question not found")
 
-    # Delete dependent attempt answers first to keep FK integrity.
-    deleted_answers = db.execute(delete(QuizAttemptAnswer).where(QuizAttemptAnswer.question_id == q.id)).rowcount
-    db.execute(delete(Question).where(Question.id == q.id))
+    original_quiz_id = q.quiz_id
+    quiz, mapping = version_quiz_for_edit(db, original_quiz_id, exclude=q.id)
+    audit_log(db=db, request=request, event_type="admin_delete_question", actor_user_id=current.id,
+              meta={"question_id": str(qid), "old_quiz_id": str(original_quiz_id),
+                    "quiz_id": str(quiz.id), "history_preserved": True})
     db.commit()
-
-    audit_log(
-        db=db,
-        request=request,
-        event_type="admin_delete_question",
-        actor_user_id=current.id,
-        meta={"question_id": str(q.id), "quiz_id": str(q.quiz_id), "deleted_attempt_answers": int(deleted_answers or 0)},
-    )
-    db.commit()
-
-    return {"ok": True}
+    modules_bump_rev(reason="question_removed")
+    return {"ok": True, "quiz_id": str(quiz.id), "id_map": question_id_map(mapping)}
 
 
 @router.post("/submodules", response_model=SubmoduleCreateResponse)
@@ -5807,10 +5010,17 @@ def create_submodule(
     if q is None:
         raise HTTPException(status_code=404, detail="quiz not found")
 
+    m = lock_module(db, m.id)
+    if m.is_archived:
+        raise HTTPException(409, "Сначала восстановите модуль из архива")
+    if db.get(LessonQuizVersion, q.id):
+        raise HTTPException(409, "Этот тест уже принадлежит другому уроку")
+    preserve_progress(db, m)
+    m.content_revision += 1
     s = Submodule(module_id=m.id, title=body.title, order=body.order, quiz_id=q.id, content="")
     db.add(s)
-    db.commit()
-    db.refresh(s)
+    db.flush()
+    remember_quiz_version(db, s)
     audit_log(
         db=db,
         request=request,
@@ -5819,6 +5029,7 @@ def create_submodule(
         meta={"module_id": str(m.id), "submodule_id": str(s.id), "quiz_id": str(q.id), "order": int(s.order)},
     )
     db.commit()
+    modules_bump_rev(reason="lesson_created")
     return {"id": str(s.id)}
 
 
@@ -5836,6 +5047,13 @@ def update_submodule(
     if sub is None:
         raise HTTPException(status_code=404, detail="submodule not found")
 
+    module = lock_module(db, sub.module_id)
+    db.refresh(sub)
+    if module.is_archived or sub.is_archived or sub.is_folder:
+        raise HTTPException(409, "Материал в архиве или является каталогом файлов")
+    preserve_progress(db, module)
+    module.content_revision += 1
+
     before = {
         "requires_quiz": bool(getattr(sub, "requires_quiz", True)),
     }
@@ -5846,17 +5064,9 @@ def update_submodule(
             raise HTTPException(status_code=400, detail="cannot enable quiz: submodule has no quiz_id")
 
         if wants:
-            # Materials-only lessons are imported with a quiz record (legacy DB shape)
-            # but with *zero* questions. Do not allow enabling quiz requirement for those.
-            try:
-                qid = getattr(sub, "quiz_id", None)
-                total = db.scalar(select(func.count()).select_from(Question).where(Question.quiz_id == qid)) or 0
-                if int(total) <= 0:
-                    raise HTTPException(status_code=400, detail="cannot enable quiz: lesson has no questions")
-            except HTTPException:
-                raise
-            except Exception:
-                raise HTTPException(status_code=400, detail="cannot enable quiz: lesson has no questions")
+            questions = list(db.scalars(select(Question).where(Question.quiz_id == sub.quiz_id)))
+            if not questions or any(str(q.concept_tag or "").startswith("needs_regen:") for q in questions):
+                raise HTTPException(409, "Сначала подготовьте все вопросы теста")
         sub.requires_quiz = wants
 
     db.add(sub)
@@ -6034,7 +5244,7 @@ def get_module_answers(
 
 
 @router.get("/users")
-def list_admin_modules(
+def list_admin_users(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
@@ -6048,104 +5258,9 @@ def list_admin_modules(
             continue
         tag_ids_by_user[uid].append(str(tid))
 
-    modules = db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()
-    module_by_id: dict[uuid.UUID, Module] = {m.id: m for m in modules}
-
-    sub_rows = db.execute(
-        select(Submodule.module_id, Submodule.id, Submodule.quiz_id, Submodule.requires_quiz, Submodule.is_folder)
-        .where(Submodule.module_id.in_([m.id for m in modules]))
-        .order_by(Submodule.module_id, Submodule.order)
-    ).all()
-
-    quiz_to_module: dict[uuid.UUID, uuid.UUID] = {}
-    sub_to_module: dict[uuid.UUID, uuid.UUID] = {}
-    requires_quiz_by_sub: dict[uuid.UUID, bool] = {}
-
-    any_quiz_required_by_module: dict[uuid.UUID, bool] = defaultdict(bool)
-
-    steps_by_module: dict[uuid.UUID, int] = defaultdict(int)
-    all_quiz_ids: set[uuid.UUID] = set()
-    all_sub_ids: set[uuid.UUID] = set()
-
-    for mid, sid, qid, rq, is_folder in sub_rows:
-        if bool(is_folder):
-            continue
-        sub_to_module[sid] = mid
-        requires_quiz_by_sub[sid] = bool(rq)
-        if bool(rq):
-            any_quiz_required_by_module[mid] = True
-        steps_by_module[mid] += 1
-        all_sub_ids.add(sid)
-        if qid is not None and bool(rq):
-            quiz_to_module[qid] = mid
-            all_quiz_ids.add(qid)
-
-    for m in modules:
-        if m.final_quiz_id and bool(any_quiz_required_by_module.get(m.id, False)):
-            quiz_to_module[m.final_quiz_id] = m.id
-            steps_by_module[m.id] += 1
-            all_quiz_ids.add(m.final_quiz_id)
-
-    user_ids = [u.id for u in rows]
-
-    passed_by_user_module: dict[tuple[uuid.UUID, uuid.UUID], int] = defaultdict(int)
-    if user_ids and all_quiz_ids:
-        passed_rows = db.execute(
-            select(QuizAttempt.user_id, QuizAttempt.quiz_id)
-            .where(
-                QuizAttempt.user_id.in_(user_ids),
-                QuizAttempt.quiz_id.in_(list(all_quiz_ids)),
-                QuizAttempt.passed == True,
-            )
-            .group_by(QuizAttempt.user_id, QuizAttempt.quiz_id)
-        ).all()
-        for uid, qid in passed_rows:
-            mid = quiz_to_module.get(qid)
-            if mid is None:
-                continue
-            passed_by_user_module[(uid, mid)] += 1
-
-    # Track read confirmations separately for materials-only lessons.
-    read_materials_by_user_module: dict[tuple[uuid.UUID, uuid.UUID], int] = defaultdict(int)
-    read_any_by_user_module: dict[tuple[uuid.UUID, uuid.UUID], int] = defaultdict(int)
-    if user_ids and all_sub_ids:
-        # Legacy meta=="read" or JSON {"action":"read"}
-        read_rows = db.execute(
-            select(LearningEvent.user_id, Submodule.module_id, LearningEvent.ref_id, LearningEvent.meta)
-            .join(Submodule, Submodule.id == LearningEvent.ref_id)
-            .where(
-                LearningEvent.user_id.in_(user_ids),
-                LearningEvent.type == LearningEventType.submodule_opened,
-                LearningEvent.ref_id.in_(list(all_sub_ids)),
-                LearningEvent.meta.is_not(None),
-            )
-        ).all()
-
-        seen: set[tuple[uuid.UUID, uuid.UUID, uuid.UUID]] = set()
-        for uid, mid, sid, meta in read_rows:
-            key = (uid, mid, sid)
-            if key in seen:
-                continue
-            ok = False
-            try:
-                if str(meta).strip().lower() == "read":
-                    ok = True
-                else:
-                    obj = json.loads(str(meta))
-                    if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
-                        ok = True
-            except Exception:
-                ok = False
-            if not ok:
-                continue
-            seen.add(key)
-
-            read_any_by_user_module[(uid, mid)] += 1
-            try:
-                if not bool(requires_quiz_by_sub.get(sid, True)):
-                    read_materials_by_user_module[(uid, mid)] += 1
-            except Exception:
-                pass
+    modules = db.scalars(select(Module).where(Module.is_active.is_(True), Module.is_archived.is_(False)).order_by(Module.title)).all()
+    module_by_id = {m.id: m for m in modules}
+    progress_matrix = LearningService(db).get_progress_matrix(rows, modules)
 
     def _progress_summary_for_user(u: User) -> dict[str, object]:
         completed_count = 0
@@ -6154,20 +5269,12 @@ def list_admin_modules(
         current_pct = -1
 
         for mid, m in module_by_id.items():
-            total = int(steps_by_module.get(mid) or 0)
-            passed = int(passed_by_user_module.get((u.id, mid)) or 0)
-            read_any = int(read_any_by_user_module.get((u.id, mid)) or 0)
-            read_materials = int(read_materials_by_user_module.get((u.id, mid)) or 0)
-
-            effective_passed = passed + read_materials
-
-            if total <= 0:
-                continue
-
-            completed = effective_passed >= total and total > 0
-            started = effective_passed > 0 or read_any > 0
-            pct = int(round((effective_passed / total) * 100)) if total > 0 else 0
-            pct = max(0, min(100, pct))
+            progress = progress_matrix.get((u.id, mid)) or {}
+            total = int(progress.get("total") or 0)
+            effective_passed = int(progress.get("passed") or 0)
+            completed = bool(progress.get("completed"))
+            started = effective_passed > 0 or int(progress.get("read_count") or 0) > 0
+            pct = 100 if completed else round(effective_passed / total * 100) if total else 0
 
             if completed:
                 completed_count += 1
@@ -6246,7 +5353,7 @@ def get_user_detail(
     )
     events_total = db.scalar(select(func.count()).select_from(LearningEvent).where(LearningEvent.user_id == uid)) or 0
 
-    modules = db.scalars(select(Module).where(Module.is_active == True).order_by(Module.title)).all()
+    modules = db.scalars(select(Module).where(Module.is_active.is_(True), Module.is_archived.is_(False)).order_by(Module.title)).all()
     module_ids = [m.id for m in modules]
     progress_map = LearningService(db).get_modules_progress(u, module_ids)
 
@@ -6263,9 +5370,7 @@ def get_user_detail(
         submods = prog.get("submodules") or []
         started = passed > 0 or any(bool(x.get("read")) for x in submods if isinstance(x, dict))
 
-        pct = 0
-        if total > 0:
-            pct = int(round((passed / total) * 100))
+        pct = 100 if completed else round(passed / total * 100) if total else 0
 
         if total > 0:
             overall_steps_total += total
@@ -6278,6 +5383,7 @@ def get_user_detail(
             "passed": passed,
             "percent": pct,
             "completed": completed,
+            "current_completed": bool(prog.get("current_completed")),
         }
 
         if completed:
@@ -6285,10 +5391,9 @@ def get_user_detail(
         elif started:
             in_progress_modules.append(item)
 
-    overall_percent = 0
-    if overall_steps_total > 0:
-        overall_percent = int(round((float(overall_steps_completed) / float(overall_steps_total)) * 100.0))
-        overall_percent = max(0, min(100, overall_percent))
+    overall_percent = round(sum(100 if (progress_map.get(m.id) or {}).get("completed") else (
+        (progress_map.get(m.id) or {}).get("passed", 0) / max(1, (progress_map.get(m.id) or {}).get("total", 0)) * 100
+    ) for m in modules) / len(modules)) if modules else 0
 
     # Fetch recent history (last 20 events)
     recent_events = db.scalars(
@@ -7045,7 +6150,7 @@ def reset_user_password(
     temp_password = str(body.password or "").strip() or _random_password(14)
     user.password_hash = _hash_password(temp_password)
     user.must_change_password = bool(body.must_change_password)
-    user.password_changed_at = None
+    user.password_changed_at = datetime.utcnow()
     db.add(user)
     db.flush()
 

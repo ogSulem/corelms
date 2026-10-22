@@ -1,0 +1,6 @@
+# Preserve byte-exact documents and synthetic media fixtures (PDF xref has fixed-width spaces).
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.avi binary
+*.zip binary

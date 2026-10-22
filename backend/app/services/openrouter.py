@@ -83,14 +83,8 @@ def _is_good_question(q: OpenRouterQuestion, *, seen_prompts: set[str]) -> bool:
     if ca not in {"A", "B", "C", "D"}:
         return False
 
-    # Explanation improves quality, but in practice many providers return it empty/short.
-    # Do not reject otherwise valid questions; instead fill a minimal explanation.
-    exp = str(q.explanation or "").strip()
-    if not exp:
-        try:
-            q.explanation = "Пояснение: правильный ответ следует из текста урока."
-        except Exception:
-            pass
+    # A missing explanation stays missing; the author must review the answer.
+    # Do not invent source-based evidence on the provider's behalf.
 
     seen_prompts.add(norm_p)
     return True

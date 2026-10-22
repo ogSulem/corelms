@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.user import UserRole
 
@@ -47,6 +47,8 @@ class QuestionCreateRequest(BaseModel):
 
 class QuestionCreateResponse(BaseModel):
     id: str
+    quiz_id: str | None = None
+    id_map: dict[str, str] = Field(default_factory=dict)
 
 
 class QuestionPublic(BaseModel):
@@ -77,6 +79,7 @@ class QuestionUpdateRequest(BaseModel):
 
 class QuestionUpdateResponse(BaseModel):
     ok: bool = True
+    id_map: dict[str, str] = Field(default_factory=dict)
     item: QuestionPublic
 
 

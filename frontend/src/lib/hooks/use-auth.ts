@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export type User = {
+  id: string;
   name: string;
-  role: 'admin' | 'superadmin' | 'user';
+  role: 'admin' | 'superadmin' | 'employee';
   xp: number;
   level: number;
   streak: number;
@@ -88,24 +89,16 @@ export function useAuth() {
   const [loading, setLoading] = useState(authSnapshot.loading);
   const [error, setError] = useState<Error | null>(authSnapshot.error);
 
-  const subscribedRef = useRef(false);
-
   useEffect(() => {
-    if (!subscribedRef.current) {
-      subscribedRef.current = true;
-      const cb = (s: AuthSnapshot) => {
-        setUser(s.user);
-        setLoading(s.loading);
-        setError(s.error);
-      };
-      authSubscribers.add(cb);
-      cb(authSnapshot);
-      void sharedFetchMe(false);
-      return () => {
-        authSubscribers.delete(cb);
-      };
-    }
+    const cb = (s: AuthSnapshot) => {
+      setUser(s.user);
+      setLoading(s.loading);
+      setError(s.error);
+    };
+    authSubscribers.add(cb);
+    cb(authSnapshot);
     void sharedFetchMe(false);
+    return () => { authSubscribers.delete(cb); };
   }, []);
 
   return { user, loading, error, refresh: sharedFetchMe };

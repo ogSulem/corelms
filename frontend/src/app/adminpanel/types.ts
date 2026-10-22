@@ -125,6 +125,8 @@ export type AdminSubmoduleItem = {
   order: number;
   quiz_id: string;
   requires_quiz?: boolean;
+  is_folder?: boolean;
+  outline_path?: string | null;
 };
 
 export type AdminSubmoduleQualityItem = {

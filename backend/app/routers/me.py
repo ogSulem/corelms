@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
 from app.db.session import get_db
+from app.models.completion import LessonQuizVersion
 from app.models.attempt import QuizAttempt
 from app.models.assignment import Assignment
 from app.models.audit import LearningEvent
@@ -30,6 +31,23 @@ from app.schemas.me import (
 router = APIRouter(prefix="/me", tags=["me"])
 
 logger = logging.getLogger(__name__)
+
+
+def _historical_quiz_contexts(db: Session, quiz_ids: list[uuid.UUID]) -> dict[str, dict]:
+    if not quiz_ids:
+        return {}
+    contexts = {}
+    rows = db.execute(select(LessonQuizVersion.quiz_id, Submodule.id, Submodule.title, Module.id, Module.title)
+        .join(Submodule, Submodule.id == LessonQuizVersion.submodule_id)
+        .join(Module, Module.id == Submodule.module_id)
+        .where(LessonQuizVersion.quiz_id.in_(quiz_ids))).all()
+    for qid, sid, stitle, mid, mtitle in rows:
+        contexts[str(qid)] = {"submodule_id": str(sid), "submodule_title": stitle,
+                              "module_id": str(mid), "module_title": mtitle}
+    for module in db.scalars(select(Module).where(Module.final_quiz_id.in_(quiz_ids))):
+        contexts[str(module.final_quiz_id)] = {"module_id": str(module.id), "module_title": module.title,
+                                              "submodule_id": None, "submodule_title": "Итоговый тест"}
+    return contexts
 
 
 @router.get("/profile", response_model=MyProfileResponse)
@@ -64,9 +82,13 @@ def my_progress_summary(request: Request, db: Session = Depends(get_db), user: U
         modules_completed = 0
         steps_total = 0
         steps_completed = 0
+        earned_module_fraction = 0.0
 
         for mid in module_ids:
             p = progress_map.get(mid) or {}
+            earned_module_fraction += 1.0 if p.get("completed") else (
+                min(1.0, int(p.get("passed_count") or 0) / int(p.get("total_lessons") or 1))
+            )
             try:
                 if bool(p.get("completed")):
                     modules_completed += 1
@@ -81,11 +103,10 @@ def my_progress_summary(request: Request, db: Session = Depends(get_db), user: U
             except Exception:
                 pass
 
-        if steps_total <= 0:
-            percent = 0
-        else:
-            percent = int(round((float(steps_completed) / float(steps_total)) * 100.0))
-            percent = max(0, min(100, percent))
+        current_percent = max(0, min(100, round(steps_completed / steps_total * 100))) if steps_total else 0
+        # Earned module completion must not shrink when a finished course gains
+        # new lessons. Current coverage is a separate, explicitly named metric.
+        percent = round(earned_module_fraction / modules_total * 100) if modules_total else 0
 
         return {
             "modules_total": int(modules_total),
@@ -93,6 +114,7 @@ def my_progress_summary(request: Request, db: Session = Depends(get_db), user: U
             "steps_total": int(steps_total),
             "steps_completed": int(steps_completed),
             "percent": int(percent),
+            "current_percent": current_percent,
         }
     except Exception as e:
         rid = getattr(getattr(request, "state", None), "request_id", None)
@@ -268,7 +290,7 @@ def my_recent_activity(db: Session = Depends(get_db), user: User = Depends(get_c
 
     # Bulk enrich attempts with module/submodule
     attempt_quiz_ids = list({a.quiz_id for a in attempts if a.quiz_id is not None})
-    subs_by_quiz: dict[str, dict] = {}
+    subs_by_quiz: dict[str, dict] = _historical_quiz_contexts(db, attempt_quiz_ids)
     if attempt_quiz_ids:
         rows = db.execute(
             select(Submodule.quiz_id, Submodule.id, Submodule.title, Module.id, Module.title)
@@ -305,7 +327,7 @@ def my_recent_activity(db: Session = Depends(get_db), user: User = Depends(get_c
                 "module_title": str(mtitle),
             }
 
-    subs_by_quiz_event: dict[str, dict] = {}
+    subs_by_quiz_event: dict[str, dict] = _historical_quiz_contexts(db, quiz_ids)
     if quiz_ids:
         rows = db.execute(
             select(Submodule.quiz_id, Submodule.id, Submodule.title, Module.id, Module.title)
@@ -464,7 +486,7 @@ def my_history(
 
     # Enrich attempts with module/submodule
     attempt_quiz_ids = list({a.quiz_id for a in attempts if a.quiz_id is not None})
-    subs_by_quiz: dict[str, dict] = {}
+    subs_by_quiz: dict[str, dict] = _historical_quiz_contexts(db, attempt_quiz_ids)
     if attempt_quiz_ids:
         rows = db.execute(
             select(Submodule.quiz_id, Submodule.id, Submodule.title, Module.id, Module.title)
@@ -501,7 +523,7 @@ def my_history(
                 "module_title": str(mtitle),
             }
 
-    subs_by_quiz_event: dict[str, dict] = {}
+    subs_by_quiz_event: dict[str, dict] = _historical_quiz_contexts(db, quiz_ids)
     if quiz_ids:
         rows = db.execute(
             select(Submodule.quiz_id, Submodule.id, Submodule.title, Module.id, Module.title)
@@ -525,6 +547,20 @@ def my_history(
         ).all()
         for aid, name in rows:
             assets_by_id[str(aid)] = {"asset_id": str(aid), "asset_name": str(name)}
+
+    assets_ctx_by_id: dict[str, dict] = {}
+    if asset_ids:
+        rows = db.execute(
+            select(ContentAsset.id, Submodule.id, Submodule.title, Module.id, Module.title)
+            .select_from(ContentAsset)
+            .outerjoin(SubmoduleAssetMap, SubmoduleAssetMap.asset_id == ContentAsset.id)
+            .outerjoin(Submodule, Submodule.id == SubmoduleAssetMap.submodule_id)
+            .join(Module, Module.id == func.coalesce(ContentAsset.module_id, Submodule.module_id))
+            .where(ContentAsset.id.in_(asset_ids))
+        ).all()
+        for aid, sid, stitle, mid, mtitle in rows:
+            assets_ctx_by_id[str(aid)] = {"module_id": str(mid), "module_title": mtitle,
+                "submodule_id": str(sid) if sid else None, "submodule_title": stitle}
 
     def _try_parse_meta(meta: str | None) -> dict | None:
         if not meta:
@@ -847,5 +883,8 @@ def my_history(
 
 @router.get("/recommendations")
 def my_recommendations(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    module_ids = recommend_next_modules(db, user_id=str(user.id), limit=3)
-    return {"module_ids": module_ids}
+    from app.services.modules import ModuleService
+    items = ModuleService(db).get_modules_overview(user)
+    candidates = [item for item in items if not item["progress"]["completed"]]
+    candidates.sort(key=lambda item: -item["progress"]["passed_count"])
+    return {"module_ids": [item["id"] for item in candidates[:3]]}

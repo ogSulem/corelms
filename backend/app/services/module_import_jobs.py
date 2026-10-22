@@ -20,16 +20,17 @@ from botocore.exceptions import ClientError
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ResponseStreamingError
 from rq import get_current_job
+from sqlalchemy import select
 
+from app.core.queue import get_job_status, normalize_job_status, release_job_lock
 from app.core.config import settings
 from app.core.queue import fetch_job, get_queue
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal
-from app.models.module import Module
+from app.models.module import Module, Submodule
 from app.models.quiz import Quiz
 from app.services.module_importer import import_module_from_dir
 from app.services.modules import modules_bump_rev, modules_invalidate_storage_cache
-from app.services.quiz_regeneration_jobs import regenerate_module_quizzes_job
 from app.services.storage import ensure_bucket_exists, get_s3_client
 
 
@@ -73,7 +74,7 @@ def _persist_job_snapshot(*, job, meta: dict) -> None:
 
         result_payload = None
         try:
-            st = str(job.get_status(refresh=True) or "").strip().lower()
+            st = get_job_status(job)
             if st == "finished":
                 res = job.result
                 if isinstance(res, (dict, list, str, int, float, bool)) or res is None:
@@ -91,7 +92,7 @@ def _persist_job_snapshot(*, job, meta: dict) -> None:
 
         payload = {
             "id": job_id,
-            "status": str(job.get_status(refresh=True) or ""),
+            "status": get_job_status(job),
             "enqueued_at": job.enqueued_at.isoformat() if getattr(job, "enqueued_at", None) else None,
             "started_at": job.started_at.isoformat() if getattr(job, "started_at", None) else None,
             "ended_at": job.ended_at.isoformat() if getattr(job, "ended_at", None) else None,
@@ -293,7 +294,7 @@ def _set_job_error(*, error: Exception, error_code: str | None = None, error_hin
             elif "module title already exists" in msg.lower() or "title already exists" in msg.lower():
                 code = "DUPLICATE_MODULE_TITLE"
                 if not hint:
-                    hint = "Смените название модуля (или удалите существующий модуль с таким названием)."
+                    hint = "Откройте существующий модуль и используйте «Обновить из ZIP» или выберите новое название."
             elif "failed to upload zip" in msg.lower() or "failed to enqueue" in msg.lower():
                 code = "IMPORT_QUEUE_OR_UPLOAD_FAILED"
                 if not hint:
@@ -375,23 +376,33 @@ def _safe_extract_zip(*, zf: zipfile.ZipFile, dest: pathlib.Path) -> None:
             if ratio > float(max_ratio) and file_size > 10_000_000:
                 raise ValueError(f"zip suspicious compression ratio: {ratio:.1f} > {max_ratio}: {name}")
 
+        if "\\" in name:
+            raise ValueError("ZIP содержит неоднозначный путь с обратным слешем")
+        if name.startswith("/") or re.match(r"^[A-Za-z]:", name) or ".." in pathlib.PurePosixPath(name).parts:
+            raise ValueError("ZIP содержит небезопасный путь")
         target = (dest / name).resolve()
-        if not str(target).startswith(str(dest)):
-            continue
+        if not target.is_relative_to(dest):
+            raise ValueError("ZIP содержит небезопасный путь")
+        if (member.external_attr >> 16) & 0o170000 == 0o120000:
+            raise ValueError("Символические ссылки в ZIP не поддерживаются")
+        if target.exists():
+            raise ValueError(f"Повторяющийся путь внутри ZIP: {name}")
         target.parent.mkdir(parents=True, exist_ok=True)
         with zf.open(member) as src, open(target, "wb") as out:
             shutil.copyfileobj(src, out, length=1024 * 1024)
 
 
-def import_module_zip_job(
+def _run_import_module_zip_job(
     *,
     s3_object_key: str,
     title: str | None = None,
     source_filename: str | None = None,
     actor_user_id: str | None = None,
     module_id: str | None = None,
-    enqueue_regen: bool = True,
+    enqueue_regen: bool = False,
     force_reimport: bool = False,
+    expected_revision: int | None = None,
+    reimport_existing: bool = False,
 ) -> dict:
     log.info("import_module_zip_job: start s3_object_key=%s source_filename=%s title=%s", s3_object_key, source_filename, title)
     _set_job_stage(stage="start", detail=s3_object_key)
@@ -399,6 +410,18 @@ def import_module_zip_job(
     s3 = get_s3_client()
 
     cleanup_done = False
+    committed = False
+    commit_attempted = False
+    attempt_id = uuid.uuid4().hex
+    try:
+        current_job = get_current_job()
+        if current_job is not None:
+            current_job.meta = {**(current_job.meta or {}), "upload_attempt_id": attempt_id, "uploaded_keys": []}
+            current_job.save_meta()
+    except Exception:
+        # Without reliable ownership metadata cleanup must leave orphans, never
+        # act on uploaded_keys inherited from an earlier execution of this job.
+        log.warning("Import cleanup ownership metadata unavailable")
 
     def _cleanup_uploaded_keys_best_effort() -> None:
         # Best-effort cleanup of S3 objects uploaded during this job.
@@ -410,6 +433,8 @@ def import_module_zip_job(
         if job is None:
             return
         try:
+            if (job.meta or {}).get("upload_attempt_id") != attempt_id:
+                return
             keys = list((job.meta or {}).get("uploaded_keys") or [])
         except Exception:
             keys = []
@@ -436,36 +461,21 @@ def import_module_zip_job(
 
     def _release_enqueue_locks() -> None:
         try:
+            job = get_current_job()
+            if job is None:
+                return
             r = get_redis()
+            meta = dict(job.meta or {})
+            for suffix, value in {
+                "object_key": s3_object_key, "title": meta.get("import_title_norm"),
+                "fingerprint": meta.get("import_fingerprint"),
+            }.items():
+                if value:
+                    release_job_lock(r, f"admin:import_enqueued_by_{suffix}:{value}", job.id)
+            if module_id:
+                release_job_lock(r, f"content:import:{module_id}", job.id)
         except Exception:
-            return
-        try:
-            r.delete(f"admin:import_enqueued_by_object_key:{str(s3_object_key or '').strip()}")
-        except Exception:
-            pass
-        try:
-            norm_title = ""
-            try:
-                job = get_current_job()
-                norm_title = str((job.meta or {}).get("import_title_norm") or "").strip()
-            except Exception:
-                norm_title = ""
-            if norm_title:
-                r.delete(f"admin:import_enqueued_by_title:{norm_title}")
-        except Exception:
-            pass
-
-        try:
-            fp = ""
-            try:
-                job = get_current_job()
-                fp = str((job.meta or {}).get("import_fingerprint") or "").strip()
-            except Exception:
-                fp = ""
-            if fp:
-                r.delete(f"admin:import_enqueued_by_fingerprint:{fp}")
-        except Exception:
-            pass
+            log.debug("Could not release import lease", exc_info=True)
 
     _cancel_checkpoint(s3_object_key=s3_object_key, stage="start")
 
@@ -517,6 +527,8 @@ def import_module_zip_job(
                     try:
                         s3.download_fileobj(settings.s3_bucket, object_key, f, Config=config)
                     except Exception:
+                        f.seek(0)
+                        f.truncate(0)  # Managed transfer may have already written partial bytes.
                         resp = s3.get_object(Bucket=settings.s3_bucket, Key=object_key)
                         expected_len = None
                         try:
@@ -567,8 +579,10 @@ def import_module_zip_job(
                 pass
 
     with tempfile.TemporaryDirectory() as td:
-        base = pathlib.Path(td)
-        zip_path = base / "module.zip"
+        workdir = pathlib.Path(td)
+        zip_path = workdir / "module.zip"
+        base = workdir / "content"
+        base.mkdir()
 
         _set_job_stage(stage="download", detail=s3_object_key)
         _cancel_checkpoint(s3_object_key=s3_object_key, stage="download")
@@ -624,7 +638,7 @@ def import_module_zip_job(
         except Exception:
             sha256 = ""
 
-        if sha256 and (not force_reimport):
+        if sha256 and (not force_reimport) and (not reimport_existing):
             # Hard idempotency: if the same ZIP content was already imported, reuse it.
             try:
                 r = get_redis()
@@ -633,138 +647,28 @@ def import_module_zip_job(
                 existing_mid = ""
 
             if existing_mid:
-                # If we created a stub module for this job, delete it to avoid clutter.
-                try:
-                    stub_mid = str(module_id or "").strip()
-                    if stub_mid and stub_mid != existing_mid:
-                        db0 = SessionLocal()
-                        try:
-                            try:
-                                stub_uuid = uuid.UUID(stub_mid)
-                            except Exception:
-                                stub_uuid = None
-
-                            if stub_uuid is not None:
-                                sm = db0.scalar(select(Module).where(Module.id == stub_uuid))
-                            else:
-                                sm = None
-
-                            if sm is not None:
-                                fq = getattr(sm, "final_quiz_id", None)
-                                try:
-                                    db0.execute(text("DELETE FROM modules WHERE id = :mid"), {"mid": str(sm.id)})
-                                except Exception:
-                                    try:
-                                        db0.delete(sm)
-                                    except Exception:
-                                        pass
-                                if fq is not None:
-                                    try:
-                                        db0.execute(text("DELETE FROM quizzes WHERE id = :qid"), {"qid": str(fq)})
-                                    except Exception:
-                                        try:
-                                            qx = db0.scalar(select(Quiz).where(Quiz.id == fq))
-                                            if qx is not None:
-                                                db0.delete(qx)
-                                        except Exception:
-                                            pass
-                                try:
-                                    db0.commit()
-                                except Exception:
-                                    db0.rollback()
-                        finally:
-                            db0.close()
-                except Exception:
-                    pass
-
-                regen_job_id: str | None = None
-                if enqueue_regen:
-                    try:
-                        _cancel_checkpoint(s3_object_key=s3_object_key, stage="regen_enqueue")
-                        _set_job_stage(stage="regen_enqueue", detail=f"{existing_mid} (reused)")
-
-                        regen_queue_name = str(settings.rq_queue_regen or "").strip() or "corelms_regen"
-                        import_queue_name = str(settings.rq_queue_import or "").strip() or "corelms_import"
-                        if regen_queue_name == import_queue_name:
-                            regen_queue_name = "corelms_regen"
-
-                        q = get_queue(regen_queue_name)
-                        regen_job = q.enqueue(
-                            regenerate_module_quizzes_job,
-                            module_id=str(existing_mid),
-                            target_questions=5,
-                            job_timeout=60 * 60 * 2,
-                            result_ttl=60 * 60 * 24 * 7,
-                            failure_ttl=60 * 60 * 24 * 7,
-                        )
-
-                        regen_job_id = str(regen_job.id)
-                        _set_existing_regen_job_id(module_id=str(existing_mid), regen_job_id=str(regen_job_id))
-
-                        try:
-                            meta = dict(regen_job.meta or {})
-                            meta["job_kind"] = "regen"
-                            meta["module_id"] = str(existing_mid)
-                            meta["target_questions"] = 5
-                            meta["actor_user_id"] = str(actor_user_id or "")
-                            meta["source"] = "auto_after_import"
-                            regen_job.meta = meta
-                            regen_job.save_meta()
-                        except Exception:
-                            log.debug("import_module_zip_job: failed to save regen job meta", exc_info=True)
-
-                        try:
-                            job = get_current_job()
-                        except Exception:
-                            job = None
-                        if job is not None:
-                            try:
-                                jm = dict(job.meta or {})
-                                jm["regen_job_id"] = str(regen_job_id)
-                                job.meta = jm
-                                job.save_meta()
-                            except Exception:
-                                pass
-
-                        try:
-                            r = get_redis()
-                            meta = {
-                                "job_id": regen_job_id,
-                                "module_id": str(existing_mid),
-                                "module_title": "",
-                                "target_questions": 5,
-                                "created_at": datetime.utcnow().isoformat(),
-                                "actor_user_id": str(actor_user_id or ""),
-                                "source": "auto_after_import",
-                            }
-                            r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
-                            r.ltrim("admin:regen_jobs", 0, 49)
-                            r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
-                            r.publish("admin:jobs:changed", str(regen_job_id))
-                        except Exception:
-                            log.debug("import_module_zip_job: failed to publish regen job to admin feed", exc_info=True)
-                    except Exception:
-                        regen_job_id = None
-
+                with SessionLocal() as check:
+                    previous = check.get(Module, uuid.UUID(existing_mid))
+                    if previous is None or previous.is_archived:
+                        existing_mid = ""
+            if existing_mid:
+                if module_id and str(module_id) != existing_mid:
+                    with SessionLocal() as check:
+                        stub = check.scalar(select(Module).where(Module.id == uuid.UUID(str(module_id))).with_for_update())
+                        if stub is not None and not stub.is_active and stub.content_revision == 1:
+                            has_lessons = check.scalar(select(Submodule.id).where(Submodule.module_id == stub.id).limit(1))
+                            from app.models.asset import ContentAsset
+                            has_assets = check.scalar(select(ContentAsset.id).where(ContentAsset.module_id == stub.id).limit(1))
+                            if not has_lessons and not has_assets:
+                                stub.is_archived = True
+                                stub.content_revision += 1
+                                check.commit()
                 _set_job_stage(stage="done", detail=f"reused: {existing_mid}")
                 _release_enqueue_locks()
-
-                # Event-driven refresh: module is effectively available (reused).
-                try:
-                    modules_invalidate_storage_cache(module_storage_prefix=f"modules/{str(existing_mid)}/")
-                except Exception:
-                    pass
-                try:
-                    modules_bump_rev(reason="import_reused")
-                except Exception:
-                    pass
-                return {
-                    "ok": True,
-                    "module_id": str(existing_mid),
-                    "reused": True,
-                    "zip_sha256": sha256,
-                    "regen_job_id": regen_job_id,
-                }
+                modules_bump_rev(reason="import_reused")
+                # Re-uploading identical bytes is NOT permission to regenerate tests.
+                return {"ok": True, "module_id": existing_mid, "reused": True,
+                        "zip_sha256": sha256, "regen_job_id": None}
 
         size = None
         try:
@@ -820,7 +724,7 @@ def import_module_zip_job(
             and (not str(p.name).startswith("._"))
         ]
         module_dir = None
-        if len(top_dirs) == 1 and not top_files:
+        if len(top_dirs) == 1 and not top_files and top_dirs[0].name != "_module":
             module_dir = top_dirs[0]
         elif inferred_title:
             tnorm = str(inferred_title).strip().casefold()
@@ -855,6 +759,8 @@ def import_module_zip_job(
         db = SessionLocal()
         try:
             report: dict[str, object] = {}
+            if reimport_existing:
+                enqueue_regen = False
             _set_job_stage(stage="import")
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="import")
             log.info("import_module_zip_job: importing to DB")
@@ -864,29 +770,17 @@ def import_module_zip_job(
                 module_dir=module_dir,
                 title_override=(title or inferred_title),
                 report_out=report,
-                generate_questions=False,
-                module_id_override=(str(module_id).strip() or None),
+                generate_questions=False, require_new_quizzes=False,
+                module_id_override=(str(module_id or "").strip() or None),
+                expected_revision=expected_revision,
             )
 
-            # Canonical linkage: bind the imported module to its source ZIP key.
-            # This makes /admin/storage/objects filtering authoritative by DB,
-            # and keeps the system consistent across Redis resets.
-            try:
-                m = db.scalar(select(Module).where(Module.id == mid))
-            except Exception:
-                m = None
-            if m is not None:
-                try:
-                    if str(s3_object_key or "").strip():
-                        m.import_object_key = str(s3_object_key).strip()
-                    # Ensure storage_prefix exists (normally set by importer).
-                    if not str(getattr(m, "storage_prefix", "") or "").strip():
-                        safe = _slugify_s3_segment(str(getattr(m, "title", "") or "module"))
-                        m.storage_prefix = f"modules/{safe}__{str(m.id)}/"
-                    db.add(m)
-                    db.flush()
-                except Exception:
-                    log.debug("import_module_zip_job: failed to set module import_object_key/storage_prefix", exc_info=True)
+            # Source linkage is part of the same transaction, not best-effort.
+            m = db.get(Module, mid)
+            if m is None:
+                raise RuntimeError("Imported module is missing before commit")
+            m.import_object_key = s3_object_key
+            db.flush()
 
             module_title_for_meta = ""
             try:
@@ -911,7 +805,9 @@ def import_module_zip_job(
 
             _set_job_stage(stage="commit")
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="commit")
+            commit_attempted = True
             db.commit()
+            committed = True
             log.info("import_module_zip_job: commit done module_id=%s", str(mid))
 
             # Event-driven refresh: storage + DB changed, invalidate caches and bump rev.
@@ -944,121 +840,26 @@ def import_module_zip_job(
             report["source_zip_deleted"] = False
             report["source_zip_kept"] = True
 
-            regen_job_id: str | None = None
-            if enqueue_regen:
-                existing_regen_job_id = _get_existing_regen_job_id(module_id=str(mid))
-                if existing_regen_job_id:
-                    regen_job_id = existing_regen_job_id
-                else:
-                    last_err: Exception | None = None
-                    for attempt in range(1, 4):
-                        try:
-                            _cancel_checkpoint(s3_object_key=s3_object_key, stage="regen_enqueue")
-                            _set_job_stage(stage="regen_enqueue", detail=f"{mid} (attempt {attempt}/3)")
-
-                            regen_queue_name = str(settings.rq_queue_regen or "").strip() or "corelms_regen"
-                            import_queue_name = str(settings.rq_queue_import or "").strip() or "corelms_import"
-                            if regen_queue_name == import_queue_name:
-                                regen_queue_name = "corelms_regen"
-                            log.info(
-                                "import_module_zip_job: enqueue regen module_id=%s queue=%s (import_queue=%s)",
-                                str(mid),
-                                regen_queue_name,
-                                import_queue_name,
-                            )
-
-                            q = get_queue(regen_queue_name)
-                            regen_job = q.enqueue(
-                                regenerate_module_quizzes_job,
-                                module_id=str(mid),
-                                target_questions=5,
-                                job_timeout=60 * 60 * 2,
-                                result_ttl=60 * 60 * 24 * 7,
-                                failure_ttl=60 * 60 * 24 * 7,
-                            )
-
-                            regen_job_id = str(regen_job.id)
-                            _set_existing_regen_job_id(module_id=str(mid), regen_job_id=str(regen_job_id))
-
-                            try:
-                                meta = dict(regen_job.meta or {})
-                                meta["job_kind"] = "regen"
-                                meta["module_id"] = str(mid)
-                                meta["module_title"] = module_title_for_meta or str(report.get("module_title") or "")
-                                meta["target_questions"] = 5
-                                meta["actor_user_id"] = str(actor_user_id or "")
-                                meta["source"] = "auto_after_import"
-                                regen_job.meta = meta
-                                regen_job.save_meta()
-                            except Exception:
-                                log.debug("import_module_zip_job: failed to save regen job meta", exc_info=True)
-
-                            # Store regen_job_id in import job meta for easier UI linking.
-                            try:
-                                job = get_current_job()
-                            except Exception:
-                                job = None
-                            if job is not None:
-                                try:
-                                    jm = dict(job.meta or {})
-                                    jm["regen_job_id"] = str(regen_job_id)
-                                    job.meta = jm
-                                    job.save_meta()
-                                except Exception:
-                                    log.debug("import_module_zip_job: failed to save import job meta (regen_job_id)", exc_info=True)
-
-                            try:
-                                r = get_redis()
-                                meta = {
-                                    "job_id": regen_job_id,
-                                    "module_id": str(mid),
-                                    "module_title": module_title_for_meta or str(report.get("module_title") or ""),
-                                    "target_questions": 5,
-                                    "created_at": datetime.utcnow().isoformat(),
-                                    "actor_user_id": str(actor_user_id or ""),
-                                    "source": "auto_after_import",
-                                }
-                                r.lpush("admin:regen_jobs", json.dumps(meta, ensure_ascii=False))
-                                r.ltrim("admin:regen_jobs", 0, 49)
-                                r.expire("admin:regen_jobs", 60 * 60 * 24 * 30)
-                                r.publish("admin:jobs:changed", str(regen_job_id))
-                            except Exception:
-                                log.debug("import_module_zip_job: failed to publish regen job to admin feed", exc_info=True)
-
-                            last_err = None
-                            break
-                        except Exception as e:
-                            last_err = e
-                            try:
-                                time.sleep(0.5)
-                            except Exception:
-                                log.debug("import_module_zip_job: regen enqueue backoff sleep failed", exc_info=True)
-
-                    if last_err is not None or not regen_job_id:
-                        report["regen_enqueue_error"] = str(last_err)
-                        _set_job_stage(stage="failed", detail="regen enqueue failed")
-                        _set_job_error(
-                            error=last_err,
-                            error_code="REGEN_ENQUEUE_FAILED",
-                            error_hint=(
-                                "Импорт завершился, но не удалось поставить задачу регена в очередь. "
-                                "Проверьте Redis/RQ worker/очередь 'corelms_regen'."
-                            ),
-                        )
-                        raise last_err
-
-            report["regen_job_id"] = regen_job_id
+            # Import, media preparation and quiz generation are independent stages.
+            # Old queued jobs may still pass enqueue_regen=True; never silently publish tests.
+            regen_job_id = None
+            report["regen_job_id"] = None
+            report["quiz_generation"] = "manual_review"
 
             _set_job_stage(stage="done", detail=str(mid))
             _release_enqueue_locks()
             return {"ok": True, "module_id": str(mid), "report": report, "regen_job_id": regen_job_id}
         except ImportCanceledError as e:
+            if committed:
+                _set_job_stage(stage="done", detail="Материалы сохранены до запроса отмены; последующие действия остановлены.")
+                return {"ok": True, "module_id": str(mid), "report": report, "regen_job_id": None,
+                        "cancel_too_late": True}
             try:
                 db.rollback()
             except Exception:
                 log.debug("import_module_zip_job: db rollback failed on cancel", exc_info=True)
             try:
-                if not cleanup_done:
+                if not cleanup_done and not commit_attempted:
                     _cleanup_uploaded_keys_best_effort()
             except Exception:
                 log.debug("import_module_zip_job: cleanup uploaded keys failed on cancel", exc_info=True)
@@ -1070,7 +871,7 @@ def import_module_zip_job(
             log.exception("import_module_zip_job: failed")
             db.rollback()
             try:
-                if not cleanup_done:
+                if not cleanup_done and not commit_attempted:
                     _cleanup_uploaded_keys_best_effort()
             except Exception:
                 log.debug("import_module_zip_job: cleanup uploaded keys failed", exc_info=True)
@@ -1078,3 +879,29 @@ def import_module_zip_job(
             raise
         finally:
             db.close()
+
+
+def import_module_zip_job(**kwargs) -> dict:
+    try:
+        return _run_import_module_zip_job(**kwargs)
+    except ImportCanceledError:
+        return {"ok": False, "canceled": True}
+    except Exception as exc:
+        _set_job_stage(stage="failed", detail=str(exc))
+        _set_job_error(error=exc)
+        raise
+    finally:
+        try:
+            job = get_current_job()
+            if job is not None:
+                r = get_redis()
+                meta = dict(job.meta or {})
+                if kwargs.get("module_id"):
+                    release_job_lock(r, f"content:import:{kwargs['module_id']}", job.id)
+                for suffix, value in {"object_key": kwargs.get("s3_object_key"),
+                                      "title": meta.get("import_title_norm"),
+                                      "fingerprint": meta.get("import_fingerprint")}.items():
+                    if value:
+                        release_job_lock(r, f"admin:import_enqueued_by_{suffix}:{value}", job.id)
+        except Exception:
+            log.debug("Could not release completed import lease", exc_info=True)

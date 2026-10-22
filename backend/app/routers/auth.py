@@ -2,16 +2,16 @@ import uuid
 import hashlib
 import json
 import ipaddress
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 import re
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
-from jose import jwt
 from passlib.context import CryptContext
+from jose import jwt, JWTError
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -19,7 +19,8 @@ from app.core.client_ip import client_ip_from_request
 from app.core.rate_limit import rate_limit
 from app.core.security_audit_log import audit_log
 from app.core.security import get_current_user
-from app.core.redis_client import get_redis
+from app.core.tokens import create_access_token, password_version
+from app.services import auth_sessions
 from app.db.session import get_db
 from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User, UserRole
@@ -123,11 +124,18 @@ def _normalize_phone(phone: str | None) -> str | None:
 
 
 def _hash_password(password: str) -> str:
+    if len(password.encode("utf-8")) > 72:
+        raise HTTPException(422, "Пароль должен занимать не более 72 байт UTF-8")
     return pwd_context.hash(password)
 
 
 def _verify_password(password: str, password_hash: str) -> bool:
-    return pwd_context.verify(password, password_hash)
+    if len(password.encode("utf-8")) > 72:
+        return False
+    try:
+        return pwd_context.verify(password, password_hash)
+    except (ValueError, TypeError):
+        return False
 
 
 def _reset_token_hash(token: str) -> str:
@@ -158,9 +166,9 @@ def reset_password_confirm(
         raise HTTPException(status_code=400, detail="passwords do not match")
 
     h = _reset_token_hash(token_raw)
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
-    prt = db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == h))
+    prt = db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == h).with_for_update())
     if prt is None:
         audit_log(db=db, request=request, event_type="auth_password_reset_failed", meta={"reason": "token_not_found"})
         db.commit()
@@ -173,7 +181,7 @@ def reset_password_confirm(
 
     try:
         exp = getattr(prt, "expires_at", None)
-        if exp is None or now >= exp:
+        if exp is None or now.timestamp() >= auth_sessions.timestamp(exp):
             audit_log(db=db, request=request, event_type="auth_password_reset_failed", actor_user_id=prt.user_id, target_user_id=prt.user_id, meta={"reason": "token_expired"})
             db.commit()
             raise HTTPException(status_code=400, detail="token expired")
@@ -182,7 +190,7 @@ def reset_password_confirm(
     except Exception:
         raise HTTPException(status_code=400, detail="invalid token")
 
-    user = db.scalar(select(User).where(User.id == prt.user_id))
+    user = db.scalar(select(User).where(User.id == prt.user_id).with_for_update())
     if user is None:
         audit_log(db=db, request=request, event_type="auth_password_reset_failed", meta={"reason": "user_missing"})
         db.commit()
@@ -193,8 +201,7 @@ def reset_password_confirm(
     user.password_changed_at = now
     db.add(user)
 
-    prt.used_at = now
-    db.add(prt)
+    db.execute(update(PasswordResetToken).where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None)).values(used_at=now))
 
     audit_log(
         db=db,
@@ -206,287 +213,13 @@ def reset_password_confirm(
     )
     db.commit()
 
+    # Password-version checks already invalidate all old JWTs and refreshes,
+    # even if Redis is temporarily unavailable during this best-effort cleanup.
+    try:
+        auth_sessions.revoke_sessions(str(user.id), keep_password_version=password_version(user))
+    except HTTPException:
+        log.warning("Password reset session cleanup deferred")
     return {"ok": True}
-
-
-def _create_access_token(*, user_id: str, role: str) -> str:
-    now = datetime.utcnow()
-    expire = now + timedelta(minutes=settings.jwt_access_token_minutes)
-    payload = {
-        "sub": user_id,
-        "role": role,
-        "iat": now,
-        "exp": expire,
-        "iss": str(getattr(settings, "jwt_issuer", "corelms")),
-        "jti": str(uuid.uuid4()),
-    }
-    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
-
-
-def _now() -> datetime:
-    return datetime.utcnow()
-
-
-def _refresh_token_hash(token: str) -> str:
-    return hashlib.sha256(str(token or "").encode("utf-8", errors="ignore")).hexdigest()
-
-
-def _user_sessions_key(user_id: str) -> str:
-    return f"auth:user_sessions:{str(user_id)}"
-
-
-def _user_device_session_key(*, user_id: str, device_hash: str) -> str:
-    return f"auth:user_device_session:{str(user_id)}:{str(device_hash)}"
-
-
-def _session_id_from_hash(h: str) -> str:
-    v = str(h or "").strip()
-    if not v:
-        return ""
-    return v[:12]
-
-
-def _session_limits() -> tuple[int, int, int]:
-    # Returns: refresh_ttl_seconds, idle_ttl_seconds, absolute_ttl_seconds
-    refresh_days = int(getattr(settings, "session_refresh_token_days", 30) or 30)
-    idle_hours = int(getattr(settings, "session_idle_timeout_hours", 12) or 12)
-    abs_days = int(getattr(settings, "session_absolute_timeout_days", 30) or 30)
-    refresh_ttl = max(60 * 60, refresh_days * 24 * 60 * 60)
-    idle_ttl = max(5 * 60, idle_hours * 60 * 60)
-    abs_ttl = max(60 * 60, abs_days * 24 * 60 * 60)
-    return refresh_ttl, idle_ttl, abs_ttl
-
-
-def _issue_refresh_session(*, user: User, request: Request) -> tuple[str, int]:
-    token = "rt_" + str(uuid.uuid4()) + "_" + str(uuid.uuid4())
-    h = _refresh_token_hash(token)
-    refresh_ttl, idle_ttl, abs_ttl = _session_limits()
-    now = _now()
-    ip = _client_ip_from_request(request)
-    ip_fp = _ip_fingerprint(ip)
-    ua = str(request.headers.get("user-agent") or "")[:400]
-    dh = _device_hash(user_agent=ua, pepper=str(getattr(settings, "jwt_secret_key", "") or ""))
-    payload = {
-        "sid": str(uuid.uuid4()),
-        "user_id": str(user.id),
-        "created_at": now.isoformat(),
-        "last_used_at": now.isoformat(),
-        "expires_at": (now + timedelta(seconds=abs_ttl)).isoformat(),
-        "idle_ttl_seconds": int(idle_ttl),
-        "ip": ip,
-        "ip_fp": ip_fp,
-        "user_agent": ua,
-        "device_hash": dh,
-    }
-    r = get_redis()
-    r.setex(f"auth:refresh:{h}", int(refresh_ttl), json.dumps(payload, ensure_ascii=False))
-    r.sadd(_user_sessions_key(str(user.id)), h)
-    r.expire(_user_sessions_key(str(user.id)), int(refresh_ttl))
-    if dh:
-        r.setex(_user_device_session_key(user_id=str(user.id), device_hash=dh), int(refresh_ttl), str(h))
-    return token, refresh_ttl
-
-
-def _rotate_refresh_session_by_hash(*, refresh_hash: str, request: Request) -> tuple[str, str, int, dict, str, str] | None:
-    h = str(refresh_hash or "").strip()
-    if not h:
-        return None
-    r = get_redis()
-    raw = r.get(f"auth:refresh:{h}")
-    if not raw:
-        # Grace window: another request may have already rotated this refresh token.
-        # This happens on fast reloads where multiple refresh calls race.
-        try:
-            rot = r.get(f"auth:refresh_rot:{h}")
-            if rot:
-                payload = json.loads(str(rot))
-                next_token = str(payload.get("token") or "").strip()
-                next_h = str(payload.get("hash") or "").strip()
-                if next_token and next_h:
-                    raw2 = r.get(f"auth:refresh:{next_h}")
-                    if raw2:
-                        sess2 = json.loads(str(raw2))
-                        if isinstance(sess2, dict):
-                            uid2 = str(sess2.get("user_id") or "").strip()
-                            ttl2 = r.ttl(f"auth:refresh:{next_h}")
-                            try:
-                                refresh_ttl2 = int(ttl2) if ttl2 and int(ttl2) > 0 else int(_session_limits()[0])
-                            except Exception:
-                                refresh_ttl2 = int(_session_limits()[0])
-                            return next_token, uid2, refresh_ttl2, sess2, h, next_h
-        except Exception:
-            log.debug("auth refresh grace lookup failed")
-        return None
-    try:
-        sess = json.loads(str(raw))
-        if not isinstance(sess, dict):
-            return None
-    except Exception:
-        return None
-
-    now = _now()
-    try:
-        last_used = datetime.fromisoformat(str(sess.get("last_used_at") or ""))
-    except Exception:
-        last_used = now
-    try:
-        expires_at = datetime.fromisoformat(str(sess.get("expires_at") or ""))
-    except Exception:
-        expires_at = now
-
-    idle_ttl = int(sess.get("idle_ttl_seconds") or 0)
-    if idle_ttl <= 0:
-        _, idle_ttl, _ = _session_limits()
-
-    if now >= expires_at:
-        r.delete(f"auth:refresh:{h}")
-        return None
-    if (now - last_used).total_seconds() > float(idle_ttl):
-        r.delete(f"auth:refresh:{h}")
-        return None
-
-    new_token = "rt_" + str(uuid.uuid4()) + "_" + str(uuid.uuid4())
-    new_h = _refresh_token_hash(new_token)
-    refresh_ttl, _, _ = _session_limits()
-    ip = _client_ip_from_request(request)
-    ip_fp = _ip_fingerprint(ip)
-    ua = str(request.headers.get("user-agent") or "")[:400]
-
-    sess["last_used_at"] = now.isoformat()
-    sess["ip"] = ip
-    sess["ip_fp"] = ip_fp
-    sess["user_agent"] = ua
-    if not str(sess.get("device_hash") or "").strip():
-        sess["device_hash"] = _device_hash(user_agent=ua, pepper=str(getattr(settings, "jwt_secret_key", "") or ""))
-    if not str(sess.get("sid") or "").strip():
-        sess["sid"] = str(uuid.uuid4())
-
-    r.setex(f"auth:refresh:{new_h}", int(refresh_ttl), json.dumps(sess, ensure_ascii=False))
-    try:
-        # Grace window mapping for concurrent refresh attempts with the same old token.
-        r.setex(
-            f"auth:refresh_rot:{h}",
-            10,
-            json.dumps({"token": new_token, "hash": new_h}, ensure_ascii=False),
-        )
-    except Exception:
-        log.debug("auth refresh rotation grace set failed", exc_info=True)
-    r.delete(f"auth:refresh:{h}")
-
-    uid = str(sess.get("user_id") or "").strip()
-    if uid:
-        key = _user_sessions_key(uid)
-        r.srem(key, h)
-        r.sadd(key, new_h)
-        r.expire(key, int(refresh_ttl))
-        dh = str(sess.get("device_hash") or "").strip()
-        if dh:
-            r.setex(_user_device_session_key(user_id=uid, device_hash=dh), int(refresh_ttl), str(new_h))
-
-    return new_token, uid, refresh_ttl, sess, h, new_h
-
-
-def _rotate_refresh_session(*, refresh_token: str, request: Request) -> tuple[str, str, int, dict, str, str] | None:
-    tok = str(refresh_token or "").strip()
-    if not tok:
-        return None
-    h = _refresh_token_hash(tok)
-    r = get_redis()
-    raw = r.get(f"auth:refresh:{h}")
-    if not raw:
-        # Grace window: another request may have already rotated this refresh token.
-        try:
-            rot = r.get(f"auth:refresh_rot:{h}")
-            if rot:
-                payload = json.loads(str(rot))
-                next_token = str(payload.get("token") or "").strip()
-                next_h = str(payload.get("hash") or "").strip()
-                if next_token and next_h:
-                    raw2 = r.get(f"auth:refresh:{next_h}")
-                    if raw2:
-                        sess2 = json.loads(str(raw2))
-                        if isinstance(sess2, dict):
-                            uid2 = str(sess2.get("user_id") or "").strip()
-                            ttl2 = r.ttl(f"auth:refresh:{next_h}")
-                            try:
-                                refresh_ttl2 = int(ttl2) if ttl2 and int(ttl2) > 0 else int(_session_limits()[0])
-                            except Exception:
-                                refresh_ttl2 = int(_session_limits()[0])
-                            return next_token, uid2, refresh_ttl2, sess2, h, next_h
-        except Exception:
-            log.debug("auth refresh grace lookup failed")
-        return None
-    try:
-        sess = json.loads(str(raw))
-        if not isinstance(sess, dict):
-            return None
-    except Exception:
-        return None
-
-    now = _now()
-    try:
-        created_at = datetime.fromisoformat(str(sess.get("created_at") or ""))
-    except Exception:
-        created_at = now
-    try:
-        last_used = datetime.fromisoformat(str(sess.get("last_used_at") or ""))
-    except Exception:
-        last_used = created_at
-    try:
-        expires_at = datetime.fromisoformat(str(sess.get("expires_at") or ""))
-    except Exception:
-        expires_at = now
-
-    idle_ttl = int(sess.get("idle_ttl_seconds") or 0)
-    if idle_ttl <= 0:
-        _, idle_ttl, _ = _session_limits()
-
-    # Enforce absolute + idle expiration.
-    if now >= expires_at:
-        r.delete(f"auth:refresh:{h}")
-        return None
-    if (now - last_used).total_seconds() > float(idle_ttl):
-        r.delete(f"auth:refresh:{h}")
-        return None
-
-    # Rotate token.
-    new_token = "rt_" + str(uuid.uuid4()) + "_" + str(uuid.uuid4())
-    new_h = _refresh_token_hash(new_token)
-    refresh_ttl, _, _ = _session_limits()
-    ip = _client_ip_from_request(request)
-    ip_fp = _ip_fingerprint(ip)
-    ua = str(request.headers.get("user-agent") or "")[:400]
-    sess["last_used_at"] = now.isoformat()
-    sess["ip"] = ip
-    sess["ip_fp"] = ip_fp
-    sess["user_agent"] = ua
-    if not str(sess.get("sid") or "").strip():
-        sess["sid"] = str(uuid.uuid4())
-    if not str(sess.get("device_hash") or "").strip():
-        sess["device_hash"] = _device_hash(user_agent=ua, pepper=str(getattr(settings, "jwt_secret_key", "") or ""))
-    r.setex(f"auth:refresh:{new_h}", int(refresh_ttl), json.dumps(sess, ensure_ascii=False))
-    # Grace window mapping for concurrent refresh attempts with the same old token.
-    try:
-        r.setex(
-            f"auth:refresh_rot:{h}",
-            10,
-            json.dumps({"token": new_token, "hash": new_h}, ensure_ascii=False),
-        )
-    except Exception:
-        log.debug("auth refresh rotation grace set failed", exc_info=True)
-    r.delete(f"auth:refresh:{h}")
-
-    uid = str(sess.get("user_id") or "").strip()
-    if uid:
-        key = _user_sessions_key(uid)
-        r.srem(key, h)
-        r.sadd(key, new_h)
-        r.expire(key, int(refresh_ttl))
-        dh = str(sess.get("device_hash") or "").strip()
-        if dh:
-            r.setex(_user_device_session_key(user_id=uid, device_hash=dh), int(refresh_ttl), str(new_h))
-
-    return new_token, uid, refresh_ttl, sess, h, new_h
 
 
 def _public_role(role: UserRole) -> str:
@@ -611,6 +344,7 @@ def register(
         streak=0,
         password_hash=_hash_password(payload.password),
     )
+    verified_version = password_version(user)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -618,16 +352,9 @@ def register(
     audit_log(db=db, request=request, event_type="auth_register_success", actor_user_id=user.id, target_user_id=user.id)
     db.commit()
 
-    expires_in = None
-    try:
-        expires_in = int(settings.jwt_access_token_minutes) * 60
-    except Exception:
-        expires_in = None
-
-    return TokenResponse(
-        access_token=_create_access_token(user_id=str(user.id), role=_public_role(user.role)),
-        expires_in=expires_in,
-    )
+    refresh_token, refresh_ttl, sid = auth_sessions.issue_session(user, request, authenticated_password_version=verified_version)
+    return TokenResponse(access_token=create_access_token(user, sid, authenticated_password_version=verified_version), refresh_token=refresh_token,
+                         expires_in=settings.jwt_access_token_minutes * 60, refresh_expires_in=refresh_ttl)
 
 
 @router.post("/token", response_model=TokenResponse)
@@ -658,6 +385,9 @@ def token(
         db.commit()
         raise HTTPException(status_code=401, detail="invalid credentials")
 
+    # Capture exactly the password that was verified, before commit expires the
+    # ORM object. A simultaneous admin reset must not authenticate the old password.
+    verified_version = password_version(user)
     ip = _client_ip_from_request(request)
     ip_fp = _ip_fingerprint(ip)
     ua = str(request.headers.get("user-agent") or "").strip()
@@ -692,32 +422,10 @@ def token(
 
     db.commit()
 
-    refresh_token = ""
-    refresh_ttl = 0
-    try:
-        r = get_redis()
-        existing_h = str(r.get(_user_device_session_key(user_id=str(user.id), device_hash=dh)) or "").strip()
-        rotated = _rotate_refresh_session_by_hash(refresh_hash=existing_h, request=request) if existing_h else None
-        if rotated is not None:
-            refresh_token, _uid, refresh_ttl, _sess, _old_h, _new_h = rotated
-        else:
-            refresh_token, refresh_ttl = _issue_refresh_session(user=user, request=request)
-    except Exception:
-        log.warning("auth token: refresh session rotate failed; issuing a new session")
-        refresh_token, refresh_ttl = _issue_refresh_session(user=user, request=request)
-
-    expires_in = None
-    try:
-        expires_in = int(settings.jwt_access_token_minutes) * 60
-    except Exception:
-        expires_in = None
-
-    return TokenResponse(
-        access_token=_create_access_token(user_id=str(user.id), role=_public_role(user.role)),
-        refresh_token=refresh_token,
-        expires_in=expires_in,
-        refresh_expires_in=int(refresh_ttl),
-    )
+    # Every explicit login is independent, even on two identical browsers.
+    refresh_token, refresh_ttl, sid = auth_sessions.issue_session(user, request, authenticated_password_version=verified_version)
+    return TokenResponse(access_token=create_access_token(user, sid, authenticated_password_version=verified_version), refresh_token=refresh_token,
+                         expires_in=settings.jwt_access_token_minutes * 60, refresh_expires_in=refresh_ttl)
 
 
 @router.get("/me", response_model=MeResponse)
@@ -747,25 +455,25 @@ def refresh_token(
     if not token:
         raise HTTPException(status_code=401, detail="not authenticated")
 
-    rotated = _rotate_refresh_session(refresh_token=token, request=request)
-    if rotated is None:
-        raise HTTPException(status_code=401, detail="invalid token")
-    new_refresh, user_id, refresh_ttl, _sess, _old_h, _new_h = rotated
+    session = auth_sessions.resolve_refresh(token)
+    if session is None:
+        raise HTTPException(401, "invalid token")
     try:
-        uid = uuid.UUID(str(user_id))
-    except Exception:
-        raise HTTPException(status_code=401, detail="invalid token")
-    user = db.scalar(select(User).where(User.id == uid))
+        user = db.get(User, uuid.UUID(session["user_id"]))
+    except (ValueError, KeyError):
+        user = None
     if user is None:
-        raise HTTPException(status_code=401, detail="invalid token")
-
-    expires_in = None
-    try:
-        expires_in = int(settings.jwt_access_token_minutes) * 60
-    except Exception:
-        expires_in = None
-
-    token_out = _create_access_token(user_id=str(user.id), role=_public_role(user.role))
+        raise HTTPException(401, "invalid token")
+    rotated = auth_sessions.rotate_session(token, user, request)
+    if rotated is None:
+        # The same device may have just changed its password in another tab.
+        # Re-read SQL once; never recreate a revoked SID or accept an old password.
+        user = db.scalar(select(User).where(User.id == user.id).execution_options(populate_existing=True))
+        rotated = auth_sessions.rotate_session(token, user, request) if user else None
+    if rotated is None:
+        raise HTTPException(401, "invalid token")
+    new_refresh, refresh_ttl, sid = rotated
+    token_out = create_access_token(user, sid)
     audit_log(
         db=db,
         request=request,
@@ -782,7 +490,7 @@ def refresh_token(
     return TokenResponse(
         access_token=token_out,
         refresh_token=new_refresh,
-        expires_in=expires_in,
+        expires_in=settings.jwt_access_token_minutes * 60,
         refresh_expires_in=int(refresh_ttl),
     )
 
@@ -797,28 +505,25 @@ def logout(
     token = ""
     if auth.lower().startswith("bearer "):
         token = auth.split(" ", 1)[1].strip()
-    if token:
-        try:
-            h = _refresh_token_hash(token)
-            r = get_redis()
-            raw = r.get(f"auth:refresh:{h}")
-            r.delete(f"auth:refresh:{h}")
-            uid = None
+    session = auth_sessions.resolve_refresh(token) if token else None
+    if session is None:
+        # If a refresh response rotated a cookie that this tab never received,
+        # the signed access cookie still identifies the stable session to revoke.
+        access = request.cookies.get("core_token") or (token if not token.startswith("rt_") else "")
+        if access:
             try:
-                sess = json.loads(str(raw)) if raw else None
-                if isinstance(sess, dict):
-                    uid = sess.get("user_id")
-            except Exception:
-                uid = None
-            if uid:
-                try:
-                    r.srem(_user_sessions_key(str(uid)), h)
-                except Exception:
-                    log.debug("auth logout: failed to update user session set")
-                audit_log(db=db, request=request, event_type="auth_logout", actor_user_id=uuid.UUID(str(uid)), target_user_id=uuid.UUID(str(uid)))
-                db.commit()
-        except Exception:
-            log.warning("auth logout: failed to revoke refresh session")
+                payload = jwt.decode(access, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm],
+                                     issuer=settings.jwt_issuer, options={"verify_exp": False})
+                user = db.get(User, uuid.UUID(payload["sub"]))
+                candidate = auth_sessions.get_session(str(payload.get("sid") or ""))
+                if user and candidate and candidate["user_id"] == str(user.id) and candidate.get("password_version") == payload.get("pv") == password_version(user):
+                    session = candidate
+            except (JWTError, KeyError, ValueError, TypeError):
+                pass
+    if session:
+        auth_sessions.revoke_sessions(session["user_id"], only_sid=session["sid"])
+        audit_log(db=db, request=request, event_type="auth_logout", actor_user_id=uuid.UUID(session["user_id"]))
+        db.commit()
     return {"ok": True}
 
 
@@ -828,197 +533,42 @@ def list_sessions(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    r = get_redis()
-    key = _user_sessions_key(str(user.id))
-    hashes = [str(x) for x in (r.smembers(key) or set())]
-    items: list[SessionItem] = []
-
-    current_h = ""
-    current_sid = ""
-    try:
-        # Frontend stores refresh token in httpOnly cookie. Authorization typically holds the access token.
-        tok = str(request.cookies.get("core_refresh") or "").strip()
-        if not tok:
-            auth = str(request.headers.get("authorization") or "")
-            if auth.lower().startswith("bearer "):
-                tok = auth.split(" ", 1)[1].strip()
-        if tok:
-            current_h = _refresh_token_hash(tok)
-            raw0 = r.get(f"auth:refresh:{current_h}")
-            if raw0:
-                try:
-                    sess0 = json.loads(str(raw0))
-                    if isinstance(sess0, dict):
-                        current_sid = str(sess0.get("sid") or "").strip()
-                except Exception:
-                    current_sid = ""
-    except Exception:
-        current_h = ""
-        current_sid = ""
-
-    alive_hashes: list[str] = []
-    for h in hashes:
-        raw = r.get(f"auth:refresh:{h}")
-        if not raw:
-            continue
-        try:
-            sess = json.loads(str(raw))
-        except Exception:
-            continue
-        if not isinstance(sess, dict):
-            continue
-        if str(sess.get("user_id") or "") != str(user.id):
-            continue
-        alive_hashes.append(h)
-        sid = str(sess.get("sid") or "").strip()
-        items.append(
-            SessionItem(
-                session_id=(sid or _session_id_from_hash(h)),
-                created_at=str(sess.get("created_at") or "") or None,
-                last_used_at=str(sess.get("last_used_at") or "") or None,
-                expires_at=str(sess.get("expires_at") or "") or None,
-                ip=str(sess.get("ip") or "") or None,
-                ip_fp=str(sess.get("ip_fp") or "") or None,
-                user_agent=str(sess.get("user_agent") or "") or None,
-                current=bool((current_sid and sid and sid == current_sid) or (not current_sid and current_h and h == current_h)),
-            )
-        )
-
-    if len(alive_hashes) != len(hashes):
-        try:
-            stale = [h for h in hashes if h not in set(alive_hashes)]
-            if stale:
-                r.srem(key, *stale)
-        except Exception:
-            log.debug("auth sessions: failed to prune stale session hashes")
-
-    items.sort(key=lambda x: str(x.last_used_at or ""), reverse=True)
-    return {"items": items}
+    current_sid = getattr(request.state, "session_id", None)
+    return {"items": [SessionItem(session_id=session["sid"], created_at=session.get("created_at"),
+        last_used_at=session.get("last_used_at"), expires_at=session.get("expires_at"),
+        ip=session.get("ip"), user_agent=session.get("user_agent"), current=session["sid"] == current_sid)
+        for session in auth_sessions.list_sessions(str(user.id)) if auth_sessions.session_matches_password(session, user)]}
 
 
 class RevokeSessionRequest(BaseModel):
-    session_id: str
+    session_id: uuid.UUID
 
 
 @router.post("/sessions/revoke")
-def revoke_session(
-    request: Request,
-    body: RevokeSessionRequest,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    sid = str(body.session_id or "").strip()
-    if not sid:
-        raise HTTPException(status_code=400, detail="invalid session_id")
-    r = get_redis()
-    key = _user_sessions_key(str(user.id))
-    hashes = [str(x) for x in (r.smembers(key) or set())]
-    target: str | None = None
-    for h in hashes:
-        raw = r.get(f"auth:refresh:{h}")
-        if raw:
-            try:
-                sess = json.loads(str(raw))
-                if isinstance(sess, dict) and str(sess.get("sid") or "").strip() == sid:
-                    target = h
-                    break
-            except Exception:
-                pass
-        if _session_id_from_hash(h) == sid:
-            target = h
-            break
-    if not target:
-        return {"ok": True}
-    try:
-        raw = r.get(f"auth:refresh:{target}")
-        sess = json.loads(str(raw)) if raw else None
-        if isinstance(sess, dict):
-            dh = str(sess.get("device_hash") or "").strip()
-            if dh:
-                dk = _user_device_session_key(user_id=str(user.id), device_hash=dh)
-                if str(r.get(dk) or "").strip() == str(target):
-                    r.delete(dk)
-    except Exception:
-        pass
-    r.delete(f"auth:refresh:{target}")
-    r.srem(key, target)
-    audit_log(db=db, request=request, event_type="auth_session_revoked", actor_user_id=user.id, target_user_id=user.id, meta={"session_id": sid})
+def revoke_session(request: Request, body: RevokeSessionRequest, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    count = auth_sessions.revoke_sessions(str(user.id), only_sid=str(body.session_id))
+    audit_log(db=db, request=request, event_type="auth_session_revoked", actor_user_id=user.id,
+              meta={"session_id": str(body.session_id), "count": count})
     db.commit()
     return {"ok": True}
 
 
 @router.post("/sessions/revoke-all")
-def revoke_all_sessions(
-    request: Request,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    r = get_redis()
-    key = _user_sessions_key(str(user.id))
-    hashes = [str(x) for x in (r.smembers(key) or set())]
-    revoked: list[str] = []
-    for h in hashes:
-        r.delete(f"auth:refresh:{h}")
-        revoked.append(h)
-    if revoked:
-        try:
-            r.srem(key, *revoked)
-        except Exception:
-            pass
-    try:
-        # Best-effort cleanup of device mappings.
-        pattern = f"auth:user_device_session:{str(user.id)}:*"
-        keys = [k for k in r.scan_iter(match=pattern)]
-        if keys:
-            r.delete(*keys)
-    except Exception:
-        pass
-    audit_log(db=db, request=request, event_type="auth_session_revoked_all", actor_user_id=user.id, target_user_id=user.id, meta={"count": len(revoked)})
+def revoke_all_sessions(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    count = auth_sessions.revoke_sessions(str(user.id))
+    audit_log(db=db, request=request, event_type="auth_session_revoked_all", actor_user_id=user.id, meta={"count": count})
     db.commit()
     return {"ok": True}
 
 
 @router.post("/sessions/revoke-others")
-def revoke_other_sessions(
-    request: Request,
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
-    r = get_redis()
-    key = _user_sessions_key(str(user.id))
-    hashes = [str(x) for x in (r.smembers(key) or set())]
-
-    current_h = ""
-    try:
-        tok = str(request.cookies.get("core_refresh") or "").strip()
-        if not tok:
-            auth = str(request.headers.get("authorization") or "")
-            if auth.lower().startswith("bearer "):
-                tok = auth.split(" ", 1)[1].strip()
-        if tok:
-            current_h = _refresh_token_hash(tok)
-    except Exception:
-        current_h = ""
-
-    revoked: list[str] = []
-    for h in hashes:
-        if current_h and h == current_h:
-            continue
-        r.delete(f"auth:refresh:{h}")
-        revoked.append(h)
-    if revoked:
-        try:
-            r.srem(key, *revoked)
-        except Exception:
-            pass
-    audit_log(
-        db=db,
-        request=request,
-        event_type="auth_session_revoked_others",
-        actor_user_id=user.id,
-        target_user_id=user.id,
-        meta={"count": len(revoked)},
-    )
+def revoke_other_sessions(request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    sid = getattr(request.state, "session_id", None)
+    if not sid:
+        raise HTTPException(409, "Обновите страницу, чтобы определить текущую сессию")
+    count = auth_sessions.revoke_sessions(str(user.id), keep_sid=sid)
+    audit_log(db=db, request=request, event_type="auth_session_revoked_others", actor_user_id=user.id, meta={"count": count})
     db.commit()
     return {"ok": True}
 
@@ -1031,13 +581,19 @@ def change_password(
     user: User = Depends(get_current_user),
     _: object = rate_limit(key_prefix="auth_change_password", limit=10, window_seconds=60),
 ):
+    user = db.scalar(select(User).where(User.id == user.id).with_for_update().execution_options(populate_existing=True))
     if not body.current_password or not _verify_password(body.current_password, user.password_hash):
         audit_log(db=db, request=request, event_type="auth_change_password_failed", actor_user_id=user.id, target_user_id=user.id)
         db.commit()
-        raise HTTPException(status_code=401, detail="invalid credentials")
+        raise HTTPException(status_code=400, detail="Текущий пароль неверен")
 
     if not body.new_password or len(body.new_password) < int(settings.password_min_length or 0):
         raise HTTPException(status_code=400, detail="password too short")
+
+    if body.confirm_password is not None and body.confirm_password != body.new_password:
+        raise HTTPException(422, "Пароли не совпадают")
+    if _verify_password(body.new_password, user.password_hash):
+        raise HTTPException(422, "Новый пароль должен отличаться от текущего")
 
     # Product rule: when admin issued a temporary password, enforce extra confirmation + phone collection.
     if bool(getattr(user, "must_change_password", False)):
@@ -1056,53 +612,18 @@ def change_password(
 
     user.password_hash = _hash_password(body.new_password)
     user.must_change_password = False
-    user.password_changed_at = datetime.utcnow()
+    user.password_changed_at = datetime.now(timezone.utc)
+    changed_version = password_version(user)
     db.add(user)
     audit_log(db=db, request=request, event_type="auth_change_password_success", actor_user_id=user.id, target_user_id=user.id)
     db.commit()
 
-    # Security hardening: after password change, revoke all other device sessions.
-    # Keep current session alive to avoid forcing immediate re-login on the same device.
     try:
-        r = get_redis()
-        key = _user_sessions_key(str(user.id))
-        hashes = [str(x) for x in (r.smembers(key) or set())]
-
-        current_h = ""
-        try:
-            tok = str(request.cookies.get("core_refresh") or "").strip()
-            if not tok:
-                auth = str(request.headers.get("authorization") or "")
-                if auth.lower().startswith("bearer "):
-                    tok = auth.split(" ", 1)[1].strip()
-            if tok:
-                current_h = _refresh_token_hash(tok)
-        except Exception:
-            current_h = ""
-
-        revoked: list[str] = []
-        for h in hashes:
-            if current_h and h == current_h:
-                continue
-            r.delete(f"auth:refresh:{h}")
-            revoked.append(h)
-        if revoked:
-            try:
-                r.srem(key, *revoked)
-            except Exception:
-                pass
-            try:
-                audit_log(
-                    db=db,
-                    request=request,
-                    event_type="auth_session_revoked_others",
-                    actor_user_id=user.id,
-                    target_user_id=user.id,
-                    meta={"count": len(revoked), "reason": "password_change"},
-                )
-                db.commit()
-            except Exception:
-                pass
-    except Exception:
-        pass
+        auth_sessions.revoke_sessions(str(user.id), keep_sid=getattr(request.state, "session_id", None),
+                                      new_password_version=changed_version, keep_password_version=changed_version)
+    except HTTPException:
+        # The password was saved; do not report failure or recreate a lost SID.
+        # Old credentials are rejected by their password version on every request.
+        log.warning("Password changed; current session could not be preserved")
+        return {"ok": True, "reauthenticate": True}
     return {"ok": True}

@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import ipaddress
 import hmac
 import uuid
@@ -22,7 +24,7 @@ from app.core.client_ip import client_ip_from_request
 from app.core.redis_client import get_redis
 from app.core.queue import get_queue
 from app.services.storage_cleanup_jobs import cleanup_admin_multipart_uploads_job, cleanup_admin_uploads_job
-from app.routers import admin, assets, auth, events, health, linear, me, modules, progress, quickstart, quizzes, sales_files, sales_links, submodules
+from app.routers import admin, content, assets, auth, events, health, linear, me, modules, progress, quickstart, quizzes, sales_files, sales_links, submodules
 from app.db.session import SessionLocal
 from app.models.user import User, UserRole
 from passlib.context import CryptContext
@@ -82,9 +84,7 @@ def create_app() -> FastAPI:
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 origin = (request.headers.get("origin") or "").strip()
                 if origin and origin not in allow_origins:
-                    from fastapi import HTTPException
-
-                    raise HTTPException(status_code=403, detail="invalid origin")
+                    return JSONResponse(status_code=403, content={"ok": False, "error_code": "invalid_origin", "error_message": "Origin is not allowed", "request_id": rid})
             response = await call_next(request)
             status_code = int(getattr(response, "status_code", 0) or 0)
         except Exception:
@@ -118,6 +118,8 @@ def create_app() -> FastAPI:
             except Exception:
                 logger.debug("request log emit failed", exc_info=True)
         response.headers["X-Request-ID"] = rid
+        if request.url.path.startswith("/auth/"):
+            response.headers["Cache-Control"] = "private, no-store"
 
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
@@ -193,6 +195,7 @@ def create_app() -> FastAPI:
     app.include_router(sales_links.router)
     app.include_router(modules.router)
     app.include_router(admin.router)
+    app.include_router(content.router)
     app.include_router(progress.router)
     app.include_router(submodules.router)
     app.include_router(linear.router)
@@ -298,8 +301,26 @@ def create_app() -> FastAPI:
                 raise
 
         _bootstrap_admin_if_needed()
+        if settings.media_dispatcher_enabled:
+            async def media_dispatch_loop():
+                from app.services.media import dispatch_pending_media
+                while True:
+                    try:
+                        await asyncio.to_thread(dispatch_pending_media)
+                    except Exception:
+                        logger.exception("media outbox dispatch postponed")
+                    await asyncio.sleep(30)
+            app.state.media_dispatch_task = asyncio.create_task(media_dispatch_loop())
         if bool(getattr(settings, "enable_inprocess_scheduler", False)):
             _start_admin_uploads_cleanup_scheduler()
+
+    @app.on_event("shutdown")
+    async def _stop_media_dispatcher():
+        task = getattr(app.state, "media_dispatch_task", None)
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     return app
 

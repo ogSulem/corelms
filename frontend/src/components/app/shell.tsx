@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { Globe, Send, Youtube } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal";
 import { AppNav } from "@/components/app/nav";
 import { useAuth } from "@/lib/hooks/use-auth";
 
@@ -16,9 +17,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
+  const [loggingOut, setLoggingOut] = React.useState(false);
   const [globalUploadBusy, setGlobalUploadBusy] = React.useState(false);
 
   const [quickStartOpen, setQuickStartOpen] = React.useState(false);
+  const [quickStartVideoFailed, setQuickStartVideoFailed] = React.useState(false);
 
   const keepAliveInFlightRef = React.useRef(false);
   const lastKeepAliveAtRef = React.useRef(0);
@@ -153,7 +156,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   }, [loading, authenticated, user, pathname]);
 
   React.useEffect(() => {
-    const onOpen = () => setQuickStartOpen(true);
+    const onOpen = () => { setQuickStartVideoFailed(false); setQuickStartOpen(true); };
     window.addEventListener("corelms:open-quickstart", onOpen as EventListener);
     return () => window.removeEventListener("corelms:open-quickstart", onOpen as EventListener);
   }, []);
@@ -184,11 +187,23 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
   const quickStartAssetId = String(process.env.NEXT_PUBLIC_QUICKSTART_ASSET_ID || "").trim();
   const quickStartVideoUrlRaw = (process.env.NEXT_PUBLIC_QUICKSTART_VIDEO_URL || "").trim();
-  const quickStartVideoUrl = quickStartAssetId ? `/api/backend/assets/${encodeURIComponent(quickStartAssetId)}/stream` : quickStartVideoUrlRaw;
-  const isYouTube = !quickStartAssetId && /youtube\.com|youtu\.be/i.test(quickStartVideoUrl);
+  let quickStartVideoUrl = quickStartAssetId ? `/api/backend/assets/${encodeURIComponent(quickStartAssetId)}/stream` : quickStartVideoUrlRaw;
+  let isYouTube = false;
+  if (quickStartVideoUrl && !quickStartAssetId) {
+    try {
+      const url = new URL(quickStartVideoUrl, "https://lms.invalid");
+      if (!["http:", "https:"].includes(url.protocol)) quickStartVideoUrl = "";
+      const host = url.hostname.replace(/^www\./, "");
+      if (["youtube.com", "youtube-nocookie.com", "youtu.be"].includes(host)) {
+        const id = host === "youtu.be" ? url.pathname.slice(1) : url.searchParams.get("v") || url.pathname.split("/").pop() || "";
+        isYouTube = /^[a-zA-Z0-9_-]{11}$/.test(id);
+        quickStartVideoUrl = isYouTube ? `https://www.youtube-nocookie.com/embed/${id}` : "";
+      }
+    } catch { quickStartVideoUrl = ""; }
+  }
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="flex min-h-screen min-w-0 flex-col">
       {globalUploadBusy ? (
         <div className="fixed inset-0 z-40">
           <div className="absolute inset-0 bg-zinc-950/15 backdrop-blur-[1px]" />
@@ -205,70 +220,28 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           </div>
         </div>
       ) : null}
-      {quickStartOpen ? (
-        <div className="fixed inset-0 z-50">
-          <div className="absolute inset-0 bg-zinc-950/60 backdrop-blur-sm" onClick={closeQuickStart} />
-          <div className="absolute inset-0 flex items-center justify-center p-6">
-            <div className="w-full max-w-3xl overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-2xl shadow-zinc-950/30">
-              <div className="flex items-center justify-between gap-4 border-b border-zinc-200 px-6 py-4">
-                <div className="min-w-0">
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Быстрый старт</div>
-                  <div className="mt-1 text-xl font-black tracking-tight text-zinc-950">Как начать обучение</div>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-xl font-black uppercase tracking-widest text-[10px]"
-                  onClick={closeQuickStart}
-                >
-                  Пропустить
-                </Button>
-              </div>
+      <Modal open={quickStartOpen} title="Как начать обучение" onClose={closeQuickStart} className="max-w-3xl" footer={<div className="flex flex-wrap justify-end gap-3"><Button variant="outline" asChild><Link href="/faq" onClick={closeQuickStart}>Открыть справку</Link></Button><Button onClick={closeQuickStart}>Понятно</Button></div>}>
+        {quickStartVideoUrl && !quickStartVideoFailed && <div className="mb-6 overflow-hidden rounded-xl bg-zinc-950">{isYouTube ? <iframe className="block aspect-video w-full" src={quickStartVideoUrl} title="Видео: быстрый старт" allow="encrypted-media; picture-in-picture" allowFullScreen loading="lazy" referrerPolicy="strict-origin-when-cross-origin" /> : <video className="block aspect-video w-full" src={quickStartVideoUrl} controls preload="metadata" playsInline onError={() => setQuickStartVideoFailed(true)} />}</div>}
+        {quickStartVideoFailed && <p role="status" className="mb-5 text-sm leading-6 text-zinc-600">Видео сейчас недоступно. Начать обучение можно по инструкции ниже.</p>}
+        <p className="mb-5 text-sm leading-7 text-zinc-600">Все материалы и результаты собраны в одном месте. Начните с доступного модуля — система подскажет следующий шаг.</p>
+        <ol className="space-y-5 text-sm leading-7 text-zinc-600">
+          <li><strong className="text-zinc-900">1. Откройте обучение.</strong> На дашборде есть кнопка следующего шага. В разделе «Обучение» можно самостоятельно выбрать модуль.</li>
+          <li><strong className="text-zinc-900">2. Изучите материал.</strong> Прочитайте урок, откройте приложенные файлы и нажмите «Я изучил материал». Если предусмотрен тест, переходите к нему после изучения.</li>
+          <li><strong className="text-zinc-900">3. Продолжайте в удобном темпе.</strong> Прогресс сохраняется. Обновление файлов не отменяет полученный зачёт — о новых материалах появится отдельная отметка.</li>
+        </ol>
+      </Modal>
 
-              <div className="bg-zinc-950">
-                {quickStartVideoUrl ? (
-                  isYouTube ? (
-                    <iframe
-                      className="block aspect-video w-full"
-                      src={quickStartVideoUrl}
-                      title="Быстрый старт"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                      allowFullScreen
-                    />
-                  ) : (
-                    <video className="block aspect-video w-full" src={quickStartVideoUrl} controls autoPlay playsInline />
-                  )
-                ) : (
-                  <div className="flex aspect-video w-full items-center justify-center p-10 text-center">
-                    <div className="max-w-md text-sm font-bold text-white/80">
-                      Добавь видео в переменную окружения
-                      <div className="mt-2 text-xs font-mono text-white/70">NEXT_PUBLIC_QUICKSTART_VIDEO_URL</div>
-                      <div className="mt-2 text-xs font-mono text-white/70">NEXT_PUBLIC_QUICKSTART_ASSET_ID</div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="flex items-center justify-end gap-3 px-6 py-4">
-                <Button className="rounded-xl font-black uppercase tracking-widest text-[10px]" onClick={closeQuickStart}>
-                  Понятно
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
+      <a href="#main-content" className="sr-only z-50 rounded-lg bg-white p-3 text-sm focus:not-sr-only focus:fixed focus:left-4 focus:top-3">Перейти к содержимому</a>
       <header className="sticky top-0 z-20 border-b border-zinc-200/80 bg-white/80 backdrop-blur-xl shadow-sm shadow-zinc-950/5">
-        <div className="mx-auto grid max-w-7xl grid-cols-[auto_1fr_auto] items-center gap-4 px-6 py-4">
-          <div className="flex items-center justify-start gap-2">
+        <div className="mx-auto grid w-full max-w-[1440px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 sm:px-6 xl:grid-cols-[auto_minmax(0,1fr)_auto]">
+          <div className="flex min-w-0 items-center justify-start gap-2">
             <a
               href="https://t.me/KarkasTaygiTg"
               target="_blank"
               rel="noopener noreferrer"
               aria-label="Telegram"
               title="Telegram"
-              className="grid h-9 w-9 place-items-center rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
+              className="hidden h-9 w-9 shrink-0 place-items-center 2xl:grid rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
             >
               <Send className="h-4 w-4" />
             </a>
@@ -278,7 +251,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               rel="noopener noreferrer"
               aria-label="ВКонтакте"
               title="ВКонтакте"
-              className="grid h-9 w-9 place-items-center rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
+              className="hidden h-9 w-9 shrink-0 place-items-center 2xl:grid rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
             >
               <span className="text-[11px] font-black tracking-widest">VK</span>
             </a>
@@ -288,7 +261,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               rel="noopener noreferrer"
               aria-label="Сайт"
               title="Сайт"
-              className="grid h-9 w-9 place-items-center rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
+              className="hidden h-9 w-9 shrink-0 place-items-center 2xl:grid rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
             >
               <Globe className="h-4 w-4" />
             </a>
@@ -298,11 +271,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
               rel="noopener noreferrer"
               aria-label="YouTube"
               title="YouTube"
-              className="grid h-9 w-9 place-items-center rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
+              className="hidden h-9 w-9 shrink-0 place-items-center 2xl:grid rounded-xl border border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 transition-all active:scale-[0.98] hover:bg-white"
             >
               <Youtube className="h-4 w-4" />
             </a>
-            <Link href={homeHref} className="group flex items-center gap-2">
+            <Link href={homeHref} className="group flex min-w-0 items-center gap-1.5 whitespace-nowrap sm:gap-2">
               <svg
                 width="22"
                 height="22"
@@ -322,14 +295,14 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                   opacity="0.55"
                 />
               </svg>
-              <span className="text-[20px] font-black uppercase tracking-tight text-[#284e13]">КАРКАС</span>
-              <span className="text-[20px] font-black uppercase tracking-tight text-[#fe9900] transition-colors duration-200 group-hover:text-[#284e13]">
+              <span className="text-base font-black uppercase tracking-tight sm:text-[20px] text-[#284e13]">КАРКАС</span>
+              <span className="text-base font-black uppercase tracking-tight sm:text-[20px] text-[#fe9900] transition-colors duration-200 group-hover:text-[#284e13]">
                 ТАЙГИ
               </span>
             </Link>
           </div>
 
-          <div className="hidden sm:flex min-w-0 items-center justify-center">
+          <div className="hidden min-w-0 items-center justify-center xl:flex">
             {!loading && authenticated ? <AppNav role={user?.role} authenticated={authenticated} /> : null}
           </div>
 
@@ -355,12 +328,23 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                 variant="outline"
                 size="sm"
                 className="rounded-xl font-black uppercase tracking-widest text-[10px] border-zinc-200 bg-white/85 text-zinc-800 shadow-sm shadow-zinc-950/5 hover:bg-zinc-50 hover:text-zinc-950 transition-colors"
+                disabled={loggingOut}
                 onClick={async () => {
-                  await fetch("/api/auth/logout", { method: "POST" });
-                  window.location.href = "/login";
+                  if (!window.dispatchEvent(new Event("corelms:before-navigate", { cancelable: true }))) return;
+                  setLoggingOut(true);
+                  try {
+                    const response = await fetch("/api/auth/logout", { method: "POST", signal: AbortSignal.timeout(15000) });
+                    if (!response.ok) throw new Error("Не удалось выйти. Проверьте соединение и повторите действие.");
+                    const result = await response.json();
+                    if (result.session_revoked === false) window.alert("Выход на этом устройстве выполнен, но сервер не подтвердил завершение сеанса. При следующем входе проверьте активные сеансы в личном кабинете.");
+                    window.location.href = "/login";
+                  } catch (err) {
+                    window.dispatchEvent(new Event("corelms:navigation-canceled"));
+                    window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Не удалось выйти", description: err instanceof Error ? err.message : "Повторите действие после восстановления связи." } }));
+                  } finally { setLoggingOut(false); }
                 }}
               >
-                Выйти
+                {loggingOut ? "Выходим…" : "Выйти"}
               </Button>
             ) : (
               <Link href="/login">
@@ -370,41 +354,13 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           </div>
         </div>
 
-        <div className="mx-auto max-w-6xl px-6 pb-4 sm:hidden">
+        <div className="mx-auto w-full max-w-[1440px] min-w-0 px-4 pb-3 sm:px-6 xl:hidden">
           {!loading && authenticated ? <AppNav role={user?.role} authenticated={authenticated} /> : null}
         </div>
       </header>
-      <main className="flex-1 min-h-0 animate-in fade-in duration-700">{children}</main>
+      <main id="main-content" className="min-w-0 flex-1 min-h-0 animate-in fade-in duration-700">{children}</main>
 
-      <button
-        type="button"
-        aria-label="Частые вопросы"
-        title="Частые вопросы"
-        onClick={() => router.push("/faq")}
-        className={
-          "fixed bottom-6 right-6 z-30 grid h-14 w-14 place-items-center rounded-[18px] " +
-          "bg-[#fe9900]/15 border border-[#fe9900]/25 ring-4 ring-[#fe9900]/10 " +
-          "text-[#284e13] shadow-2xl shadow-zinc-950/15 transition-all active:scale-[0.98] hover:bg-[#fe9900]/20"
-        }
-      >
-        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M12 18h.01" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
-          <path
-            d="M9.25 9.5a2.75 2.75 0 1 1 4.2 2.33c-.84.56-1.45 1.15-1.45 2.17v.25"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10Z"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
+
 
       <footer className="border-t border-zinc-200/80 bg-white/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl flex-col gap-2 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">

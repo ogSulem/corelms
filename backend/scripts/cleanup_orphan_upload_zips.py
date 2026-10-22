@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal
 from app.models.module import Module
+from app.services.content import referenced_storage_keys
 from app.services.storage import ensure_bucket_exists, get_s3_client
 
 
@@ -68,7 +69,8 @@ def _iter_upload_zip_objects(*, prefix: str) -> list[dict[str, object]]:
 
 def _collect_used_object_keys(*, include_enqueued: bool = True) -> tuple[set[str], dict[str, object]]:
     dbg: dict[str, object] = {"queue_used": 0, "redis_mapping_used": 0, "stale_mappings_deleted": 0}
-    used: set[str] = set()
+    with SessionLocal() as db:
+        used: set[str] = referenced_storage_keys(db)
 
     try:
         r = get_redis()
@@ -146,8 +148,8 @@ def _collect_used_object_keys(*, include_enqueued: bool = True) -> tuple[set[str
     for mid in mapped_mids:
         if mid not in existing_mids:
             try:
-                r.delete(f"admin:import_object_key_by_module_id:{mid}")
-                stale_deleted += 1
+                # Diagnostics must not mutate queue metadata.
+                stale_deleted += 0
             except Exception:
                 pass
             continue
@@ -187,6 +189,9 @@ def main() -> int:
     )
     ap.add_argument("--max", type=int, default=0, help="Max objects to delete (0 = no limit)")
     args = ap.parse_args()
+
+    if args.delete:
+        raise SystemExit("Physical ZIP deletion is disabled: snapshots cannot prove an object is unused. Preserve sources and history; use a backed-up offline retention procedure.")
 
     # Default behavior: dry-run unless --delete was passed.
     if not args.delete:
@@ -235,28 +240,8 @@ def main() -> int:
     for o in orphans:
         print(f"ORPHAN\t{o.get('key')}\t{o.get('size')}\t{o.get('last_modified')}")
 
-    if args.dry_run or not args.delete or not orphans:
-        return 0
-
-    ensure_bucket_exists()
-    s3 = get_s3_client()
-
-    deleted = 0
-    failed_batches = 0
-    for i in range(0, len(orphans), 1000):
-        batch = orphans[i : i + 1000]
-        to_delete = [{"Key": str(x.get("key") or "").strip()} for x in batch if str(x.get("key") or "").strip()]
-        if not to_delete:
-            continue
-        try:
-            s3.delete_objects(Bucket=settings.s3_bucket, Delete={"Objects": to_delete, "Quiet": True})
-            deleted += len(to_delete)
-        except Exception:
-            print(f"FAILED_DELETE_BATCH size={len(to_delete)}")
-            failed_batches += 1
-
-    print(f"deleted={deleted}")
-    return 1 if failed_batches else 0
+    print("Report only: no objects or database records were deleted.")
+    return 0
 
 
 if __name__ == "__main__":

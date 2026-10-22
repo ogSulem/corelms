@@ -1,151 +1,66 @@
-import * as nextHeaders from "next/headers";
+import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { sharedRefresh } from "../_refresh_shared";
 import { clearAuthCookies, setAccessCookie, setRefreshCookie } from "../_cookies";
 
-const API_BASE_URL =
-  process.env.CORE_INTERNAL_API_BASE_URL ||
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  "http://backend:8000";
+const API_BASE_URL = process.env.CORE_INTERNAL_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "http://backend:8000";
 
-export async function GET(req: Request) {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const cookieStore = await (nextHeaders as any).cookies();
-  const token = cookieStore.get("core_token")?.value;
-  const refresh = cookieStore.get("core_refresh")?.value;
+export async function GET(request: Request) {
+  const jar = await cookies();
+  let access = jar.get("core_token")?.value || "";
+  const refresh = jar.get("core_refresh")?.value || "";
+  let rotation: Extract<Awaited<ReturnType<typeof sharedRefresh>>, { ok: true }> | null = null;
 
-  async function tryRefresh(): Promise<
-    | {
-        access: string;
-        nextRefresh?: string;
-        expiresIn?: number;
-        refreshExpiresIn?: number;
-      }
-    | null
-  > {
-    const rt = String(refresh || "").trim();
-    if (!rt) return null;
-    const r = await sharedRefresh({
-      apiBaseUrl: API_BASE_URL,
-      refreshToken: rt,
-      proxyHeaders: {
-        xRealIp: req.headers.get("x-real-ip"),
-        xForwardedFor: req.headers.get("x-forwarded-for"),
-        forwarded: req.headers.get("forwarded"),
-      },
-    });
-    if (!r.ok) return null;
-    const expiresIn = Number.isFinite(Number(r.expiresIn)) ? Number(r.expiresIn) : undefined;
-    const refreshExpiresIn = Number.isFinite(Number(r.refreshExpiresIn)) ? Number(r.refreshExpiresIn) : undefined;
-    return {
-      access: r.access,
-      nextRefresh: r.nextRefresh,
-      expiresIn,
-      refreshExpiresIn,
-    };
-  }
-
-  function setTokenCookies(out: NextResponse, args: { access: string; nextRefresh?: string; expiresIn?: number; refreshExpiresIn?: number }) {
-    setAccessCookie(out, args.access, { upstreamExpiresIn: typeof args.expiresIn === "number" ? args.expiresIn : null });
-    setRefreshCookie(out, String(args.nextRefresh || ""), {
-      refreshExpiresIn: typeof args.refreshExpiresIn === "number" ? args.refreshExpiresIn : null,
-    });
-  }
-
-  async function fetchMe(accessToken: string): Promise<Response | null> {
-    const at = String(accessToken || "").trim();
-    if (!at) return null;
+  const finish = (response: NextResponse) => {
+    // A refresh-only visit also needs the rotated cookies, not just the JSON user.
+    if (rotation) {
+      setAccessCookie(response, rotation.access, { upstreamExpiresIn: rotation.expiresIn ?? null });
+      if (rotation.nextRefresh) setRefreshCookie(response, rotation.nextRefresh, { refreshExpiresIn: rotation.refreshExpiresIn ?? null });
+    }
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
+  };
+  const unavailable = () => finish(NextResponse.json({ error: "Сервис авторизации временно недоступен" }, { status: 503 }));
+  const unauthenticated = () => {
+    const response = NextResponse.json({ authenticated: false });
+    clearAuthCookies(response);
+    response.headers.set("Cache-Control", "private, no-store");
+    return response;
+  };
+  const renew = async () => {
+    const result = await sharedRefresh({ apiBaseUrl: API_BASE_URL, refreshToken: refresh, proxyHeaders: {
+      xRealIp: request.headers.get("x-real-ip"), xForwardedFor: request.headers.get("x-forwarded-for"), forwarded: request.headers.get("forwarded"), userAgent: request.headers.get("user-agent"), origin: request.headers.get("origin"),
+    } });
+    if (result.ok) { rotation = result; access = result.access; return null; }
+    return result.status === 401 || result.status === 403 ? unauthenticated() : unavailable();
+  };
+  const fetchUser = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
     try {
-      const headers = new Headers({ Authorization: `Bearer ${at}` });
-      const xri = req.headers.get("x-real-ip");
-      const xff = req.headers.get("x-forwarded-for");
-      const fwd = req.headers.get("forwarded");
-      if (xri) headers.set("x-real-ip", xri);
-      if (xff) headers.set("x-forwarded-for", xff);
-      if (fwd) headers.set("forwarded", fwd);
-      return await fetch(`${API_BASE_URL}/auth/me`, {
-        cache: "no-store",
-        headers,
-      });
-    } catch {
-      return null;
-    }
-  }
-
-  let accessToken = String(token || "").trim();
-  if (!accessToken && refresh) {
-    const rotated = await tryRefresh();
-    if (rotated?.access) accessToken = rotated.access;
-  }
-
-  if (!accessToken) {
-    return NextResponse.json({ authenticated: false });
-  }
-
-  let res: Response;
-  try {
-    const r0 = await fetchMe(accessToken);
-    if (!r0) return NextResponse.json({ authenticated: false });
-    res = r0;
-  } catch {
-    return NextResponse.json({ authenticated: false });
-  }
-
-  if (!res.ok) {
-    // If access is expired, try refresh once (if cookie exists), then retry.
-    const rotated = await tryRefresh();
-    if (rotated?.access) {
-      const r1 = await fetchMe(rotated.access);
-      if (r1 && r1.ok) {
-        const user = (await r1.json()) as {
-          id: string;
-          name: string;
-          role: string;
-          position: string | null;
-          xp: number;
-          level: number;
-          streak: number;
-          must_change_password?: boolean;
-        };
-
-        const normalizedRole = user.role === "manager" ? "admin" : user.role === "employee" ? "user" : user.role;
-        const out = NextResponse.json({
-          authenticated: true,
-          user: {
-            ...user,
-            role: normalizedRole,
-            must_change_password: !!user.must_change_password,
-          },
-        });
-        setTokenCookies(out, rotated);
-        return out;
+      const headers = new Headers({ Authorization: `Bearer ${access}` });
+      for (const name of ["x-real-ip", "x-forwarded-for", "forwarded", "user-agent"]) {
+        const value = request.headers.get(name); if (value) headers.set(name, value);
       }
-    }
-
-    const out = NextResponse.json({ authenticated: false });
-    clearAuthCookies(out);
-    return out;
-  }
-
-  const user = (await res.json()) as {
-    id: string;
-    name: string;
-    role: string;
-    position: string | null;
-    xp: number;
-    level: number;
-    streak: number;
-    must_change_password?: boolean;
+      const response = await fetch(`${API_BASE_URL}/auth/me`, { cache: "no-store", headers, signal: controller.signal });
+      return { ok: response.ok, status: response.status, user: response.ok ? await response.json() : null };
+    } finally { clearTimeout(timer); }
   };
 
-  const normalizedRole = user.role === "manager" ? "admin" : user.role === "employee" ? "user" : user.role;
-
-  return NextResponse.json({
-    authenticated: true,
-    user: {
-      ...user,
-      role: normalizedRole,
-      must_change_password: !!user.must_change_password,
-    },
-  });
+  if (!access) {
+    if (!refresh) return unauthenticated();
+    const error = await renew(); if (error) return error;
+  }
+  try {
+    let response = await fetchUser();
+    if (response.status === 401 && refresh && !rotation) {
+      const error = await renew(); if (error) return error;
+      response = await fetchUser();
+    }
+    if (response.status === 401 || response.status === 403) return unauthenticated();
+    if (!response.ok) return unavailable();
+    const user = response.user;
+    const role = user.role === "manager" ? "admin" : user.role === "employee" ? "user" : user.role;
+    return finish(NextResponse.json({ authenticated: true, user: { ...user, role, must_change_password: !!user.must_change_password } }));
+  } catch { return unavailable(); }
 }

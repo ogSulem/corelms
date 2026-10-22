@@ -33,6 +33,8 @@ export function LoginClient() {
     if (loading) return;
     setLoading(true);
     setError(null);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
       const n = String(name || "").trim();
       const p = String(password || "");
@@ -41,6 +43,7 @@ export function LoginClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: n, password: p }),
         credentials: "include",
+        signal: controller.signal,
       });
       if (!res.ok) {
         let code = "";
@@ -72,9 +75,10 @@ export function LoginClient() {
       } else if ((msg || "").toLowerCase().includes("upstream_unavailable") || (msg || "").toLowerCase().includes("unavailable") || (msg || "").includes("502")) {
         setError("СЕРВИС ВРЕМЕННО НЕДОСТУПЕН. ПОВТОРИТЕ ПОПЫТКУ.");
       } else {
-        setError("ОШИБКА АВТОРИЗАЦИИ. ПОВТОРИТЕ ПОПЫТКУ.");
+        setError((err as Error)?.name === "AbortError" ? "Сервер долго не отвечает. Повторите попытку." : err instanceof TypeError ? "Нет связи с сервером. Проверьте соединение." : msg || "Не удалось войти. Повторите попытку.");
       }
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   }

@@ -4,6 +4,10 @@ import json
 import uuid
 import urllib.parse
 import logging
+import mimetypes
+from pathlib import PurePath
+from types import SimpleNamespace
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -17,13 +21,18 @@ from app.core.security import get_current_user, require_roles
 from app.core.security_audit_log import audit_log
 from app.db.session import get_db
 from app.models.asset import ContentAsset
+from app.models.sales import SalesEntry
+from app.services.media import current_rendition, stage_rendition, asset_is_active
 from app.models.audit import LearningEvent, LearningEventType
 from app.models.module import Module, Submodule
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.user import User, UserRole
 from app.schemas.asset import AssetCreateRequest, AssetCreateResponse, AssetGetUrlResponse
 from app.services.skills import record_activity_and_award_xp
-from app.services.storage import get_s3_client, presign_get, presign_put
+from app.services.access import is_admin, accessible_modules_clause
+from app.services.document_preview import MAX_BYTES, build_preview, preview_slot
+from app.services.content import referenced_storage_keys
+from app.services.storage import get_s3_client, presign_get
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -32,67 +41,29 @@ log = logging.getLogger(__name__)
 
 
 def _asset_access_guard(*, db: Session, user: User, aid: uuid.UUID, asset: ContentAsset) -> tuple[str | None, str | None]:
-    # Hardening: avoid leaking arbitrary assets by UUID.
-    # - Non-admin users must only access assets that are part of active learning content.
-    # - Admin upload ZIP artifacts must never be downloadable by non-admins.
-    object_key = str(asset.object_key or "")
-    if user.role != UserRole.admin and object_key.startswith("uploads/admin/"):
-        raise HTTPException(status_code=403, detail="forbidden")
-
-    if user.role != UserRole.admin and object_key.startswith("uploads/quickstart/"):
+    sales = db.scalar(select(SalesEntry).where(SalesEntry.asset_id == aid))
+    if sales:
+        from app.services.sales_library import path_is_visible
+        if user.role != UserRole.superadmin and (asset.is_archived or sales.is_archived or not path_is_visible(db, sales.section, sales.path)):
+            raise HTTPException(404, "Материал недоступен")
         return None, None
-
-    if user.role != UserRole.admin:
-        linked_to_active = (
-            db.scalar(
-                select(func.count(ContentAsset.id))
-                .select_from(ContentAsset)
-                .join(SubmoduleAssetMap, SubmoduleAssetMap.asset_id == ContentAsset.id)
-                .join(Submodule, Submodule.id == SubmoduleAssetMap.submodule_id)
-                .join(Module, Module.id == Submodule.module_id)
-                .where(ContentAsset.id == aid, Module.is_active == True)  # noqa: E712
-            )
-            or 0
-        )
-
-        module_prefix_active = 0
-        if object_key.startswith("modules/"):
-            parts = object_key.split("/")
-            seg = parts[1] if len(parts) >= 2 else ""
-            mid = ""
-            if seg:
-                if "__" in seg:
-                    mid = seg.split("__")[-1]
-                else:
-                    mid = seg
-            if mid:
-                module_prefix_active = (
-                    db.scalar(select(func.count(Module.id)).select_from(Module).where(Module.id == mid, Module.is_active == True))  # noqa: E712
-                    or 0
-                )
-
-        if int(linked_to_active) <= 0 and int(module_prefix_active) <= 0:
-            raise HTTPException(status_code=403, detail="forbidden")
-
-    module_id = None
-    submodule_id = None
-    try:
-        row = db.execute(
-            select(Submodule.id, Module.id)
-            .select_from(SubmoduleAssetMap)
-            .join(Submodule, Submodule.id == SubmoduleAssetMap.submodule_id)
-            .join(Module, Module.id == Submodule.module_id)
-            .where(SubmoduleAssetMap.asset_id == asset.id)
-            .limit(1)
-        ).first()
-        if row:
-            submodule_id = str(row[0]) if row[0] else None
-            module_id = str(row[1]) if row[1] else None
-    except Exception:
-        log.debug("assets: failed to resolve module/submodule ids for asset", exc_info=True)
-        module_id = None
-        submodule_id = None
-    return module_id, submodule_id
+    if is_admin(user):
+        return (str(asset.module_id) if asset.module_id else None), None
+    if asset.is_archived:
+        raise HTTPException(404, "Материал недоступен")
+    if str(asset.object_key or "").startswith("uploads/quickstart/"):
+        return None, None
+    links = db.execute(select(Submodule.id, Submodule.module_id, Submodule.is_archived)
+        .join(SubmoduleAssetMap, SubmoduleAssetMap.submodule_id == Submodule.id)
+        .where(SubmoduleAssetMap.asset_id == aid)).all()
+    candidates = {mid for _, mid, archived in links if not archived}
+    if not links and asset.module_id:
+        candidates.add(asset.module_id)
+    allowed = db.scalar(select(Module.id).where(Module.id.in_(candidates), accessible_modules_clause(user)).limit(1))
+    if allowed is None:
+        raise HTTPException(404, "Материал недоступен")
+    sub_id = next((sid for sid, mid, archived in links if mid == allowed and not archived), None)
+    return str(allowed), str(sub_id) if sub_id else None
 
 
 @router.post("/presign-upload", response_model=AssetCreateResponse)
@@ -103,31 +74,10 @@ def presign_upload(
     user: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="asset_presign_upload", limit=30, window_seconds=60),
 ):
-    existing = db.scalar(select(ContentAsset).where(ContentAsset.object_key == body.object_key))
-    if existing is not None:
+    if body.object_key in referenced_storage_keys(db):
         raise HTTPException(status_code=409, detail="object_key already exists")
 
-    asset = ContentAsset(
-        bucket=settings.s3_bucket,
-        object_key=body.object_key,
-        original_filename=body.original_filename,
-        mime_type=body.mime_type,
-        created_by=user.id,
-    )
-    db.add(asset)
-    db.commit()
-    db.refresh(asset)
-
-    url = presign_put(object_key=asset.object_key, content_type=asset.mime_type)
-    audit_log(
-        db=db,
-        request=request,
-        event_type="admin_presign_asset_upload",
-        actor_user_id=user.id,
-        meta={"asset_id": str(asset.id), "object_key": asset.object_key, "mime_type": asset.mime_type},
-    )
-    db.commit()
-    return AssetCreateResponse(asset_id=str(asset.id), upload_url=url)
+    raise HTTPException(410, "Прямая запись в произвольные S3-ключи отключена. Загружайте файлы через редактор модуля или библиотеку продаж: они сохраняют оригиналы и версии.")
 
 
 @router.get("/{asset_id}/presign-download", response_model=AssetGetUrlResponse)
@@ -205,8 +155,7 @@ def presign_download(
 
     expires_seconds = 300
 
-    # Office Online viewer requires a stable public URL and often behaves better
-    # with a correct Content-Type. Also give Office embeds a longer TTL.
+    # Keep MIME metadata accurate for downloading Office originals.
     original_name_l = str(asset.original_filename or "").strip().lower()
     ext = ""
     try:
@@ -251,7 +200,7 @@ def presign_download(
     # Hardening: if the object was manually deleted from storage, return 404 (not a broken presign URL).
     try:
         s3 = get_s3_client()
-        s3.head_object(Bucket=settings.s3_bucket, Key=str(asset.object_key or ""))
+        s3.head_object(Bucket=asset.bucket, Key=str(asset.object_key or ""))
     except ClientError as e:
         code = str((e.response or {}).get("Error", {}).get("Code") or "").strip()
         status = int((e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode") or 0)
@@ -263,7 +212,7 @@ def presign_download(
         raise HTTPException(status_code=503, detail="storage unavailable")
 
     url = presign_get(
-        object_key=asset.object_key,
+        object_key=asset.object_key, bucket=asset.bucket,
         response_content_type=response_ct,
         response_content_disposition=disposition,
         expires_seconds=int(expires_seconds),
@@ -271,6 +220,7 @@ def presign_download(
     return AssetGetUrlResponse(asset_id=str(asset.id), download_url=url)
 
 
+@router.get("/{asset_id}/download")
 @router.get("/{asset_id}/stream")
 def stream_asset(
     request: Request,
@@ -278,6 +228,7 @@ def stream_asset(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     range_header: str | None = Header(default=None, alias="Range"),
+    variant: Literal["original", "browser"] = Query(default="original"),
     _: object = rate_limit(key_prefix="asset_stream", limit=240, window_seconds=60),
 ):
     try:
@@ -290,11 +241,20 @@ def stream_asset(
         raise HTTPException(status_code=404, detail="asset not found")
 
     module_id, submodule_id = _asset_access_guard(db=db, user=user, aid=aid, asset=asset)
+    downloading = request.url.path.endswith("/download")
+    snapshot = {name: getattr(asset, name) for name in ("id", "bucket", "object_key", "mime_type", "original_filename", "version")}
+    if variant == "browser" and not downloading:
+        rendition = current_rendition(db, asset)
+        if not rendition or rendition.state != "ready" or not rendition.object_key:
+            raise HTTPException(409, "Копия для браузера ещё не готова. Оригинал доступен для скачивания.")
+        snapshot.update(bucket=rendition.bucket, object_key=rendition.object_key, mime_type=rendition.mime_type,
+            original_filename=str(PurePath(asset.original_filename).with_suffix(".mp4" if rendition.mime_type == "video/mp4" else ".pdf")))
+
 
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
     try:
         meta = {
-            "action": "stream",
+            "action": "download" if downloading else "stream",
             "filename": str(asset.original_filename or ""),
             "object_key": str(asset.object_key or ""),
             "mime_type": str(asset.mime_type or ""),
@@ -316,12 +276,13 @@ def stream_asset(
         except Exception:
             pass
 
+    asset = SimpleNamespace(**snapshot)
     s3 = get_s3_client()
     object_key = str(asset.object_key or "")
     if not object_key:
         raise HTTPException(status_code=404, detail="asset not found")
 
-    content_type = str(asset.mime_type or "").strip() or "application/octet-stream"
+    content_type = mimetypes.guess_type(asset.original_filename)[0] or str(asset.mime_type or "").strip() or "application/octet-stream"
     filename = str(asset.original_filename or "").strip() or "file"
     # Hardening: Edge/PDF viewer may block if Content-Disposition filename* contains path separators.
     # Use basename only.
@@ -344,21 +305,13 @@ def stream_asset(
     quoted = urllib.parse.quote(filename, safe="")
     disposition = f"inline; filename*=UTF-8''{quoted}"
 
-    ct_l = content_type.lower()
-    allowed = False
-    try:
-        if ct_l == "application/pdf":
-            allowed = True
-        elif ct_l.startswith("image/"):
-            allowed = True
-        elif ct_l.startswith("video/"):
-            allowed = True
-        elif ct_l.startswith("text/"):
-            allowed = True
-    except Exception:
-        allowed = False
-    if not allowed:
-        raise HTTPException(status_code=415, detail="unsupported media type")
+    extension = PurePath(filename).suffix.lower()
+    # Never render uploaded HTML/SVG/XML on the authenticated application's origin.
+    safe_inline = extension in {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a", ".flac"}
+    if not downloading and not safe_inline:
+        raise HTTPException(415, "Для этого формата используйте предпросмотр или скачайте оригинал")
+    if downloading:
+        disposition = f"attachment; filename*=UTF-8''{quoted}"
 
     # Parse Range: bytes=start-end
     range_value = str(range_header or "").strip()
@@ -390,19 +343,22 @@ def stream_asset(
             suffix_len = None
 
     def _body_iter(body):
-        while True:
-            chunk = body.read(1024 * 512)
-            if not chunk:
-                break
-            yield chunk
+        try:
+            while True:
+                chunk = body.read(1024 * 512)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            body.close()
 
     try:
-        kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key}
+        kwargs: dict[str, object] = {"Bucket": asset.bucket, "Key": object_key}
 
         # If Range is requested, validate against object size and normalize to a concrete range.
         if range_value_l.startswith("bytes="):
             try:
-                head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+                head = s3.head_object(Bucket=asset.bucket, Key=object_key)
                 size_total = int(head.get("ContentLength") or 0)
             except ClientError as e:
                 code = str((e.response or {}).get("Error", {}).get("Code") or "").strip()
@@ -456,6 +412,9 @@ def stream_asset(
             "Accept-Ranges": "bytes",
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
+            "X-Frame-Options": "SAMEORIGIN",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; object-src 'self'; frame-ancestors 'self'",
         }
         if obj.get("ContentRange"):
             headers["Content-Range"] = str(obj.get("ContentRange"))
@@ -487,3 +446,76 @@ def stream_asset(
         raise HTTPException(status_code=503, detail="storage unavailable") from e
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to stream asset") from e
+
+
+@router.get("/{asset_id}/preview")
+def preview_asset(
+    asset_id: uuid.UUID, sheet: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db), user: User = Depends(get_current_user),
+    _: object = rate_limit(key_prefix="asset_preview", limit=60, window_seconds=60),
+):
+    asset = db.get(ContentAsset, asset_id)
+    if asset is None:
+        raise HTTPException(404, "Файл не найден")
+    module_id, submodule_id = _asset_access_guard(db=db, user=user, aid=asset_id, asset=asset)
+    if asset.size_bytes and asset.size_bytes > MAX_BYTES:
+        raise HTTPException(413, "Файл больше 25 МБ. Для просмотра скачайте оригинал.")
+    with preview_slot():
+        try:
+            obj = get_s3_client().get_object(Bucket=asset.bucket, Key=asset.object_key)
+            body = obj["Body"]
+            try:
+                if int(obj.get("ContentLength") or 0) > MAX_BYTES:
+                    raise HTTPException(413, "Файл больше 25 МБ. Для просмотра скачайте оригинал.")
+                data = body.read(MAX_BYTES + 1)
+            finally:
+                body.close()
+        except HTTPException:
+            raise
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            raise HTTPException(404 if code in {"404", "NoSuchKey", "NotFound"} else 503,
+                                "Файл не найден в хранилище" if code in {"404", "NoSuchKey", "NotFound"} else "Хранилище временно недоступно") from exc
+        except Exception as exc:
+            raise HTTPException(503, "Хранилище временно недоступно. Повторите попытку.") from exc
+        preview = build_preview(data, asset.original_filename, sheet=sheet)
+    record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
+    db.add(LearningEvent(user_id=user.id, type=LearningEventType.asset_viewed, ref_id=asset.id,
+                        meta=json.dumps({"action": "preview", "module_id": module_id, "submodule_id": submodule_id,
+                                         "filename": asset.original_filename}, ensure_ascii=False)))
+    db.commit()
+    from fastapi.responses import JSONResponse
+    return JSONResponse({**preview, "asset_id": str(asset.id), "version": asset.version}, headers={"Cache-Control": "private, no-store"})
+
+
+@router.get("/{asset_id}/viewer")
+def asset_viewer(asset_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user),
+                 _: object = rate_limit(key_prefix="asset_viewer", limit=120, window_seconds=60)):
+    asset = db.scalar(select(ContentAsset).where(ContentAsset.id == asset_id).with_for_update())
+    if not asset:
+        raise HTTPException(404, "Материал недоступен")
+    _asset_access_guard(db=db, user=user, aid=asset_id, asset=asset)
+    row = current_rendition(db, asset)
+    if (row is None or row.state == "skipped") and asset_is_active(db, asset):
+        row = stage_rendition(db, asset)
+        db.commit()
+    return {"state": row.state if row else "original", "source_version": asset.version,
+            "mime_type": row.mime_type if row and row.state == "ready" else None,
+            "error": row.error if row else None, "can_retry": is_admin(user) and asset_is_active(db, asset) and (user.role == UserRole.superadmin or not db.scalar(select(SalesEntry.id).where(SalesEntry.asset_id == asset.id)))}
+
+
+@router.post("/{asset_id}/viewer/retry", status_code=202)
+def retry_asset_viewer(asset_id: uuid.UUID, request: Request, db: Session = Depends(get_db),
+                       user: User = Depends(require_roles(UserRole.admin)),
+                       _: object = rate_limit(key_prefix="asset_viewer_retry", limit=20, window_seconds=60)):
+    asset = db.scalar(select(ContentAsset).where(ContentAsset.id == asset_id).with_for_update())
+    if not asset or not asset_is_active(db, asset):
+        raise HTTPException(404, "Активный материал не найден")
+    if db.scalar(select(SalesEntry.id).where(SalesEntry.asset_id == asset.id)) and user.role != UserRole.superadmin:
+        raise HTTPException(403, "Только суперадминистратор управляет файлами продаж")
+    row = stage_rendition(db, asset, retry=True)
+    if not row:
+        raise HTTPException(422, "Этот формат не требует подготовки")
+    audit_log(db=db, request=request, actor_user_id=user.id, event_type="asset_rendition_requested", meta={"asset_id": str(asset.id), "version": asset.version})
+    db.commit()
+    return {"state": row.state}

@@ -16,7 +16,8 @@ export function middleware(req: NextRequest) {
   }
 
   const token = req.cookies.get("core_token")?.value;
-  if (!token) {
+  const refresh = req.cookies.get("core_refresh")?.value;
+  if (!token && !refresh) {
     const url = req.nextUrl.clone();
     url.pathname = "/";
     url.searchParams.set("redirect", pathname);

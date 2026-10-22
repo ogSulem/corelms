@@ -69,3 +69,13 @@ Thumbs.db
 
 # Local assets
 quickstart.mp4
+
+# Incremental TypeScript build cache
+*.tsbuildinfo
+
+# Browser test artifacts
+frontend/test-results/
+frontend/playwright-report/
+
+# Small synthetic archive required by the browser regression test
+!frontend/e2e/fixtures/update.zip

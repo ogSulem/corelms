@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User, UserRole
+from app.core.tokens import password_version
+from app.services.auth_sessions import get_session
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
@@ -59,23 +61,24 @@ def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="invalid token")
 
-    try:
-        request.state.user_id = str(user.id)
-    except Exception:
-        pass
+    # Old access tokens refresh once into the SID-bound format at rollout.
+    sid = payload.get("sid")
+    if not sid or payload.get("pv") != password_version(user):
+        raise HTTPException(401, "invalid token")
+    session = get_session(str(sid))
+    if not session or session.get("user_id") != str(user.id) or session.get("password_version") != payload.get("pv"):
+        raise HTTPException(401, "session revoked")
+    request.state.user_id = str(user.id)
+    request.state.session_id = str(sid)
+    if user.must_change_password and request.url.path not in {"/auth/me", "/auth/change-password", "/auth/sessions", "/auth/sessions/revoke-all"}:
+        raise HTTPException(403, {"error_code": "password_change_required", "error_message": "Сначала смените временный пароль"})
     return user
 
 
 def require_roles(*roles: UserRole):
     def _dep(user: User = Depends(get_current_user)) -> User:
-        # Role model: superadmin + admin + employee
-        # - superadmin can access everything
-        # - admin can access everything
-        # - employee can access only endpoints that explicitly allow it
+        # Admin is not a superadmin. Only the top role inherits all permissions.
         if user.role == UserRole.superadmin:
-            return user
-
-        if user.role == UserRole.admin:
             return user
 
         if user.role not in roles:
