@@ -45,7 +45,6 @@ def test_employee_cannot_access_admin_endpoints(client):
     password = "testpass123"
     _create_user(name=username, password=password, role=UserRole.employee)
 
-    # headers = _auth_headers_for_user(client, username=username, password=password)
-    # r = client.get("/admin/skills/coverage", headers=headers)
-    # assert r.status_code == 403
-    pass
+    headers = _auth_headers_for_user(client, username=username, password=password)
+    r = client.get("/admin/content/modules", headers=headers)
+    assert r.status_code == 403

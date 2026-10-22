@@ -126,6 +126,39 @@ services:
     mem_limit: 384m
     cpus: 0.75
 
+  worker_media:
+    build:
+      context: ./backend
+      target: media
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      - AUTO_MIGRATE_ON_START=false
+      - RQ_WORKER_QUEUES=${RQ_WORKER_MEDIA_QUEUES:-corelms_media}
+      - RQ_WORKER_PROCESSES=1
+      - MEDIA_ENCODER_THREADS=${MEDIA_ENCODER_THREADS:-2}
+    entrypoint: ["python", "-m", "app.worker"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: ${MEDIA_WORKER_MEMORY_LIMIT:-1536m}
+    cpus: ${MEDIA_WORKER_CPUS:-1.5}
+    pids_limit: 128
+
   worker_default:
     build: ./backend
     depends_on:
@@ -158,7 +191,10 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
-    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    # This instance holds sessions and RQ jobs, not only disposable caches.
+    command: ["redis-server", "--maxmemory", "${REDIS_MAXMEMORY:-256mb}", "--maxmemory-policy", "noeviction", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -169,7 +205,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    mem_limit: 320m
+    # Leave headroom for client buffers and AOF rewrite copy-on-write.
+    mem_limit: ${REDIS_MEMORY_LIMIT:-640m}
     cpus: 0.5
 
   backend:
@@ -306,6 +343,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  redis_data:
   pg_data:
   backend_data:
   caddy_data:

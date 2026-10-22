@@ -33,6 +33,7 @@ class MyProgressSummaryResponse(BaseModel):
     steps_total: int
     steps_completed: int
     percent: int
+    current_percent: int = 0
 
 
 class RecentAttempt(BaseModel):

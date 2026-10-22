@@ -16,6 +16,8 @@ class QuizAttempt(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), index=True)
 
     attempt_no: Mapped[int] = mapped_column(Integer, default=1)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    xp_awarded: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import mimetypes
 import pathlib
 import re
 import random
-import subprocess
 import tempfile
 import time
 import uuid
@@ -22,10 +22,10 @@ from app.models.asset import ContentAsset
 from app.models.module import Module, Submodule
 from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.models.submodule_asset import SubmoduleAssetMap
-from app.services.llm_handler import choose_llm_provider_order_fast, generate_quiz_questions_ai
-from app.services.quiz_generation import generate_quiz_questions_heuristic
 from app.services.quiz_text import is_useful_quiz_text
-from app.services.storage import ensure_bucket_exists, get_s3_client, upload_fileobj_with_retry
+from app.services.content import lock_module, module_assets, normalize_name, preserve_progress, snapshot_asset, storage_key, require_owned_asset, snapshot_lesson
+from app.services.learning import remember_quiz_version
+from app.services.storage import effective_bucket, ensure_bucket_exists, get_s3_client, upload_fileobj_with_retry
 
 
 log = logging.getLogger(__name__)
@@ -95,53 +95,6 @@ def _is_noise_dir_name(name: str) -> bool:
     except Exception:
         return False
     return False
-
-
-def _track_transcode_meta(*, event: str, rel_name: str, **extra: object) -> None:
-    try:
-        job = get_current_job()
-    except Exception:
-        job = None
-    if job is None:
-        return
-    try:
-        meta = dict(job.meta or {})
-        tc = dict(meta.get("transcode") or {})
-
-        def _inc(key: str) -> None:
-            try:
-                tc[key] = int(tc.get(key) or 0) + 1
-            except Exception:
-                tc[key] = 1
-
-        tc["last_event"] = str(event)
-        tc["last_rel_name"] = str(rel_name or "")
-
-        if event == "attempt":
-            _inc("attempted")
-        elif event == "ok":
-            _inc("ok")
-        elif event == "timeout":
-            _inc("timeout")
-            _inc("failed")
-        elif event == "failed":
-            _inc("failed")
-
-        for k, v in (extra or {}).items():
-            try:
-                if v is None:
-                    continue
-                s = str(v)
-                tc[f"last_{k}"] = s[:2000]
-            except Exception:
-                continue
-
-        meta["transcode"] = tc
-        job.meta = meta
-        job.save_meta()
-    except Exception:
-        log.debug("module_importer: failed to save transcode meta", exc_info=True)
-        return
 
 
 def _track_uploaded_key(object_key: str) -> None:
@@ -384,12 +337,11 @@ def _normalize_text_to_markdown(text: str) -> str:
 
 def _docx_to_text(path: pathlib.Path) -> str:
     try:
-        with zipfile.ZipFile(path, "r") as z:
-            xml = z.read("word/document.xml").decode("utf-8", errors="ignore")
-        xml = re.sub(r"</w:p>", "\n", xml)
-        xml = re.sub(r"<[^>]+>", "", xml)
-        xml = re.sub(r"\n{3,}", "\n\n", xml)
-        return _normalize_text_to_markdown(xml)
+        from app.services.document_preview import MAX_BYTES, build_preview
+        if path.stat().st_size > MAX_BYTES:
+            return ""
+        preview = build_preview(path.read_bytes(), path.name)
+        return "\n\n".join(part["text"] for part in preview.get("blocks", []))[:300_000]
     except Exception:
         return ""
 
@@ -398,6 +350,8 @@ def _pdf_to_text(path: pathlib.Path) -> str:
     try:
         from pypdf import PdfReader  # type: ignore
 
+        if path.stat().st_size > 25 * 1024 * 1024:
+            return ""
         reader = PdfReader(str(path))
         parts: list[str] = []
         for page in reader.pages[:30]:
@@ -405,7 +359,7 @@ def _pdf_to_text(path: pathlib.Path) -> str:
             t = _normalize_text_to_markdown(t)
             if t:
                 parts.append(t)
-        return "\n\n".join(parts).strip()
+        return "\n\n".join(parts).strip()[:300_000]
     except Exception:
         return ""
 
@@ -414,13 +368,14 @@ def _read_text(path: pathlib.Path) -> str:
     ext = path.suffix.lower()
     if ext in {".txt", ".md"}:
         try:
-            txt = path.read_text(encoding="utf-8", errors="ignore")
+            with path.open("rb") as stream:
+                txt = stream.read(2 * 1024 * 1024).decode("utf-8", errors="replace")[:300_000]
             if ext == ".md":
                 return txt.strip()
             return _normalize_text_to_markdown(txt)
         except Exception:
             return ""
-    if ext == ".docx":
+    if ext in {".docx", ".pptx"}:
         return _docx_to_text(path)
     if ext == ".pdf":
         return _pdf_to_text(path)
@@ -503,134 +458,8 @@ def _upload_file(*, s3, object_key: str, file_path: pathlib.Path) -> tuple[str |
 
 
 def _maybe_transcode_video(*, file_path: pathlib.Path, rel_name: str) -> tuple[pathlib.Path, str, str | None]:
-    # Convert non-browser-friendly containers to MP4 for stable playback.
-    # Note: we intentionally do NOT add new dependencies besides ffmpeg.
-    ext = str(file_path.suffix or "").lower().lstrip(".")
-    if not ext:
-        return file_path, rel_name, None
-
-    # Common problematic / inconsistent browser support.
-    # (mp4/webm are typically fine and should not be re-encoded.)
-    transcode_exts = {"mov", "mkv", "avi", "wmv", "flv", "mpg", "mpeg", "mts", "m2ts"}
-    if ext not in transcode_exts:
-        return file_path, rel_name, None
-
-    if not file_path.exists():
-        return file_path, rel_name, None
-
-    tmpdir = ""
-    out_path: pathlib.Path | None = None
-    try:
-        tmpdir = tempfile.mkdtemp(prefix="corelms_transcode_")
-        out_path = pathlib.Path(tmpdir) / (file_path.stem + ".mp4")
-
-        _track_transcode_meta(event="attempt", rel_name=rel_name, src_ext=ext)
-
-        # ffmpeg:
-        # - H.264 video + AAC audio
-        # - faststart for progressive playback
-        # - map audio optionally ("a?") to handle videos without audio
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(file_path),
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a?",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "128k",
-            "-movflags",
-            "+faststart",
-            str(out_path),
-        ]
-
-        timeout_s = int(getattr(settings, "import_transcode_timeout_seconds", 0) or 0) or 60 * 45
-        started = time.time()
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
-        except subprocess.TimeoutExpired as e:
-            _track_transcode_meta(
-                event="timeout",
-                rel_name=rel_name,
-                timeout_s=str(timeout_s),
-                stderr=(str(getattr(e, "stderr", "") or "") or "")[:2000],
-            )
-            return file_path, rel_name, None
-
-        dur_ms = int(max(0.0, (time.time() - started)) * 1000.0)
-        if proc.returncode != 0:
-            log.warning(
-                "module_importer: ffmpeg transcode failed for %s rc=%s stderr=%s",
-                str(file_path),
-                proc.returncode,
-                (proc.stderr or "")[:2000],
-            )
-            _track_transcode_meta(
-                event="failed",
-                rel_name=rel_name,
-                rc=str(proc.returncode),
-                dur_ms=str(dur_ms),
-                stderr=(proc.stderr or "")[:2000],
-            )
-            try:
-                if out_path is not None:
-                    out_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-            try:
-                if tmpdir:
-                    pathlib.Path(tmpdir).rmdir()
-            except Exception:
-                pass
-            return file_path, rel_name, None
-
-        if out_path is None or (not out_path.exists()) or int(out_path.stat().st_size) <= 0:
-            _track_transcode_meta(event="failed", rel_name=rel_name, rc=str(proc.returncode), dur_ms=str(dur_ms), stderr="empty output")
-            try:
-                if out_path is not None:
-                    out_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-            try:
-                if tmpdir:
-                    pathlib.Path(tmpdir).rmdir()
-            except Exception:
-                pass
-            return file_path, rel_name, None
-
-        new_rel = re.sub(r"\.[A-Za-z0-9]{1,8}$", ".mp4", str(rel_name or "").strip())
-        if not new_rel:
-            new_rel = (file_path.stem + ".mp4")
-
-        try:
-            _track_transcode_meta(event="ok", rel_name=rel_name, dur_ms=str(dur_ms), out_bytes=str(int(out_path.stat().st_size)))
-        except Exception:
-            _track_transcode_meta(event="ok", rel_name=rel_name, dur_ms=str(dur_ms))
-        return out_path, new_rel, "video/mp4"
-    except Exception:
-        log.debug("module_importer: ffmpeg transcode failed", exc_info=True)
-        _track_transcode_meta(event="failed", rel_name=rel_name, stderr="exception")
-        try:
-            if out_path is not None:
-                out_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        try:
-            if tmpdir:
-                pathlib.Path(tmpdir).rmdir()
-        except Exception:
-            pass
-        return file_path, rel_name, None
+    """Legacy helper: imports always retain exact originals; conversion is async."""
+    return file_path, rel_name, None
 
 
 def _upload_markdown_text(*, s3, object_key: str, text_value: str) -> None:
@@ -669,615 +498,256 @@ def _lesson_markdown_fallback(*, module_title: str, lesson_title: str, files: li
     return "\n".join(lines).strip()
 
 
+def _source_path(path: pathlib.Path, root: pathlib.Path) -> str:
+    value = normalize_name(path.relative_to(root).as_posix())
+    if len(value) > 1000:
+        raise ValueError("Путь внутри ZIP слишком длинный (более 1000 символов)")
+    return value
+
+
+def _import_specs(root: pathlib.Path) -> list[dict]:
+    """Stable identities are paths, NEVER ordinal lesson numbers.
+
+    Root files are lessons; top-level directories are material catalogs. _module
+    contains general attachments. A missing path in a new ZIP is kept, not deleted.
+    """
+    specs = []
+    entries = sorted(root.iterdir(), key=lambda p: (_parse_order(p.name, 999), p.name.casefold()))
+    for path in entries:
+        if _should_ignore_file(path):
+            continue
+        if path.name == "_module" and path.is_dir():
+            for fp in _list_files_recursive(path):
+                specs.append({"source": _source_path(fp, root), "title": fp.name,
+                              "files": [fp], "root": path, "folder": False, "general": True})
+        elif path.is_file():
+            specs.append({"source": "file:" + _source_path(path, root), "title": _guess_title(path.stem),
+                          "files": [path], "root": root, "folder": False, "general": False})
+        elif path.is_dir() and not _is_noise_dir_name(path.name):
+            files = _list_files_recursive(path)
+            if files:
+                specs.append({"source": "folder:" + _source_path(path, root), "title": _guess_title(path.name),
+                              "files": files, "root": path, "folder": True, "general": False})
+    if not specs:
+        raise ValueError("ZIP не содержит материалов для импорта")
+    return specs
+
+
 def import_module_from_dir(
-    *,
-    db: Session,
-    module_dir: pathlib.Path,
-    title_override: str | None = None,
-    report_out: dict | None = None,
-    generate_questions: bool = True,
-    module_id_override: str | None = None,
+    *, db: Session, module_dir: pathlib.Path, title_override: str | None = None,
+    report_out: dict | None = None, generate_questions: bool = False,
+    module_id_override: str | None = None, expected_revision: int | None = None,
+    require_new_quizzes: bool = False,
 ) -> uuid.UUID:
+    """Stage immutable S3 objects, then atomically merge DB references.
+
+    No deletes, hidden publication changes, commits, or questionnaire replacement.
+    The caller owns the transaction. A failed update leaves live bytes and IDs intact.
+    """
     ensure_bucket_exists()
     s3 = get_s3_client()
+    bucket = effective_bucket()
+    module_title = normalize_name(title_override or module_dir.name) or "Модуль"
+    mid = uuid.UUID(str(module_id_override)) if module_id_override else uuid.uuid4()
+    existing = db.get(Module, mid) if module_id_override else None
+    if module_id_override and existing is None:
+        raise ValueError("Модуль для обновления не найден")
+    if existing is None and db.scalar(select(Module.id).where(func.lower(Module.title) == module_title.lower())):
+        raise ValueError("Модуль с таким названием уже существует")
+    if existing and existing.is_archived:
+        raise ValueError("Сначала восстановите модуль из архива")
+    base_revision = existing.content_revision if existing else 1
+    if expected_revision is not None and base_revision != expected_revision:
+        raise ValueError("Модуль изменён после запуска импорта. Обновите страницу и повторите.")
+    prefix = (existing.storage_prefix if existing else None) or f"modules/{_slugify_s3_segment(module_title)}__{mid}/"
+    staging_module = Module(id=mid, title=module_title, storage_prefix=prefix)
+    known_assets = module_assets(db, mid) if existing else []
+    source_hashes = {a.source_path: a.source_checksum_sha256 for a in known_assets if a.source_path}
+    known_hashes = {a.source_path: a.checksum_sha256 for a in known_assets if a.source_path}
+    # End the read transaction before potentially long S3 uploads. No locks while
+    # transcoding/uploading: learners continue using the previous content revision.
+    db.rollback()
 
-    module_title = (title_override or module_dir.name).strip() or "Модуль"
-
-    m: Module | None = None
-    if str(module_id_override or "").strip():
-        try:
-            mid = uuid.UUID(str(module_id_override))
-        except Exception as e:
-            raise ValueError(f"invalid module_id_override: {module_id_override}") from e
-        m = db.scalar(select(Module).where(Module.id == mid))
-        if m is None:
-            raise ValueError(f"module_id_override not found: {module_id_override}")
-
-        # Force rebuild behavior: when importing into an existing (stub) module, wipe previous
-        # submodule structure so the resulting tree matches the ZIP.
-        try:
-            old_sub_ids = [
-                r[0]
-                for r in (db.execute(select(Submodule.id).where(Submodule.module_id == mid)).all() or [])
-                if r and r[0] is not None
-            ]
-        except Exception:
-            old_sub_ids = []
-
-        old_quiz_ids: list[uuid.UUID] = []
-        if old_sub_ids:
-            try:
-                old_quiz_ids = [
-                    r[0]
-                    for r in (db.execute(select(Submodule.quiz_id).where(Submodule.id.in_(old_sub_ids))).all() or [])
-                    if r and r[0] is not None
-                ]
-            except Exception:
-                old_quiz_ids = []
-
-        if old_sub_ids:
-            try:
-                db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.submodule_id.in_(old_sub_ids)))
-            except Exception:
-                pass
-            try:
-                db.execute(delete(Submodule).where(Submodule.id.in_(old_sub_ids)))
-            except Exception:
-                pass
-
-        if old_quiz_ids:
-            try:
-                db.execute(delete(Question).where(Question.quiz_id.in_(old_quiz_ids)))
-            except Exception:
-                pass
-            try:
-                db.execute(delete(Quiz).where(Quiz.id.in_(old_quiz_ids)))
-            except Exception:
-                pass
-
-        # Update stub metadata to match inferred title.
-        m.title = module_title
-        m.description = f"Материалы модуля «{module_title}»."
-        m.is_active = False
-        db.add(m)
-        db.flush()
-    else:
-        # Commercial-grade behavior: do not allow silent duplicates.
-        existing = db.scalar(select(Module).where(func.lower(Module.title) == func.lower(module_title)))
-        if existing is not None:
-            raise ValueError(f"module title already exists: {module_title}")
-
-    report: dict[str, object] | None = None
-    if report_out is not None:
-        report = report_out  # mutate caller-owned dict
-        report.setdefault("module_title", module_title)
-        report.setdefault("submodules", 0)
-        report.setdefault("module_assets", 0)
-        report.setdefault("lesson_assets", 0)
-        report.setdefault("questions_total", 0)
-        report.setdefault("questions_ai", 0)
-        report.setdefault("questions_heur", 0)
-        report.setdefault("questions_fallback", 0)
-        report.setdefault("needs_regen", 0)
-        report.setdefault("ai_enabled", bool(settings.openrouter_enabled))
-        report.setdefault("ai_used", False)
-
-    if m is None:
-        # Product rule: final exam questions are generated at runtime on /quizzes/{id}/start.
-        # We still keep a stable final_quiz_id so the UI/routes can reference the final exam.
-        final_quiz = Quiz(type=QuizType.final, pass_threshold=70, time_limit=None, attempts_limit=3)
-        db.add(final_quiz)
-        db.flush()
-
-        m = Module(
-            title=module_title,
-            description=f"Материалы модуля «{module_title}».",
-            difficulty=1,
-            category="Обучение",
-            # Product rule: imported module is hidden from learners until quizzes are fully generated.
-            # We will auto-activate at the end if import didn't flag needs_regen questions.
-            is_active=False,
-            final_quiz_id=final_quiz.id,
-        )
-        db.add(m)
-        db.flush()
-
-    log.info("module_importer: created module id=%s title=%s", str(m.id), module_title)
-
-    pfx = str(getattr(m, "storage_prefix", "") or "").strip()
-    if not pfx:
-        safe = _slugify_s3_segment(module_title)
-        pfx = f"modules/{safe}__{str(m.id)}/"
-        try:
-            m.storage_prefix = pfx
-            db.add(m)
-            db.flush()
-        except Exception:
-            pfx = f"modules/{str(m.id)}/"
-
-    # Normalize module_dir if the ZIP has an extra nesting level.
-    # We dive into nested folders as long as there are NO files and only ONE subfolder.
-    # This handles ZIPs like "Archive.zip -> ModuleFolder -> [Content]"
-    for _ in range(5):
-        try:
-            entries = [p for p in module_dir.iterdir() if not _should_ignore_file(p)]
-            files = [p for p in entries if p.is_file()]
-            dirs = [p for p in entries if p.is_dir() and (not _is_noise_dir_name(p.name))]
-            
-            # If we have files in current dir OR multiple directories, this is our root.
-            if files or len(dirs) != 1:
-                break
-            
-            # Only one directory and no files? Dive in.
-            log.info("module_importer: diving deeper from %s to %s", module_dir.name, dirs[0].name)
-            module_dir = dirs[0]
-        except Exception:
-            break
-
-    # Diagnostics: store directory scan in the current import job meta.
+    report = report_out if report_out is not None else {}
+    report.update({"module_title": module_title, "submodules": 0, "lesson_assets": 0, "module_assets": 0,
+                   "lessons_added": 0, "lessons_updated": 0, "lessons_kept": 0,
+                   "files_added": 0, "files_updated": 0, "files_unchanged": 0,
+                   "questions_total": 0, "needs_regen": 0, "progress_preserved": True,
+                   "warnings": []})
+    specs = _import_specs(module_dir)
+    uploaded: list[str] = []
     try:
-        job = get_current_job()
-    except Exception:
-        job = None
-    if job is not None:
-        try:
-            dir_names: list[str] = []
-            noise_names: list[str] = []
-            ok_names: list[str] = []
-            try:
-                for p in module_dir.iterdir():
-                    if not p.is_dir():
-                        continue
-                    nm = str(p.name or "")
-                    dir_names.append(nm)
-                    if _is_noise_dir_name(nm):
-                        noise_names.append(nm)
-                    else:
-                        ok_names.append(nm)
-            except Exception:
-                pass
-
-            jm = dict(job.meta or {})
-            dbg = dict(jm.get("import_debug") or {})
-            dbg["module_dir"] = str(module_dir)
-            dbg["dirs"] = dir_names[:200]
-            dbg["dirs_noise"] = noise_names[:200]
-            dbg["dirs_ok"] = ok_names[:200]
-            jm["import_debug"] = dbg
-            job.meta = jm
-            job.save_meta()
-        except Exception:
-            pass
-
-    module_material_dir = module_dir / "_module"
-    module_material_viewable: list[pathlib.Path] = []
-    if module_material_dir.exists() and module_material_dir.is_dir():
-        for fp in _list_files_recursive(module_material_dir):
-            try:
-                rel = fp.relative_to(module_material_dir)
-                rel_name = str(rel.as_posix())
-            except Exception:
-                rel_name = fp.name
-
-            _set_job_detail(f"material: {rel_name}")
-            eff_path, eff_rel, forced_ct = _maybe_transcode_video(file_path=fp, rel_name=rel_name)
-            object_key = f"{pfx}_module/{eff_rel}"
-            mime, size = _upload_file(s3=s3, object_key=object_key, file_path=eff_path)
-            if forced_ct:
-                mime = forced_ct
-            try:
-                if eff_path != fp:
-                    eff_path.unlink(missing_ok=True)
-                    try:
-                        eff_path.parent.rmdir()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == object_key))
-            if asset is None:
-                asset = ContentAsset(
-                    bucket=settings.s3_bucket,
-                    object_key=object_key,
-                    original_filename=eff_rel,
-                    mime_type=mime,
-                    size_bytes=size,
-                    checksum_sha256=None,
-                    created_by=None,
-                )
-                db.add(asset)
-                db.flush()
-
-            if _is_previewable_lesson_asset(fp):
-                module_material_viewable.append(fp)
-
-            if report is not None:
-                report["module_assets"] = int(report.get("module_assets") or 0) + 1
-
-    def _is_noise_lesson_dir(d: pathlib.Path) -> bool:
-        return _is_noise_dir_name(d.name)
-
-    lesson_candidates = [d for d in module_dir.iterdir() if d.is_dir() and (not _is_noise_lesson_dir(d))]
-
-    # Diagnostics: store selected lesson candidates.
-    if job is not None:
-        try:
-            jm = dict(job.meta or {})
-            dbg = dict(jm.get("import_debug") or {})
-            dbg["lesson_candidates"] = [str(getattr(d, "name", "")) for d in lesson_candidates][:200]
-            jm["import_debug"] = dbg
-            job.meta = jm
-            job.save_meta()
-        except Exception:
-            pass
-    
-    # If no lesson candidates found in the current module_dir, but there are subfolders,
-    # it might be a nested structure where lessons are one level deeper.
-    if not lesson_candidates:
-        all_subdirs = [d for d in module_dir.iterdir() if d.is_dir() and (not _is_noise_lesson_dir(d))]
-        for d in sorted(all_subdirs, key=lambda x: _parse_order(x.name, 999)):
-            inner = [x for x in d.iterdir() if x.is_dir() and (not _is_noise_lesson_dir(x))]
-            if inner:
-                log.info("module_importer: found lesson candidates in subfolder %s", d.name)
-                module_dir = d
-                lesson_candidates = inner
-                break
-
-    lesson_dirs = sorted(lesson_candidates, key=lambda x: _parse_order(x.name, 999))
-
-    try:
-        module_dir_abs = module_dir.resolve()
-    except Exception:
-        module_dir_abs = module_dir
-
-    root_as_lesson = False
-    if not lesson_dirs:
-        # Some ZIPs come as a flat folder: theory files are placed directly in module root.
-        # In this case we import the module root as a single lesson.
-        root_as_lesson = True
-        lesson_dirs = [module_dir]
-
-    if root_as_lesson:
-        root_files = sorted([p for p in module_dir.iterdir() if p.is_file() and not _should_ignore_file(p)])
-        # Ideal behavior for flat modules: if there are multiple files directly in module root,
-        # import each file as a separate material lesson (no quiz).
-        if len(root_files) > 1:
-            lesson_specs = []
-            extra_assets = []
-            for i, fp in enumerate(sorted(root_files, key=lambda x: (_parse_order(x.name, 999), x.name.lower())), start=1):
-                lesson_specs.append((i, _guess_title(fp.stem), [fp]))
-        else:
-            # Single-file (or no-file) flat module.
-            lesson_specs = [(1, module_title, root_files)]
-            extra_assets = []
-    else:
-        # Mixed mode: module has lesson folders AND files in module root.
-        # Treat root-level files as their own lesson(s) instead of dropping them.
-        root_files = sorted([p for p in module_dir.iterdir() if p.is_file() and not _should_ignore_file(p)])
-        root_theory_files = [p for p in root_files if _is_theory_file(p)]
-
-        lesson_specs = []
-        extra_assets = []
-        nested_order = 0
-
-        if root_files:
-            if len(root_theory_files) > 1:
-                root_theory_files = sorted(root_theory_files, key=lambda x: _parse_order(x.name, 999))
-                for tf in root_theory_files:
-                    lesson_specs.append((_parse_order(tf.name, 999), _guess_title(tf.stem), [tf], module_dir))
-                root_extra_assets = [p for p in root_files if p not in set(root_theory_files)]
-                if root_extra_assets:
-                    base = max([_parse_order(tf.name, 999) for tf in (root_theory_files or [])] + [0])
-                    for j, fp in enumerate(
-                        sorted(root_extra_assets, key=lambda x: (_parse_order(x.name, 999), x.name.lower())),
-                        start=1,
-                    ):
-                        lesson_specs.append((base + j, _guess_title(fp.stem), [fp], module_dir))
-            else:
-                title0 = _guess_title(module_dir.name) or module_title
-                lesson_specs.append((_parse_order(module_dir.name, 0), title0, root_files, module_dir))
-
-        for i, ld in enumerate(lesson_dirs, start=1):
-            # Product rule:
-            # - Any directory under module root is imported as a SINGLE folder lesson (catalog).
-            # - Files inside are assets of that folder (including nested folders), not separate submodules.
-            if ld.is_dir():
-                files2 = _list_files_recursive(ld)
-                files2 = [p for p in files2 if not _should_ignore_file(p)]
-                if not files2:
+        # Phase 1: validation/extraction/upload, no DB mutations.
+        for spec in specs:
+            _set_job_detail(f"Подготовка: {spec['title']}")
+            theory = "" if spec["folder"] or spec["general"] else _theory_from_files(spec["files"])
+            spec["theory"] = theory
+            spec["requires_quiz"] = False  # Tests are a separate, reviewed authoring action.
+            spec["assets"] = []
+            for fp in sorted(spec["files"], key=lambda p: _asset_sort_key(fp=p, lesson_root=spec["root"])):
+                source = _source_path(fp, module_dir)
+                rel_name = normalize_name(fp.relative_to(spec["root"]).as_posix())
+                if len(rel_name) > 400:
+                    raise ValueError(f"Слишком длинное имя файла: {rel_name[:80]}")
+                with fp.open("rb") as stream:
+                    source_checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+                if source_hashes.get(source) == source_checksum:
+                    spec["assets"].append({"source": source, "filename": rel_name, "key": None,
+                                           "source_checksum": source_checksum, "source_unchanged": True})
                     continue
-
-                lesson_specs.append((_parse_order(ld.name, i), _guess_title(ld.name), files2, ld, None, True))
-                continue
-
-            direct_files = []
-
-            # No direct files and no subdirs: ignore.
-            files2 = _list_files_recursive(ld)
-            files2 = [p for p in files2 if not _should_ignore_file(p)]
-            if files2:
-                lesson_specs.append((_parse_order(ld.name, i), _guess_title(ld.name), files2, ld))
-
-    # Add viewable module materials as separate material lessons (no quiz).
-    if module_material_viewable:
-        base = max([int(x[0]) for x in (lesson_specs or [(0, "", [])])] + [0])
-        for j, fp in enumerate(
-            sorted(module_material_viewable, key=lambda x: (_parse_order(x.name, 999), x.name.lower())),
-            start=1,
-        ):
-            lesson_specs.append((base + j, _guess_title(fp.stem), [fp], module_material_dir))
-
-    total_lessons = len(lesson_specs)
-
-    # lesson_specs item formats:
-    # - (order, title, files)
-    # - (order, title, files, lesson_root)
-    # - (order, title, files, lesson_root, outline_path_override)
-    # - (order, title, files, lesson_root, outline_path_override, is_folder)
-    normalized_specs: list[tuple[int, str, list[pathlib.Path], pathlib.Path, str | None, bool]] = []
-    for spec in lesson_specs:
-        if len(spec) == 3:
-            o, t, f = spec  # type: ignore[misc]
-            normalized_specs.append((int(o), str(t), list(f), module_dir, None, False))
-        elif len(spec) == 4:
-            o, t, f, root = spec  # type: ignore[misc]
-            normalized_specs.append((int(o), str(t), list(f), pathlib.Path(root), None, False))
-        elif len(spec) == 5:
-            o, t, f, root, outline_override = spec  # type: ignore[misc]
-            normalized_specs.append((int(o), str(t), list(f), pathlib.Path(root), str(outline_override) if outline_override else None, False))
-        else:
-            o, t, f, root, outline_override, is_folder = spec  # type: ignore[misc]
-            normalized_specs.append(
-                (int(o), str(t), list(f), pathlib.Path(root), str(outline_override) if outline_override else None, bool(is_folder))
-            )
-
-    normalized_specs.sort(key=lambda x: (x[0], x[1].lower()))
-    renum: list[tuple[int, str, list[pathlib.Path], pathlib.Path, str | None, bool]] = []
-    for idx, (_, t, f, root, outline_override, is_folder) in enumerate(normalized_specs, start=1):
-        renum.append((idx, t, f, root, outline_override, is_folder))
-
-    # If this module is flat (no lesson folders) and has multiple files in root,
-    # all lessons are treated as materials-only (requires_quiz=false).
-    flat_multi_root_files = bool(root_as_lesson and len([p for p in module_dir.iterdir() if p.is_file() and not _should_ignore_file(p)]) > 1)
-    material_roots = {module_material_dir.resolve()} if module_material_dir.exists() else set()
-    for i, (order, title, files, lesson_root, outline_override, is_folder) in enumerate(renum, start=1):
-        _set_job_detail(f"lesson {i}/{total_lessons}: {title}")
-
-        outline_path: str | None = outline_override
-        if outline_path is None:
-            try:
+                # Publish the exact original; expensive encoding is a separate outbox job.
+                eff_path, eff_rel, forced_ct = fp, rel_name, None
                 try:
-                    lesson_root_abs = lesson_root.resolve()
-                except Exception:
-                    lesson_root_abs = lesson_root
+                    with eff_path.open("rb") as stream:
+                        checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+                    key = None
+                    mime = forced_ct or mimetypes.guess_type(eff_rel)[0] or "application/octet-stream"
+                    size = eff_path.stat().st_size
+                    if known_hashes.get(source) != checksum:
+                        key = storage_key(staging_module, eff_rel)
+                        # Register BEFORE uploading, including cleanup of partial failures.
+                        uploaded.append(key)
+                        _upload_file(s3=s3, object_key=key, file_path=eff_path)
+                    spec["assets"].append({"source": source, "filename": eff_rel, "key": key,
+                                           "mime": mime, "size": size, "checksum": checksum,
+                                           "source_checksum": source_checksum, "source_unchanged": False})
+                finally:
+                    if eff_path != fp:
+                        eff_path.unlink(missing_ok=True)
+                        if eff_path.parent.name.startswith("corelms_transcode_"):
+                            eff_path.parent.rmdir()
 
-                rel = lesson_root_abs.relative_to(module_dir_abs)
-                parts = [p for p in rel.parts if p and p not in {"_module", "__MACOSX"}]
-                if len(parts) > 1:
-                    outline_path = "/".join(_outline_segments([str(x) for x in parts[:-1]]))
-            except Exception:
-                outline_path = None
-
-        extracted_theory = _theory_from_files(files)
-        extracted_theory_clean = str(extracted_theory or "").strip()
-        extracted_ok = bool(is_useful_quiz_text(extracted_theory_clean))
-
-        non_theory_files = [p for p in files if p.is_file() and not _is_theory_file(p)]
-        has_previewable_assets = any(_is_previewable_lesson_asset(p) for p in non_theory_files)
-
-        # Product rule:
-        # - Generate quizzes for lessons where we can extract meaningful text (PDF/DOCX/TXT/MD).
-        # - Otherwise treat as materials-only (file lesson), even if it's a non-previewable binary.
-        # This avoids generating quizzes from a fallback "file list" markdown.
-        materials_only = not extracted_ok
-        try:
-            if flat_multi_root_files:
-                # Flat modules are usually materials-only, but if we can extract real text,
-                # treat the lesson as quiz-capable even in flat structure.
-                materials_only = (not extracted_ok)
-            elif lesson_root and lesson_root.exists() and lesson_root.is_dir() and lesson_root.resolve() in material_roots:
-                materials_only = True
-            elif is_folder:
-                extracted_ok = False
-                materials_only = True
-                outline_path = None
-            elif outline_path:
-                # Product rule for nested outline folders: view-only content. No quizzes/regens.
-                extracted_ok = False
-                materials_only = True
-        except Exception:
-            log.debug("module_importer: materials_only rule evaluation failed", exc_info=True)
-
-        theory = extracted_theory_clean
-        content_key = None
-        if not is_folder:
-            if not theory:
-                theory = _lesson_markdown_fallback(module_title=module_title, lesson_title=title, files=files)
-            content_key = f"{pfx}{order:02d}/theory.md"
-            _upload_markdown_text(s3=s3, object_key=content_key, text_value=theory)
-
-        qz = Quiz(type=QuizType.submodule, pass_threshold=70, time_limit=None, attempts_limit=None)
-        db.add(qz)
-        db.flush()
-
-        s = Submodule(
-            module_id=m.id,
-            title=title,
-            content=theory,
-            content_object_key=content_key,
-            order=order,
-            quiz_id=qz.id,
-            requires_quiz=bool(extracted_ok),
-            is_folder=bool(is_folder),
-            outline_path=outline_path,
-        )
-        db.add(s)
-        db.flush()
-
-        if report is not None:
-            report["submodules"] = int(report.get("submodules") or 0) + 1
-
-        # Phase 1: if generate_questions=False (default for fast ingest), create placeholders.
-        # Phase 2: if generate_questions=True (background regen), call AI/Heuristic.
-        if generate_questions and (not materials_only):
-            qs = []
-            if settings.openrouter_enabled:
-                provider_order = choose_llm_provider_order_fast(ttl_seconds=300, use_cache=False)
-                qs = generate_quiz_questions_ai(
-                    title=title,
-                    text=theory or "",
-                    n_questions=5,
-                    min_questions=3,
-                    retries=3,
-                    backoff_seconds=1.0,
-                    provider_order=provider_order,
-                )
-                if qs:
-                    for qi, q in enumerate(qs, start=1):
-                        raw_type = str(getattr(q, "qtype", None) or getattr(q, "type", "") or "").strip().lower()
-                        qtype = "multi" if raw_type == "multi" else "single"
-                        db.add(
-                            Question(
-                                quiz_id=qz.id,
-                                type=QuestionType.single if qtype == "single" else QuestionType.multi,
-                                difficulty=2 if qtype == "multi" else 1,
-                                prompt=str(getattr(q, "prompt", "") or ""),
-                                correct_answer=str(getattr(q, "correct_answer", "") or ""),
-                                explanation=(getattr(q, "explanation", None) if getattr(q, "explanation", None) else None),
-                                concept_tag=f"ok:import:{m.id}:{order}:{qi}",
-                                variant_group=None,
-                            )
-                        )
-                    if report is not None:
-                        report["questions_ai"] = int(report.get("questions_ai") or 0) + len(qs)
-                        report["questions_total"] = int(report.get("questions_total") or 0) + len(qs)
-
-            if not qs:
-                # Fallback to Heuristic
-                generated = generate_quiz_questions_heuristic(
-                    seed=f"{m.id}:{order}",
-                    title=title,
-                    theory_text=theory or "",
-                    target=5,
-                )
-                if generated:
-                    for qi, mcq in enumerate(generated, start=1):
-                        db.add(
-                            Question(
-                                quiz_id=qz.id,
-                                type=QuestionType.single if mcq.qtype == "single" else QuestionType.multi,
-                                difficulty=2 if mcq.qtype == "multi" else 1,
-                                prompt=mcq.prompt,
-                                correct_answer=mcq.correct_answer,
-                                explanation=None,
-                                concept_tag=f"heur:import:{m.id}:{order}:{qi}",
-                                variant_group=None,
-                            )
-                        )
-                    if report is not None:
-                        report["questions_heur"] = int(report.get("questions_heur") or 0) + len(generated)
-                        report["questions_total"] = int(report.get("questions_total") or 0) + len(generated)
+        # Phase 2: short atomic reconciliation, with optimistic conflict detection.
+        if module_id_override:
+            module = lock_module(db, mid, base_revision)
+            if module.is_archived:
+                raise ValueError("Модуль перемещён в архив во время импорта")
+            preserve_progress(db, module)
         else:
-            # Quick placeholder creation for two-phase import.
-            # Materials-only lessons should NOT require quiz, so skip placeholders.
-            if not materials_only:
-                db.add(
-                    Question(
-                        quiz_id=qz.id,
-                        type=QuestionType.single,
-                        difficulty=1,
-                        prompt=(
-                            f"По уроку «{title}» выберите верный вариант.\n"
-                            "A) Подтвердить прочтение и пройти квиз\nB) Пропустить урок\nC) Завершить модуль без проверки\nD) Ничего не делать"
-                        ),
-                        correct_answer="A",
-                        explanation=None,
-                        concept_tag=f"needs_regen:import:{m.id}:{order}:1",
-                        variant_group=None,
-                    )
-                )
-                if report is not None:
-                    report["needs_regen"] = int(report.get("needs_regen") or 0) + 1
-                    report["questions_total"] = int(report.get("questions_total") or 0) + 1
+            module = Module(id=mid, title=module_title, description=f"Материалы модуля «{module_title}».",
+                            difficulty=1, category="Обучение", is_active=False, storage_prefix=prefix)
+            db.add(module)
+            db.flush()
+        module.storage_prefix = prefix
+        old_subs = list(db.scalars(select(Submodule).where(Submodule.module_id == mid).order_by(Submodule.order)))
+        assets = module_assets(db, mid)
+        linked = dict(db.execute(select(SubmoduleAssetMap.asset_id, SubmoduleAssetMap.submodule_id).where(
+            SubmoduleAssetMap.submodule_id.in_([s.id for s in old_subs])
+        )).all())
+        used: set[uuid.UUID] = set()
+        max_order = max([s.order for s in old_subs] + [0])
+        for spec in specs:
+            sub = None
+            new_lesson = False
+            if not spec["general"]:
+                candidates = [s for s in old_subs if s.id not in used and s.source_path == spec["source"]]
+                if not candidates:
+                    # Conservative legacy adoption: only an unambiguous title + kind.
+                    # Never match by order or a fuzzy title; ambiguity must not move progress.
+                    candidates = [s for s in old_subs if s.id not in used and not s.source_path
+                                  and normalize_name(s.title).casefold() == normalize_name(spec["title"]).casefold()
+                                  and s.is_folder == spec["folder"]]
+                if len(candidates) == 1:
+                    sub = candidates[0]
+                    report["lessons_updated"] += 1
+                    if sub.content != spec["theory"]:
+                        if sub.content_mode == "manual":
+                            report["warnings"].append(f"«{sub.title}»: ручной текст сохранён; обновлены только вложения.")
+                        else:
+                            snapshot_lesson(db, sub)
+                            sub.content = spec["theory"]
+                            sub.content_object_key = None
+                            if sub.requires_quiz:
+                                report["warnings"].append(f"«{sub.title}»: текст обновлён; проверьте соответствие сохранённого теста.")
+                    # Names, ordering, quiz policy, archived state and manual text remain intact.
+                    sub.source_path = spec["source"]
+                else:
+                    if candidates:
+                        report["warnings"].append(f"«{spec['title']}»: неоднозначное сопоставление; создан новый материал, старые сохранены.")
+                    quiz = Quiz(type=QuizType.submodule, pass_threshold=70, attempts_limit=0)
+                    db.add(quiz)
+                    db.flush()
+                    max_order += 1
+                    sub = Submodule(module_id=mid, title=spec["title"][:300], content=spec["theory"],
+                                    order=max_order, quiz_id=quiz.id, requires_quiz=spec["requires_quiz"],
+                                    is_folder=spec["folder"], source_path=spec["source"], content_mode="import")
+                    db.add(sub)
+                    db.flush()
+                    new_lesson = True
+                    report["lessons_added"] += 1
+                used.add(sub.id)
+                remember_quiz_version(db, sub)
+                report["submodules"] += 1
 
-        per_asset_order = 1
-        # If this module is flat (no lesson folders), attach non-theory assets to the first lesson.
-        files_for_assets = files
-        if root_as_lesson and i == 1 and extra_assets:
-            files_for_assets = list(files) + list(extra_assets)
-
-        seen_asset_paths: set[pathlib.Path] = set()
-        for fp in files_for_assets:
-            try:
-                if not fp.exists() or not fp.is_file():
-                    continue
-            except Exception:
-                continue
-            if _should_ignore_file(fp):
-                continue
-            seen_asset_paths.add(fp)
-
-        for fp in sorted(seen_asset_paths, key=lambda x: _asset_sort_key(fp=x, lesson_root=lesson_root)):
-            rel_name = fp.name
-            try:
-                rel = fp.relative_to(lesson_root)
-                rel_name = str(rel.as_posix())
-            except Exception:
-                rel_name = fp.name
-
-            _set_job_detail(f"asset: {rel_name}")
-            eff_path, eff_rel, forced_ct = _maybe_transcode_video(file_path=fp, rel_name=rel_name)
-            object_key = f"{pfx}{order:02d}/{eff_rel}"
-            mime, size = _upload_file(s3=s3, object_key=object_key, file_path=eff_path)
-            if forced_ct:
-                mime = forced_ct
-            try:
-                if eff_path != fp:
-                    eff_path.unlink(missing_ok=True)
-                    try:
-                        eff_path.parent.rmdir()
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            asset = db.scalar(select(ContentAsset).where(ContentAsset.object_key == object_key))
-            if asset is None:
-                asset = ContentAsset(
-                    bucket=settings.s3_bucket,
-                    object_key=object_key,
-                    original_filename=eff_rel,
-                    mime_type=mime,
-                    size_bytes=size,
-                    checksum_sha256=None,
-                    created_by=None,
-                )
-                db.add(asset)
+            for data in spec["assets"]:
+                target = sub.id if sub else None
+                matches = [a for a in assets if a.source_path == data["source"]]
+                if not matches:
+                    matches = [a for a in assets if not a.source_path and linked.get(a.id) == target
+                               and normalize_name(a.original_filename).casefold() == normalize_name(data["filename"]).casefold()]
+                if len(matches) > 1:
+                    raise ValueError(f"Несколько файлов соответствуют {data['filename']}. Уточните структуру в редакторе.")
+                if matches and not matches[0].source_path and matches[0].created_by is not None:
+                    raise ValueError(f"«{data['filename']}» уже добавлен вручную. Переименуйте файл в ZIP или редакторе, чтобы импорт не заменил его без явной привязки к источнику.")
+                asset = require_owned_asset(db, module, matches[0].id) if matches else None
+                if asset is None:
+                    if not data["key"]:
+                        raise ValueError("Файл перемещён в редакторе во время подготовки. Повторите импорт.")
+                    asset = ContentAsset(module_id=mid, bucket=bucket, object_key=data["key"],
+                        original_filename=data["filename"], mime_type=data["mime"], size_bytes=data["size"],
+                        checksum_sha256=data["checksum"], source_checksum_sha256=data["source_checksum"], source_path=data["source"], order=len(assets) + 1)
+                    db.add(asset)
+                    db.flush()
+                    assets.append(asset)
+                    if sub:
+                        order = int(db.scalar(select(func.max(SubmoduleAssetMap.order)).where(SubmoduleAssetMap.submodule_id == sub.id)) or 0) + 1
+                        db.add(SubmoduleAssetMap(submodule_id=sub.id, asset_id=asset.id, order=order))
+                        db.flush()
+                        linked[asset.id] = sub.id
+                    report["files_added"] += 1
+                elif not data["source_unchanged"] and asset.checksum_sha256 != data["checksum"]:
+                    if not data["key"]:
+                        raise ValueError("Версия файла изменилась. Повторите импорт.")
+                    snapshot_asset(db, asset)
+                    asset.object_key, asset.bucket = data["key"], bucket
+                    asset.mime_type, asset.size_bytes = data["mime"], data["size"]
+                    asset.checksum_sha256 = data["checksum"]
+                    asset.source_checksum_sha256 = data["source_checksum"]
+                    asset.source_path = data["source"]
+                    asset.module_id = mid
+                    report["files_updated"] += 1
+                else:
+                    asset.source_path = data["source"]
+                    asset.source_checksum_sha256 = data["source_checksum"]
+                    report["files_unchanged"] += 1
+                    if data["key"]:
+                        s3.delete_object(Bucket=bucket, Key=data["key"])
+                        uploaded.remove(data["key"])
+                if sub and new_lesson and not sub.is_folder and sub.primary_asset_id is None:
+                    sub.primary_asset_id = asset.id
+                from app.services.media import stage_rendition
                 db.flush()
-
-            db.add(
-                SubmoduleAssetMap(
-                    submodule_id=s.id,
-                    asset_id=asset.id,
-                    order=per_asset_order,
-                )
-            )
-            per_asset_order += 1
-
-            if report is not None:
-                report["lesson_assets"] = int(report.get("lesson_assets") or 0) + 1
-
-    try:
-        any_quiz_required = bool(
-            db.scalar(select(func.count(Submodule.id)).where(Submodule.module_id == m.id, Submodule.requires_quiz == True))  # noqa: E712
-            or 0
-        )
-        if not any_quiz_required:
-            m.final_quiz_id = None
-            db.add(m)
+                stage_rendition(db, asset)
+                report["lesson_assets" if sub else "module_assets"] += 1
+        report["lessons_kept"] = len([s for s in old_subs if s.id not in used])
+        db.flush()
+        if not module_id_override and module.final_quiz_id is None and db.scalar(select(Submodule.id).where(
+            Submodule.module_id == mid, Submodule.requires_quiz.is_(True), Submodule.is_archived.is_(False)
+        ).limit(1)):
+            final = Quiz(type=QuizType.final, pass_threshold=70, attempts_limit=3)
+            db.add(final)
+            db.flush()
+            module.final_quiz_id = final.id
+        module.content_revision += 1
+        report["content_revision"] = module.content_revision
+        db.flush()
+        return mid
     except Exception:
-        log.debug("module_importer: failed to update final_quiz_id", exc_info=True)
-
-    db.commit()
-    return m.id
+        db.rollback()
+        # Only unique staging keys from THIS attempt; never a live or source object.
+        for key in uploaded:
+            try:
+                s3.delete_object(Bucket=bucket, Key=key)
+            except Exception:
+                log.warning("Could not remove staged object %s", key)
+        raise

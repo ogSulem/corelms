@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,3 +27,9 @@ class LearningEvent(Base):
 
     meta: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+
+
+# Same invariant as migration 0004, also enforced in SQLite test databases.
+Index("ux_learning_events_read_once", LearningEvent.user_id, LearningEvent.ref_id, unique=True,
+      postgresql_where=text("type = 'submodule_opened' AND meta = 'read'"),
+      sqlite_where=text("type = 'submodule_opened' AND meta = 'read'"))

@@ -116,6 +116,10 @@ def get_s3_client(*, endpoint_url: str | None = None):
     )
 
 
+def effective_bucket() -> str:
+    return _rt_str(_runtime_s3(), "s3_bucket") or settings.s3_bucket
+
+
 def upload_fileobj_with_retry(
     *,
     s3,
@@ -514,13 +518,14 @@ def presign_put(*, object_key: str, content_type: str | None, expires_seconds: i
 def presign_get(
     *,
     object_key: str,
+    bucket: str | None = None,
     expires_seconds: int | None = None,
     response_content_type: str | None = None,
     response_content_disposition: str | None = None,
 ) -> str:
     ensure_bucket_exists()
     rt = _runtime_s3()
-    bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
+    bucket = bucket or _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = _get_presign_client()
     try:
         caller_provided_expires = expires_seconds is not None

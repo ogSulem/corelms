@@ -1,5 +1,6 @@
 import * as nextHeaders from "next/headers";
 import { NextResponse } from "next/server";
+import { allowedAuthRequest } from "../_request";
 import { sharedRefresh } from "../_refresh_shared";
 import { clearAuthCookies, setAccessCookie, setRefreshCookie } from "../_cookies";
 
@@ -9,6 +10,7 @@ const API_BASE_URL =
   "http://backend:8000";
 
 export async function POST(req: Request) {
+  if (!allowedAuthRequest(req)) return NextResponse.json({ ok: false, error_code: "invalid_origin" }, { status: 403 });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const cookieStore = await (nextHeaders as any).cookies();
   const refresh = cookieStore.get("core_refresh")?.value;
@@ -24,12 +26,14 @@ export async function POST(req: Request) {
       xRealIp: req.headers.get("x-real-ip"),
       xForwardedFor: req.headers.get("x-forwarded-for"),
       forwarded: req.headers.get("forwarded"),
+      userAgent: req.headers.get("user-agent"),
+      origin: req.headers.get("origin"),
     },
   });
 
   if (!result.ok) {
-    if (result.status === 502) {
-      return NextResponse.json({ ok: false, error_code: "upstream_unavailable" }, { status: 502 });
+    if (result.status !== 401 && result.status !== 403) {
+      return NextResponse.json({ ok: false, error_code: "upstream_unavailable" }, { status: result.status });
     }
 
     const out = NextResponse.json({ ok: false, error_code: "refresh_failed" }, { status: 401 });
@@ -44,7 +48,7 @@ export async function POST(req: Request) {
     upstreamExpiresIn: Number.isFinite(Number(result.expiresIn)) ? Number(result.expiresIn) : null,
   });
 
-  setRefreshCookie(response, String(result.nextRefresh || ""), {
+  if (result.nextRefresh) setRefreshCookie(response, result.nextRefresh, {
     refreshExpiresIn: Number.isFinite(Number(result.refreshExpiresIn)) ? Number(result.refreshExpiresIn) : null,
   });
 

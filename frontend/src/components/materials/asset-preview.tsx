@@ -1,0 +1,219 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { AlertCircle, Download, FileText, Loader2, Maximize2, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { apiFetch } from "@/lib/api";
+import { columnLabel, downloadMaterial, fileExtension, formatBytes, materialKind, type Material } from "@/lib/materials";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/cn";
+
+type ViewerState = { state: string; source_version: number; mime_type: string | null; error: string | null; can_retry: boolean };
+
+type PreviewData = {
+  kind: "table" | "document" | "text";
+  sheets?: string[];
+  sheet?: number;
+  rows?: string[][];
+  blocks?: { type: "heading" | "paragraph"; text: string }[];
+  text?: string;
+  truncated: boolean;
+  notice?: string;
+};
+
+export function AssetPreview({ asset, onClose, className }: { asset: Material; onClose?: () => void; className?: string }) {
+  return <PreviewContent key={`${asset.asset_id}:${asset.version || 1}`} asset={asset} onClose={onClose} className={className} />;
+}
+
+function PreviewContent({ asset, onClose, className }: { asset: Material; onClose?: () => void; className?: string }) {
+  const [data, setData] = useState<PreviewData | null>(null);
+  const [sheet, setSheet] = useState(0);
+  const [retry, setRetry] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [rendition, setRendition] = useState<ViewerState | null>(null);
+  const [viewerError, setViewerError] = useState<string | null>(null);
+  const [textFallback, setTextFallback] = useState(false);
+  const [preparingAgain, setPreparingAgain] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const playback = useRef<{ time: number; paused: boolean } | null>(null);
+  const [pdfSupported, setPdfSupported] = useState(true);
+  useEffect(() => { setPdfSupported(navigator.pdfViewerEnabled !== false); }, []);
+  const originalKind = materialKind(asset.original_filename);
+  const needsPreparation = originalKind === "video" || originalKind === "document";
+  const copyAvailable = rendition?.state === "ready";
+  const copyReady = copyAvailable && !textFallback;
+  const kind = copyReady ? rendition.mime_type === "application/pdf" ? "pdf" : "video" : originalKind;
+  const source = `/api/backend/assets/${encodeURIComponent(asset.asset_id)}/stream?variant=${copyReady ? "browser" : "original"}&v=${asset.version || 1}&retry=${retry}`;
+  const native = ["pdf", "image", "audio", "video"].includes(kind);
+  const showPreparation = needsPreparation && !copyReady && (originalKind === "document" ? !textFallback : !["mp4", "webm"].includes(fileExtension(asset.original_filename)));
+  const pending = !rendition || ["pending", "queued", "processing"].includes(rendition.state);
+
+  useEffect(() => {
+    if (!needsPreparation) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    let running = false;
+    let complete = false;
+    const poll = async () => {
+      if (running || complete || controller.signal.aborted) return;
+      if (document.hidden) { timer = setTimeout(poll, 15000); return; }
+      running = true;
+      try {
+        const next = await apiFetch<ViewerState>(`/assets/${asset.asset_id}/viewer`, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        if (next.state === "ready" && videoRef.current) playback.current = { time: videoRef.current.currentTime, paused: videoRef.current.paused };
+        setRendition(next); setViewerError(null);
+        complete = !["pending", "queued", "processing"].includes(next.state);
+      } catch (e) {
+        if (!controller.signal.aborted) setViewerError(e instanceof Error ? e.message : "Не удалось получить статус подготовки");
+        complete = true;
+      } finally {
+        running = false;
+        if (!complete && !controller.signal.aborted) timer = setTimeout(poll, 4000);
+      }
+    };
+    const visible = () => { if (!document.hidden) { clearTimeout(timer); void poll(); } };
+    document.addEventListener("visibilitychange", visible);
+    void poll();
+    return () => { controller.abort(); clearTimeout(timer); document.removeEventListener("visibilitychange", visible); };
+  }, [asset.asset_id, needsPreparation, retry]);
+
+  async function retryPreparation() {
+    setPreparingAgain(true); setViewerError(null);
+    try {
+      await apiFetch(`/assets/${asset.asset_id}/viewer/retry`, { method: "POST" });
+      setRendition(null); setRetry(n => n + 1);
+    } catch (e) { setViewerError(e instanceof Error ? e.message : "Не удалось повторить подготовку"); }
+    finally { setPreparingAgain(false); }
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setReady(false);
+    setError(null);
+    if (showPreparation || kind === "download") { setLoading(false); return () => controller.abort(); }
+    const load = async () => {
+      try {
+        if (native) {
+          // Auth renewal and an S3 existence check before mounting native viewers.
+          await apiFetch(`/assets/${asset.asset_id}/presign-download?action=view`, { signal: controller.signal });
+          if (!controller.signal.aborted) setReady(true);
+        } else {
+          const result = await apiFetch<PreviewData>(`/assets/${asset.asset_id}/preview?sheet=${sheet}`, { signal: controller.signal });
+          if (!controller.signal.aborted) setData(result);
+        }
+      } catch (e) {
+        if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "Не удалось открыть файл");
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [asset.asset_id, kind, native, retry, sheet, copyReady, showPreparation]);
+
+  async function download() {
+    setDownloading(true);
+    setDownloadError(null);
+    try { await downloadMaterial(asset.asset_id); }
+    catch (e) { setDownloadError(e instanceof Error ? e.message : "Не удалось скачать файл"); }
+    finally { setDownloading(false); }
+  }
+
+  const mediaError = () => setError("Браузер не смог воспроизвести этот формат. Скачайте оригинал или попробуйте открыть файл в другом браузере.");
+  const width = data?.rows?.reduce((max, row) => Math.max(max, row.length), 0) || 0;
+
+  return (
+    <section aria-label={`Просмотр: ${asset.original_filename}`} className={cn("overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm", className)}>
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 sm:px-5">
+        <div className="flex min-w-0 flex-[1_1_192px] items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-700"><FileText size={20} /></div>
+          <div className="min-w-0">
+            <h3 className="break-words text-sm font-semibold text-zinc-900">{asset.original_filename}</h3>
+            <p className="mt-0.5 text-xs text-zinc-500">{fileExtension(asset.original_filename).toUpperCase() || "Файл"} · {formatBytes(asset.size_bytes)}{asset.version && asset.version > 1 ? ` · Версия ${asset.version}` : ""}</p>
+          </div>
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+          {kind === "pdf" && ready && <a href={source} target="_blank" rel="noopener noreferrer" title="Открыть PDF в отдельной вкладке" className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100"><Maximize2 size={18} /><span className="sr-only">Открыть PDF в отдельной вкладке</span></a>}
+          <Button variant="outline" size="sm" className="gap-2 rounded-lg border-zinc-200 text-xs font-medium normal-case tracking-normal" onClick={() => void download()} disabled={downloading}>
+            {downloading ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />} Скачать оригинал
+          </Button>
+          {onClose && <button type="button" onClick={onClose} aria-label="Закрыть предпросмотр" className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100"><X size={18} /></button>}
+        </div>
+      </header>
+      {needsPreparation && <div className={cn("flex flex-wrap items-center justify-between gap-2 border-b px-5 py-3 text-xs leading-6", copyAvailable ? "border-emerald-100 bg-emerald-50/60 text-emerald-800" : "border-amber-100 bg-amber-50/60 text-amber-900")}>
+        <p className="min-w-0 flex-1">{copyAvailable ? originalKind === "video" ? "Для браузера: MP4 · H.264/AAC. Исходный файл не изменён." : "Для браузера подготовлена PDF-копия. Исходный документ не изменён." : viewerError || rendition?.error || (originalKind === "video" ? "Готовится совместимая видеокопия. Оригинал уже можно скачать." : "Готовится PDF-копия с оформлением документа. Пока доступен оригинал и быстрый просмотр текста.")}</p>
+        {copyAvailable && textFallback && <button type="button" className="font-medium underline" onClick={() => setTextFallback(false)}>Открыть PDF-копию</button>}
+        {viewerError && <button type="button" className="font-medium underline" onClick={() => setRetry(n => n + 1)}>Обновить статус</button>}
+        {!pending && !copyAvailable && rendition?.can_retry && <button type="button" disabled={preparingAgain} className="font-medium underline disabled:opacity-40" onClick={() => void retryPreparation()}>{preparingAgain ? "Запускаем…" : "Повторить подготовку"}</button>}
+      </div>}
+      {downloadError && <p role="alert" className="border-b border-rose-100 bg-rose-50 px-5 py-3 text-sm text-rose-700">{downloadError}</p>}
+      {loading ? (
+        <div role="status" className="flex min-h-60 flex-col items-center justify-center gap-3 text-sm text-zinc-500"><Loader2 className="animate-spin text-amber-600" size={25} />Готовим предпросмотр…</div>
+      ) : error ? (
+        <div role="alert" className="flex min-h-60 flex-col items-center justify-center gap-4 p-8 text-center">
+          <AlertCircle size={30} className="text-amber-600" />
+          <p className="max-w-lg text-sm leading-relaxed text-zinc-700">{error}</p>
+          <div className="flex flex-wrap justify-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setRetry(v => v + 1)} className="gap-2 rounded-lg text-xs font-medium normal-case tracking-normal"><RefreshCw size={15} />Повторить</Button>
+            <Button size="sm" onClick={() => void download()} disabled={downloading} className="rounded-lg text-xs font-medium normal-case tracking-normal">Скачать файл</Button>
+          </div>
+        </div>
+      ) : showPreparation ? (
+        <div role="status" className="flex min-h-72 flex-col items-center justify-center gap-4 p-6 text-center">
+          {pending && !viewerError ? <Loader2 size={30} className="animate-spin text-amber-600" /> : <FileText size={32} className="text-zinc-300" />}
+          <h4 className="text-base font-medium text-zinc-800">{pending && !viewerError ? "Подготавливаем материал для браузера" : "Оригинал доступен для скачивания"}</h4>
+          <p className="max-w-lg text-sm leading-7 text-zinc-500">{originalKind === "video" ? "Видео преобразуется в MP4 в фоне. Это может занять несколько минут; страницу можно закрыть." : "Чтобы не потерять таблицы, изображения и разметку, полный документ открывается как PDF. Текстовый просмотр — упрощённый."}</p>
+          {originalKind === "document" && <Button variant="outline" size="sm" className="rounded-xl text-xs font-medium normal-case tracking-normal" onClick={() => setTextFallback(true)}>Быстрый просмотр текста</Button>}
+        </div>
+      ) : kind === "download" ? (
+        <div className="flex min-h-60 flex-col items-center justify-center gap-3 p-8 text-center">
+          <FileText size={36} className="text-zinc-300" />
+          <p className="font-medium text-zinc-800">Файл доступен для скачивания</p>
+          <p className="max-w-md text-sm leading-relaxed text-zinc-500">У этого формата нет встроенного просмотра. Откройте оригинал в подходящей программе — файл не потерян.</p>
+        </div>
+      ) : native && ready ? (
+        <div className="bg-zinc-50">
+          {kind === "pdf" && !pdfSupported && <p className="px-6 py-12 text-center text-sm leading-7 text-zinc-600">Встроенный просмотр PDF в этом браузере недоступен. Скачайте оригинал или откройте файл в отдельной вкладке.</p>}
+          {kind === "pdf" && pdfSupported && <iframe key={retry} title={`PDF: ${asset.original_filename}`} src={source} className="h-[72vh] min-h-[400px] w-full border-0" />}
+          {kind === "image" && <img src={source} alt={asset.original_filename} onError={mediaError} className="mx-auto max-h-[75vh] max-w-full object-contain" />}
+          {kind === "video" && <video ref={videoRef} src={source} onLoadedMetadata={() => {
+            const video = videoRef.current, saved = playback.current;
+            if (video && saved) { video.currentTime = Math.min(saved.time, video.duration || saved.time); if (!saved.paused) void video.play().catch(() => {}); playback.current = null; }
+          }} controls playsInline preload="metadata" onError={mediaError} className="max-h-[75vh] w-full bg-zinc-950"><track kind="captions" /></video>}
+          {kind === "audio" && <div className="p-6 sm:p-10"><audio src={source} controls preload="metadata" onError={mediaError} className="w-full"><track kind="captions" /></audio></div>}
+        </div>
+      ) : data?.kind === "table" ? (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-3">
+            <label className="flex items-center gap-2 text-sm font-medium text-zinc-700">Лист
+              <select aria-label="Лист таблицы" value={sheet} onChange={e => setSheet(Number(e.target.value))} className="max-w-[220px] rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm">
+                {data.sheets?.map((name, index) => <option key={index} value={index}>{name}</option>)}
+              </select>
+            </label>
+            <span className="text-xs text-zinc-500">{data.rows?.length || 0} строк в предпросмотре · Только чтение</span>
+          </div>
+          {data.rows?.length ? <div className="max-h-[65vh] overflow-auto" tabIndex={0} role="region" aria-label="Содержимое таблицы">
+            <table className="w-full border-collapse text-left text-xs">
+              <thead className="sticky top-0 z-10 bg-zinc-100 text-zinc-600"><tr><th scope="col" className="w-10 border-b border-r border-zinc-200 px-3 py-2"><span className="sr-only">Строка</span></th>{Array.from({ length: width }, (_, i) => <th scope="col" key={i} className="min-w-28 border-b border-r border-zinc-200 px-3 py-2 text-center font-medium">{columnLabel(i)}</th>)}</tr></thead>
+              <tbody>{data.rows.map((row, i) => <tr key={i} className="even:bg-zinc-50/60 hover:bg-amber-50/50"><th scope="row" className="sticky left-0 border-b border-r border-zinc-200 bg-zinc-100 px-3 py-2 text-right font-normal text-zinc-500">{i + 1}</th>{row.map((cell, j) => <td key={j} title={cell} className={cn("max-w-md whitespace-pre-wrap break-words border-b border-r border-zinc-100 px-3 py-2 align-top leading-relaxed", cell.startsWith("=") && "font-mono text-emerald-800")}>{cell}</td>)}</tr>)}</tbody>
+            </table>
+          </div> : <p className="p-10 text-center text-sm text-zinc-500">Этот лист пуст.</p>}
+        </>
+      ) : data?.kind === "document" ? (
+        <article className="max-h-[70vh] space-y-3 overflow-auto p-5 text-sm leading-7 text-zinc-800 sm:p-8">
+          {data.blocks?.length ? data.blocks.map((block, i) => block.type === "heading" ? <h4 key={i} className="border-b border-zinc-100 pb-2 pt-4 text-lg font-semibold">{block.text}</h4> : <p key={i} className="whitespace-pre-wrap">{block.text}</p>) : <p className="text-zinc-500">Текст не найден. Документ может состоять из изображений — скачайте оригинал.</p>}
+        </article>
+      ) : data?.kind === "text" ? <pre className="max-h-[65vh] overflow-auto whitespace-pre-wrap break-words p-5 font-mono text-sm leading-6 text-zinc-800">{data.text || "Файл не содержит текста."}</pre> : null}
+      {!loading && !error && (data?.notice || data?.truncated) && <div className="space-y-1 border-t border-zinc-200 bg-amber-50/50 px-5 py-3 text-xs leading-relaxed text-zinc-600">
+        {data.notice && <p>{data.notice}</p>}
+        {data.truncated && <p className="font-medium text-amber-800">Показана часть документа: до 500 строк и 60 столбцов таблицы или ограниченный объём текста. Полная версия — в оригинале.</p>}
+      </div>}
+      <footer className="flex items-center gap-2 border-t border-zinc-100 px-5 py-2 text-[11px] text-zinc-500"><ShieldCheck size={13} />Файл не передаётся внешним сервисам просмотра</footer>
+    </section>
+  );
+}

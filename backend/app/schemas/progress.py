@@ -26,4 +26,9 @@ class ModuleProgressResponse(BaseModel):
     final_passed: bool
     final_best_score: int | None = None
     completed: bool
+    current_completed: bool = False
+    has_updates: bool = False
+    completed_at: str | None = None
+    completed_revision: int | None = None
+    content_revision: int = 1
     submodules: list[SubmoduleStatus]

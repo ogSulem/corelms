@@ -1,7 +1,6 @@
 import * as nextHeaders from "next/headers";
 import { NextResponse } from "next/server";
 
-import { clearAuthCookies } from "../../auth/_cookies";
 
 const API_BASE_URL =
   process.env.CORE_INTERNAL_API_BASE_URL ||
@@ -91,7 +90,9 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     cache: "no-store",
   };
 
-  const timeoutMs = Number.parseInt(process.env.BACKEND_PROXY_TIMEOUT_MS || "180000", 10) || 180000;
+  const isContentUpload = req.method === "POST" && path[0] === "admin" && path[1] === "content" && ["assets", "reimport"].includes(path[path.length - 1]);
+  const defaultTimeout = isContentUpload ? 900000 : 180000;
+  const timeoutMs = Number.parseInt((isContentUpload ? process.env.BACKEND_PROXY_UPLOAD_TIMEOUT_MS : process.env.BACKEND_PROXY_TIMEOUT_MS) || String(defaultTimeout), 10) || defaultTimeout;
   const ac = new AbortController();
   const t = isSse ? null : setTimeout(() => ac.abort(), Math.max(1000, timeoutMs));
 
@@ -141,9 +142,6 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     headers: responseHeaders,
   });
 
-  if (res.status === 401 && !isSse) {
-    clearAuthCookies(out);
-  }
 
   return out;
 }

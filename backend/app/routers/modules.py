@@ -23,6 +23,8 @@ from app.models.user import User
 from app.schemas.modules_overview import ModulesOverviewResponse
 from app.schemas.module import ModulePublic, SubmoduleAssetsResponse, SubmodulePublic
 from app.services.modules import ModuleService
+from app.services.access import require_module_access, require_submodule_access
+from app.services.learning import LearningService
 from app.services.skills import record_activity_and_award_xp
 
 router = APIRouter(prefix="/modules", tags=["modules"])
@@ -66,7 +68,7 @@ def list_modules(db: Session = Depends(get_db), user: User = Depends(get_current
 
 
 @router.get("/events")
-async def modules_events(request: Request, _: User = Depends(get_current_user)):
+async def modules_events(request: Request, user: User = Depends(get_current_user)):
     async def gen():
         loop = asyncio.get_running_loop()
         q: asyncio.Queue[object] = asyncio.Queue()
@@ -185,10 +187,8 @@ async def modules_events(request: Request, _: User = Depends(get_current_user)):
 
 
 @router.get("/{module_id}", response_model=ModulePublic)
-def get_module(module_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    m = db.scalar(select(Module).where(Module.id == module_id))
-    if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+def get_module(module_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    m = require_module_access(db, user, module_id)
 
     return {
         "id": str(m.id),
@@ -202,14 +202,12 @@ def get_module(module_id: str, db: Session = Depends(get_db), _: User = Depends(
 
 @router.post("/{module_id}/open")
 def open_module(
-    module_id: str,
+    module_id: uuid.UUID,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     _: object = rate_limit(key_prefix="module_open", limit=120, window_seconds=60),
 ):
-    m = db.scalar(select(Module).where(Module.id == module_id))
-    if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+    m = require_module_access(db, user, module_id, lock=True)
 
     # Count module open as activity for streak, but do not award XP.
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
@@ -217,7 +215,7 @@ def open_module(
     # Note: do NOT introduce a new LearningEventType (would require DB enum migration).
     # Reuse submodule_opened with ref_id=None and encode action in meta.
     try:
-        meta = json.dumps({"action": "module_open", "module_id": str(m.id)}, ensure_ascii=False)
+        meta = json.dumps({"action": "module_open", "module_id": str(m.id), "content_revision": m.content_revision}, ensure_ascii=False)
     except Exception:
         meta = "module_open"
 
@@ -229,13 +227,15 @@ def open_module(
             meta=meta,
         )
     )
+    LearningService(db).remember_completions(m, user)
     db.commit()
     return {"ok": True}
 
 
 @router.get("/{module_id}/submodules", response_model=list[SubmodulePublic])
-def list_submodules(module_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    rows = db.scalars(select(Submodule).where(Submodule.module_id == module_id).order_by(Submodule.order)).all()
+def list_submodules(module_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    require_module_access(db, user, module_id)
+    rows = db.scalars(select(Submodule).where(Submodule.module_id == module_id, Submodule.is_archived.is_(False)).order_by(Submodule.order)).all()
     return [
         {
             "id": str(s.id),
@@ -252,15 +252,16 @@ def list_submodules(module_id: str, db: Session = Depends(get_db), _: User = Dep
 
 
 @router.get("/submodules/{submodule_id}/assets", response_model=SubmoduleAssetsResponse)
-def submodule_assets(submodule_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+def submodule_assets(submodule_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     sub = db.scalar(select(Submodule).where(Submodule.id == submodule_id))
     if sub is None:
         raise HTTPException(status_code=404, detail="submodule not found")
 
+    require_submodule_access(db, user, sub)
     stmt = (
         select(SubmoduleAssetMap.order, ContentAsset)
         .join(ContentAsset, ContentAsset.id == SubmoduleAssetMap.asset_id)
-        .where(SubmoduleAssetMap.submodule_id == sub.id)
+        .where(SubmoduleAssetMap.submodule_id == sub.id, ContentAsset.is_archived.is_(False))
         .order_by(SubmoduleAssetMap.order)
     )
     rows = db.execute(stmt).all()
@@ -274,6 +275,7 @@ def submodule_assets(submodule_id: str, db: Session = Depends(get_db), _: User =
                 "original_filename": asset.original_filename,
                 "mime_type": asset.mime_type,
                 "size_bytes": asset.size_bytes,
+                "version": asset.version,
                 "order": int(order),
             }
             for order, asset in rows
@@ -282,19 +284,15 @@ def submodule_assets(submodule_id: str, db: Session = Depends(get_db), _: User =
 
 
 @router.get("/{module_id}/assets")
-def module_assets(module_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    m = db.scalar(select(Module).where(Module.id == module_id))
-    if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+def module_assets(module_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    m = require_module_access(db, user, module_id)
 
-    # Convention (no DB migrations): module-level materials are stored by object_key prefix.
-    # IMPORTANT: lesson files are linked via SubmoduleAssetMap, so do NOT list them here.
-    pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{module_id}/"
-    if pfx and (not pfx.endswith("/")):
-        pfx = pfx + "/"
-    prefix = f"{pfx}_module/"
     assets = db.scalars(
-        select(ContentAsset).where(ContentAsset.object_key.like(prefix + "%")).order_by(ContentAsset.original_filename)
+        select(ContentAsset).where(
+            ContentAsset.module_id == m.id,
+            ContentAsset.is_archived.is_(False),
+            ~select(SubmoduleAssetMap.asset_id).where(SubmoduleAssetMap.asset_id == ContentAsset.id).exists(),
+        ).order_by(ContentAsset.order, ContentAsset.original_filename)
     ).all()
 
     return {
@@ -306,6 +304,7 @@ def module_assets(module_id: str, db: Session = Depends(get_db), _: User = Depen
                 "original_filename": a.original_filename,
                 "mime_type": a.mime_type,
                 "size_bytes": a.size_bytes,
+                "version": a.version,
             }
             for a in assets
         ],

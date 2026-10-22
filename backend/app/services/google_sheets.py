@@ -1,90 +1,80 @@
+"""Bounded Sheets reads. Each call owns its transport (httplib2 is not thread safe)."""
 from __future__ import annotations
 
 import json
-import logging
-from functools import lru_cache
+from contextlib import contextmanager
 
+import httplib2
 from google.oauth2 import service_account
+from google_auth_httplib2 import AuthorizedHttp
 from googleapiclient.discovery import build
 
-
-log = logging.getLogger(__name__)
-
-
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+MAX_SHEETS = 30
+MAX_ROWS = 1001
 
 
-@lru_cache(maxsize=8)
-def _cached_client(*, creds_json: str, api_key: str):
-    cj = str(creds_json or "").strip()
-    ak = str(api_key or "").strip()
-
-    if cj:
-        info = json.loads(cj)
-        creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-        return build("sheets", "v4", credentials=creds, cache_discovery=False)
-
-    if ak:
-        # Public sheets access via API key (no OAuth)
-        return build("sheets", "v4", developerKey=ak, cache_discovery=False)
-
-    raise ValueError("Google Sheets client requires either creds_json or api_key")
+@contextmanager
+def sheets_client(*, creds_json: str | None = None, api_key: str | None = None):
+    transport = httplib2.Http(timeout=8)
+    if creds_json:
+        credentials = service_account.Credentials.from_service_account_info(json.loads(creds_json), scopes=SCOPES)
+        transport = AuthorizedHttp(credentials, http=transport)
+    elif not api_key:
+        raise ValueError("Google Sheets credentials are not configured")
+    service = build("sheets", "v4", http=transport, developerKey=api_key or None, cache_discovery=False, static_discovery=True)
+    try:
+        yield service
+    finally:
+        service.close()
 
 
-def read_values(*, spreadsheet_id: str, range_a1: str, creds_json: str | None = None, api_key: str | None = None) -> list[list[str]]:
-    """Read a values range from Google Sheets.
+def _titles(service, spreadsheet_id: str) -> list[str]:
+    response = service.spreadsheets().get(spreadsheetId=spreadsheet_id, fields="sheets(properties(title,index))").execute(num_retries=0)
+    sheets = response.get("sheets") or []
+    return [str(s["properties"]["title"]) for s in sorted(sheets, key=lambda s: s.get("properties", {}).get("index", 0))
+            if s.get("properties", {}).get("title")]
 
-    Returns list of rows, each row is list of cell strings.
-    """
 
-    sid = str(spreadsheet_id or "").strip()
-    if not sid:
-        return []
-    r = str(range_a1 or "").strip()
-    if not r:
-        return []
+def _rows(value) -> list[list[str]]:
+    return [[str(cell)[:4000] if cell is not None else "" for cell in row[:3]]
+            for row in (value or [])[:MAX_ROWS] if isinstance(row, list)]
 
-    svc = _cached_client(creds_json=str(creds_json or "").strip(), api_key=str(api_key or "").strip())
-    resp = svc.spreadsheets().values().get(spreadsheetId=sid, range=r).execute()
-    values = resp.get("values") or []
-    out: list[list[str]] = []
-    for row in values:
-        if not isinstance(row, list):
-            continue
-        out.append([str(x) if x is not None else "" for x in row])
-    return out
+
+def read_sales_snapshot(*, spreadsheet_id: str, creds_json: str | None = None, api_key: str | None = None) -> dict:
+    with sheets_client(creds_json=creds_json, api_key=api_key) as service:
+        all_titles = _titles(service, spreadsheet_id)
+        titles = all_titles[:MAX_SHEETS]
+        if not titles:
+            return {"sheets": [], "truncated": False}
+        ranges = ["'" + title.replace("'", "''") + f"'!A1:C{MAX_ROWS}" for title in titles]
+        # CellData.hyperlink retains HYPERLINK and named rich-text links; the
+        # values endpoint would otherwise return only their visible labels.
+        response = service.spreadsheets().get(spreadsheetId=spreadsheet_id, ranges=ranges, includeGridData=True,
+            fields="sheets(properties(title),data(rowData(values(formattedValue,hyperlink))))").execute(num_retries=0)
+        by_title = {str(sheet.get("properties", {}).get("title")): sheet for sheet in response.get("sheets", [])}
+        if any(title not in by_title for title in titles):
+            raise ValueError("Incomplete Sheets snapshot")
+        values = []
+        truncated = len(all_titles) > MAX_SHEETS
+        for title in titles:
+            grids = by_title[title].get("data") or []
+            cells = grids[0].get("rowData", []) if grids else []
+            truncated = truncated or len(cells) >= MAX_ROWS
+            header = [str(cell.get("formattedValue") or "").strip().lower() for cell in (cells[0].get("values", []) if cells else [])]
+            link_column = next((i for i, label in enumerate(header[:3]) if label in {"link", "ссылка"}), -1)
+            rows = [[(cell.get("hyperlink") if row_index > 0 and i == link_column else None) or cell.get("formattedValue", "")
+                     for i, cell in enumerate(row.get("values", [])[:3])] for row_index, row in enumerate(cells[:MAX_ROWS])]
+            values.append((title, _rows(rows)))
+        return {"sheets": values, "truncated": truncated}
 
 
 def list_sheet_titles(*, spreadsheet_id: str, creds_json: str | None = None, api_key: str | None = None) -> list[str]:
-    """Return sheet/tab titles in the order they appear in the spreadsheet UI."""
+    with sheets_client(creds_json=creds_json, api_key=api_key) as service:
+        return _titles(service, spreadsheet_id)[:MAX_SHEETS]
 
-    sid = str(spreadsheet_id or "").strip()
-    if not sid:
-        return []
 
-    svc = _cached_client(creds_json=str(creds_json or "").strip(), api_key=str(api_key or "").strip())
-    resp = (
-        svc.spreadsheets()
-        .get(
-            spreadsheetId=sid,
-            fields="sheets(properties(title,index))",
-        )
-        .execute()
-    )
-
-    sheets = resp.get("sheets") if isinstance(resp, dict) else None
-    out: list[tuple[int, str]] = []
-    for sh in sheets or []:
-        try:
-            props = (sh or {}).get("properties") if isinstance(sh, dict) else None
-            if not isinstance(props, dict):
-                continue
-            title = str(props.get("title") or "").strip()
-            idx = int(props.get("index") or 0)
-            if title:
-                out.append((idx, title))
-        except Exception:
-            continue
-
-    out.sort(key=lambda x: int(x[0]))
-    return [t for _, t in out]
+def read_values(*, spreadsheet_id: str, range_a1: str, creds_json: str | None = None, api_key: str | None = None) -> list[list[str]]:
+    with sheets_client(creds_json=creds_json, api_key=api_key) as service:
+        response = service.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=range_a1).execute(num_retries=0)
+        return _rows(response.get("values"))

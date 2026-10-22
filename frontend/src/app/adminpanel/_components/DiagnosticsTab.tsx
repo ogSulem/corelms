@@ -537,14 +537,7 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                 >
                   {brokenModulesBusy ? "..." : "СКАН"}
                 </Button>
-                <Button
-                  variant="destructive"
-                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={brokenModulesBusy || Number(brokenModulesCount || 0) <= 0}
-                  onClick={() => void purgeBrokenModules()}
-                >
-                  УДАЛИТЬ ИЗ DB
-                </Button>
+                <p className="text-xs text-zinc-500">Удаление из базы отключено. Проверьте материалы в редакторе; ненужные модули можно переместить в архив без потери истории.</p>
               </div>
 
               {Array.isArray(brokenModules) && brokenModules.length ? (

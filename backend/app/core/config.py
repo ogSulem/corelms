@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     s3_presign_upload_expires_seconds: int = Field(default=3600, validation_alias="S3_PRESIGN_UPLOAD_EXPIRES_SECONDS")
     s3_presign_multipart_part_expires_seconds: int = Field(default=3600, validation_alias="S3_PRESIGN_MULTIPART_PART_EXPIRES_SECONDS")
 
+    media_dispatcher_enabled: bool = Field(default=True, validation_alias="MEDIA_DISPATCHER_ENABLED")
+    rq_queue_media: str = Field(default="corelms_media", validation_alias="RQ_QUEUE_MEDIA")
+    media_timeout_seconds: int = Field(default=2700, ge=30, le=7200, validation_alias="MEDIA_TIMEOUT_SECONDS")
+    ffmpeg_binary: str = Field(default="ffmpeg", validation_alias="FFMPEG_BINARY")
+    ffprobe_binary: str = Field(default="ffprobe", validation_alias="FFPROBE_BINARY")
+    libreoffice_binary: str = Field(default="libreoffice", validation_alias="LIBREOFFICE_BINARY")
+    media_encoder_threads: int = Field(default=2, ge=1, le=8, validation_alias="MEDIA_ENCODER_THREADS")
+
     sales_links_spreadsheet_id: str | None = Field(default=None, validation_alias="SALES_LINKS_SPREADSHEET_ID")
     sales_links_service_account_json: str | None = Field(default=None, validation_alias="SALES_LINKS_SERVICE_ACCOUNT_JSON")
     sales_links_google_api_key: str | None = Field(default=None, validation_alias="SALES_LINKS_GOOGLE_API_KEY")
@@ -110,6 +118,8 @@ class Settings(BaseSettings):
         default=2,
         validation_alias="REGEN_MAX_LESSON_ATTEMPTS",
     )
+
+    content_upload_max_bytes: int = Field(default=512 * 1024 * 1024, ge=1, validation_alias="CONTENT_UPLOAD_MAX_BYTES")
 
     import_zip_max_uncompressed_bytes: int = Field(default=10_000_000_000, validation_alias="IMPORT_ZIP_MAX_UNCOMPRESSED_BYTES")
     import_zip_max_files: int = Field(default=20000, validation_alias="IMPORT_ZIP_MAX_FILES")

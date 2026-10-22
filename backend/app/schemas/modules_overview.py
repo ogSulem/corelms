@@ -9,6 +9,10 @@ class ModuleProgressPreview(BaseModel):
     passed_count: int
     final_passed: bool
     completed: bool
+    current_completed: bool = False
+    has_updates: bool = False
+    completed_at: str | None = None
+    content_revision: int = 1
 
 
 class ModuleOverviewItem(BaseModel):

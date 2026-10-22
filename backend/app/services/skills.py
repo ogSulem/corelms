@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.audit import LearningEvent
@@ -85,6 +86,12 @@ def award_xp(db: Session, *, user_id: str, xp: int) -> None:
 
 
 def record_activity_and_award_xp(db: Session, *, user_id: str, xp: int) -> None:
+    from app.models.user import User
+    uid = _as_uuid(user_id)
+    if uid is None:
+        return
+    # The identity map may contain the user loaded before another request committed.
+    db.scalar(select(User).where(User.id == uid).with_for_update().execution_options(populate_existing=True))
     now = datetime.now(timezone.utc)
     _apply_streak_on_activity(db, user_id=user_id, now=now)
     award_xp(db, user_id=user_id, xp=xp)

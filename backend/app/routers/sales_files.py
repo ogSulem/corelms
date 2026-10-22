@@ -1,362 +1,226 @@
 from __future__ import annotations
 
-import json
-import os
+import mimetypes
+import uuid
+from pathlib import PurePosixPath
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.core.security import get_current_user, require_roles
+from app.core.security_audit_log import audit_log
+from app.db.session import get_db
+from app.models.asset import AssetRevision, ContentAsset
+from app.models.sales import SalesEntry
 from app.models.user import User, UserRole
-from app.services.storage import (
-    get_s3_client,
-    presign_get,
-    presign_put,
-    s3_invalidate_common_prefixes,
-    s3_invalidate_prefix_has_objects,
-)
-
+from app.routers.content import _inspect_upload
+from app.schemas.content import VersionRestore
+from app.services.content import safe_filename, snapshot_asset
+from app.services.media import stage_rendition
+from app.services.sales_library import (adopt_legacy_page, clean_path, get_section, identity, join_path,
+    listing_payload, managed_key, path_is_visible, require_available_name, require_directory, require_entry)
+from app.services.storage import effective_bucket, get_s3_client, upload_fileobj_with_retry
 
 router = APIRouter(prefix="/sales-files", tags=["sales"])
-
-
 Section = Literal["photos", "catalogs"]
 
 
-def _section_prefix(section: str) -> str:
-    s = str(section or "").strip().lower()
-    if s not in {"photos", "catalogs"}:
-        raise HTTPException(status_code=400, detail="invalid section")
-    return f"sales/{s}"
-
-
-def _normalize_path(path: str | None) -> str:
-    p = str(path or "").strip().replace("\\", "/")
-    p = p.strip("/")
-    if not p:
-        return ""
-    # avoid directory traversal patterns
-    parts = [x for x in p.split("/") if x and x not in {".", ".."}]
-    return "/".join(parts)
-
-
-def _join_key(prefix: str, path: str, filename: str | None = None) -> str:
-    p = str(prefix or "").strip().strip("/")
-    pp = _normalize_path(path)
-    if filename is None:
-        return f"{p}/{pp}".rstrip("/")
-    fn = str(filename or "").strip().replace("\\", "/")
-    fn = fn.split("/")[-1].strip()
-    if not fn:
-        raise HTTPException(status_code=400, detail="missing filename")
-    if pp:
-        return f"{p}/{pp}/{fn}"
-    return f"{p}/{fn}"
-
-
-class PresignUploadRequest(BaseModel):
+class FolderCreate(BaseModel):
     section: Section
-    path: str | None = None
-    filename: str
-    content_type: str | None = None
+    path: str = ""
+    name: str = Field(min_length=1, max_length=400)
+    revision: int = Field(ge=1)
 
 
-class PresignUploadResponse(BaseModel):
-    key: str
-    upload_url: str
+class EntryEdit(BaseModel):
+    revision: int = Field(ge=1)
+    name: str | None = Field(default=None, min_length=1, max_length=400)
+    is_archived: bool | None = None
 
 
-class PresignDownloadResponse(BaseModel):
-    url: str
+def finish(db: Session, request: Request, user: User, section, path: str, event: str, **meta):
+    section.revision += 1
+    audit_log(db=db, request=request, actor_user_id=user.id, event_type=event, meta={"section": section.name, **meta})
+    db.commit()
+    return listing_payload(db, section.name, path, include_archived=True)
 
 
-class ListEntry(BaseModel):
-    kind: Literal["folder", "file"]
-    title: str
-    key: str
-    size: int | None = None
-    last_modified: str | None = None
+@router.get("/list")
+def list_sales_files(section: Section, path: str = "", include_archived: bool = False,
+                     offset: int = Query(default=0, ge=0, le=1_000_000), q: str = Query(default="", max_length=200),
+                     legacy_cursor: str | None = Query(default=None, max_length=4000),
+                     db: Session = Depends(get_db), user: User = Depends(get_current_user),
+                     _: object = rate_limit(key_prefix="sales_files_list", limit=120, window_seconds=60)):
+    path = clean_path(path)
+    if include_archived and user.role != UserRole.superadmin:
+        raise HTTPException(403, "Архив доступен только суперадминистратору")
+    cursor, notice = adopt_legacy_page(db, section, path, cursor=legacy_cursor, include_archived=include_archived)
+    return listing_payload(db, section, path, include_archived=include_archived, offset=offset,
+                           query=q.strip(), legacy_cursor=cursor, notice=notice)
 
 
-class ListResponse(BaseModel):
-    prefix: str
-    path: str
-    entries: list[ListEntry]
+@router.post("/mkdir", status_code=201)
+def create_folder(body: FolderCreate, request: Request, db: Session = Depends(get_db),
+                  user: User = Depends(require_roles(UserRole.superadmin))):
+    path, name = clean_path(body.path), safe_filename(body.name)
+    join_path(path, name)
+    get_section(db, body.section, revision=body.revision)
+    require_directory(db, body.section, path)
+    require_available_name(db, body.section, path, name, check_legacy=True)
+    section = get_section(db, body.section, revision=body.revision, lock=True)
+    require_directory(db, body.section, path)
+    require_available_name(db, body.section, path, name)
+    entry = SalesEntry(section=body.section, path=path, name=name, kind="folder",
+                       identity_key=identity(body.section, path, name, "folder"))
+    db.add(entry)
+    db.flush()
+    return finish(db, request, user, section, path, "sales_folder_created", entry_id=str(entry.id))
 
 
-class MkdirRequest(BaseModel):
-    section: Section
-    path: str | None = None
-    name: str
-
-
-class DeleteObjectRequest(BaseModel):
-    key: str
-
-
-class DeleteFolderRequest(BaseModel):
-    section: Section
-    path: str | None = None
-
-
-@router.get("/list", response_model=ListResponse)
-def list_sales_files(
-    section: Section,
-    path: str | None = Query(default=None),
-    _: User = Depends(get_current_user),
-    __: object = rate_limit(key_prefix="sales_files_list", limit=240, window_seconds=60),
-):
-    base = _section_prefix(section)
-    rel = _normalize_path(path)
-    prefix = _join_key(base, rel)
-    if prefix and not prefix.endswith("/"):
-        prefix = prefix + "/"
-
+@router.post("/upload", status_code=201)
+def upload_sales_file(request: Request, file: UploadFile = File(...), section: Section = Form(...),
+                      path: str = Form(default=""), revision: int = Form(..., ge=1),
+                      replace_id: uuid.UUID | None = Form(default=None), db: Session = Depends(get_db),
+                      user: User = Depends(require_roles(UserRole.superadmin)),
+                      _: object = rate_limit(key_prefix="sales_upload", limit=120, window_seconds=60)):
+    filename, size, checksum = _inspect_upload(file, max_bytes=settings.content_upload_max_bytes)
+    path = clean_path(path)
+    get_section(db, section, revision=revision)
+    entry = require_entry(db, replace_id) if replace_id else None
+    if entry and (entry.section != section or entry.kind != "file" or entry.is_archived):
+        raise HTTPException(409, "Выберите активный файл этого раздела")
+    name = str(PurePosixPath(entry.name).with_suffix(PurePosixPath(filename).suffix)) if entry else filename
+    path = entry.path if entry else path
+    require_directory(db, section, path)
+    require_available_name(db, section, path, name, exclude=entry.id if entry else None,
+                           check_legacy=not entry or name != entry.name)
+    db.commit()
+    bucket, key = effective_bucket(), managed_key(section, filename)
+    mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     s3 = get_s3_client()
-
-    # S3 folders are prefixes; list direct children via Delimiter
-    token: str | None = None
-    folders: set[str] = set()
-    files: list[dict[str, object]] = []
-    while True:
-        kwargs: dict[str, object] = {
-            "Bucket": settings.s3_bucket,
-            "Prefix": prefix,
-            "Delimiter": "/",
-            "MaxKeys": 1000,
-        }
-        if token:
-            kwargs["ContinuationToken"] = token
-        resp = s3.list_objects_v2(**kwargs)
-
-        for cp in (resp.get("CommonPrefixes") or []):
-            try:
-                pfx = str((cp or {}).get("Prefix") or "")
-                if not pfx:
-                    continue
-                folders.add(pfx)
-            except Exception:
-                continue
-
-        for it in (resp.get("Contents") or []):
-            try:
-                key = str((it or {}).get("Key") or "")
-                if not key:
-                    continue
-                # Skip folder marker objects
-                if key.endswith("/.keep") or key.endswith("/"):
-                    continue
-                # Do not include the prefix object itself
-                if key == prefix:
-                    continue
-                files.append(it)
-            except Exception:
-                continue
-
-        if not resp.get("IsTruncated"):
-            break
-        token = resp.get("NextContinuationToken")
-        if not token:
-            break
-
-    entries: list[ListEntry] = []
-
-    # Folders
-    for f in sorted(folders):
-        # f is full prefix, e.g. sales/photos/a/b/
-        name = f[len(prefix) :].rstrip("/")
-        name = name.split("/")[0] if "/" in name else name
-        if not name:
-            continue
-        entries.append(ListEntry(kind="folder", title=name, key=f))
-
-    # Files
-    def _basename(k: str) -> str:
-        kk = k.rstrip("/")
-        return kk.split("/")[-1] if "/" in kk else kk
-
-    for it in files:
-        key = str((it or {}).get("Key") or "")
-        if not key or not key.startswith(prefix):
-            continue
-        tail = key[len(prefix) :]
-        if not tail or "/" in tail:
-            # should not happen with Delimiter, but keep hardening
-            continue
-        lm = None
-        try:
-            lm = (it or {}).get("LastModified")
-            lm = lm.isoformat() if lm else None
-        except Exception:
-            lm = None
-        try:
-            size = int((it or {}).get("Size") or 0)
-        except Exception:
-            size = 0
-        entries.append(ListEntry(kind="file", title=_basename(key), key=key, size=size, last_modified=lm))
-
-    # folders first, then files
-    entries.sort(key=lambda e: (0 if e.kind == "folder" else 1, e.title.lower()))
-
-    return ListResponse(prefix=base, path=rel, entries=entries)
-
-
-@router.get("/presign-download", response_model=PresignDownloadResponse)
-def presign_sales_download(
-    key: str,
-    _: User = Depends(get_current_user),
-    __: object = rate_limit(key_prefix="sales_files_presign_get", limit=600, window_seconds=60),
-):
-    k = str(key or "").strip().lstrip("/")
-    if not k.startswith("sales/photos/") and not k.startswith("sales/catalogs/"):
-        raise HTTPException(status_code=400, detail="invalid key")
-    url = presign_get(object_key=k)
-    return PresignDownloadResponse(url=url)
-
-
-@router.post("/presign-upload", response_model=PresignUploadResponse)
-def presign_sales_upload(
-    request: Request,
-    body: PresignUploadRequest,
-    user: User = Depends(require_roles(UserRole.superadmin)),
-    _: object = rate_limit(key_prefix="sales_files_presign_put", limit=60, window_seconds=60),
-):
-    base = _section_prefix(body.section)
-    rel = _normalize_path(body.path)
-    object_key = _join_key(base, rel, body.filename)
-
-    ct = str(body.content_type or "").strip() or "application/octet-stream"
-
-    # Best-effort hardening: prevent overwriting by default.
-    # If you want overwrite, we can add an explicit flag.
-    s3 = get_s3_client()
+    attempted = False
     try:
-        s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
-        raise HTTPException(status_code=409, detail="object already exists")
-    except HTTPException:
+        upload_fileobj_with_retry(s3=s3, object_key=key, fileobj=file.file, content_type=mime, size_bytes=size)
+        root = get_section(db, section, revision=revision, lock=True)
+        require_directory(db, section, path)
+        entry = require_entry(db, replace_id) if replace_id else None
+        if entry and (entry.is_archived or entry.path != path):
+            raise HTTPException(409, "Файл изменён. Обновите список.")
+        require_available_name(db, section, path, name, exclude=entry.id if entry else None)
+        if entry:
+            asset = db.get(ContentAsset, entry.asset_id)
+            snapshot_asset(db, asset)
+            entry.name, entry.identity_key = name, identity(section, path, name)
+            asset.original_filename = name
+            asset.bucket, asset.object_key, asset.mime_type = bucket, key, mime
+            asset.checksum_sha256, asset.size_bytes, asset.created_by = checksum, size, user.id
+        else:
+            asset = ContentAsset(bucket=bucket, object_key=key, original_filename=name, mime_type=mime,
+                                 size_bytes=size, checksum_sha256=checksum, created_by=user.id)
+            db.add(asset)
+            db.flush()
+            entry = SalesEntry(section=section, path=path, name=name, kind="file", asset_id=asset.id,
+                               identity_key=identity(section, path, name))
+            db.add(entry)
+        db.flush()
+        stage_rendition(db, asset)
+        root.revision += 1
+        audit_log(db=db, request=request, actor_user_id=user.id, event_type="sales_file_replaced" if replace_id else "sales_file_uploaded",
+                  meta={"section": section, "entry_id": str(entry.id), "asset_id": str(asset.id), "version": asset.version})
+        attempted = True
+        db.commit()
+        return listing_payload(db, section, path, include_archived=True)
+    except Exception:
+        db.rollback()
+        if not attempted:
+            try:
+                s3.delete_object(Bucket=bucket, Key=key)
+            except Exception:
+                pass  # Delete only our unpublished staging object, never a prior version.
         raise
-    except Exception:
-        pass
 
-    upload_url = presign_put(object_key=object_key, content_type=ct)
 
-    # Invalidate folder listings caches (if any)
+@router.patch("/entries/{entry_id}")
+def edit_entry(entry_id: uuid.UUID, body: EntryEdit, request: Request, db: Session = Depends(get_db),
+               user: User = Depends(require_roles(UserRole.superadmin))):
+    entry = require_entry(db, entry_id)
+    if body.name is not None and body.name != entry.name:
+        get_section(db, entry.section, revision=body.revision)
+        name = safe_filename(body.name)
+        require_available_name(db, entry.section, entry.path, name, exclude=entry.id, check_legacy=name != entry.name)
+    root = get_section(db, entry.section, revision=body.revision, lock=True)
+    db.refresh(entry)
+    if body.is_archived is False and not path_is_visible(db, entry.section, entry.path):
+        raise HTTPException(409, "Сначала восстановите родительскую папку")
+    if body.name is not None:
+        if entry.kind != "file":
+            raise HTTPException(422, "Переименование папок пока не поддерживается")
+        name = safe_filename(body.name)
+        if PurePosixPath(name).suffix.lower() != PurePosixPath(entry.name).suffix.lower():
+            raise HTTPException(422, "Чтобы изменить формат, используйте замену файла")
+        require_available_name(db, entry.section, entry.path, name, exclude=entry.id)
+        entry.name, entry.identity_key = name, identity(entry.section, entry.path, name)
+        db.get(ContentAsset, entry.asset_id).original_filename = name
+    if body.is_archived is not None:
+        entry.is_archived = body.is_archived
+        if entry.asset_id:
+            db.get(ContentAsset, entry.asset_id).is_archived = body.is_archived
+    return finish(db, request, user, root, entry.path, "sales_entry_updated", entry_id=str(entry.id), fields=sorted(body.model_fields_set - {"revision"}))
+
+
+@router.get("/entries/{entry_id}/versions")
+def file_versions(entry_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.superadmin))):
+    entry = require_entry(db, entry_id)
+    if not entry.asset_id:
+        raise HTTPException(422, "У папки нет версий файла")
+    asset = db.get(ContentAsset, entry.asset_id)
+    rows = list(db.scalars(select(AssetRevision).where(AssetRevision.asset_id == asset.id).order_by(AssetRevision.version.desc())))
+    return {"current_version": asset.version, "items": [{"version": r.version, "filename": r.original_filename,
+        "size_bytes": r.size_bytes, "created_at": r.created_at.isoformat()} for r in rows]}
+
+
+@router.post("/entries/{entry_id}/restore-version")
+def restore_version(entry_id: uuid.UUID, body: VersionRestore, request: Request, db: Session = Depends(get_db),
+                    user: User = Depends(require_roles(UserRole.superadmin))):
+    entry = require_entry(db, entry_id)
+    get_section(db, entry.section, revision=body.revision)
+    require_directory(db, entry.section, entry.path)
+    if not entry.asset_id or entry.is_archived:
+        raise HTTPException(409, "Сначала восстановите файл из архива")
+    asset = db.get(ContentAsset, entry.asset_id)
+    old = db.scalar(select(AssetRevision).where(AssetRevision.asset_id == asset.id, AssetRevision.version == body.version))
+    if old is None:
+        raise HTTPException(404, "Версия не найдена")
     try:
-        s3_invalidate_common_prefixes(prefix=f"{base}/{rel}")
-        s3_invalidate_prefix_has_objects(prefix=f"{base}/{rel}")
-    except Exception:
-        pass
-
-    return PresignUploadResponse(key=object_key, upload_url=upload_url)
-
-
-@router.post("/mkdir")
-def mkdir_sales_folder(
-    body: MkdirRequest,
-    user: User = Depends(require_roles(UserRole.superadmin)),
-    _: object = rate_limit(key_prefix="sales_files_mkdir", limit=60, window_seconds=60),
-):
-    base = _section_prefix(body.section)
-    rel = _normalize_path(body.path)
-    name = str(body.name or "").strip().replace("\\", "/").strip("/")
-    name = name.split("/")[0].strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="missing folder name")
-    if name in {".", ".."}:
-        raise HTTPException(status_code=400, detail="invalid folder name")
-
-    folder_prefix = _join_key(base, os.path.join(rel, name).replace("\\", "/"))
-    marker_key = folder_prefix.rstrip("/") + "/.keep"
-
-    s3 = get_s3_client()
-    s3.put_object(Bucket=settings.s3_bucket, Key=marker_key, Body=b"", ContentType="application/octet-stream")
-
-    try:
-        s3_invalidate_common_prefixes(prefix=f"{base}/{rel}")
-        s3_invalidate_prefix_has_objects(prefix=f"{base}/{rel}")
-    except Exception:
-        pass
-
-    return {"ok": True, "key": marker_key}
+        get_s3_client().head_object(Bucket=old.bucket, Key=old.object_key)
+    except Exception as exc:
+        raise HTTPException(409, "Оригинал этой версии недоступен в хранилище") from exc
+    name = str(PurePosixPath(entry.name).with_suffix(PurePosixPath(old.original_filename).suffix))
+    require_available_name(db, entry.section, entry.path, name, exclude=entry.id, check_legacy=name != entry.name)
+    root = get_section(db, entry.section, revision=body.revision, lock=True)
+    db.refresh(entry)
+    db.refresh(asset)
+    require_directory(db, entry.section, entry.path)
+    require_available_name(db, entry.section, entry.path, name, exclude=entry.id)
+    snapshot_asset(db, asset)
+    asset.bucket, asset.object_key, asset.mime_type = old.bucket, old.object_key, old.mime_type
+    asset.size_bytes, asset.checksum_sha256, asset.original_filename = old.size_bytes, old.checksum_sha256, name
+    asset.created_by = user.id
+    entry.name, entry.identity_key = name, identity(entry.section, entry.path, name)
+    db.flush()
+    stage_rendition(db, asset)
+    return finish(db, request, user, root, entry.path, "sales_file_version_restored", entry_id=str(entry.id), source_version=body.version)
 
 
+# Old clients cannot overwrite objects with signed PUTs or physically delete prefixes.
+@router.post("/presign-upload")
+@router.get("/presign-download")
 @router.delete("/object")
-def delete_sales_object(
-    key: str,
-    user: User = Depends(require_roles(UserRole.superadmin)),
-    _: object = rate_limit(key_prefix="sales_files_delete_object", limit=240, window_seconds=60),
-):
-    k = str(key or "").strip().lstrip("/")
-    if not k.startswith("sales/photos/") and not k.startswith("sales/catalogs/"):
-        raise HTTPException(status_code=400, detail="invalid key")
-
-    s3 = get_s3_client()
-    s3.delete_object(Bucket=settings.s3_bucket, Key=k)
-
-    # invalidate parent listing cache (best-effort)
-    try:
-        parent = k.rsplit("/", 1)[0]
-        s3_invalidate_common_prefixes(prefix=parent)
-        s3_invalidate_prefix_has_objects(prefix=parent)
-    except Exception:
-        pass
-
-    return {"ok": True}
-
-
 @router.delete("/folder")
-def delete_sales_folder(
-    section: Section,
-    path: str | None = Query(default=None),
-    user: User = Depends(require_roles(UserRole.superadmin)),
-    _: object = rate_limit(key_prefix="sales_files_delete_folder", limit=60, window_seconds=60),
-):
-    base = _section_prefix(section)
-    rel = _normalize_path(path)
-    prefix = _join_key(base, rel)
-    if prefix and not prefix.endswith("/"):
-        prefix = prefix + "/"
-
-    s3 = get_s3_client()
-
-    # Delete all objects under prefix in batches.
-    token: str | None = None
-    keys: list[str] = []
-    while True:
-        kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Prefix": prefix, "MaxKeys": 1000}
-        if token:
-            kwargs["ContinuationToken"] = token
-        resp = s3.list_objects_v2(**kwargs)
-        for it in (resp.get("Contents") or []):
-            try:
-                k = str((it or {}).get("Key") or "")
-                if k:
-                    keys.append(k)
-            except Exception:
-                continue
-        if not resp.get("IsTruncated"):
-            break
-        token = resp.get("NextContinuationToken")
-        if not token:
-            break
-
-    for i in range(0, len(keys), 1000):
-        chunk = keys[i : i + 1000]
-        if not chunk:
-            continue
-        s3.delete_objects(
-            Bucket=settings.s3_bucket,
-            Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
-        )
-
-    try:
-        parent = prefix.rstrip("/").rsplit("/", 1)[0]
-        s3_invalidate_common_prefixes(prefix=parent)
-        s3_invalidate_prefix_has_objects(prefix=parent)
-    except Exception:
-        pass
-
-    return {"ok": True, "deleted": len(keys)}
+def obsolete_sales_operation(user: User = Depends(require_roles(UserRole.superadmin))):
+    raise HTTPException(410, "Обновите страницу продаж. Используйте защищённую загрузку, просмотр и обратимый архив.")

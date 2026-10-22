@@ -1,6 +1,8 @@
 ﻿"use client";
 
 import * as React from "react";
+import Link from "next/link";
+import { ModuleLibrary } from "@/components/admin/module-library";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as nextNavigation from "next/navigation";
 import { AppShell } from "@/components/app/shell";
@@ -30,6 +32,12 @@ import { ModulesTab } from "./_components/ModulesTab";
 import ImportTab from "./_components/ImportTab";
 
 export default function AdminPanelClient() {
+  return <React.Suspense fallback={<p role="status" className="p-10 text-center">Загрузка админ-панели…</p>}><AdminPanelContent /></React.Suspense>;
+}
+
+function AdminPanelContent() {
+  const queryParams = nextNavigation.useSearchParams();
+  const showAdvancedModules = !!queryParams.get("mid");
   const { user, loading: authLoading } = useAuth();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pathname = (nextNavigation as any).usePathname();
@@ -62,6 +70,7 @@ export default function AdminPanelClient() {
   const importSkipCurrentRef = useRef(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const importRunnerActiveRef = useRef<boolean>(false);
+  const importLeaveRequestedRef = useRef(false);
   const importQueuePendingRef = useRef<File[]>([]);
   const lastAdminSseRefreshMsRef = useRef<number>(0);
   const jobsSseLastOkAtRef = useRef<number>(0);
@@ -102,7 +111,16 @@ export default function AdminPanelClient() {
 
   const pathForTab = (t: TabKey): string => `/admin/${t}`;
 
+  const confirmImportLeave = () => {
+    if (!importRunnerActiveRef.current || importLeaveRequestedRef.current) return true;
+    if (!window.confirm("Файлы ещё передаются. Покинуть страницу? Неотправленные файлы будут отменены; уже запущенные серверные задачи продолжат работу.")) return false;
+    importLeaveRequestedRef.current = true;
+    importUploadAbortRef.current?.abort();
+    return true;
+  };
+
   const goTab = (next: TabKey) => {
+    if (next === "modules" && !confirmImportLeave()) return;
     const desired = pathForTab(next);
     if (pathname !== desired) router.push(desired);
     if (tab !== next) setTab(next);
@@ -117,6 +135,15 @@ export default function AdminPanelClient() {
       // ignore
     }
   };
+
+  useEffect(() => {
+    const mid = queryParams.get("mid");
+    const sid = queryParams.get("sid");
+    const qid = queryParams.get("qid");
+    if (mid) setSelectedAdminModuleId(mid);
+    if (sid) setSelectedSubmoduleId(sid);
+    if (qid) setSelectedQuizId(qid);
+  }, [queryParams]);
 
   // --- Utilities ---
   function readAdminQuery(): { mid?: string; sid?: string; qid?: string } {
@@ -345,6 +372,32 @@ export default function AdminPanelClient() {
   // Import
   const [importFiles, setImportFiles] = useState<File[]>([]);
   const [importBusy, setImportBusy] = useState(false);
+  useEffect(() => {
+    if (!importBusy) return;
+    const originalUrl = window.location.href, originalState = window.history.state;
+    const leavesImportShell = (url: URL) => !["/admin/import", "/admin/analytics", "/admin/users", "/admin/diagnostics"].includes(url.pathname);
+    const link = (event: MouseEvent) => {
+      const anchor = (event.target as Element | null)?.closest<HTMLAnchorElement>("a[href]");
+      if (!anchor || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || anchor.target === "_blank" || anchor.hasAttribute("download")) return;
+      if (leavesImportShell(new URL(anchor.href)) && !confirmImportLeave()) { event.preventDefault(); event.stopImmediatePropagation(); }
+    };
+    const back = (event: Event) => {
+      if (leavesImportShell(new URL(window.location.href)) && !confirmImportLeave()) {
+        event.preventDefault(); window.history.pushState(originalState, "", originalUrl);
+      }
+    };
+    const navigate = (event: Event) => { if (!confirmImportLeave()) event.preventDefault(); };
+    document.addEventListener("click", link, true);
+    window.addEventListener("corelms:before-history", back);
+    window.addEventListener("corelms:before-navigate", navigate);
+    return () => { document.removeEventListener("click", link, true); window.removeEventListener("corelms:before-history", back); window.removeEventListener("corelms:before-navigate", navigate); };
+    // The handler reads live refs, not stale upload state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [importBusy, pathname]);
+  useEffect(() => () => {
+    if (importRunnerActiveRef.current) { importLeaveRequestedRef.current = true; importUploadAbortRef.current?.abort(); }
+  }, []);
+
   const [importBatch, setImportBatch] = useState<{ total: number; done: number } | null>(null);
   const [importEnqueueProgress, setImportEnqueueProgress] = useState<{ total: number; done: number } | null>(null);
   const [clientImportStage, setClientImportStage] = useState<string>("");
@@ -970,6 +1023,7 @@ export default function AdminPanelClient() {
     if (importRunnerActiveRef.current) return;
 
     importRunnerActiveRef.current = true;
+    importLeaveRequestedRef.current = false;
     importUploadAbortRef.current = new AbortController();
     try {
       (window as any).__corelms_import_upload_abort_controller = importUploadAbortRef.current;
@@ -994,7 +1048,7 @@ export default function AdminPanelClient() {
 
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       try {
-        if (!importRunnerActiveRef.current) return;
+        if (!importRunnerActiveRef.current || importLeaveRequestedRef.current) return;
         e.preventDefault();
         e.returnValue = "";
       } catch {
@@ -1215,6 +1269,7 @@ export default function AdminPanelClient() {
       };
 
       for (let i = 0; i < effBatch.length; i++) {
+        if (importLeaveRequestedRef.current) break;
         const f = effBatch[i];
         const fn = String((f as any)?.name || "module.zip").trim() || "module.zip";
 
@@ -1760,10 +1815,10 @@ export default function AdminPanelClient() {
         if (!hasSelected) {
           const first = sorted[0];
           setSelectedSubmoduleId(first.id);
-          setSelectedQuizId(first.requires_quiz !== false ? String(first.quiz_id || "") : "");
+          setSelectedQuizId(first.is_folder ? "" : String(first.quiz_id || ""));
         } else {
           const cur = sorted.find((s) => s.id === selectedSubmoduleId) as any;
-          const nextQuizId = cur && cur.requires_quiz !== false ? String(cur.quiz_id || "") : "";
+          const nextQuizId = cur && !cur.is_folder ? String(cur.quiz_id || "") : "";
           const prevQuizId = String(selectedQuizId || "");
           if (nextQuizId && nextQuizId !== prevQuizId) {
             setSelectedQuizId(nextQuizId);
@@ -2122,7 +2177,7 @@ export default function AdminPanelClient() {
   async function deleteSelectedModule() {
     if (!selectedAdminModuleId) return;
     const title = String(selectedAdminModule?.title || "").trim();
-    if (!window.confirm(`Удалить модуль${title ? `\n\n${title}` : ""}?\n\nДействие необратимо.`)) return;
+    if (!window.confirm(`Переместить модуль${title ? `\n\n${title}` : ""} в архив?\n\nМатериалы и прогресс сохранятся. Модуль можно восстановить в библиотеке.`)) return;
     const deletingId = String(selectedAdminModuleId);
     const prevModules = adminModules;
     const prevSelectedModuleId = selectedAdminModuleId;
@@ -2136,14 +2191,14 @@ export default function AdminPanelClient() {
       setSelectedSubmoduleId("");
       setSelectedQuizId("");
       await apiFetch(`/admin/modules/${encodeURIComponent(selectedAdminModuleId)}`, { method: "DELETE" });
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "МОДУЛЬ УДАЛЁН", description: "" } }));
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Модуль в архиве", description: "Материалы и результаты сохранены" } }));
       await loadAdminModulesForce();
     } catch (e) {
       setAdminModules(prevModules);
       setSelectedAdminModuleId(prevSelectedModuleId);
       setSelectedSubmoduleId(prevSelectedSubmoduleId);
       setSelectedQuizId(prevSelectedQuizId);
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ УДАЛИТЬ МОДУЛЬ");
+      setError(e instanceof Error ? e.message : "Не удалось переместить модуль в архив");
     }
   }
 
@@ -2156,47 +2211,51 @@ export default function AdminPanelClient() {
     } catch { /* ignore */ }
   }
 
+  async function acceptQuestionVersion(result: { quiz_id?: string; item?: AdminQuestionItem; id_map?: Record<string, string> }, savedId?: string) {
+    const nextQuizId = result.quiz_id || result.item?.quiz_id || selectedQuizId;
+    const mapping = result.id_map || {};
+    setQuestionDraftsById(previous => Object.fromEntries(Object.entries(previous)
+      .filter(([id]) => id !== savedId).map(([id, draft]) => [mapping[id] || id, draft])));
+    setSelectedQuizId(nextQuizId);
+    setSelectedAdminModuleSubs(previous => previous.map(sub => sub.id === selectedSubmoduleId ? { ...sub, quiz_id: nextQuizId } : sub));
+    await loadQuestionsForQuiz(nextQuizId);
+    void loadSelectedAdminModuleSubQuality(selectedAdminModuleId);
+  }
+
   async function createQuestionAdmin(quizId: string) {
-    if (!quizId) return;
+    if (!quizId || newQuestionBusy || questionSavingId) return;
     try {
-      setNewQuestionBusy(true);
-      setError(null);
-      const res = await apiFetch<{ id?: string }>(`/admin/quizzes/${encodeURIComponent(quizId)}/questions`, { method: "POST" });
-      if (res?.id) {
-        window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ВОПРОС СОЗДАН", description: "" } }));
-        await loadQuestionsForQuiz(quizId);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СОЗДАТЬ ВОПРОС");
-    } finally {
-      setNewQuestionBusy(false);
-    }
+      setNewQuestionBusy(true); setError(null);
+      const result = await apiFetch<{ id: string; quiz_id: string; id_map: Record<string, string> }>("/admin/questions", {
+        method: "POST", body: JSON.stringify({ quiz_id: quizId, type: "single", prompt: "Новый вопрос\nA) Вариант 1\nB) Вариант 2", correct_answer: "A", concept_tag: "needs_regen:manual" }),
+      });
+      await acceptQuestionVersion(result);
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Вопрос создан", description: "Замените шаблон своим вопросом и сохраните его" } }));
+    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось создать вопрос"); }
+    finally { setNewQuestionBusy(false); }
   }
 
   async function deleteQuestionAdmin(id: string) {
-    if (!id) return;
-    if (!window.confirm("Удалить вопрос?")) return;
+    if (!id || questionSavingId || newQuestionBusy || !window.confirm("Убрать вопрос из текущего теста? В предыдущих попытках он сохранится.")) return;
     try {
-      setError(null);
-      await apiFetch(`/admin/questions/${encodeURIComponent(id)}`, { method: "DELETE" });
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ВОПРОС УДАЛЁН", description: "" } }));
-      if (selectedQuizId) await loadQuestionsForQuiz(selectedQuizId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ УДАЛИТЬ ВОПРОС");
-    }
+      setQuestionSavingId(id); setError(null);
+      const result = await apiFetch<{ quiz_id: string; id_map: Record<string, string> }>(`/admin/questions/${encodeURIComponent(id)}`, { method: "DELETE" });
+      await acceptQuestionVersion(result, id);
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Вопрос убран из теста", description: "История ответов сохранена" } }));
+    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось удалить вопрос"); }
+    finally { setQuestionSavingId(""); }
   }
 
   async function saveQuestionDraft(id: string) {
     const draft = questionDraftsById[id];
-    if (!draft) return;
+    if (!draft || questionSavingId || newQuestionBusy) return;
     try {
-      setQuestionSavingId(id);
-      await apiFetch(`/admin/questions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(draft) });
-      setQuestionDraftsById((prev: Record<string, any>) => { const n = { ...prev }; delete n[id]; return n; });
-      await loadQuestionsForQuiz(selectedQuizId);
-    } finally {
-      setQuestionSavingId("");
-    }
+      setQuestionSavingId(id); setError(null);
+      const result = await apiFetch<{ item: AdminQuestionItem; id_map: Record<string, string> }>(`/admin/questions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(draft) });
+      await acceptQuestionVersion(result, id);
+      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Вопрос сохранён", description: "Начатые попытки продолжают работать с предыдущей версией" } }));
+    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось сохранить вопрос"); }
+    finally { setQuestionSavingId(""); }
   }
 
   function getDraftValue(q: any, key: string) {
@@ -2760,10 +2819,12 @@ export default function AdminPanelClient() {
 
   if (authLoading) return <div className="flex min-h-screen items-center justify-center"><div className="h-12 w-12 rounded-full border-2 border-[#fe9900]/30 border-t-[#fe9900] animate-spin" /></div>;
 
+  if (user?.role !== "admin" && user?.role !== "superadmin") return <AppShell><p role="alert" className="p-10 text-center">Раздел доступен только администраторам.</p></AppShell>;
+
   return (
     <AppShell>
       <div className="mx-auto w-full max-w-7xl px-4 py-10">
-        <div className="flex items-start justify-between gap-6">
+        <div className="flex flex-wrap items-start justify-between gap-6">
           <div>
             <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Каркас Тайги</div>
             <h1 className="mt-2 text-3xl font-black tracking-tighter text-zinc-950 uppercase">Админ-панель</h1>
@@ -2778,7 +2839,7 @@ export default function AdminPanelClient() {
             >
               ССЫЛКА
             </button>
-            <div className="flex items-center gap-2 rounded-2xl border border-zinc-200 bg-white p-2">
+            <div className="flex max-w-full flex-wrap items-center gap-1 rounded-2xl border border-zinc-200 bg-white p-2">
               {(["modules", "import", "analytics", "users", "diagnostics"] as TabKey[]).map((t) => (
                 <button
                   key={t}
@@ -2806,7 +2867,13 @@ export default function AdminPanelClient() {
         )}
 
         <div className="mt-8">
-          {tab === "modules" && (
+          {tab === "modules" && !showAdvancedModules && <ModuleLibrary />}
+          {tab === "modules" && showAdvancedModules && (
+            <>
+            <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 text-sm">
+              <Link href="/admin/modules" className="text-zinc-500 hover:underline">← Библиотека модулей</Link>
+              <Link href={`/admin/modules/${selectedAdminModuleId || queryParams.get("mid")}`} className="font-semibold text-amber-800 hover:underline">Открыть редактор материалов и файлов →</Link>
+            </div>
             <ModulesTab
               adminModules={adminModules}
               adminModulesLoading={adminModulesLoading}
@@ -2850,6 +2917,7 @@ export default function AdminPanelClient() {
               getDraftValue={getDraftValue}
               setQuestionDraftsById={setQuestionDraftsById}
             />
+            </>
           )}
           {tab === "users" && (
             <UsersTab
@@ -2904,7 +2972,7 @@ export default function AdminPanelClient() {
           {tab === "analytics" && (
             <div className="grid gap-6 lg:grid-cols-12 items-start">
               <div className="lg:col-span-8 relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-10 shadow-2xl shadow-zinc-950/10">
-                <div className="flex items-start justify-between gap-6">
+                <div className="flex flex-wrap items-start justify-between gap-6">
                   <div>
                     <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Сводка</div>
                     <div className="text-2xl font-black tracking-tighter text-zinc-950 uppercase leading-none">Аналитика</div>

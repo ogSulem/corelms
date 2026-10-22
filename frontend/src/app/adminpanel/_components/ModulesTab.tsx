@@ -336,7 +336,7 @@ export function ModulesTab(props: ModulesTabProps) {
                         disabled={!selectedAdminModuleId}
                         onClick={() => void regenerateSelectedModuleQuizzes()}
                       >
-                        РЕГЕН ТЕСТОВ
+                        Обновить тесты
                       </Button>
                     ) : (
                       <div className="h-10 rounded-xl border border-zinc-200 bg-zinc-50 px-4 flex items-center justify-center text-[9px] font-black uppercase tracking-widest text-zinc-600 whitespace-nowrap">
@@ -349,7 +349,7 @@ export function ModulesTab(props: ModulesTabProps) {
                       disabled={!selectedAdminModuleId}
                       onClick={() => void deleteSelectedModule()}
                     >
-                      УДАЛИТЬ
+                      В АРХИВ
                     </Button>
                   </div>
                 ) : null}
@@ -606,11 +606,13 @@ export function ModulesTab(props: ModulesTabProps) {
                           }
                         >
                           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 min-w-0">
-                            <button
-                              type="button"
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedSubmoduleId(s.id); setSelectedQuizId(isFolderLesson ? "" : String(s.quiz_id || "")); } }}
                               onClick={() => {
                                 setSelectedSubmoduleId(s.id);
-                                if (isQuizLesson) {
+                                if (!isFolderLesson) {
                                   setSelectedQuizId(String(s.quiz_id || ""));
                                 } else {
                                   setSelectedQuizId("");
@@ -646,9 +648,7 @@ export function ModulesTab(props: ModulesTabProps) {
                                       if (!hasQuizId) return;
                                       const next = !Boolean((s as any)?.requires_quiz ?? true);
                                       void updateSubmoduleAdmin(String(s.id), { requires_quiz: next });
-                                      if (active && !next) {
-                                        setSelectedQuizId("");
-                                      }
+
                                     }}
                                     disabled={!hasQuizId}
                                     className={
@@ -689,7 +689,7 @@ export function ModulesTab(props: ModulesTabProps) {
                                   </>
                                 ) : null}
                               </div>
-                            </button>
+                            </div>
 
                             {isFileLesson ? null : moduleRegenRunning || subRegenRunning ? (
                               <div className="h-9 rounded-xl border border-[#fe9900]/25 bg-[#fe9900]/10 px-3 flex items-center justify-center text-[9px] font-black uppercase tracking-widest text-[#fe9900] whitespace-nowrap">
@@ -703,7 +703,7 @@ export function ModulesTab(props: ModulesTabProps) {
                                 disabled={!s.id || moduleRegenRunning || subRegenRunning}
                                 onClick={() => void regenerateSubmoduleQuiz(String(s.id))}
                               >
-                                REGEN УРОКА
+                                Обновить тест урока
                               </Button>
                             )}
                           </div>
@@ -789,7 +789,7 @@ export function ModulesTab(props: ModulesTabProps) {
                                 className="rounded-xl border border-rose-100 bg-rose-50/50 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-rose-600 hover:bg-rose-100"
                                 onClick={() => void deleteQuestionAdmin(String(q.id))}
                               >
-                                УДАЛИТЬ
+                                В АРХИВ
                               </button>
                             </div>
                           </div>
