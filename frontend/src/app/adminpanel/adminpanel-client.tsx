@@ -15,9 +15,6 @@ import {
   ImportJobItem,
   RegenJobItem,
   AdminModuleItem,
-  AdminSubmoduleItem,
-  AdminSubmoduleQualityItem,
-  AdminQuestionItem,
   UserItem,
   UserHistoryDetailedItem,
   UserDetail,
@@ -36,7 +33,6 @@ export default function AdminPanelClient() {
 }
 
 function AdminPanelContent() {
-  const queryParams = nextNavigation.useSearchParams();
   const { user, loading: authLoading } = useAuth();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pathname = (nextNavigation as any).usePathname();
@@ -133,32 +129,7 @@ function AdminPanelContent() {
     }
   };
 
-  useEffect(() => {
-    const mid = queryParams.get("mid");
-    const sid = queryParams.get("sid");
-    const qid = queryParams.get("qid");
-    if (mid) setSelectedAdminModuleId(mid);
-    if (sid) setSelectedSubmoduleId(sid);
-    if (qid) setSelectedQuizId(qid);
-  }, [queryParams]);
-
   // --- Utilities ---
-  function readAdminQuery(): { mid?: string; sid?: string; qid?: string } {
-    try {
-      const sp = new URLSearchParams(window.location.search || "");
-      const mid = String(sp.get("mid") || "").trim();
-      const sid = String(sp.get("sid") || "").trim();
-      const qid = String(sp.get("qid") || "").trim();
-      return {
-        mid: mid || undefined,
-        sid: sid || undefined,
-        qid: qid || undefined,
-      };
-    } catch {
-      return {};
-    }
-  }
-
   function loadAdminUiState(): any {
     try {
       const raw = window.sessionStorage.getItem(ADMIN_UI_STATE_KEY);
@@ -187,17 +158,6 @@ function AdminPanelContent() {
   const [adminModules, setAdminModules] = useState<AdminModuleItem[]>([]);
   const [adminModulesLoading, setAdminModulesLoading] = useState(false);
   const [selectedAdminModuleId, setSelectedAdminModuleId] = useState<string>("");
-  const [selectedAdminModuleSubs, setSelectedAdminModuleSubs] = useState<AdminSubmoduleItem[]>([]);
-  const [selectedAdminModuleSubsLoading, setSelectedAdminModuleSubsLoading] = useState(false);
-  const [subQualityByModuleId, setSubQualityByModuleId] = useState<Record<string, AdminSubmoduleQualityItem[]>>({});
-  const [subQualityLoadingByModuleId, setSubQualityLoadingByModuleId] = useState<Record<string, boolean>>({});
-  const [selectedSubmoduleId, setSelectedSubmoduleId] = useState<string>("");
-  const [selectedQuizId, setSelectedQuizId] = useState<string>("");
-  const [questionsByQuizId, setQuestionsByQuizId] = useState<Record<string, AdminQuestionItem[]>>({});
-  const [questionsLoadingQuizId, setQuestionsLoadingQuizId] = useState<string>("");
-  const [questionSavingId, setQuestionSavingId] = useState<string>("");
-  const [questionDraftsById, setQuestionDraftsById] = useState<Record<string, any>>({});
-  const [newQuestionBusy, setNewQuestionBusy] = useState(false);
 
   // Users
   const [users, setUsers] = useState<UserItem[]>([]);
@@ -314,26 +274,6 @@ function AdminPanelContent() {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg || "НЕ УДАЛОСЬ ОБНОВИТЬ ТЕГИ");
-    }
-  }
-
-  async function setSelectedAdminModuleAccess(patch: { visibility?: string | null; tag_ids?: string[] | null }) {
-    const mid = String(selectedAdminModuleId || "").trim();
-    if (!mid) return;
-    try {
-      setError(null);
-      await apiFetch<any>(`/admin/modules/${encodeURIComponent(mid)}/access`, {
-        method: "PUT",
-        body: JSON.stringify({
-          visibility: patch?.visibility ?? null,
-          tag_ids: patch?.tag_ids ?? null,
-        }),
-      });
-      await loadAdminModulesForce();
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ДОСТУП ОБНОВЛЕН", description: "" } }));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg || "НЕ УДАЛОСЬ ОБНОВИТЬ ДОСТУП");
     }
   }
 
@@ -1501,10 +1441,8 @@ function AdminPanelContent() {
   }
 
   function openModuleFromImport(it: ImportJobItem) {
-    if (it.module_id) {
-      setSelectedAdminModuleId(it.module_id);
-      goTab("modules");
-    }
+    // Единственный редактор раздела — отдельная страница.
+    if (it.module_id) router.push(`/admin/modules/${it.module_id}`);
   }
 
   function cancelCurrentJob() {
@@ -1681,12 +1619,15 @@ function AdminPanelContent() {
     }
   }
 
-  async function loadSystemStatus() {
-    const now = Date.now();
-    if (now - Number(systemStatusLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
+  async function loadSystemStatus(probe = false) {
+    if (!probe) {
+      const now = Date.now();
+      if (now - Number(systemStatusLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
+    }
     try {
       setSysLoading(true);
-      const res = await apiFetch<any>(`/admin/system/status`);
+      // Внешние сервисы (AI и S3) проверяются только по нажатию: сеть не должна тормозить раздел.
+      const res = await apiFetch<any>(`/admin/system/status${probe ? "?probe=true" : ""}`, probe ? { timeoutMs: 25_000 } : undefined);
       setSys(res || null);
       systemStatusLoadedAtRef.current = Date.now();
     } catch {
@@ -1732,7 +1673,6 @@ function AdminPanelContent() {
       });
       setAdminModules(items);
       adminModulesLoadedAtRef.current = Date.now();
-      void loadStorageOrphansCount();
       if (items.length && (!selectedAdminModuleId || !items.some(x => x.id === selectedAdminModuleId))) {
         setSelectedAdminModuleId(items[0].id);
       }
@@ -1744,127 +1684,6 @@ function AdminPanelContent() {
   async function loadAdminModulesForce() {
     adminModulesLoadedAtRef.current = 0;
     await loadAdminModules();
-  }
-
-  async function reconcileModulesStorage() {
-    try {
-      setError(null);
-      const res = await apiFetch<any>(`/admin/modules/reconcile`, {
-        method: "POST",
-        body: JSON.stringify({ apply: true }),
-      });
-      const dbCount = Number((res as any)?.db_modules || 0);
-      const s3Count = Number((res as any)?.s3_prefixes || 0);
-      const created = Number((res as any)?.created || 0);
-      const missing = Array.isArray((res as any)?.missing_in_storage) ? (res as any).missing_in_storage.length : 0;
-      const orphan = Array.isArray((res as any)?.orphan_in_storage) ? (res as any).orphan_in_storage.length : 0;
-      setError(`SYNC: DB=${dbCount}, S3=${s3Count}, created=${created}, missing=${missing}, orphan=${orphan}`);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "SYNC FAILED");
-    } finally {
-      void loadAdminModulesForce();
-      try {
-        void loadStorageUploads(storageUploadsPrefix);
-      } catch {
-        // ignore
-      }
-    }
-  }
-
-  async function loadSelectedAdminModule() {
-    if (!selectedAdminModuleId) {
-      setSelectedAdminModuleSubs([]);
-      setSelectedSubmoduleId("");
-      setSelectedQuizId("");
-      return;
-    }
-    try {
-      setSelectedAdminModuleSubsLoading(true);
-      const subs = await apiFetch<AdminSubmoduleItem[]>(`/modules/${encodeURIComponent(selectedAdminModuleId)}/submodules`);
-      const sorted = (subs || []).slice().sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-      setSelectedAdminModuleSubs(sorted);
-
-      // Keep selection stable, but if the selected submodule's quiz_id changed (regen creates a new quiz)
-      // update selectedQuizId so the questions panel reloads immediately.
-      if (sorted.length) {
-        const hasSelected = Boolean(selectedSubmoduleId) && sorted.some((s) => s.id === selectedSubmoduleId);
-        if (!hasSelected) {
-          const first = sorted[0];
-          setSelectedSubmoduleId(first.id);
-          setSelectedQuizId(first.is_folder ? "" : String(first.quiz_id || ""));
-        } else {
-          const cur = sorted.find((s) => s.id === selectedSubmoduleId) as any;
-          const nextQuizId = cur && !cur.is_folder ? String(cur.quiz_id || "") : "";
-          const prevQuizId = String(selectedQuizId || "");
-          if (nextQuizId && nextQuizId !== prevQuizId) {
-            setSelectedQuizId(nextQuizId);
-            try {
-              // Force immediate questions refresh for the new quiz.
-              void loadQuestionsForQuiz(nextQuizId);
-            } catch {
-              // ignore
-            }
-          }
-        }
-      }
-      void loadSelectedAdminModuleSubQuality(String(selectedAdminModuleId));
-    } finally {
-      setSelectedAdminModuleSubsLoading(false);
-    }
-  }
-
-  async function loadSelectedAdminModuleSubQuality(moduleId: string) {
-    const mid = String(moduleId || "").trim();
-    if (!mid) return;
-    try {
-      setSubQualityLoadingByModuleId((prev: Record<string, boolean>) => ({ ...prev, [mid]: true }));
-      const res = await apiFetch<{ ok: boolean; items: AdminSubmoduleQualityItem[] }>(`/admin/modules/${encodeURIComponent(mid)}/submodules/quality`);
-      setSubQualityByModuleId((prev: Record<string, AdminSubmoduleQualityItem[]>) => ({ ...prev, [mid]: res?.items || [] }));
-    } catch {
-      setSubQualityByModuleId((prev: Record<string, AdminSubmoduleQualityItem[]>) => ({ ...prev, [mid]: [] }));
-    } finally {
-      setSubQualityLoadingByModuleId((prev: Record<string, boolean>) => ({ ...prev, [mid]: false }));
-    }
-  }
-
-  async function loadQuestionsForQuiz(quizId: string) {
-    const qid = String(quizId || "").trim();
-    if (!qid) return;
-    if (questionsLoadingQuizId) return;
-    try {
-      setQuestionsLoadingQuizId(qid);
-      const res = await apiFetch<{ ok: boolean; items: AdminQuestionItem[] }>(
-        `/admin/quizzes/${encodeURIComponent(qid)}/questions`
-      );
-      setQuestionsByQuizId((prev: Record<string, AdminQuestionItem[]>) => ({ ...prev, [qid]: res?.items || [] }));
-    } catch {
-      setQuestionsByQuizId((prev: Record<string, AdminQuestionItem[]>) => ({ ...prev, [qid]: [] }));
-    } finally {
-      setQuestionsLoadingQuizId("");
-    }
-  }
-
-  async function loadStorageOrphansCount() {
-    try {
-      const res = await apiFetch<{ orphans_count: number }>("/admin/maintenance/storage/orphan-module-prefixes?sample_keys=0");
-      setStorageOrphansCount(res?.orphans_count || 0);
-    } catch {
-      setStorageOrphansCount(0);
-    }
-  }
-
-  async function purgeOrphanStorage() {
-    if (!window.confirm(`Вы уверены, что хотите удалить ${storageOrphansCount} неиспользуемых префиксов в хранилище?`)) return;
-    try {
-      setIsStorageScanning(true);
-      await apiFetch("/admin/maintenance/storage/purge-orphan-module-prefixes?dry_run=false", { method: "POST" });
-      await loadStorageOrphansCount();
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "ХРАНИЛИЩЕ ОЧИЩЕНО", description: "" } }));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ОЧИСТИТЬ ХРАНИЛИЩЕ");
-    } finally {
-      setIsStorageScanning(false);
-    }
   }
 
   async function loadStorageUploads(prefixOverride?: string) {
@@ -1929,197 +1748,6 @@ function AdminPanelContent() {
     } finally {
       setBrokenModulesBusy(false);
     }
-  }
-
-  async function setSelectedModuleVisibility(nextActive: boolean) {
-    if (!selectedAdminModuleId) return;
-    try {
-      await apiFetch(`/admin/modules/${encodeURIComponent(selectedAdminModuleId)}/visibility`, { method: "POST", body: JSON.stringify({ is_active: nextActive }) });
-      await loadAdminModulesForce();
-      void loadSelectedAdminModule();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ИЗМЕНИТЬ ВИДИМОСТЬ");
-    }
-  }
-
-  async function renameSelectedAdminModule(nextTitle: string) {
-    const mid = String(selectedAdminModuleId || "").trim();
-    const title = String(nextTitle || "").trim();
-    if (!mid) return;
-    if (!title) {
-      setError("НАЗВАНИЕ НЕ МОЖЕТ БЫТЬ ПУСТЫМ");
-      return;
-    }
-    try {
-      setError(null);
-      await apiFetch(`/admin/modules/${encodeURIComponent(mid)}`, { method: "PATCH", body: JSON.stringify({ title }) });
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "НАЗВАНИЕ ОБНОВЛЕНО", description: "" } }));
-      await loadAdminModulesForce();
-      void loadSelectedAdminModule();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ПЕРЕИМЕНОВАТЬ");
-    }
-  }
-
-  async function regenerateSelectedModuleQuizzes() {
-    if (!selectedAdminModuleId) return;
-    if (!window.confirm("Запустить реген тестов для выбранного модуля?")) return;
-    try {
-      setError(null);
-      const res = await apiFetch<{ job_id?: string }>(
-        `/admin/modules/${encodeURIComponent(selectedAdminModuleId)}/regenerate-quizzes`,
-        { method: "POST" }
-      );
-      if (res?.job_id) {
-        setSelectedJobId(String(res.job_id));
-        goTab("import");
-        setJobPanelOpen(true);
-      }
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "РЕГЕН ЗАПУЩЕН", description: "" } }));
-      void loadRegenHistory(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ЗАПУСТИТЬ РЕГЕН");
-    }
-  }
-
-  async function regenerateSubmoduleQuiz(submoduleId: string) {
-    const sid = String(submoduleId || "").trim();
-    if (!sid) return;
-    if (!window.confirm("Запустить реген теста для выбранного урока?")) return;
-    try {
-      setError(null);
-      const res = await apiFetch<{ job_id?: string; skipped?: boolean; skip_reason?: string; deduped?: boolean }>(
-        `/admin/submodules/${encodeURIComponent(sid)}/regenerate-quiz`,
-        { method: "POST" }
-      );
-      if ((res as any)?.skipped) {
-        const reason = String((res as any)?.skip_reason || "").trim();
-        const label = reason === "folder_lesson" ? "ПАПКА" : reason === "file_lesson" ? "ФАЙЛОВЫЙ" : "SKIPPED";
-        window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: `РЕГЕН НЕ НУЖЕН (${label})`, description: "" } }));
-        return;
-      }
-      if (res?.job_id) {
-        setSelectedJobId(String(res.job_id));
-        goTab("import");
-        setJobPanelOpen(true);
-      }
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "РЕГЕН ЗАПУЩЕН", description: "" } }));
-      void loadRegenHistory(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ ЗАПУСТИТЬ РЕГЕН");
-    }
-  }
-
-  async function updateSubmoduleAdmin(submoduleId: string, patch: { requires_quiz?: boolean | null }) {
-    const sid = String(submoduleId || "").trim();
-    if (!sid) return;
-    try {
-      setError(null);
-      await apiFetch(`/admin/submodules/${encodeURIComponent(sid)}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          requires_quiz: patch?.requires_quiz ?? null,
-        }),
-      });
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "УРОК ОБНОВЛЁН", description: "" } }));
-      void loadSelectedAdminModule();
-    } catch (e) {
-      const anyErr = e as any;
-      const rid = String(anyErr?.requestId || anyErr?.request_id || "").trim();
-      setError("НЕ УДАЛОСЬ ОБНОВИТЬ УРОК" + (rid ? ` (код: ${rid})` : ""));
-    }
-  }
-
-  async function deleteSelectedModule() {
-    if (!selectedAdminModuleId) return;
-    const title = String(selectedAdminModule?.title || "").trim();
-    if (!window.confirm(`Переместить модуль${title ? `\n\n${title}` : ""} в архив?\n\nМатериалы и прогресс сохранятся. Модуль можно восстановить в библиотеке.`)) return;
-    const deletingId = String(selectedAdminModuleId);
-    const prevModules = adminModules;
-    const prevSelectedModuleId = selectedAdminModuleId;
-    const prevSelectedSubmoduleId = selectedSubmoduleId;
-    const prevSelectedQuizId = selectedQuizId;
-    try {
-      setError(null);
-      setAdminModules((xs: AdminModuleItem[]) => (Array.isArray(xs) ? xs.filter((m) => String((m as any)?.id || "") !== deletingId) : xs));
-      // Immediate UI feedback: clear selection right away so the deleted module disappears instantly.
-      setSelectedAdminModuleId("");
-      setSelectedSubmoduleId("");
-      setSelectedQuizId("");
-      await apiFetch(`/admin/modules/${encodeURIComponent(selectedAdminModuleId)}`, { method: "DELETE" });
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Модуль в архиве", description: "Материалы и результаты сохранены" } }));
-      await loadAdminModulesForce();
-    } catch (e) {
-      setAdminModules(prevModules);
-      setSelectedAdminModuleId(prevSelectedModuleId);
-      setSelectedSubmoduleId(prevSelectedSubmoduleId);
-      setSelectedQuizId(prevSelectedQuizId);
-      setError(e instanceof Error ? e.message : "Не удалось переместить модуль в архив");
-    }
-  }
-
-  async function reloadModules() {
-    try {
-      const ms = await apiFetch<any[]>(`/modules`);
-      const mapped = (ms || []).map((m) => ({ id: String(m.id), title: String(m.title) }));
-      setModules(mapped);
-      if (mapped.length && !moduleId) setModuleId(mapped[0].id);
-    } catch { /* ignore */ }
-  }
-
-  async function acceptQuestionVersion(result: { quiz_id?: string; item?: AdminQuestionItem; id_map?: Record<string, string> }, savedId?: string) {
-    const nextQuizId = result.quiz_id || result.item?.quiz_id || selectedQuizId;
-    const mapping = result.id_map || {};
-    setQuestionDraftsById(previous => Object.fromEntries(Object.entries(previous)
-      .filter(([id]) => id !== savedId).map(([id, draft]) => [mapping[id] || id, draft])));
-    setSelectedQuizId(nextQuizId);
-    setSelectedAdminModuleSubs(previous => previous.map(sub => sub.id === selectedSubmoduleId ? { ...sub, quiz_id: nextQuizId } : sub));
-    await loadQuestionsForQuiz(nextQuizId);
-    void loadSelectedAdminModuleSubQuality(selectedAdminModuleId);
-  }
-
-  async function createQuestionAdmin(quizId: string) {
-    if (!quizId || newQuestionBusy || questionSavingId) return;
-    try {
-      setNewQuestionBusy(true); setError(null);
-      const result = await apiFetch<{ id: string; quiz_id: string; id_map: Record<string, string> }>("/admin/questions", {
-        method: "POST", body: JSON.stringify({ quiz_id: quizId, type: "single", prompt: "Новый вопрос\nA) Вариант 1\nB) Вариант 2", correct_answer: "A", concept_tag: "needs_regen:manual" }),
-      });
-      await acceptQuestionVersion(result);
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Вопрос создан", description: "Замените шаблон своим вопросом и сохраните его" } }));
-    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось создать вопрос"); }
-    finally { setNewQuestionBusy(false); }
-  }
-
-  async function deleteQuestionAdmin(id: string) {
-    if (!id || questionSavingId || newQuestionBusy || !window.confirm("Убрать вопрос из текущего теста? В предыдущих попытках он сохранится.")) return;
-    try {
-      setQuestionSavingId(id); setError(null);
-      const result = await apiFetch<{ quiz_id: string; id_map: Record<string, string> }>(`/admin/questions/${encodeURIComponent(id)}`, { method: "DELETE" });
-      await acceptQuestionVersion(result, id);
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Вопрос убран из теста", description: "История ответов сохранена" } }));
-    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось удалить вопрос"); }
-    finally { setQuestionSavingId(""); }
-  }
-
-  async function saveQuestionDraft(id: string) {
-    const draft = questionDraftsById[id];
-    if (!draft || questionSavingId || newQuestionBusy) return;
-    try {
-      setQuestionSavingId(id); setError(null);
-      const result = await apiFetch<{ item: AdminQuestionItem; id_map: Record<string, string> }>(`/admin/questions/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(draft) });
-      await acceptQuestionVersion(result, id);
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "Вопрос сохранён", description: "Начатые попытки продолжают работать с предыдущей версией" } }));
-    } catch (e) { setError(e instanceof Error ? e.message : "Не удалось сохранить вопрос"); }
-    finally { setQuestionSavingId(""); }
-  }
-
-  function getDraftValue(q: any, key: string) {
-    return questionDraftsById[q.id]?.[key] ?? q[key];
-  }
-
-  function isQuestionDirty(q: any) {
-    return !!questionDraftsById[q.id];
   }
 
   async function saveImportState() {
@@ -2485,11 +2113,8 @@ function AdminPanelContent() {
     didInitFromQueryRef.current = true;
 
     const st = loadAdminUiState();
-    const q = readAdminQuery();
 
-    const mid = q.mid || String(st?.selectedAdminModuleId || "").trim() || "";
-    const sid = q.sid || String(st?.selectedSubmoduleId || "").trim() || "";
-    const qid = q.qid || String(st?.selectedQuizId || "").trim() || "";
+    const mid = String(st?.selectedAdminModuleId || "").trim() || "";
     const uid = String(st?.selectedUserId || "").trim() || "";
     const uq = String(st?.userQuery || "").trim() || "";
     const iqv = String(st?.importQueueView || "").trim() as any;
@@ -2497,8 +2122,6 @@ function AdminPanelContent() {
     const sjid = String(st?.selectedJobId || "").trim() || "";
 
     if (mid) setSelectedAdminModuleId(mid);
-    if (sid) setSelectedSubmoduleId(sid);
-    if (qid) setSelectedQuizId(qid);
     if (uid) setSelectedUserId(uid);
     if (uq) setUserQuery(uq);
     if (iqv === "active" || iqv === "history") setImportQueueView(iqv);
@@ -2510,15 +2133,13 @@ function AdminPanelContent() {
     if (!didInitFromQueryRef.current) return;
     saveAdminUiState({
       selectedAdminModuleId: String(selectedAdminModuleId || "").trim(),
-      selectedSubmoduleId: String(selectedSubmoduleId || "").trim(),
-      selectedQuizId: String(selectedQuizId || "").trim(),
       selectedUserId: String(selectedUserId || "").trim(),
       userQuery: String(userQuery || "").trim(),
       importQueueView: String(importQueueView || "").trim(),
       jobPanelOpen: Boolean(jobPanelOpen),
       selectedJobId: String(selectedJobId || "").trim(),
     });
-  }, [selectedAdminModuleId, selectedSubmoduleId, selectedQuizId, selectedUserId, userQuery, importQueueView, jobPanelOpen, selectedJobId]);
+  }, [selectedAdminModuleId, selectedUserId, userQuery, importQueueView, jobPanelOpen, selectedJobId]);
 
   useEffect(() => {
     const t = tabFromPath(pathname);
@@ -2540,42 +2161,12 @@ function AdminPanelContent() {
   }, [tab]);
 
   useEffect(() => {
-    if (selectedAdminModuleId) void loadSelectedAdminModule();
-  }, [selectedAdminModuleId]);
-
-  useEffect(() => {
     if (selectedUserId) void loadUserDetail(selectedUserId);
   }, [selectedUserId]);
-
-  useEffect(() => {
-    const qid = String(selectedQuizId || "").trim();
-    if (!qid) return;
-
-    try {
-      const cached = questionsByQuizId[qid];
-      if (Array.isArray(cached)) return;
-    } catch {
-      // ignore
-    }
-
-    if (questionsLoadingQuizId) return;
-    void loadQuestionsForQuiz(qid);
-  }, [selectedQuizId]);
 
   // --- Render logic ---
   const selectedAdminModule = useMemo(() => adminModules.find((m: AdminModuleItem) => String(m.id) === String(selectedAdminModuleId)) || null, [adminModules, selectedAdminModuleId]);
   const selectedAdminModuleQuality = useMemo(() => (selectedAdminModule as any)?.question_quality || { total_current: 0, needs_regen_current: 0, fallback_current: 0, ai_current: 0, heur_current: 0 }, [selectedAdminModule]);
-  const selectedAdminModuleSubsQuality = useMemo(() => {
-    const mid = String(selectedAdminModuleId || "").trim();
-    if (!mid) return [] as any[];
-    return (subQualityByModuleId as any)?.[mid] || [];
-  }, [subQualityByModuleId, selectedAdminModuleId]);
-  const selectedAdminModuleSubsQualityLoading = useMemo(() => {
-    const mid = String(selectedAdminModuleId || "").trim();
-    if (!mid) return false;
-    return Boolean((subQualityLoadingByModuleId as any)?.[mid]);
-  }, [subQualityLoadingByModuleId, selectedAdminModuleId]);
-  const selectedQuizQuestions = useMemo(() => questionsByQuizId[selectedQuizId] || [], [questionsByQuizId, selectedQuizId]);
   const activeModuleRegenByModuleId = useMemo(() => {
     const out: Record<string, any> = {};
     for (const it of regenHistory || []) {
@@ -2642,23 +2233,14 @@ function AdminPanelContent() {
   const shareUrl = useMemo(() => {
     try {
       const base = window.location.origin;
-      const sp = new URLSearchParams();
-
-      if (tab === "modules") {
-        const mid = String(selectedAdminModuleId || "").trim();
-        const sid = String(selectedSubmoduleId || "").trim();
-        const qid = String(selectedQuizId || "").trim();
-        if (mid) sp.set("mid", mid);
-        if (sid) sp.set("sid", sid);
-        if (qid) sp.set("qid", qid);
-      }
-
-      const qs = sp.toString();
-      return qs ? `${base}${pathForTab(tab)}?${qs}` : `${base}${pathForTab(tab)}`;
+      const mid = String(selectedAdminModuleId || "").trim();
+      // Единственный редактор раздела живёт на отдельной странице: ссылка ведёт прямо в него.
+      if (tab === "modules" && mid) return `${base}/admin/modules/${mid}`;
+      return `${base}${pathForTab(tab)}`;
     } catch {
       return "";
     }
-  }, [tab, selectedAdminModuleId, selectedSubmoduleId, selectedQuizId]);
+  }, [tab, selectedAdminModuleId]);
 
   if (authLoading) return <div className="flex min-h-screen items-center justify-center"><div className="h-12 w-12 rounded-full border-2 border-[#fe9900]/30 border-t-[#fe9900] animate-spin" /></div>;
 
@@ -2843,6 +2425,7 @@ function AdminPanelContent() {
               sys={sys}
               sysLoading={sysLoading}
               loadSystemStatus={loadSystemStatus}
+              probeStatus={() => loadSystemStatus(true)}
               brokenModulesBusy={brokenModulesBusy}
               brokenModules={brokenModules}
               brokenModulesCount={brokenModulesCount}

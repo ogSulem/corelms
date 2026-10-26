@@ -1,10 +1,10 @@
 """Runtime application settings that administrators can edit in the LMS.
 
-Precedence is deliberately explicit:
+Every integration resolves the same way:
 
 1. values saved here (database, secrets encrypted at rest);
-2. legacy ``runtime:llm`` Redis overrides, when runtime overrides are enabled;
-3. process environment (``OPENROUTER_*``, ``SALES_LINKS_*``).
+2. legacy Redis overrides (``runtime:llm`` / ``runtime:s3``) kept for upgrades;
+3. process environment (``OPENROUTER_*``, ``SALES_LINKS_*``, ``S3_*``).
 
 Resolution always happens in the process that needs the value, so RQ workers
 see a token saved in the UI without a restart. No plaintext secret is ever
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
@@ -31,6 +32,10 @@ log = logging.getLogger(__name__)
 
 AI_KEY = "ai"
 SALES_KEY = "sales"
+STORAGE_KEY = "storage"
+PLATFORM_KEY = "platform"
+
+LEGACY_STORAGE_KEY = "runtime:s3"
 
 
 class SettingsValidationError(ValueError):
@@ -188,21 +193,6 @@ def _pick(name: str, db_value: object, runtime_value: object, env_value: object,
         return env_value
     sources[name] = "none"
     return None
-
-
-def stored_ai_values(db: Session | None = None) -> dict:
-    """Values explicitly saved by an administrator (no environment fallback)."""
-    row = _read(db, AI_KEY)
-    raw = row.value
-    return {
-        "enabled": _bool(raw.get("enabled")),
-        "base_url": _text(raw.get("base_url")),
-        "model": _text(raw.get("model")),
-        "http_referer": _text(raw.get("http_referer")),
-        "app_title": _text(raw.get("app_title")),
-        "api_key_present": bool(_text(raw.get("api_key"))),
-        "updated_at": row.updated_at,
-    }
 
 
 def get_ai_settings(db: Session | None = None) -> AISettings:
@@ -497,4 +487,354 @@ def sales_settings_payload(config: SalesSettings) -> dict:
             "service_account_present": bool(_text(getattr(settings, "sales_links_service_account_json", ""))),
             "api_key_present": bool(_text(getattr(settings, "sales_links_google_api_key", ""))),
         },
+    }
+
+
+# --- Storage (S3) -----------------------------------------------------------
+# Values live next to the other integrations: encrypted in the database, so
+# they survive Redis restarts, cache expiry and key rotation (reported, not
+# silently lost). The storage layer reads them on every call, therefore saving
+# needs no restart. A short per-process cache keeps multipart uploads cheap.
+
+STORAGE_FIELDS = (
+    "s3_endpoint_url",
+    "s3_public_endpoint_url",
+    "s3_bucket",
+    "s3_region_name",
+    "s3_addressing_style",
+)
+STORAGE_SECRET_FIELDS = ("s3_access_key_id", "s3_secret_access_key")
+_STORAGE_CACHE_TTL_SECONDS = 10.0
+_storage_cache: tuple[float, dict[str, str]] | None = None
+
+
+@dataclass(frozen=True)
+class StorageSettings:
+    endpoint_url: str
+    public_endpoint_url: str
+    bucket: str
+    region_name: str
+    addressing_style: str
+    access_key_id: str
+    secret_access_key: str
+    sources: dict[str, str]
+    stored: bool
+    updated_at: str | None
+    credentials_error: bool = False
+    legacy: bool = False
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.bucket)
+
+
+def invalidate_storage_cache() -> None:
+    global _storage_cache
+    _storage_cache = None
+
+
+def _legacy_storage() -> dict[str, str]:
+    """Redis ``runtime:s3`` overrides written by older releases."""
+    env = _text(getattr(settings, "app_env", "")).lower()
+    if env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_s3_overrides", False)):
+        return {}
+    try:
+        raw = get_redis().hgetall(LEGACY_STORAGE_KEY) or {}
+    except Exception:
+        log.debug("app_settings: legacy runtime:s3 is unavailable", exc_info=True)
+        return {}
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        k = key.decode("utf-8") if isinstance(key, (bytes, bytearray)) else str(key)
+        v = value.decode("utf-8", errors="ignore") if isinstance(value, (bytes, bytearray)) else str(value)
+        if k in STORAGE_FIELDS or k in STORAGE_SECRET_FIELDS:
+            out[k] = v.strip()
+    return out
+
+
+def get_storage_settings(db: Session | None = None) -> StorageSettings:
+    row = _read(db, STORAGE_KEY)
+    value = dict(row.value)
+    # Rows written by early builds of this feature used the short names.
+    for field in STORAGE_FIELDS + STORAGE_SECRET_FIELDS:
+        short = field.replace("s3_", "")
+        if field not in value and short in value:
+            value[field] = value[short]
+    legacy = _legacy_storage()
+    sources: dict[str, str] = {}
+
+    credentials_error = False
+    stored_access = ""
+    stored_secret = ""
+    for field, target in (("s3_access_key_id", "access"), ("s3_secret_access_key", "secret")):
+        raw = _text(value.get(field))
+        if not raw:
+            continue
+        try:
+            decoded = decrypt_secret(raw)
+        except SecretDecryptError:
+            credentials_error = True
+            continue
+        if target == "access":
+            stored_access = decoded
+        else:
+            stored_secret = decoded
+
+    env_access = _text(getattr(settings, "s3_access_key_id", ""))
+    env_secret = _text(getattr(settings, "s3_secret_access_key", ""))
+    legacy_access = _text(legacy.get("s3_access_key_id"))
+    legacy_secret = _text(legacy.get("s3_secret_access_key"))
+
+    access_key_id = str(_pick("access", stored_access, legacy_access, env_access, sources) or "")
+    secret_access_key = str(_pick("secret", stored_secret, legacy_secret, env_secret, sources) or "")
+
+    env_values = {
+        "s3_endpoint_url": _text(getattr(settings, "s3_endpoint_url", "")),
+        "s3_public_endpoint_url": _text(getattr(settings, "s3_public_endpoint_url", "")),
+        "s3_bucket": _text(getattr(settings, "s3_bucket", "")),
+        "s3_region_name": _text(getattr(settings, "s3_region_name", "")),
+        "s3_addressing_style": _text(getattr(settings, "s3_addressing_style", "")),
+    }
+    resolved: dict[str, str] = {}
+    for field in STORAGE_FIELDS:
+        resolved[field] = str(
+            _pick(field, _text(value.get(field)), _text(legacy.get(field)), env_values[field], sources) or ""
+        )
+
+    return StorageSettings(
+        endpoint_url=resolved["s3_endpoint_url"],
+        public_endpoint_url=resolved["s3_public_endpoint_url"],
+        bucket=resolved["s3_bucket"],
+        region_name=resolved["s3_region_name"],
+        addressing_style=resolved["s3_addressing_style"],
+        access_key_id=access_key_id,
+        secret_access_key=secret_access_key,
+        sources=sources,
+        stored=row.exists,
+        updated_at=row.updated_at,
+        # An unreadable stored key is only a problem when no fallback exists.
+        credentials_error=bool(credentials_error and not (access_key_id or secret_access_key)),
+        legacy=bool(legacy),
+    )
+
+
+def storage_overrides(db: Session | None = None) -> dict[str, str]:
+    """Overrides that must win over ``S3_*`` environment values.
+
+    Only explicitly saved or legacy values are returned, so call sites keep
+    their existing ``override or settings.s3_...`` fallbacks. Cached briefly
+    because every S3 call resolves it.
+    """
+    global _storage_cache
+    now = time.monotonic()
+    if db is None and _storage_cache is not None and now - _storage_cache[0] < _STORAGE_CACHE_TTL_SECONDS:
+        return dict(_storage_cache[1])
+
+    saved = _read(db, STORAGE_KEY).value
+    for field in STORAGE_FIELDS + STORAGE_SECRET_FIELDS:
+        short = field.replace("s3_", "")
+        if field not in saved and short in saved:
+            saved[field] = saved[short]
+    out: dict[str, str] = {}
+    for field in STORAGE_FIELDS:
+        value = _text(saved.get(field))
+        if value:
+            out[field] = value
+    for field in STORAGE_SECRET_FIELDS:
+        raw = _text(saved.get(field))
+        if not raw:
+            continue
+        try:
+            out[field] = decrypt_secret(raw)
+        except SecretDecryptError:
+            log.warning("app_settings: stored S3 secret cannot be decrypted; enter it again", exc_info=False)
+    # Legacy Redis values stay readable during an upgrade, but never win over
+    # values saved in the interface.
+    for field, value in _legacy_storage().items():
+        out.setdefault(field, value)
+
+    if db is None:
+        _storage_cache = (now, dict(out))
+    return out
+
+
+def save_storage_settings(
+    db: Session,
+    *,
+    actor_id,
+    endpoint_url: str = "",
+    public_endpoint_url: str = "",
+    bucket: str = "",
+    region_name: str = "",
+    addressing_style: str = "",
+    access_key_id: str | None = None,
+    secret_access_key: str | None = None,
+    clear_credentials: bool = False,
+) -> StorageSettings:
+    current = _read(db, STORAGE_KEY)
+    value = dict(current.value)
+    cleaned = {
+        "s3_endpoint_url": _text(endpoint_url),
+        "s3_public_endpoint_url": _text(public_endpoint_url),
+        "s3_bucket": _text(bucket),
+        "s3_region_name": _text(region_name),
+        "s3_addressing_style": _text(addressing_style),
+    }
+    if not cleaned["s3_bucket"]:
+        raise SettingsValidationError("Укажите имя bucket")
+    for field, raw in cleaned.items():
+        if len(raw) > 500:
+            raise SettingsValidationError(f"{field}: слишком длинное значение")
+    for field in ("s3_endpoint_url", "s3_public_endpoint_url"):
+        cleaned[field] = _validate_http_url(cleaned[field], field=field.replace("s3_", "").replace("_", " ").capitalize())
+    if cleaned["s3_addressing_style"] and cleaned["s3_addressing_style"] not in {"path", "virtual", "auto"}:
+        raise SettingsValidationError("Стиль адресации: path, virtual или auto")
+    if len(cleaned["s3_region_name"]) > 100:
+        raise SettingsValidationError("Регион указан неверно")
+
+    # Canonical ``s3_*`` keys are shared by the storage layer, the legacy Redis
+    # hash and this row, so one name works everywhere.
+    for field, raw in cleaned.items():
+        if raw:
+            value[field] = raw
+        else:
+            value.pop(field, None)
+
+    if clear_credentials:
+        value.pop("s3_access_key_id", None)
+        value.pop("s3_secret_access_key", None)
+    for field, raw in (("s3_access_key_id", access_key_id), ("s3_secret_access_key", secret_access_key)):
+        candidate = _text(raw)
+        if not candidate:
+            continue
+        if len(candidate) > 2000 or any(ch.isspace() for ch in candidate):
+            raise SettingsValidationError(f"{field}: неверный формат ключа")
+        value[field] = encrypt_secret(candidate)
+
+    _write(db, STORAGE_KEY, value, actor_id=actor_id)
+    invalidate_storage_cache()
+    return get_storage_settings(db)
+
+
+def reset_storage_settings(db: Session) -> None:
+    delete_setting(db, STORAGE_KEY)
+    try:
+        get_redis().delete(LEGACY_STORAGE_KEY)
+    except Exception:
+        log.debug("app_settings: could not clear legacy runtime:s3", exc_info=True)
+    invalidate_storage_cache()
+
+
+def storage_settings_payload(config: StorageSettings) -> dict:
+    """Safe storage representation: only masked credentials leave the server."""
+    return {
+        "configured": config.configured,
+        "stored": config.stored,
+        "updated_at": config.updated_at,
+        "fields": {
+            "s3_endpoint_url": config.endpoint_url if config.sources.get("s3_endpoint_url") == "database" else "",
+            "s3_public_endpoint_url": config.public_endpoint_url if config.sources.get("s3_public_endpoint_url") == "database" else "",
+            "s3_bucket": config.bucket if config.sources.get("s3_bucket") == "database" else "",
+            "s3_region_name": config.region_name if config.sources.get("s3_region_name") == "database" else "",
+            "s3_addressing_style": config.addressing_style if config.sources.get("s3_addressing_style") == "database" else "",
+        },
+        "access_key_masked": mask_secret(config.access_key_id),
+        "secret_key_masked": mask_secret(config.secret_access_key),
+        "sources": config.sources,
+        "credentials_error": config.credentials_error,
+        "legacy": config.legacy,
+        "resolved": {
+            "bucket": config.bucket,
+            "endpoint_url": config.endpoint_url,
+            "public_endpoint_url": config.public_endpoint_url,
+            "region_name": config.region_name,
+            "addressing_style": config.addressing_style,
+        },
+        "env": {
+            "bucket": _text(getattr(settings, "s3_bucket", "")),
+            "endpoint_url": _text(getattr(settings, "s3_endpoint_url", "")),
+            "credentials_present": bool(_text(getattr(settings, "s3_access_key_id", ""))),
+        },
+        "secret_storage": "encrypted",
+    }
+
+
+# --- Platform limits --------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PlatformSettings:
+    upload_max_bytes: int
+    allow_public_register: bool
+    sources: dict[str, str]
+    stored: bool
+    updated_at: str | None
+
+
+MIN_UPLOAD_BYTES = 1024 * 1024
+MAX_UPLOAD_BYTES = 20 * 1024 * 1024 * 1024
+
+
+def get_platform_settings(db: Session | None = None) -> PlatformSettings:
+    row = _read(db, PLATFORM_KEY)
+    value = row.value
+    sources: dict[str, str] = {}
+
+    env_upload = int(getattr(settings, "content_upload_max_bytes", 512 * 1024 * 1024) or 512 * 1024 * 1024)
+    stored_upload = value.get("upload_max_bytes")
+    upload = env_upload
+    if isinstance(stored_upload, int) and MIN_UPLOAD_BYTES <= stored_upload <= MAX_UPLOAD_BYTES:
+        upload, sources["upload_max_bytes"] = stored_upload, "database"
+    else:
+        sources["upload_max_bytes"] = "environment"
+
+    env_register = bool(getattr(settings, "allow_public_register", False))
+    stored_register = _bool(value.get("allow_public_register"))
+    if stored_register is None:
+        allow_register, sources["allow_public_register"] = env_register, "environment"
+    else:
+        allow_register, sources["allow_public_register"] = stored_register, "database"
+
+    return PlatformSettings(
+        upload_max_bytes=upload,
+        allow_public_register=allow_register,
+        sources=sources,
+        stored=row.exists,
+        updated_at=row.updated_at,
+    )
+
+
+def save_platform_settings(
+    db: Session,
+    *,
+    actor_id,
+    upload_max_bytes: int,
+    allow_public_register: bool,
+) -> PlatformSettings:
+    if not isinstance(upload_max_bytes, int) or not (MIN_UPLOAD_BYTES <= upload_max_bytes <= MAX_UPLOAD_BYTES):
+        raise SettingsValidationError("Размер файла должен быть от 1 МБ до 20 ГБ")
+    current = _read(db, PLATFORM_KEY)
+    value = dict(current.value)
+    value["upload_max_bytes"] = int(upload_max_bytes)
+    value["allow_public_register"] = bool(allow_public_register)
+    _write(db, PLATFORM_KEY, value, actor_id=actor_id)
+    return get_platform_settings(db)
+
+
+def reset_platform_settings(db: Session) -> None:
+    delete_setting(db, PLATFORM_KEY)
+
+
+def platform_settings_payload(config: PlatformSettings) -> dict:
+    return {
+        "upload_max_bytes": config.upload_max_bytes,
+        "allow_public_register": config.allow_public_register,
+        "sources": config.sources,
+        "stored": config.stored,
+        "updated_at": config.updated_at,
+        "env": {
+            "upload_max_bytes": int(getattr(settings, "content_upload_max_bytes", 0) or 0),
+            "allow_public_register": bool(getattr(settings, "allow_public_register", False)),
+        },
+        "limits": {"min_upload_bytes": MIN_UPLOAD_BYTES, "max_upload_bytes": MAX_UPLOAD_BYTES},
     }

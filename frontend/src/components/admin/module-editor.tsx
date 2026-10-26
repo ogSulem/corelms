@@ -10,6 +10,7 @@ import { LessonPresentation } from "@/components/learning/lesson-presentation";
 import { AppShell } from "@/components/app/shell";
 import { AssetPreview } from "@/components/materials/asset-preview";
 import { MaterialIcon } from "@/components/materials/material-browser";
+import { AssetVersionList, type AssetVersion } from "@/components/materials/asset-version-list";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { useActiveTabVisibility } from "@/lib/hooks/use-active-tab-visibility";
@@ -69,7 +70,7 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
   const [draftTarget, setDraftTarget] = useState("");
   const [showMarkdown, setShowMarkdown] = useState(false);
   const [moduleDraft, setModuleDraft] = useState({ title: "", description: "", category: "", visibility: "public", tag_ids: [] as string[] });
-  const [versions, setVersions] = useState<{ version: number; filename: string; size_bytes: number | null; created_at: string }[]>([]);
+  const [versions, setVersions] = useState<AssetVersion[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [tasks, setTasks] = useState<FileTask[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -430,7 +431,22 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
       {dialog?.kind === "rename" && <p className="text-xs leading-relaxed text-zinc-500">Меняется отображаемое имя, а не содержимое и не ссылка на файл. Сохраните исходное расширение.</p>}
       {dialog?.kind === "move" && <div className="space-y-4"><p className="break-words text-sm text-zinc-500">{dialog.asset.original_filename}</p><label className="block space-y-2 text-sm font-medium">Куда переместить<select className={input} value={draftTarget} onChange={e => setDraftTarget(e.target.value)}><option value="">Общие файлы модуля</option>{activeLessons.map(l => <option key={l.id} value={l.id}>{l.title}</option>)}</select></label><p className="text-xs text-zinc-500">Содержимое, ссылка на файл и его версии сохранятся.</p></div>}
       {dialog?.kind === "textVersions" && <div className="space-y-4"><div><p className="break-words text-sm font-medium">{dialog.lesson.title}</p><p className="mt-2 text-xs text-zinc-500">Текущая версия: {dialog.lesson.content_version}. Восстановленный текст будет защищён от замены ZIP-импортом.</p></div>{versionsLoading ? <p role="status" className="py-4 text-sm text-zinc-500">Загружаем историю…</p> : textVersions.length ? <div className="max-h-56 space-y-2 overflow-y-auto">{textVersions.map(version => <button key={version.version} type="button" aria-pressed={textPreview?.version === version.version} onClick={() => void previewTextVersion(dialog.lesson, version.version)} className={cn("flex w-full flex-wrap items-center justify-between gap-2 rounded-xl border p-3 text-left", textPreview?.version === version.version ? "border-amber-400 bg-amber-50" : "border-zinc-200 hover:bg-zinc-50")}><span className="text-sm font-medium">Версия {version.version}</span><span className="text-xs text-zinc-500">Снимок перед изменением · {new Date(version.created_at).toLocaleString("ru-RU")}</span></button>)}</div> : <p className="py-4 text-sm text-zinc-500">Текст ещё не менялся. Предыдущие версии появятся здесь после сохранения изменений.</p>}{textLoading && <p role="status" className="text-sm text-zinc-500">Загружаем текст…</p>}{textPreview && <><div className="max-h-80 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-7">{textPreview.content || "Пустой текст"}</div><Button variant="outline" className={btn} disabled={locked || dialog.lesson.is_archived} onClick={() => { if (window.confirm(`Восстановить текст версии ${textPreview.version}? Текущий текст останется в истории.`)) void mutate(`/lessons/${dialog.lesson.id}/restore-version`, "POST", { version: textPreview.version }, "Текст восстановлен", dialog.revision).then(ok => { if (ok) setDialog(null); }); }}><RotateCcw size={15} />Восстановить версию {textPreview.version}</Button></>}</div>}
-      {dialog?.kind === "versions" && <div className="space-y-3"><p className="break-words text-sm font-medium">{dialog.asset.original_filename}</p><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">Текущая версия: {dialog.asset.version} · {formatBytes(dialog.asset.size_bytes)}</div>{versionsLoading ? <p role="status" className="flex items-center gap-2 py-4 text-sm text-zinc-500"><Loader2 className="animate-spin" size={16} />Загружаем историю…</p> : versions.length ? versions.map(version => <div key={version.version} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 p-4"><div><p className="text-sm font-medium">Версия {version.version}</p><p className="mt-1 text-xs text-zinc-500">{new Date(version.created_at).toLocaleString("ru-RU")} · {formatBytes(version.size_bytes)}</p></div><Button variant="outline" className={btn} size="sm" disabled={locked} onClick={() => { if (window.confirm(`Восстановить версию ${version.version}? Текущая версия тоже останется в истории.`)) void mutate(`/assets/${dialog.asset.asset_id}/restore-version`, "POST", { version: version.version }, "Версия восстановлена").then(ok => { if (ok) setDialog(null); }); }}><RotateCcw size={14} />Восстановить</Button></div>) : <p className="py-5 text-sm text-zinc-500">Файл ещё не заменяли. Предыдущие версии появятся здесь после замены.</p>}<p className="pt-2 text-xs leading-relaxed text-zinc-500">Восстановление создаёт новую текущую версию. Ничто из истории не удаляется.</p></div>}
+      {dialog?.kind === "versions" && <div className="space-y-3">
+        <p className="break-words text-sm font-medium">{dialog.asset.original_filename}</p>
+        <AssetVersionList
+          versions={versions}
+          loading={versionsLoading}
+          current={<div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">Текущая версия: {dialog.asset.version} · {formatBytes(dialog.asset.size_bytes)}</div>}
+          empty="Файл ещё не заменяли. Предыдущие версии появятся здесь после замены."
+          hint={<p className="pt-2 text-xs leading-relaxed text-zinc-500">Восстановление создаёт новую текущую версию. Ничто из истории не удаляется.</p>}
+          disabled={locked}
+          onRestore={version => {
+            if (window.confirm(`Восстановить версию ${version.version}? Текущая версия тоже останется в истории.`)) {
+              void mutate(`/assets/${dialog.asset.asset_id}/restore-version`, "POST", { version: version.version }, "Версия восстановлена").then(ok => { if (ok) setDialog(null); });
+            }
+          }}
+        />
+      </div>}
     </Modal>
   </div></AppShell>;
 }

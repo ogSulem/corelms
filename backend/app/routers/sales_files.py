@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.core.security import get_current_user, require_roles
 from app.core.security_audit_log import audit_log
 from app.db.session import get_db
+from app.services.app_settings import get_platform_settings
 from app.models.asset import AssetRevision, ContentAsset
 from app.models.sales import SalesEntry
 from app.models.user import User, UserRole
@@ -88,7 +88,7 @@ def upload_sales_file(request: Request, file: UploadFile = File(...), section: S
                       replace_id: uuid.UUID | None = Form(default=None), db: Session = Depends(get_db),
                       user: User = Depends(require_roles(UserRole.superadmin)),
                       _: object = rate_limit(key_prefix="sales_upload", limit=120, window_seconds=60)):
-    filename, size, checksum = _inspect_upload(file, max_bytes=settings.content_upload_max_bytes)
+    filename, size, checksum = _inspect_upload(file, max_bytes=get_platform_settings(db).upload_max_bytes)
     path = clean_path(path)
     get_section(db, section, revision=revision)
     entry = require_entry(db, replace_id) if replace_id else None

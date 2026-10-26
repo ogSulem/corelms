@@ -1,3 +1,4 @@
+import io
 import json
 import uuid
 from sqlalchemy import select
@@ -210,7 +211,9 @@ def test_overview_reports_schema_target_and_server_limits(client, admin_headers)
     response = client.get("/admin/settings/overview", headers=admin_headers)
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["schema"]["expected"] == "0024"
+    from app.routers.settings import expected_schema_revision
+    assert body["schema"]["expected"] == expected_schema_revision()
+    assert expected_schema_revision() == "0024"
     assert body["upload_max_bytes"] > 0
 
 
@@ -312,38 +315,59 @@ def test_a_token_row_without_an_enabled_flag_is_treated_as_enabled(client, db, a
     assert config.sources["enabled"] == "database"
 
 
-def test_storage_settings_are_saved_as_masked_overrides(client, admin_headers, monkeypatch):
-    from app.core.redis_client import get_redis
-
-    monkeypatch.setattr(settings, "app_env", "development")
+def test_storage_settings_are_saved_encrypted_and_masked(client, db, admin_headers):
     saved = client.put("/admin/settings/storage", headers=admin_headers,
                        json={"s3_endpoint_url": "https://s3.example.test", "s3_bucket": "bucket-test",
                              "s3_access_key_id": "fake-access-aaaaaaaa", "s3_secret_access_key": "fake-secret-bbbbbbbb"})
     assert saved.status_code == 200, saved.text
-    payload = saved.json()
-    assert payload["stored"] is True
-    assert payload["effective"]["bucket"] == "bucket-test"
-    assert payload["effective"]["endpoint"] == "https://s3.example.test"
+    body = saved.json()
+    assert body["ok"] is True and body["restart_required"] is False
+    payload = body["settings"]
+    assert payload["stored"] is True and payload["configured"] is True
+    assert payload["fields"]["s3_bucket"] == "bucket-test"
+    assert payload["resolved"]["bucket"] == "bucket-test"
+    assert payload["resolved"]["endpoint_url"] == "https://s3.example.test"
     assert "fake-access-aaaaaaaa" not in json.dumps(payload) and "fake-secret-bbbbbbbb" not in json.dumps(payload)
     assert payload["access_key_masked"].startswith("fak") and "aaaaaaaa" not in payload["access_key_masked"]
-    assert get_redis().hget("runtime:s3", "s3_secret_access_key") in {b"fake-secret-bbbbbbbb", "fake-secret-bbbbbbbb"}
+    assert payload["sources"]["s3_bucket"] == "database"
+
+    # Credentials live in the encrypted settings table, never in plaintext.
+    row = db.scalar(select(AppSetting).where(AppSetting.key == "storage"))
+    assert row is not None and row.updated_by is not None
+    stored = json.loads(row.value)
+    assert "fake-secret-bbbbbbbb" not in row.value
+    assert stored["s3_secret_access_key"].startswith("enc:v1:")
+    assert decrypt_secret(stored["s3_secret_access_key"]) == "fake-secret-bbbbbbbb"
+
+    # The saved values are the effective ones immediately, without a restart.
+    from app.services.storage import effective_bucket, effective_endpoint
+    assert effective_bucket() == "bucket-test"
+    assert effective_endpoint() == "https://s3.example.test"
 
     # A bucket is mandatory: an accidental empty save must not wipe storage.
     assert client.put("/admin/settings/storage", headers=admin_headers, json={"s3_bucket": ""}).status_code == 422
-    assert get_redis().hget("runtime:s3", "s3_bucket") in {b"bucket-test", "bucket-test"}
+    assert effective_bucket() == "bucket-test"
 
     reset = client.delete("/admin/settings/storage", headers=admin_headers)
-    assert reset.status_code == 200 and reset.json()["stored"] is False
-    assert get_redis().hgetall("runtime:s3") == {}
+    assert reset.status_code == 200 and reset.json()["settings"]["stored"] is False
+    assert db.scalar(select(AppSetting).where(AppSetting.key == "storage")) is None
+    assert effective_bucket() == settings.s3_bucket
 
 
-def test_storage_settings_are_read_only_when_overrides_are_disabled(client, admin_headers, monkeypatch):
+def test_storage_settings_stay_editable_in_production(client, admin_headers, monkeypatch):
     monkeypatch.setattr(settings, "app_env", "production")
     monkeypatch.delenv("ALLOW_RUNTIME_S3_OVERRIDES", raising=False)
     read = client.get("/admin/settings/storage", headers=admin_headers)
-    assert read.status_code == 200 and read.json()["editable"] is False
-    blocked = client.put("/admin/settings/storage", headers=admin_headers, json={"s3_bucket": "other"})
-    assert blocked.status_code == 403
+    assert read.status_code == 200 and read.json()["editable"] is True
+    saved = client.put("/admin/settings/storage", headers=admin_headers, json={"s3_bucket": "other"})
+    assert saved.status_code == 200 and saved.json()["settings"]["resolved"]["bucket"] == "other"
+
+
+def test_storage_settings_are_admin_only(client, make_user):
+    _, employee = make_user()
+    assert client.get("/admin/settings/storage", headers=employee).status_code == 403
+    assert client.put("/admin/settings/storage", headers=employee, json={"s3_bucket": "x"}).status_code == 403
+    assert client.delete("/admin/settings/storage", headers=employee).status_code == 403
 
 
 def test_storage_connection_test_reports_bucket_state(client, admin_headers, monkeypatch):
@@ -362,3 +386,78 @@ def test_storage_connection_test_reports_bucket_state(client, admin_headers, mon
     bad = client.post("/admin/settings/storage/test", headers=admin_headers)
     assert bad.status_code == 200 and bad.json()["ok"] is False
     assert "NoSuchBucket" in bad.json()["message"]
+
+
+def test_platform_limits_are_editable_and_apply_immediately(client, db, admin_headers, make_module):
+    saved = client.put("/admin/settings/platform", headers=admin_headers,
+                       json={"upload_max_bytes": 5 * 1024 * 1024, "allow_public_register": True})
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["restart_required"] is False
+    payload = body["settings"]
+    assert payload["upload_max_bytes"] == 5 * 1024 * 1024
+    assert payload["allow_public_register"] is True
+    assert payload["sources"]["upload_max_bytes"] == "database"
+    assert payload["limits"]["min_upload_bytes"] == 1024 * 1024
+
+    module, _, _ = make_module()
+    capabilities = client.get(f"/admin/content/modules/{module.id}", headers=admin_headers).json()["capabilities"]
+    assert capabilities["upload_max_bytes"] == 5 * 1024 * 1024
+
+    row = db.scalar(select(AppSetting).where(AppSetting.key == "platform"))
+    assert row is not None and row.updated_by is not None
+
+    reset = client.delete("/admin/settings/platform", headers=admin_headers)
+    assert reset.status_code == 200 and reset.json()["settings"]["stored"] is False
+    assert reset.json()["settings"]["upload_max_bytes"] == settings.content_upload_max_bytes
+
+
+def test_platform_limits_reject_out_of_range_values(client, admin_headers):
+    for value in (0, 1024, 20 * 1024 * 1024 * 1024 + 1):
+        response = client.put("/admin/settings/platform", headers=admin_headers,
+                              json={"upload_max_bytes": value, "allow_public_register": False})
+        assert response.status_code == 422, value
+
+
+def test_platform_settings_are_admin_only(client, make_user):
+    _, employee = make_user()
+    assert client.get("/admin/settings/platform", headers=employee).status_code == 403
+    assert client.put("/admin/settings/platform", headers=employee,
+                      json={"upload_max_bytes": 1024 * 1024}).status_code == 403
+
+
+def test_platform_upload_limit_is_enforced(client, admin_headers, make_module):
+    module, _, _ = make_module()
+    assert client.put("/admin/settings/platform", headers=admin_headers,
+                      json={"upload_max_bytes": 1024 * 1024, "allow_public_register": False}).status_code == 200
+    too_big = io.BytesIO(b"x" * (1024 * 1024 + 1024))
+    response = client.post(f"/admin/content/modules/{module.id}/assets", headers=admin_headers,
+                           data={"revision": "1"},
+                           files={"file": ("big.bin", too_big, "application/octet-stream")})
+    assert response.status_code == 413
+    assert "1 МБ" in response.text
+
+
+def test_public_registration_follows_the_saved_setting(client, admin_headers, monkeypatch):
+    from app.core.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "allow_public_register", True)
+
+    def register(name: str):
+        return client.post("/auth/register", json={"name": name, "position": None, "role": "employee",
+                                                   "password": "testpass123"})
+
+    saved = client.put("/admin/settings/platform", headers=admin_headers,
+                       json={"upload_max_bytes": 512 * 1024 * 1024, "allow_public_register": False})
+    assert saved.status_code == 200
+    closed = register(f"closed_{uuid.uuid4().hex[:8]}")
+    assert closed.status_code == 403
+
+    client.put("/admin/settings/platform", headers=admin_headers,
+               json={"upload_max_bytes": 512 * 1024 * 1024, "allow_public_register": True})
+    opened = register(f"open_{uuid.uuid4().hex[:8]}")
+    assert opened.status_code in (200, 201), opened.text
+
+    # «Сбросить к серверу» возвращает поведение из .env без перезапуска.
+    client.delete("/admin/settings/platform", headers=admin_headers)
+    assert register(f"back_{uuid.uuid4().hex[:8]}").status_code == 200

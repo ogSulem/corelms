@@ -1,4 +1,4 @@
-export class CoreApiError extends Error {
+class CoreApiError extends Error {
   status: number;
   errorCode?: string;
   requestId?: string;

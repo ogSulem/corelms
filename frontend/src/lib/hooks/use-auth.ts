@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-export type User = {
+type User = {
   id: string;
   name: string;
   role: 'admin' | 'superadmin' | 'employee';

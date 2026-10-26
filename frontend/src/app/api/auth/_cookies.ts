@@ -4,25 +4,25 @@ function _isProd(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
-export function cookieSecure(): boolean {
+function cookieSecure(): boolean {
   const raw = String(process.env.COOKIE_SECURE || "").trim();
   if (raw) return raw.toLowerCase() === "true";
   return _isProd();
 }
 
-export function cookieDomain(): string | undefined {
+function cookieDomain(): string | undefined {
   const v = String(process.env.COOKIE_DOMAIN || "").trim();
   if (!v) return undefined;
   const isAscii = /^[\x00-\x7F]+$/.test(v);
   return isAscii ? v : undefined;
 }
 
-export function tokenConfiguredMaxAgeSeconds(): number {
+function tokenConfiguredMaxAgeSeconds(): number {
   const v = Number.parseInt(process.env.CORE_TOKEN_MAX_AGE_SECONDS || "3600", 10);
   return Number.isFinite(v) && v > 0 ? v : 3600;
 }
 
-export function effectiveAccessMaxAgeSeconds(upstreamExpiresIn?: number | null): number {
+function effectiveAccessMaxAgeSeconds(upstreamExpiresIn?: number | null): number {
   const configured = tokenConfiguredMaxAgeSeconds();
   const u = typeof upstreamExpiresIn === "number" && Number.isFinite(upstreamExpiresIn) && upstreamExpiresIn > 0 ? upstreamExpiresIn : null;
   return u ? Math.min(configured, u) : configured;
