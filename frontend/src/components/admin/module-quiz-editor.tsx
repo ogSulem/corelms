@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, GraduationCap, Loader2, Plus, RefreshCw, Save, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -188,7 +189,7 @@ export function ModuleQuizEditor({ moduleId, revision, lessons, initialLessonId,
           <div className="flex flex-wrap gap-2"><label className="flex items-center gap-2 text-xs text-zinc-500">Вопросов на урок<input type="number" min={1} max={10} aria-label="Вопросов на урок" className={`${field} !w-20`} value={count} onChange={e => setCount(Number(e.target.value))} /></label>
             <Button className={btn} disabled={locked || busy || !aiConfigured} onClick={() => void startBatch(true)}><Sparkles size={16} />Только без тестов</Button>
             <Button variant="outline" className={btn} disabled={locked || busy || !aiConfigured} onClick={() => void startBatch(false)}>Все уроки</Button></div></div>
-        {!aiConfigured && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs leading-6 text-amber-900">AI-провайдер не настроен на сервере. Создайте вопросы вручную — всё остальное работает без AI.</p>}
+        {!aiConfigured && <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs leading-6 text-amber-900">AI пока не настроен. Создайте вопросы вручную или <Link href="/admin/settings" className="font-semibold underline">укажите токен в настройках</Link> — всё остальное работает без AI.</p>}
         {batchLoading ? <p role="status" className="mt-3 text-xs text-zinc-500">Проверяем общую подготовку…</p> : batch && (batch.items.length > 0 || batch.message) && <div className="mt-3 space-y-2">
           {!!batch.items.length && <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500"><span>{batch.working ? "Идёт подготовка." : "Подготовка завершена."}</span>{Object.entries(batch.counts || {}).filter(([, n]) => n > 0).map(([state, n]) => <span key={state} className={cn("rounded-full px-2 py-0.5", state === "failed" || state === "needs_source" || state === "stale" ? "bg-amber-100 text-amber-900" : "bg-white text-zinc-600")}>{stateLabel(state)} · {n}</span>)}</div>}
           {!!batch.remaining && <p className="text-xs leading-6 text-zinc-500">Ещё {batch.remaining} уроков не вошли в один запуск (до 50 за раз). Запустите подготовку повторно после проверки.</p>}

@@ -2,6 +2,7 @@ from app.models.user import User, UserRole
 from app.models.module import Module
 from app.models.quiz import Quiz
 from app.models.assignment import Assignment
+from app.models.app_setting import AppSetting
 
 __all__ = [
     "User",
@@ -9,4 +10,5 @@ __all__ = [
     "Module",
     "Quiz",
     "Assignment",
+    "AppSetting",
 ]

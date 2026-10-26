@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -9,9 +10,10 @@ import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from app.core.config import settings
+from app.core.config import settings  # noqa: F401 - compatibility with diagnostics/tests
 from app.core.queue import release_job_lock
 from app.core.redis_client import get_redis
+from app.services.app_settings import get_sales_settings
 from app.services.google_sheets import read_sales_snapshot
 
 log = logging.getLogger(__name__)
@@ -72,8 +74,17 @@ def parse_snapshot(snapshot: dict) -> tuple[list[dict], list[str]]:
     return blocks, warnings
 
 
-def source_url() -> str | None:
-    sid = str(settings.sales_links_spreadsheet_id or "").strip()
+def cache_key(config=None) -> str:
+    """Snapshot cache is scoped to the credentials as well as the spreadsheet."""
+    config = config or get_sales_settings()
+    fingerprint = hashlib.sha256(
+        f"{config.spreadsheet_id}\0{config.service_account_json}\0{config.api_key}".encode("utf-8")
+    ).hexdigest()[:12]
+    return f"sales:links:v4:{config.spreadsheet_id}:{fingerprint}"
+
+
+def source_url(config=None) -> str | None:
+    sid = str((config or get_sales_settings()).spreadsheet_id or "").strip()
     return f"https://docs.google.com/spreadsheets/d/{sid}/edit" if re.fullmatch(r"[A-Za-z0-9_-]{1,200}", sid) else None
 
 
@@ -83,15 +94,19 @@ def _fallback(cached: dict | None, message: str, *, refreshing: bool = False) ->
 
 
 def get_sales_links_payload(*, bypass_cache: bool = False) -> dict:
-    sid = str(settings.sales_links_spreadsheet_id or "").strip()
-    creds = str(settings.sales_links_service_account_json or "").strip()
-    api_key = str(settings.sales_links_google_api_key or "").strip()
+    config = get_sales_settings()
+    sid = str(config.spreadsheet_id or "").strip()
+    creds = str(config.service_account_json or "").strip()
+    api_key = str(config.api_key or "").strip()
     if not sid or (not creds and not api_key):
         return {"blocks": [], "status": "unconfigured", "last_success_at": None, "warnings": [],
                 "message": "Google Sheets ещё не настроены. Файлы продаж доступны независимо от таблицы."}
-    if source_url() is None:
+    if config.credentials_error and not (creds or api_key):
+        return {"blocks": [], "status": "error", "last_success_at": None, "warnings": [],
+                "message": config.credentials_error}
+    if source_url(config) is None:
         return _fallback(None, "Проверьте идентификатор таблицы в настройках сервера.")
-    key = f"sales:links:v3:{sid}"
+    key = cache_key(config)
     token = uuid.uuid4().hex
     redis = None
     cached, fresh_until = _memory.get(key, (None, 0))

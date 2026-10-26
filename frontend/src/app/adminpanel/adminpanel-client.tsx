@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { AdminNav } from "@/components/admin/admin-nav";
 import { ModuleLibrary } from "@/components/admin/module-library";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as nextNavigation from "next/navigation";
@@ -28,7 +29,6 @@ import {
 
 import { DiagnosticsTab } from "./_components/DiagnosticsTab";
 import { UsersTab } from "./_components/UsersTab";
-import { ModulesTab } from "./_components/ModulesTab";
 import ImportTab from "./_components/ImportTab";
 
 export default function AdminPanelClient() {
@@ -37,7 +37,6 @@ export default function AdminPanelClient() {
 
 function AdminPanelContent() {
   const queryParams = nextNavigation.useSearchParams();
-  const showAdvancedModules = !!queryParams.get("mid");
   const { user, loading: authLoading } = useAuth();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pathname = (nextNavigation as any).usePathname();
@@ -85,8 +84,6 @@ function AdminPanelContent() {
   const adminModulesLoadedAtRef = useRef<number>(0);
   const usersLoadedAtRef = useRef<number>(0);
   const systemStatusLoadedAtRef = useRef<number>(0);
-  const runtimeLlmLoadedAtRef = useRef<number>(0);
-  const runtimeS3LoadedAtRef = useRef<number>(0);
 
   const jobsDebugEnabled = useMemo(() => {
     try {
@@ -434,27 +431,6 @@ function AdminPanelContent() {
   // Diagnostics
   const [sys, setSys] = useState<any>(null);
   const [sysLoading, setSysLoading] = useState(false);
-  const [diagSaving, setDiagSaving] = useState(false);
-  const [openrouterEnabledDraft, setOpenrouterEnabledDraft] = useState(false);
-  const [openrouterBaseUrlDraft, setOpenrouterBaseUrlDraft] = useState("");
-  const [openrouterModelDraft, setOpenrouterModelDraft] = useState("");
-  const [openrouterApiKeyDraft, setOpenrouterApiKeyDraft] = useState("");
-  const [openrouterApiKeyMasked, setOpenrouterApiKeyMasked] = useState("");
-  const [openrouterHttpRefererDraft, setOpenrouterHttpRefererDraft] = useState("");
-  const [openrouterAppTitleDraft, setOpenrouterAppTitleDraft] = useState("");
-  const [runtimeLlmOverridesAllowed, setRuntimeLlmOverridesAllowed] = useState(true);
-  const [llmEffective, setLlmEffective] = useState<any>(null);
-  const [s3Draft, setS3Draft] = useState<any>({
-    s3_endpoint_url: "",
-    s3_public_endpoint_url: "",
-    s3_access_key_id: "",
-    s3_secret_access_key: "",
-    s3_bucket: "",
-    s3_region_name: "",
-    s3_addressing_style: "",
-    s3_access_key_id_masked: "",
-    s3_secret_access_key_masked: "",
-  });
   const [brokenModulesBusy, setBrokenModulesBusy] = useState(false);
   const [brokenModules, setBrokenModules] = useState<{ id: string; title: string }[]>([]);
   const [brokenModulesCount, setBrokenModulesCount] = useState<number>(0);
@@ -1923,126 +1899,6 @@ function AdminPanelContent() {
     }
   }
 
-  async function loadRuntimeLlmSettings() {
-    const now = Date.now();
-    if (now - Number(runtimeLlmLoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
-    try {
-      const data = await apiFetch<any>("/admin/runtime/llm");
-      setRuntimeLlmOverridesAllowed(Boolean((data as any)?.runtime_overrides_allowed ?? true));
-      setOpenrouterEnabledDraft(!!data?.openrouter_enabled);
-      setOpenrouterBaseUrlDraft(data?.openrouter_base_url || "");
-      setOpenrouterModelDraft(data?.openrouter_model || "");
-      setOpenrouterApiKeyMasked(data?.openrouter_api_key_masked || "");
-      setOpenrouterHttpRefererDraft(data?.openrouter_http_referer || "");
-      setOpenrouterAppTitleDraft(data?.openrouter_app_title || "");
-      setLlmEffective(data?.effective || null);
-      runtimeLlmLoadedAtRef.current = Date.now();
-    } catch {
-      // ignore
-    }
-  }
-
-  async function loadRuntimeLlmSettingsForce() {
-    runtimeLlmLoadedAtRef.current = 0;
-    await loadRuntimeLlmSettings();
-  }
-
-  async function saveRuntimeLlmSettings() {
-    try {
-      setDiagSaving(true);
-      const body: any = {
-        openrouter_enabled: openrouterEnabledDraft,
-        openrouter_base_url: openrouterBaseUrlDraft,
-        openrouter_model: openrouterModelDraft,
-        openrouter_http_referer: openrouterHttpRefererDraft,
-        openrouter_app_title: openrouterAppTitleDraft,
-      };
-      if (openrouterApiKeyDraft) body.openrouter_api_key = openrouterApiKeyDraft;
-      await apiFetch("/admin/runtime/llm", { method: "POST", body: JSON.stringify(body) });
-      await Promise.all([loadSystemStatusForce(), loadRuntimeLlmSettingsForce()]);
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "НАСТРОЙКИ СОХРАНЕНЫ", description: "" } }));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СОХРАНИТЬ НАСТРОЙКИ");
-    } finally {
-      setDiagSaving(false);
-    }
-  }
-
-  async function resetRuntimeLlmSettings() {
-    try {
-      setDiagSaving(true);
-      await apiFetch("/admin/runtime/llm/reset", { method: "POST" });
-      await Promise.all([loadSystemStatusForce(), loadRuntimeLlmSettingsForce()]);
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "RUNTIME LLM СБРОШЕН", description: "" } }));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СБРОСИТЬ RUNTIME LLM");
-    } finally {
-      setDiagSaving(false);
-    }
-  }
-
-  async function loadRuntimeS3Settings() {
-    const now = Date.now();
-    if (now - Number(runtimeS3LoadedAtRef.current || 0) < ADMIN_CACHE_TTL_MS) return;
-    try {
-      const data = await apiFetch<any>("/admin/runtime/s3");
-      setS3Draft({
-        s3_endpoint_url: data?.s3_endpoint_url || "",
-        s3_public_endpoint_url: data?.s3_public_endpoint_url || "",
-        s3_access_key_id: "",
-        s3_secret_access_key: "",
-        s3_bucket: data?.s3_bucket || "",
-        s3_region_name: data?.s3_region_name || "",
-        s3_addressing_style: data?.s3_addressing_style || "",
-        s3_access_key_id_masked: data?.s3_access_key_id_masked || "",
-        s3_secret_access_key_masked: data?.s3_secret_access_key_masked || "",
-      });
-      runtimeS3LoadedAtRef.current = Date.now();
-    } catch {
-      // ignore
-    }
-  }
-
-  async function loadRuntimeS3SettingsForce() {
-    runtimeS3LoadedAtRef.current = 0;
-    await loadRuntimeS3Settings();
-  }
-
-  async function saveRuntimeS3Settings() {
-    try {
-      setDiagSaving(true);
-      const body: any = {
-        s3_endpoint_url: String(s3Draft?.s3_endpoint_url || "").trim(),
-        s3_public_endpoint_url: String(s3Draft?.s3_public_endpoint_url || "").trim(),
-        s3_bucket: String(s3Draft?.s3_bucket || "").trim(),
-        s3_region_name: String(s3Draft?.s3_region_name || "").trim(),
-        s3_addressing_style: String(s3Draft?.s3_addressing_style || "").trim(),
-      };
-      if (String(s3Draft?.s3_access_key_id || "").trim()) body.s3_access_key_id = String(s3Draft.s3_access_key_id).trim();
-      if (String(s3Draft?.s3_secret_access_key || "").trim()) body.s3_secret_access_key = String(s3Draft.s3_secret_access_key).trim();
-      await apiFetch("/admin/runtime/s3", { method: "POST", body: JSON.stringify(body) });
-      await Promise.all([loadRuntimeS3SettingsForce(), loadSystemStatusForce()]);
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "S3 НАСТРОЙКИ СОХРАНЕНЫ", description: "" } }));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СОХРАНИТЬ S3 НАСТРОЙКИ");
-    } finally {
-      setDiagSaving(false);
-    }
-  }
-
-  async function resetRuntimeS3Settings() {
-    try {
-      setDiagSaving(true);
-      await apiFetch("/admin/runtime/s3/reset", { method: "POST" });
-      await Promise.all([loadRuntimeS3SettingsForce(), loadSystemStatusForce()]);
-      window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: "RUNTIME S3 СБРОШЕН", description: "" } }));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "НЕ УДАЛОСЬ СБРОСИТЬ RUNTIME S3");
-    } finally {
-      setDiagSaving(false);
-    }
-  }
-
   async function scanBrokenModules() {
     try {
       setBrokenModulesBusy(true);
@@ -2671,7 +2527,7 @@ function AdminPanelContent() {
 
   useEffect(() => {
     if (tab === "users") void loadUsers();
-    if (tab === "diagnostics") { void loadSystemStatus(); void Promise.all([loadRuntimeLlmSettings(), loadRuntimeS3Settings()]); }
+    if (tab === "diagnostics") void loadSystemStatus();
     if (tab === "modules") void loadAdminModules();
     if (tab === "analytics") void Promise.all([loadUsers(), loadAdminModules()]);
     if (tab === "import") {
@@ -2783,19 +2639,6 @@ function AdminPanelContent() {
     };
   }, [users, adminModules]);
 
-  const switchTabGuarded = (next: TabKey) => {
-    if (next === tab) return;
-    goTab(next);
-  };
-
-  const tabLabelRu: Record<TabKey, string> = {
-    modules: "МОДУЛИ",
-    import: "ИМПОРТ",
-    analytics: "АНАЛИТИКА",
-    users: "ПОЛЬЗОВАТЕЛИ",
-    diagnostics: "ДИАГНОСТИКА",
-  };
-
   const shareUrl = useMemo(() => {
     try {
       const base = window.location.origin;
@@ -2821,43 +2664,33 @@ function AdminPanelContent() {
 
   if (user?.role !== "admin" && user?.role !== "superadmin") return <AppShell><p role="alert" className="p-10 text-center">Раздел доступен только администраторам.</p></AppShell>;
 
+  const pageTitle = ({
+    modules: "Модули",
+    import: "Импорт и задачи",
+    analytics: "Результаты обучения",
+    users: "Пользователи",
+    diagnostics: "Диагностика",
+  } as Record<TabKey, string>)[tab] || "Админ-центр";
+
   return (
     <AppShell>
-      <div className="mx-auto w-full max-w-7xl px-4 py-10">
-        <div className="flex flex-wrap items-start justify-between gap-6">
+      <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:py-10">
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Каркас Тайги</div>
-            <h1 className="mt-2 text-3xl font-black tracking-tighter text-zinc-950 uppercase">Админ-панель</h1>
+            <p className="text-xs font-semibold uppercase tracking-widest text-amber-800">Админ-центр</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-zinc-950">{pageTitle}</h1>
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              className="h-10 rounded-xl border border-zinc-200 bg-white px-4 text-[10px] font-black uppercase tracking-widest text-zinc-700 hover:bg-zinc-50"
-              onClick={() => void copy(shareUrl)}
-              disabled={!shareUrl}
-              title="Скопировать ссылку на текущий раздел"
-            >
-              ССЫЛКА
-            </button>
-            <div className="flex max-w-full flex-wrap items-center gap-1 rounded-2xl border border-zinc-200 bg-white p-2">
-              {(["modules", "import", "analytics", "users", "diagnostics"] as TabKey[]).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => switchTabGuarded(t)}
-                  className={
-                    "h-10 rounded-xl px-4 text-[10px] font-black uppercase tracking-widest transition " +
-                    (tab === t
-                      ? "bg-[#fe9900]/15 text-zinc-950 border border-[#fe9900]/25"
-                      : "text-zinc-600 hover:text-zinc-950 hover:bg-zinc-50 border border-transparent")
-                  }
-                >
-                  {tabLabelRu[t] || t.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </div>
+          <button
+            type="button"
+            className="h-10 rounded-xl border border-zinc-200 bg-white px-4 text-xs font-semibold text-zinc-700 hover:bg-zinc-50 disabled:opacity-50"
+            onClick={() => void copy(shareUrl)}
+            disabled={!shareUrl}
+            title="Скопировать ссылку на текущий раздел"
+          >
+            Ссылка на раздел
+          </button>
         </div>
+        <AdminNav />
 
         {error && (
           <div className="mt-6 rounded-[24px] border border-rose-200 bg-rose-50 p-5 text-sm font-bold text-rose-800 flex justify-between items-center">
@@ -2867,58 +2700,7 @@ function AdminPanelContent() {
         )}
 
         <div className="mt-8">
-          {tab === "modules" && !showAdvancedModules && <ModuleLibrary />}
-          {tab === "modules" && showAdvancedModules && (
-            <>
-            <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 text-sm">
-              <Link href="/admin/modules" className="text-zinc-500 hover:underline">← Библиотека модулей</Link>
-              <Link href={`/admin/modules/${selectedAdminModuleId || queryParams.get("mid")}`} className="font-semibold text-amber-800 hover:underline">Открыть редактор материалов и файлов →</Link>
-            </div>
-            <ModulesTab
-              adminModules={adminModules}
-              adminModulesLoading={adminModulesLoading}
-              loadAdminModules={loadAdminModulesForce}
-              reconcileModulesStorage={reconcileModulesStorage}
-              selectedAdminModuleId={selectedAdminModuleId}
-              setSelectedAdminModuleId={setSelectedAdminModuleId}
-              selectedAdminModule={selectedAdminModule}
-              setSelectedModuleVisibility={setSelectedModuleVisibility}
-              renameSelectedAdminModule={renameSelectedAdminModule}
-              tags={tags}
-              tagsLoading={tagsLoading}
-              setSelectedAdminModuleAccess={setSelectedAdminModuleAccess}
-              activeModuleRegenByModuleId={activeModuleRegenByModuleId}
-              activeSubmoduleRegenBySubmoduleId={activeSubmoduleRegenBySubmoduleId}
-              regenerateSelectedModuleQuizzes={regenerateSelectedModuleQuizzes}
-              deleteSelectedModule={deleteSelectedModule}
-              selectedAdminModuleSubsLoading={selectedAdminModuleSubsLoading}
-              selectedAdminModuleSubs={selectedAdminModuleSubs}
-              selectedAdminModuleSubsQuality={selectedAdminModuleSubsQuality}
-              selectedAdminModuleSubsQualityLoading={selectedAdminModuleSubsQualityLoading}
-              regenerateSubmoduleQuiz={regenerateSubmoduleQuiz}
-              updateSubmoduleAdmin={updateSubmoduleAdmin}
-              purgeOrphanStorage={purgeOrphanStorage}
-              isStorageScanning={isStorageScanning}
-              storageOrphansCount={storageOrphansCount}
-              selectedSubmoduleId={selectedSubmoduleId}
-              setSelectedSubmoduleId={setSelectedSubmoduleId}
-              setSelectedQuizId={setSelectedQuizId}
-              selectedQuizId={selectedQuizId}
-              newQuestionBusy={newQuestionBusy}
-              createQuestionAdmin={createQuestionAdmin}
-              questionsLoadingQuizId={questionsLoadingQuizId}
-              loadQuestionsForQuiz={loadQuestionsForQuiz}
-              selectedQuizQuestions={selectedQuizQuestions}
-              isQuestionDirty={isQuestionDirty}
-              questionSavingId={questionSavingId}
-              saveQuestionDraft={saveQuestionDraft}
-              copy={copy}
-              deleteQuestionAdmin={deleteQuestionAdmin}
-              getDraftValue={getDraftValue}
-              setQuestionDraftsById={setQuestionDraftsById}
-            />
-            </>
-          )}
+          {tab === "modules" && <ModuleLibrary />}
           {tab === "users" && (
             <UsersTab
               currentUserId={String((user as any)?.id || "")}
@@ -3061,31 +2843,6 @@ function AdminPanelContent() {
               sys={sys}
               sysLoading={sysLoading}
               loadSystemStatus={loadSystemStatus}
-              runtimeLlmOverridesAllowed={runtimeLlmOverridesAllowed}
-              openrouterEnabledDraft={openrouterEnabledDraft}
-              setOpenrouterEnabledDraft={setOpenrouterEnabledDraft}
-              openrouterBaseUrlDraft={openrouterBaseUrlDraft}
-              setOpenrouterBaseUrlDraft={setOpenrouterBaseUrlDraft}
-              openrouterModelDraft={openrouterModelDraft}
-              setOpenrouterModelDraft={setOpenrouterModelDraft}
-              openrouterApiKeyDraft={openrouterApiKeyDraft}
-              setOpenrouterApiKeyDraft={setOpenrouterApiKeyDraft}
-              openrouterApiKeyMasked={openrouterApiKeyMasked}
-              openrouterHttpRefererDraft={openrouterHttpRefererDraft}
-              setOpenrouterHttpRefererDraft={setOpenrouterHttpRefererDraft}
-              openrouterAppTitleDraft={openrouterAppTitleDraft}
-              setOpenrouterAppTitleDraft={setOpenrouterAppTitleDraft}
-              llmEffective={llmEffective}
-              diagSaving={diagSaving}
-              saveRuntimeLlmSettings={saveRuntimeLlmSettings}
-              loadRuntimeLlmSettings={loadRuntimeLlmSettings}
-              resetRuntimeLlmSettings={resetRuntimeLlmSettings}
-
-              s3Draft={s3Draft}
-              setS3Draft={setS3Draft}
-              saveRuntimeS3Settings={saveRuntimeS3Settings}
-              loadRuntimeS3Settings={loadRuntimeS3Settings}
-              resetRuntimeS3Settings={resetRuntimeS3Settings}
               brokenModulesBusy={brokenModulesBusy}
               brokenModules={brokenModules}
               brokenModulesCount={brokenModulesCount}

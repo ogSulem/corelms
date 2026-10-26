@@ -42,7 +42,7 @@ def test_legacy_upgrade_backfills_completion_and_asset_ownership(monkeypatch):
         assert connection.execute(text("SELECT module_id FROM content_assets WHERE id IN (:aid,:general)"), values).scalars().all() == [mid, mid]
         assert connection.execute(text("SELECT submodule_id FROM lesson_quiz_versions WHERE quiz_id=:qid"), values).scalar_one() == sid
         assert connection.execute(text("SELECT content_revision FROM modules WHERE id=:mid"), values).scalar_one() == 1
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0023"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0024"
         assert connection.execute(text("SELECT content_mode, content_version FROM submodules WHERE id=:sid"), values).one() == ("manual", 1)
         assert connection.execute(text("SELECT count(*) FROM lesson_revisions")).scalar_one() == 0
         assert connection.execute(text("SELECT presentation_mode, primary_asset_id FROM submodules WHERE id=:sid"), values).one() == ("auto", None)

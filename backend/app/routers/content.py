@@ -24,6 +24,7 @@ from app.models.module import Module, Submodule
 from app.models.lesson_revision import LessonRevision
 from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.schemas.authoring import FinalQuizSave, GenerateDraft, GenerateModuleDrafts, QuizSave
+from app.services.app_settings import get_ai_settings
 from app.services.quiz_drafts import prepare_module_drafts, module_draft_status
 from app.services.authoring import format_prompt, generate_quiz_draft_job, question_payload, quiz_payload, source_revision, request_signature
 from app.models.submodule_asset import SubmoduleAssetMap
@@ -626,8 +627,8 @@ def create_quiz_draft(module_id: uuid.UUID, lesson_id: uuid.UUID, body: Generate
     lesson = require_lesson(db, module, lesson_id)
     if lesson.is_archived or lesson.is_folder:
         raise HTTPException(409, "Выберите активный урок")
-    if not str(settings.openrouter_api_key or "").strip():
-        raise HTTPException(503, "AI-провайдер не настроен. Добавьте вопросы вручную или настройте OPENROUTER_API_KEY на сервере.")
+    if not get_ai_settings(db).configured:
+        raise HTTPException(503, "AI-провайдер не настроен. Добавьте вопросы вручную или укажите токен в разделе «Админ-центр → Настройки».")
     fingerprint = source_revision(db, lesson)
     signature = request_signature(fingerprint, body.count, body.source_text)
     key = _draft_key(module.id, lesson.id)

@@ -43,6 +43,7 @@ from app.models.sales import SalesEntry, SalesSection  # noqa: F401
 from app.models.asset import AssetRevision, ContentAsset  # noqa: F401
 from app.models.submodule_asset import SubmoduleAssetMap  # noqa: F401
 from app.models.security_audit import SecurityAuditEvent  # noqa: F401
+from app.models.app_setting import AppSetting  # noqa: F401
 
 
 

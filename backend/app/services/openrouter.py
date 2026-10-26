@@ -9,7 +9,7 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import settings
-from app.core.redis_client import get_redis
+from app.services.app_settings import get_ai_settings
 
 
 log = logging.getLogger(__name__)
@@ -238,61 +238,13 @@ def generate_quiz_questions_openrouter(
     if debug_out is not None:
         debug_out.setdefault("provider", "openrouter")
 
-    env = (getattr(settings, "app_env", "") or "").strip().lower()
-    allow_runtime = bool(getattr(settings, "allow_runtime_llm_overrides", False))
+    cfg = get_ai_settings()
+    if not cfg.enabled:
+        if debug_out is not None:
+            debug_out.setdefault("error", "disabled")
+        return []
 
-    if not settings.openrouter_enabled:
-        # Allow runtime enabling via Redis.
-        try:
-            if env in {"prod", "production"} and not allow_runtime:
-                if debug_out is not None:
-                    debug_out.setdefault("error", "disabled")
-                return []
-            r = get_redis()
-            enabled_raw = (r.hget("runtime:llm", "openrouter_enabled") or b"").decode("utf-8", errors="ignore")
-            if enabled_raw.strip().lower() not in {"1", "true", "yes", "on"}:
-                if debug_out is not None:
-                    debug_out.setdefault("error", "disabled")
-                return []
-        except Exception:
-            log.debug("generate_quiz_questions_openrouter: runtime enable check failed", exc_info=True)
-            if debug_out is not None:
-                debug_out.setdefault("error", "disabled")
-            return []
-
-    token = (settings.openrouter_api_key or "").strip()
-
-    # Runtime overrides.
-    runtime_model: str | None = None
-    runtime_base: str | None = None
-    runtime_ref: str | None = None
-    runtime_title: str | None = None
-    try:
-        if env in {"prod", "production"} and not allow_runtime:
-            raise RuntimeError("runtime_overrides_disabled")
-        r = get_redis()
-        rt = r.hget("runtime:llm", "openrouter_api_key")
-        if rt is not None:
-            token = (rt.decode("utf-8") if isinstance(rt, (bytes, bytearray)) else str(rt)).strip() or token
-
-        rm = r.hget("runtime:llm", "openrouter_model")
-        if rm is not None:
-            runtime_model = (rm.decode("utf-8") if isinstance(rm, (bytes, bytearray)) else str(rm)).strip() or None
-
-        rb = r.hget("runtime:llm", "openrouter_base_url")
-        if rb is not None:
-            runtime_base = (rb.decode("utf-8") if isinstance(rb, (bytes, bytearray)) else str(rb)).strip() or None
-
-        rr = r.hget("runtime:llm", "openrouter_http_referer")
-        if rr is not None:
-            runtime_ref = (rr.decode("utf-8") if isinstance(rr, (bytes, bytearray)) else str(rr)).strip() or None
-
-        rtt = r.hget("runtime:llm", "openrouter_app_title")
-        if rtt is not None:
-            runtime_title = (rtt.decode("utf-8") if isinstance(rtt, (bytes, bytearray)) else str(rtt)).strip() or None
-    except Exception:
-        log.debug("generate_quiz_questions_openrouter: runtime overrides read failed", exc_info=True)
-
+    token = (cfg.api_key or "").strip()
     if not token:
         if debug_out is not None:
             debug_out["error"] = "missing_token"
@@ -303,11 +255,7 @@ def generate_quiz_questions_openrouter(
             return
         debug_out["error"] = error
 
-    use_model = (
-        (str(model).strip() if model is not None else "")
-        or (runtime_model or "")
-        or str(settings.openrouter_model or "").strip()
-    )
+    use_model = (str(model).strip() if model is not None else "") or (cfg.model or "").strip()
     if not use_model:
         _set_debug("missing_model")
         return []
@@ -389,11 +337,7 @@ def generate_quiz_questions_openrouter(
         except Exception:
             log.debug("generate_quiz_questions_openrouter: debug_out request metadata build failed", exc_info=True)
 
-    base = (
-        (str(base_url).strip() if base_url is not None else "")
-        or (runtime_base or "")
-        or str(settings.openrouter_base_url or "")
-    ).rstrip("/")
+    base = ((str(base_url).strip() if base_url is not None else "") or (cfg.base_url or "")).rstrip("/")
     url = base + "/chat/completions"
 
     if not base:
@@ -401,8 +345,8 @@ def generate_quiz_questions_openrouter(
         return []
 
     headers: dict[str, str] = {"Authorization": f"Bearer {token}"}
-    referer = (runtime_ref or "") or str(settings.openrouter_http_referer or "").strip()
-    app_title = (runtime_title or "") or str(settings.openrouter_app_title or "").strip()
+    referer = (cfg.http_referer or "").strip()
+    app_title = (cfg.app_title or "").strip()
     if referer:
         headers["HTTP-Referer"] = referer
     if app_title:
