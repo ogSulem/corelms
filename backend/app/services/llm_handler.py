@@ -6,9 +6,8 @@ import re
 from typing import Any
 
 from app.core.config import settings
-from app.core.redis_client import get_redis
 from app.services.openrouter import generate_quiz_questions_openrouter
-from app.services.openrouter_health import openrouter_healthcheck
+from app.services.app_settings import get_ai_settings
 
 
 log = logging.getLogger(__name__)
@@ -144,27 +143,9 @@ def generate_quiz_questions_ai(
             return
         debug_out[key] = value
 
-    # Runtime overrides (admin diagnostics tab) stored in Redis.
-    runtime: dict[str, str] = {}
-    env = (getattr(settings, "app_env", "") or "").strip().lower()
-    allow_runtime = bool(getattr(settings, "allow_runtime_llm_overrides", False))
-    if env in {"prod", "production"} and not allow_runtime:
-        runtime = {}
-    else:
-        try:
-            r = get_redis()
-            raw = r.hgetall("runtime:llm") or {}
-            for k, v in (raw or {}).items():
-                kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-                runtime[kk] = vv
-        except Exception:
-            log.debug("generate_quiz_questions_ai: failed to load runtime:llm overrides", exc_info=True)
-            runtime = {}
-
-    runtime_or_enabled = (runtime.get("openrouter_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
-    runtime_or_base_url = (runtime.get("openrouter_base_url") or "").strip() or None
-    runtime_or_model = (runtime.get("openrouter_model") or "").strip() or None
+    ai_cfg = get_ai_settings()
+    if debug_out is not None:
+        debug_out.setdefault("config_source", ai_cfg.sources)
 
     # Product configuration: OpenRouter-only.
     # Ignore other providers even if configured.
@@ -206,20 +187,17 @@ def generate_quiz_questions_ai(
 
             if provider in {"openrouter", "or"}:
                 _set_debug("provider", "openrouter")
-                if not (bool(settings.openrouter_enabled) or bool(runtime_or_enabled)):
+                if not ai_cfg.enabled:
+                    _set_debug("provider_error", "disabled")
+                    errors.append("openrouter:disabled")
                     continue
-                ok_or, _meta = (False, None)
-                try:
-                    ok_or, _meta = openrouter_healthcheck()
-                except Exception:
-                    log.debug("generate_quiz_questions_ai: openrouter_healthcheck failed", exc_info=True)
-                    ok_or = False
-
-                if not ok_or:
-                    _set_debug("provider", "openrouter")
-                    _set_debug("provider_error", str(_meta or "unreachable"))
-                    errors.append("openrouter:" + str(_meta or "unreachable"))
+                if not ai_cfg.api_key:
+                    _set_debug("provider_error", "missing_token")
+                    errors.append("openrouter:missing_token")
                     continue
+                # No separate /models probe here: some compatible gateways do not
+                # expose it, and it would add a network round-trip to every draft.
+                # Authentication/network errors are reported by the real request.
 
                 local_debug = {}
                 best: list[Any] = []
@@ -267,8 +245,6 @@ def generate_quiz_questions_ai(
                         text=text,
                         n_questions=n_questions,
                         debug_out=local_debug,
-                        base_url=runtime_or_base_url,
-                        model=runtime_or_model,
                         system_prompt=strict_prompt,
                         temperature=0.2,
                         timeout_read_seconds=dyn_read,
@@ -294,8 +270,6 @@ def generate_quiz_questions_ai(
                                 text=text,
                                 n_questions=n_questions,
                                 debug_out=repair_debug,
-                                base_url=runtime_or_base_url,
-                                model=runtime_or_model,
                                 system_prompt=strict_prompt,
                                 temperature=0.0,
                                 timeout_read_seconds=dyn_read,
@@ -333,8 +307,6 @@ def generate_quiz_questions_ai(
                                     text=(text + "\n\n" + continuation)[:14000],
                                     n_questions=missing,
                                     debug_out=more_debug,
-                                    base_url=runtime_or_base_url,
-                                    model=runtime_or_model,
                                     system_prompt=strict_prompt,
                                     temperature=0.2,
                                     timeout_read_seconds=dyn_read,
@@ -363,8 +335,6 @@ def generate_quiz_questions_ai(
                     last_err = str(local_debug.get("error") or "empty")
                     _set_debug("provider_error", "openrouter:" + str(last_err or "empty"))
 
-                    if not ok_or:
-                        break
                     if attempt < max_tries:
                         time.sleep(max(0.1, float(backoff_seconds) * float(attempt)))
 

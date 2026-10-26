@@ -68,7 +68,7 @@ def test_redis_outage_uses_bounded_memory_fallback_and_failure_backoff(monkeypat
     monkeypatch.setattr(sales_links, 'read_sales_snapshot', fail)
     assert sales_links.get_sales_links_payload(bypass_cache=True)['status'] == 'stale'
     assert sales_links.get_sales_links_payload()['status'] == 'stale' and len(calls) == 2
-    key = 'sales:links:v3:sheet-id'
+    key = sales_links.cache_key()
     old = {**good, 'last_success_at': (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()}
     sales_links._memory[key] = old, 0; sales_links._errors.clear()
     assert sales_links.get_sales_links_payload()['status'] == 'error'

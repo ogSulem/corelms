@@ -20,5 +20,6 @@ google-auth==2.38.0
 
 # Internal, read-only document previews (no third-party viewer).
 openpyxl==3.1.5
+cryptography==50.0.2
 xlrd==2.0.2
 defusedxml==0.7.1

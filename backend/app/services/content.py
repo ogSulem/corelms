@@ -11,6 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.app_settings import get_ai_settings
 from app.models.media import AssetRendition
 from app.models.tag import ModuleTagMap
 from app.models.asset import AssetRevision, ContentAsset
@@ -177,8 +178,9 @@ def workspace(db: Session, module: Module) -> dict:
     assets = module_assets(db, module.id)
     question_counts = dict(db.execute(select(Question.quiz_id, func.count()).where(Question.quiz_id.in_([s.quiz_id for s in subs])).group_by(Question.quiz_id)).all())
     links = dict(db.execute(select(SubmoduleAssetMap.asset_id, SubmoduleAssetMap.submodule_id).where(SubmoduleAssetMap.submodule_id.in_([s.id for s in subs]))).all())
+    ai = get_ai_settings(db)
     return {
-        "capabilities": {"ai_configured": bool(str(settings.openrouter_api_key or "").strip()),
+        "capabilities": {"ai_configured": ai.configured, "ai_enabled": ai.enabled,
                          "upload_max_bytes": settings.content_upload_max_bytes},
         "module": {
             "id": str(module.id), "title": module.title, "description": module.description,

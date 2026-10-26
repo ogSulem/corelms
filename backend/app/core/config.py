@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     jwt_access_token_minutes: int = Field(default=15, validation_alias="JWT_ACCESS_TOKEN_MINUTES")
     jwt_issuer: str = Field(default="corelms", validation_alias="JWT_ISSUER")
 
+    # Optional dedicated key for encrypting admin-editable secrets (AI token,
+    # Google service account). When unset, JWT_SECRET_KEY is used.
+    settings_encryption_key: str | None = Field(default=None, validation_alias="SETTINGS_ENCRYPTION_KEY")
+
     session_refresh_token_days: int = Field(default=30, validation_alias="SESSION_REFRESH_TOKEN_DAYS")
     session_idle_timeout_hours: int = Field(default=12, validation_alias="SESSION_IDLE_TIMEOUT_HOURS")
     session_absolute_timeout_days: int = Field(default=30, validation_alias="SESSION_ABSOLUTE_TIMEOUT_DAYS")
@@ -185,7 +189,3 @@ if _is_prod():
         raise RuntimeError("S3_ACCESS_KEY_ID must be set to a non-default value in production")
     if (settings.s3_secret_access_key or "").strip() in {"change-me", "your-secret-key"}:
         raise RuntimeError("S3_SECRET_ACCESS_KEY must be set to a non-default value in production")
-
-    if bool(settings.openrouter_enabled):
-        if not (settings.openrouter_api_key or "").strip():
-            raise RuntimeError("OPENROUTER_API_KEY must be set when OpenRouter is enabled in production")

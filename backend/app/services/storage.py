@@ -120,6 +120,15 @@ def effective_bucket() -> str:
     return _rt_str(_runtime_s3(), "s3_bucket") or settings.s3_bucket
 
 
+def effective_endpoint() -> str:
+    return _rt_str(_runtime_s3(), "s3_endpoint_url") or str(getattr(settings, "s3_endpoint_url", "") or "")
+
+
+def effective_public_endpoint() -> str:
+    return (_rt_str(_runtime_s3(), "s3_public_endpoint_url")
+            or str(getattr(settings, "s3_public_endpoint_url", "") or ""))
+
+
 def upload_fileobj_with_retry(
     *,
     s3,

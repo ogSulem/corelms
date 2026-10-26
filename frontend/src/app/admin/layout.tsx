@@ -11,7 +11,7 @@ const AdminPanelClient = dynamic(() => import("../adminpanel/adminpanel-client")
 function AdminRoute({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   // The normal library/editor never mount the legacy polling/analytics screen.
-  if (pathname.startsWith("/admin/modules/") || pathname === "/admin/modules") return <>{children}</>;
+  if (pathname.startsWith("/admin/modules/") || pathname === "/admin/modules" || pathname === "/admin/settings") return <>{children}</>;
   return <><AdminPanelClient />{children}</>;
 }
 

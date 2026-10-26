@@ -19,6 +19,7 @@ from app.core.queue import get_queue, get_job_status
 from app.core.redis_client import get_redis
 from app.models.module import Module, Submodule
 from app.models.quiz import Question
+from app.services.app_settings import get_ai_settings
 from app.services.authoring import generate_quiz_draft_job, request_signature, source_revision
 
 TTL = 7 * 86400
@@ -39,8 +40,8 @@ def _text(value):
 
 
 def prepare_module_drafts(db, module: Module, *, actor_id, count: int, only_missing: bool, lesson_ids=None) -> dict:
-    if not str(settings.openrouter_api_key or "").strip():
-        raise HTTPException(503, "AI-провайдер не настроен. Материалы сохранены; тесты можно создать вручную или настроить OPENROUTER_API_KEY.")
+    if not get_ai_settings(db).configured:
+        raise HTTPException(503, "AI-провайдер не настроен. Материалы сохранены; тесты можно создать вручную или указать токен в разделе «Админ-центр → Настройки».")
     all_lessons = list(db.scalars(select(Submodule).where(Submodule.module_id == module.id,
         Submodule.is_archived.is_(False), Submodule.is_folder.is_(False)).order_by(Submodule.order, Submodule.id)))
     if lesson_ids is not None:

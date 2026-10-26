@@ -7,41 +7,7 @@ interface DiagnosticsTabProps {
   sys: any;
   sysLoading: boolean;
   loadSystemStatus: () => Promise<void>;
-  runtimeLlmOverridesAllowed: boolean;
-  openrouterEnabledDraft: boolean;
-  setOpenrouterEnabledDraft: (val: boolean) => void;
-  openrouterBaseUrlDraft: string;
-  setOpenrouterBaseUrlDraft: (val: string) => void;
-  openrouterModelDraft: string;
-  setOpenrouterModelDraft: (val: string) => void;
-  openrouterApiKeyDraft: string;
-  setOpenrouterApiKeyDraft: (val: string) => void;
-  openrouterApiKeyMasked: string;
-  openrouterHttpRefererDraft: string;
-  setOpenrouterHttpRefererDraft: (val: string) => void;
-  openrouterAppTitleDraft: string;
-  setOpenrouterAppTitleDraft: (val: string) => void;
-  llmEffective: any;
-  diagSaving: boolean;
-  saveRuntimeLlmSettings: () => Promise<void>;
-  loadRuntimeLlmSettings: () => Promise<void>;
-  resetRuntimeLlmSettings: () => Promise<void>;
 
-  s3Draft: {
-    s3_endpoint_url: string;
-    s3_public_endpoint_url: string;
-    s3_access_key_id: string;
-    s3_secret_access_key: string;
-    s3_bucket: string;
-    s3_region_name: string;
-    s3_addressing_style: string;
-    s3_access_key_id_masked: string;
-    s3_secret_access_key_masked: string;
-  };
-  setS3Draft: (next: any) => void;
-  saveRuntimeS3Settings: () => Promise<void>;
-  loadRuntimeS3Settings: () => Promise<void>;
-  resetRuntimeS3Settings: () => Promise<void>;
 
   brokenModulesBusy: boolean;
   brokenModules: { id: string; title: string }[];
@@ -59,25 +25,6 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
     sys,
     sysLoading,
     loadSystemStatus,
-    runtimeLlmOverridesAllowed,
-    openrouterEnabledDraft,
-    setOpenrouterEnabledDraft,
-    openrouterBaseUrlDraft,
-    setOpenrouterBaseUrlDraft,
-    openrouterModelDraft,
-    setOpenrouterModelDraft,
-    openrouterApiKeyDraft,
-    setOpenrouterApiKeyDraft,
-    openrouterApiKeyMasked,
-    openrouterHttpRefererDraft,
-    setOpenrouterHttpRefererDraft,
-    openrouterAppTitleDraft,
-    setOpenrouterAppTitleDraft,
-    llmEffective,
-    diagSaving,
-    saveRuntimeLlmSettings,
-    loadRuntimeLlmSettings,
-    resetRuntimeLlmSettings,
     brokenModulesBusy,
     brokenModules,
     brokenModulesCount,
@@ -88,11 +35,6 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
     modulesStorageScan,
     scanModulesStorage,
 
-    s3Draft,
-    setS3Draft,
-    saveRuntimeS3Settings,
-    loadRuntimeS3Settings,
-    resetRuntimeS3Settings,
   } = props;
 
   const [storageProblemsOnly, setStorageProblemsOnly] = useState(true);
@@ -121,7 +63,7 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
         <div>
           <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">ЦЕНТР УПРАВЛЕНИЯ</div>
           <div className="mt-2 text-2xl font-black tracking-tighter text-zinc-950 uppercase">Диагностика</div>
-          <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Статусы, runtime-настройки и проверки целостности</div>
+          <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Состояние сервисов и проверки целостности данных</div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -131,14 +73,6 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
             onClick={() => void loadSystemStatus()}
           >
             {sysLoading ? "..." : "ОБНОВИТЬ СТАТУС"}
-          </Button>
-          <Button
-            variant="outline"
-            className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-            disabled={diagSaving}
-            onClick={() => void Promise.all([loadRuntimeLlmSettings(), loadRuntimeS3Settings()])}
-          >
-            ОБНОВИТЬ RUNTIME
           </Button>
         </div>
       </div>
@@ -291,226 +225,52 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
             <summary className="cursor-pointer select-none px-8 py-6">
               <div className="flex items-center justify-between gap-6">
                 <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">RUNTIME</div>
-                  <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">OPENROUTER / LLM</div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">ИНТЕГРАЦИИ</div>
+                  <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">AI И ХРАНИЛИЩЕ</div>
                 </div>
                 <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">свернуть/развернуть</div>
               </div>
             </summary>
             <div className="px-8 pb-8">
-              <div className="grid gap-4 max-w-3xl">
-                <div className="grid gap-3 rounded-2xl border border-zinc-200 bg-white p-5">
-                  <label className="flex items-center justify-between gap-4">
-                    <div className="text-[11px] font-bold text-zinc-800">ВКЛЮЧЕНО</div>
-                    <input
-                      type="checkbox"
-                      checked={openrouterEnabledDraft}
-                      onChange={(e) => setOpenrouterEnabledDraft(e.target.checked)}
-                      className="h-5 w-5"
-                    />
-                  </label>
-                  <div className="grid gap-2">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">BASE URL</div>
-                    <input
-                      value={openrouterBaseUrlDraft}
-                      onChange={(e) => setOpenrouterBaseUrlDraft(e.target.value)}
-                      placeholder="https://openrouter.ai/api/v1"
-                      className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                    />
+              <p className="text-xs font-bold text-zinc-600">
+                Изменение токенов, модели и хранилища — в одном месте: Админ-центр → Настройки. Здесь только состояние.
+              </p>
+              <div className="mt-5 grid gap-3 lg:grid-cols-2">
+                <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">AI ДЛЯ ТЕСТОВ</div>
+                  <div className="mt-2 text-[11px] font-black uppercase tracking-wide text-zinc-950">
+                    {(sys as any)?.openrouter?.ok ? "ПОДКЛЮЧЕНИЕ РАБОТАЕТ" : (sys as any)?.openrouter?.enabled ? "НЕТ ОТВЕТА" : "ВЫКЛЮЧЕН"}
                   </div>
-                  <div className="grid gap-2">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">MODEL</div>
-                    <input
-                      value={openrouterModelDraft}
-                      onChange={(e) => setOpenrouterModelDraft(e.target.value)}
-                      placeholder="openai/gpt-4o-mini"
-                      className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                    />
+                  <div className="mt-2 break-all text-[10px] font-bold text-zinc-600">
+                    {String((sys as any)?.openrouter?.model || "—")} · {String((sys as any)?.openrouter?.base_url || "—")}
                   </div>
-                  <div className="grid gap-2">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">API KEY</div>
-                    <input
-                      value={openrouterApiKeyDraft}
-                      onChange={(e) => setOpenrouterApiKeyDraft(e.target.value)}
-                      placeholder={openrouterApiKeyMasked ? `СЕЙЧАС: ${openrouterApiKeyMasked}` : "sk-or-v1..."}
-                      className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                    />
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                      хранится в Redis (runtime), не в .env
-                    </div>
-                  </div>
-                  <div className="grid gap-2">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">HTTP REFERER</div>
-                    <input
-                      value={openrouterHttpRefererDraft}
-                      onChange={(e) => setOpenrouterHttpRefererDraft(e.target.value)}
-                      placeholder="https://your-app"
-                      className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">APP TITLE</div>
-                    <input
-                      value={openrouterAppTitleDraft}
-                      onChange={(e) => setOpenrouterAppTitleDraft(e.target.value)}
-                      placeholder="CoreLMS"
-                      className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                    />
-                  </div>
+                  {(sys as any)?.openrouter?.reason ? (
+                    <div className="mt-1 break-all text-[10px] font-bold text-rose-700">{String((sys as any)?.openrouter?.reason)}</div>
+                  ) : null}
+                  <a href="/admin/settings#ai" className="mt-3 inline-block text-[10px] font-black uppercase tracking-widest text-amber-700 underline">
+                    Настроить AI →
+                  </a>
                 </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="primary"
-                    className="h-11 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={diagSaving || !runtimeLlmOverridesAllowed}
-                    onClick={() => void saveRuntimeLlmSettings()}
-                  >
-                    {diagSaving ? "..." : "СОХРАНИТЬ"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="h-11 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={diagSaving || !runtimeLlmOverridesAllowed}
-                    onClick={() => void resetRuntimeLlmSettings()}
-                  >
-                    СБРОСИТЬ RUNTIME
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="h-11 rounded-2xl font-black uppercase tracking-widest text-[9px]"
-                    disabled={diagSaving}
-                    onClick={() => void loadRuntimeLlmSettings()}
-                  >
-                    ОБНОВИТЬ
-                  </Button>
+                <div className="rounded-2xl border border-zinc-200 bg-white p-5">
+                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ХРАНИЛИЩЕ ФАЙЛОВ</div>
+                  <div className="mt-2 text-[11px] font-black uppercase tracking-wide text-zinc-950">
+                    {(sys as any)?.s3?.ok ? "BUCKET ДОСТУПЕН" : "НЕТ ДОСТУПА"}
+                  </div>
+                  <div className="mt-2 break-all text-[10px] font-bold text-zinc-600">
+                    {String((sys as any)?.s3?.bucket || "—")} · {String((sys as any)?.s3?.endpoint || "—")}
+                  </div>
+                  {(sys as any)?.s3?.reason ? (
+                    <div className="mt-1 break-all text-[10px] font-bold text-rose-700">{String((sys as any)?.s3?.reason)}</div>
+                  ) : null}
+                  <a href="/admin/settings#storage" className="mt-3 inline-block text-[10px] font-black uppercase tracking-widest text-amber-700 underline">
+                    Настроить хранилище →
+                  </a>
                 </div>
               </div>
             </div>
           </details>
         </div>
 
-        <div className="lg:col-span-12 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-0 shadow-xl overflow-hidden">
-          <details open>
-            <summary className="cursor-pointer select-none px-8 py-6">
-              <div className="flex items-center justify-between gap-6">
-                <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">RUNTIME</div>
-                  <div className="mt-2 text-xl font-black tracking-tighter text-zinc-950 uppercase">S3</div>
-                  <div className="mt-2 text-[10px] font-bold text-zinc-600 uppercase tracking-widest">Для prod используем внешний S3 (REG.RU).</div>
-                </div>
-                <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600">свернуть/развернуть</div>
-              </div>
-            </summary>
-
-            <div className="px-8 pb-8">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant="outline"
-                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={diagSaving}
-                  onClick={() => void loadRuntimeS3Settings()}
-                >
-                  ОБНОВИТЬ
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={diagSaving}
-                  onClick={() => void resetRuntimeS3Settings()}
-                >
-                  СБРОСИТЬ RUNTIME
-                </Button>
-                <Button
-                  variant="primary"
-                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={diagSaving}
-                  onClick={() => void saveRuntimeS3Settings()}
-                >
-                  СОХРАНИТЬ
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-10 rounded-xl font-black uppercase tracking-widest text-[9px]"
-                  disabled={sysLoading}
-                  onClick={() => void loadSystemStatus()}
-                >
-                  {sysLoading ? "..." : "ПРОВЕРИТЬ"}
-                </Button>
-              </div>
-
-              <div className="mt-6 grid gap-4 lg:grid-cols-2">
-            <div className="grid gap-3 rounded-2xl border border-zinc-200 bg-white p-5">
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ENDPOINT URL</div>
-              <input
-                value={String(s3Draft?.s3_endpoint_url || "")}
-                onChange={(e) => setS3Draft({ ...s3Draft, s3_endpoint_url: e.target.value })}
-                placeholder="https://s3.regru.cloud"
-                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-              />
-
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">PUBLIC ENDPOINT URL</div>
-              <input
-                value={String(s3Draft?.s3_public_endpoint_url || "")}
-                onChange={(e) => setS3Draft({ ...s3Draft, s3_public_endpoint_url: e.target.value })}
-                placeholder="https://s3.regru.cloud"
-                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-              />
-
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">BUCKET</div>
-              <input
-                value={String(s3Draft?.s3_bucket || "")}
-                onChange={(e) => setS3Draft({ ...s3Draft, s3_bucket: e.target.value })}
-                placeholder="corelms-content"
-                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-              />
-            </div>
-
-            <div className="grid gap-3 rounded-2xl border border-zinc-200 bg-white p-5">
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ACCESS KEY ID</div>
-              <input
-                value={String(s3Draft?.s3_access_key_id || "")}
-                onChange={(e) => setS3Draft({ ...s3Draft, s3_access_key_id: e.target.value })}
-                placeholder={String(s3Draft?.s3_access_key_id_masked || "") ? `СЕЙЧАС: ${String(s3Draft.s3_access_key_id_masked)}` : ""}
-                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-              />
-
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">SECRET ACCESS KEY</div>
-              <input
-                value={String(s3Draft?.s3_secret_access_key || "")}
-                onChange={(e) => setS3Draft({ ...s3Draft, s3_secret_access_key: e.target.value })}
-                placeholder={String(s3Draft?.s3_secret_access_key_masked || "") ? `СЕЙЧАС: ${String(s3Draft.s3_secret_access_key_masked)}` : ""}
-                className="h-11 rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-              />
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">REGION</div>
-                  <input
-                    value={String(s3Draft?.s3_region_name || "")}
-                    onChange={(e) => setS3Draft({ ...s3Draft, s3_region_name: e.target.value })}
-                    placeholder="us-east-1"
-                    className="h-11 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                  />
-                </div>
-                <div>
-                  <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ADDRESSING</div>
-                  <input
-                    value={String(s3Draft?.s3_addressing_style || "")}
-                    onChange={(e) => setS3Draft({ ...s3Draft, s3_addressing_style: e.target.value })}
-                    placeholder="path"
-                    className="h-11 w-full rounded-2xl border border-zinc-200 bg-white px-4 text-[11px] font-bold text-zinc-900"
-                  />
-                </div>
-              </div>
-              <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">
-                хранится в Redis (runtime), не в .env
-              </div>
-            </div>
-          </div>
-            </div>
-          </details>
-        </div>
 
         <div className="lg:col-span-12 rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-0 shadow-xl overflow-hidden">
           <details open>

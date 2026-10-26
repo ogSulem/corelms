@@ -37,7 +37,7 @@ test("one editor: legacy redirect, structured test, unsaved guard, learner gradi
   await expect(page).toHaveURL(new RegExp(`/admin/modules/${moduleId}\\?tab=tests&lesson=`));
   await expect(page.getByRole("heading", { name: "Проверка знаний", exact: true })).toBeVisible();
   // A disposable stand without an AI key must still support fully manual authoring.
-  await expect(page.getByText(/AI-провайдер не настроен/)).toBeVisible();
+  await expect(page.getByText(/AI пока не настроен/)).toBeVisible();
   await expect(page.getByRole("button", { name: "Только без тестов", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Добавить вопрос", exact: true }).click();
   await page.getByLabel("Формулировка вопроса 1", { exact: true }).fill("Что сначала уточняет консультант?");

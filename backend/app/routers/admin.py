@@ -114,6 +114,7 @@ from app.services.storage import (
     s3_prefix_has_objects,
 )
 from app.services.openrouter_health import openrouter_healthcheck
+from app.services.app_settings import get_ai_settings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -507,35 +508,12 @@ def system_status(
     _: User = Depends(require_roles(UserRole.admin)),
 ):
     env = (getattr(settings, "app_env", "") or "").strip().lower()
-    allow_llm_rt = bool(getattr(settings, "allow_runtime_llm_overrides", False))
     allow_s3_rt = bool(getattr(settings, "allow_runtime_s3_overrides", False))
 
-    runtime: dict[str, str] = {}
-    if not (env in {"prod", "production"} and not allow_llm_rt):
-        try:
-            r = get_redis()
-            raw = r.hgetall("runtime:llm") or {}
-            for k, v in (raw or {}).items():
-                kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-                runtime[kk] = vv
-        except Exception:
-            runtime = {}
-
-    def _rt_bool(key: str) -> bool | None:
-        v = (runtime.get(key) or "").strip().lower()
-        if not v:
-            return None
-        return v in {"1", "true", "yes", "on"}
-
-    def _rt_str(key: str) -> str:
-        return str(runtime.get(key) or "").strip()
-
-    eff_or_enabled = _rt_bool("openrouter_enabled")
-    if eff_or_enabled is None:
-        eff_or_enabled = bool(getattr(settings, "openrouter_enabled", False))
-    eff_or_base_url = _rt_str("openrouter_base_url") or str(getattr(settings, "openrouter_base_url", ""))
-    eff_or_model = _rt_str("openrouter_model") or str(getattr(settings, "openrouter_model", ""))
+    ai = get_ai_settings(db)
+    eff_or_enabled = bool(ai.enabled)
+    eff_or_base_url = ai.base_url
+    eff_or_model = ai.model
 
     out: dict[str, object] = {
         "db": {"ok": False},
@@ -598,9 +576,11 @@ def system_status(
             "llm": {
                 "provider_order": str(getattr(settings, "llm_provider_order", "") or ""),
                 "openrouter": {
-                    "enabled": bool(getattr(settings, "openrouter_enabled", False)),
-                    "base_url": str(getattr(settings, "openrouter_base_url", "") or ""),
-                    "model": str(getattr(settings, "openrouter_model", "") or ""),
+                    "enabled": bool(ai.enabled),
+                    "configured": bool(ai.configured),
+                    "base_url": ai.base_url,
+                    "model": ai.model,
+                    "sources": ai.sources,
                     "timeout_connect": float(getattr(settings, "openrouter_timeout_connect", 0.0) or 0.0),
                     "timeout_read": float(getattr(settings, "openrouter_timeout_read", 0.0) or 0.0),
                     "timeout_write": float(getattr(settings, "openrouter_timeout_write", 0.0) or 0.0),
@@ -687,156 +667,6 @@ def system_status(
     return out
 
 
-class RuntimeLlmSettingsRequest(BaseModel):
-    openrouter_enabled: bool | None = None
-    openrouter_base_url: str | None = None
-    openrouter_model: str | None = None
-    openrouter_api_key: str | None = None
-    openrouter_http_referer: str | None = None
-    openrouter_app_title: str | None = None
-
-
-class RuntimeS3SettingsRequest(BaseModel):
-    s3_endpoint_url: str | None = None
-    s3_public_endpoint_url: str | None = None
-    s3_access_key_id: str | None = None
-    s3_secret_access_key: str | None = None
-    s3_bucket: str | None = None
-    s3_region_name: str | None = None
-    s3_addressing_style: str | None = None
-
-
-@router.get("/runtime/llm")
-def get_runtime_llm_settings(
-    _: User = Depends(require_roles(UserRole.admin)),
-):
-    env = (getattr(settings, "app_env", "") or "").strip().lower()
-    overrides_allowed = not (env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)))
-    try:
-        r = get_redis()
-        data = r.hgetall("runtime:llm") or {}
-    except Exception:
-        data = {}
-
-    def _get(k: str) -> str:
-        v = data.get(k)
-        if v is None:
-            return ""
-        try:
-            return v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-        except Exception:
-            return str(v)
-
-    or_token = _get("openrouter_api_key")
-    or_masked = ""
-    if or_token:
-        or_masked = or_token[:4] + "…" + or_token[-4:]
-
-    or_enabled_raw = _get("openrouter_enabled")
-    or_enabled = or_enabled_raw.lower() in {"1", "true", "yes", "on"}
-
-    def _eff_bool(rt_raw: str, env_val: bool) -> bool:
-        s = (rt_raw or "").strip().lower()
-        if not s:
-            return bool(env_val)
-        return s in {"1", "true", "yes", "on"}
-
-    def _eff_str(rt_val: str, env_val: str | None) -> str:
-        v = (rt_val or "").strip()
-        if v:
-            return v
-        return str(env_val or "").strip()
-
-    eff_or_token = _eff_str(_get("openrouter_api_key"), str(getattr(settings, "openrouter_api_key", "") or ""))
-
-    eff = {
-        "openrouter_enabled": _eff_bool(_get("openrouter_enabled"), bool(getattr(settings, "openrouter_enabled", False))),
-        "openrouter_base_url": _eff_str(_get("openrouter_base_url"), str(getattr(settings, "openrouter_base_url", ""))),
-        "openrouter_model": _eff_str(_get("openrouter_model"), str(getattr(settings, "openrouter_model", ""))),
-        "openrouter_api_key_present": bool((eff_or_token or "").strip()),
-        "openrouter_http_referer": _eff_str(_get("openrouter_http_referer"), str(getattr(settings, "openrouter_http_referer", ""))),
-        "openrouter_app_title": _eff_str(_get("openrouter_app_title"), str(getattr(settings, "openrouter_app_title", ""))),
-    }
-
-    if not overrides_allowed:
-        return {
-            "runtime_overrides_allowed": False,
-            "openrouter_enabled": False,
-            "openrouter_base_url": "",
-            "openrouter_model": "",
-            "openrouter_api_key_masked": "",
-            "openrouter_http_referer": "",
-            "openrouter_app_title": "",
-            "effective": eff,
-        }
-
-    return {
-        "runtime_overrides_allowed": True,
-        "openrouter_enabled": bool(or_enabled),
-        "openrouter_base_url": _get("openrouter_base_url"),
-        "openrouter_model": _get("openrouter_model"),
-        "openrouter_api_key_masked": or_masked,
-        "openrouter_http_referer": _get("openrouter_http_referer"),
-        "openrouter_app_title": _get("openrouter_app_title"),
-        "effective": eff,
-    }
-
-
-@router.post("/runtime/llm")
-def set_runtime_llm_settings(
-    request: Request,
-    body: RuntimeLlmSettingsRequest,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_roles(UserRole.admin)),
-):
-    env = (getattr(settings, "app_env", "") or "").strip().lower()
-    if env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)):
-        raise HTTPException(status_code=403, detail="runtime LLM overrides are disabled in production")
-    try:
-        r = get_redis()
-    except Exception:
-        raise HTTPException(status_code=500, detail="redis unavailable")
-
-    updates: dict[str, str] = {}
-
-    if body.openrouter_enabled is not None:
-        updates["openrouter_enabled"] = "1" if bool(body.openrouter_enabled) else "0"
-    if body.openrouter_base_url is not None:
-        updates["openrouter_base_url"] = str(body.openrouter_base_url or "").strip()
-    if body.openrouter_model is not None:
-        updates["openrouter_model"] = str(body.openrouter_model or "").strip()
-    if body.openrouter_api_key is not None:
-        updates["openrouter_api_key"] = str(body.openrouter_api_key or "").strip()
-    if body.openrouter_http_referer is not None:
-        updates["openrouter_http_referer"] = str(body.openrouter_http_referer or "").strip()
-    if body.openrouter_app_title is not None:
-        updates["openrouter_app_title"] = str(body.openrouter_app_title or "").strip()
-
-
-    if updates:
-        try:
-            r.hset("runtime:llm", mapping=updates)
-            r.expire("runtime:llm", 60 * 60 * 24 * 30)
-        except Exception:
-            raise HTTPException(status_code=500, detail="failed to save settings")
-
-    try:
-        audit_log(
-            db=db,
-            request=request,
-            event_type="admin_set_runtime_llm_settings",
-            actor_user_id=_.id,
-            meta={"keys": list(updates.keys())},
-        )
-    except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            log.debug("admin_set_runtime_llm_settings: db rollback failed", exc_info=True)
-        log.warning("admin_set_runtime_llm_settings: audit_log failed")
-    return {"ok": True}
-
-
 @router.patch("/modules/{module_id}")
 def update_module(
     request: Request,
@@ -894,196 +724,6 @@ def update_module(
         pass
     db.commit()
     return {"ok": True, "module_id": str(m.id), "title": m.title}
-
-
-@router.post("/runtime/llm/reset")
-def reset_runtime_llm_settings(
-    request: Request,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_roles(UserRole.admin)),
-):
-    env = (getattr(settings, "app_env", "") or "").strip().lower()
-    if env in {"prod", "production"} and not bool(getattr(settings, "allow_runtime_llm_overrides", False)):
-        raise HTTPException(status_code=403, detail="runtime LLM overrides are disabled in production")
-    try:
-        r = get_redis()
-    except Exception:
-        raise HTTPException(status_code=500, detail="redis unavailable")
-    try:
-        r.delete("runtime:llm")
-    except Exception:
-        raise HTTPException(status_code=500, detail="failed to reset")
-    try:
-        audit_log(
-            db=db,
-            request=request,
-            event_type="admin_reset_runtime_llm_settings",
-            actor_user_id=_.id,
-            meta={},
-        )
-    except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            log.debug("admin_reset_runtime_llm_settings: db rollback failed", exc_info=True)
-        log.warning("admin_reset_runtime_llm_settings: audit_log failed")
-    return {"ok": True}
-
-
-@router.get("/runtime/s3")
-def get_runtime_s3_settings(
-    _: User = Depends(require_roles(UserRole.admin)),
-):
-    try:
-        r = get_redis()
-        data = r.hgetall("runtime:s3") or {}
-    except Exception:
-        data = {}
-
-    def _get(k: str) -> str:
-        v = data.get(k)
-        if v is None:
-            return ""
-        try:
-            return v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-        except Exception:
-            return str(v)
-
-    ak = _get("s3_access_key_id")
-    sk = _get("s3_secret_access_key")
-
-    ak_masked = (ak[:3] + "…" + ak[-3:]) if ak and len(ak) >= 8 else ("***" if ak else "")
-    sk_masked = (sk[:3] + "…" + sk[-3:]) if sk and len(sk) >= 8 else ("***" if sk else "")
-
-    def _eff_str(rt_val: str, env_val: str | None) -> str:
-        v = (rt_val or "").strip()
-        if v:
-            return v
-        return str(env_val or "").strip()
-
-    eff = {
-        "s3_endpoint_url": _eff_str(_get("s3_endpoint_url"), str(getattr(settings, "s3_endpoint_url", "") or "")),
-        "s3_public_endpoint_url": _eff_str(_get("s3_public_endpoint_url"), str(getattr(settings, "s3_public_endpoint_url", "") or "")),
-        "s3_bucket": _eff_str(_get("s3_bucket"), str(getattr(settings, "s3_bucket", "") or "")),
-        "s3_region_name": _eff_str(_get("s3_region_name"), str(getattr(settings, "s3_region_name", "") or "")),
-        "s3_addressing_style": _eff_str(_get("s3_addressing_style"), str(getattr(settings, "s3_addressing_style", "") or "")),
-        "s3_access_key_id_present": bool(_eff_str(_get("s3_access_key_id"), str(getattr(settings, "s3_access_key_id", "") or "")).strip()),
-        "s3_secret_access_key_present": bool(_eff_str(_get("s3_secret_access_key"), str(getattr(settings, "s3_secret_access_key", "") or "")).strip()),
-    }
-
-    return {
-        "s3_endpoint_url": _get("s3_endpoint_url"),
-        "s3_public_endpoint_url": _get("s3_public_endpoint_url"),
-        "s3_bucket": _get("s3_bucket"),
-        "s3_region_name": _get("s3_region_name"),
-        "s3_addressing_style": _get("s3_addressing_style"),
-        "s3_access_key_id_masked": ak_masked,
-        "s3_secret_access_key_masked": sk_masked,
-        "effective": eff,
-    }
-
-
-@router.post("/runtime/s3")
-def set_runtime_s3_settings(
-    request: Request,
-    body: RuntimeS3SettingsRequest,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_roles(UserRole.admin)),
-):
-    try:
-        env = (getattr(settings, "app_env", "") or "").strip().lower()
-    except Exception:
-        env = ""
-    if env in {"prod", "production"}:
-        import os
-
-        allow = str(os.getenv("ALLOW_RUNTIME_S3_OVERRIDES") or "").strip().lower() == "true"
-        if not allow:
-            raise HTTPException(status_code=403, detail="runtime overrides disabled")
-    try:
-        r = get_redis()
-    except Exception:
-        raise HTTPException(status_code=500, detail="redis unavailable")
-
-    updates: dict[str, str] = {}
-    if body.s3_endpoint_url is not None:
-        updates["s3_endpoint_url"] = str(body.s3_endpoint_url or "").strip()
-    if body.s3_public_endpoint_url is not None:
-        updates["s3_public_endpoint_url"] = str(body.s3_public_endpoint_url or "").strip()
-    if body.s3_access_key_id is not None:
-        updates["s3_access_key_id"] = str(body.s3_access_key_id or "").strip()
-    if body.s3_secret_access_key is not None:
-        updates["s3_secret_access_key"] = str(body.s3_secret_access_key or "").strip()
-    if body.s3_bucket is not None:
-        updates["s3_bucket"] = str(body.s3_bucket or "").strip()
-    if body.s3_region_name is not None:
-        updates["s3_region_name"] = str(body.s3_region_name or "").strip()
-    if body.s3_addressing_style is not None:
-        updates["s3_addressing_style"] = str(body.s3_addressing_style or "").strip()
-
-    if updates:
-        try:
-            r.hset("runtime:s3", mapping=updates)
-            r.expire("runtime:s3", 60 * 60 * 24 * 30)
-        except Exception:
-            raise HTTPException(status_code=500, detail="failed to save settings")
-
-    try:
-        audit_log(
-            db=db,
-            request=request,
-            event_type="admin_set_runtime_s3_settings",
-            actor_user_id=_.id,
-            meta={"keys": list(updates.keys())},
-        )
-    except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            log.debug("admin_set_runtime_s3_settings: db rollback failed", exc_info=True)
-        log.warning("admin_set_runtime_s3_settings: audit_log failed")
-    return {"ok": True}
-
-
-@router.post("/runtime/s3/reset")
-def reset_runtime_s3_settings(
-    request: Request,
-    db: Session = Depends(get_db),
-    _: User = Depends(require_roles(UserRole.admin)),
-):
-    try:
-        env = (getattr(settings, "app_env", "") or "").strip().lower()
-    except Exception:
-        env = ""
-    if env in {"prod", "production"}:
-        import os
-
-        allow = str(os.getenv("ALLOW_RUNTIME_S3_OVERRIDES") or "").strip().lower() == "true"
-        if not allow:
-            raise HTTPException(status_code=403, detail="runtime overrides disabled")
-    try:
-        r = get_redis()
-    except Exception:
-        raise HTTPException(status_code=500, detail="redis unavailable")
-    try:
-        r.delete("runtime:s3")
-    except Exception:
-        raise HTTPException(status_code=500, detail="failed to reset")
-    try:
-        audit_log(
-            db=db,
-            request=request,
-            event_type="admin_reset_runtime_s3_settings",
-            actor_user_id=_.id,
-            meta={},
-        )
-    except Exception:
-        try:
-            db.rollback()
-        except Exception:
-            log.debug("admin_reset_runtime_s3_settings: db rollback failed", exc_info=True)
-        log.warning("admin_reset_runtime_s3_settings: audit_log failed")
-    return {"ok": True}
 
 
 @router.post("/maintenance/modules/purge-missing-storage")
@@ -1571,12 +1211,20 @@ def llm_probe(
     except Exception:
         runtime = {}
 
+    ai = get_ai_settings()
     out: dict[str, object] = {
         "settings": {
+            "openrouter_enabled": bool(ai.enabled),
+            "openrouter_base_url": ai.base_url,
+            "openrouter_model": ai.model,
+            "configured": bool(ai.configured),
+            "sources": ai.sources,
+            "llm_provider_order": settings.llm_provider_order,
+        },
+        "environment": {
             "openrouter_enabled": bool(settings.openrouter_enabled),
             "openrouter_base_url": settings.openrouter_base_url,
             "openrouter_model": settings.openrouter_model,
-            "llm_provider_order": settings.llm_provider_order,
         },
         "runtime": {
             "openrouter_enabled": runtime.get("openrouter_enabled") or "",
