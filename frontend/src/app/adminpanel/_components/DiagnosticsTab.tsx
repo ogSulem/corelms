@@ -6,7 +6,8 @@ import { useMemo, useState } from "react";
 interface DiagnosticsTabProps {
   sys: any;
   sysLoading: boolean;
-  loadSystemStatus: () => Promise<void>;
+  loadSystemStatus: (probe?: boolean) => Promise<void>;
+  probeStatus: () => Promise<void>;
 
 
   brokenModulesBusy: boolean;
@@ -25,6 +26,7 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
     sys,
     sysLoading,
     loadSystemStatus,
+    probeStatus,
     brokenModulesBusy,
     brokenModules,
     brokenModulesCount,
@@ -96,7 +98,12 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                 { key: "openrouter", label: "OPENROUTER" },
               ] as { key: string; label: string }[]
             ).map((x) => {
-              const ok = !!(sys as any)?.[x.key]?.ok;
+              const item = (sys as any)?.[x.key];
+              const ok = !!item?.ok;
+              // Внешние сервисы проверяются по кнопке, поэтому «не проверено» — это не ошибка.
+              const configured = item?.configured === undefined ? true : !!item?.configured;
+              const probed = item?.probed === undefined ? true : !!item?.probed;
+              const state = !configured ? "настроить" : !probed ? "не проверено" : ok ? "ok" : "fail";
               return (
                 <div key={x.key} className="rounded-2xl border border-zinc-200 bg-white p-4">
                   <div className="flex items-center justify-between gap-3">
@@ -104,12 +111,14 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                     <div
                       className={
                         "inline-flex items-center rounded-full border px-3 py-1 text-[9px] font-black uppercase tracking-widest " +
-                        (ok
+                        (state === "ok"
                           ? "border-[#284e13]/20 bg-[#284e13]/10 text-[#284e13]"
-                          : "border-rose-200 bg-rose-50 text-rose-800")
+                          : state === "fail"
+                            ? "border-rose-200 bg-rose-50 text-rose-800"
+                            : "border-zinc-200 bg-zinc-50 text-zinc-600")
                       }
                     >
-                      {ok ? "OK" : "FAIL"}
+                      {state === "ok" ? "OK" : state === "fail" ? "FAIL" : state === "настроить" ? "НЕ НАСТРОЕНО" : "НЕ ПРОВЕРЕНО"}
                     </div>
                   </div>
 
@@ -239,7 +248,13 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                 <div className="rounded-2xl border border-zinc-200 bg-white p-5">
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">AI ДЛЯ ТЕСТОВ</div>
                   <div className="mt-2 text-[11px] font-black uppercase tracking-wide text-zinc-950">
-                    {(sys as any)?.openrouter?.ok ? "ПОДКЛЮЧЕНИЕ РАБОТАЕТ" : (sys as any)?.openrouter?.enabled ? "НЕТ ОТВЕТА" : "ВЫКЛЮЧЕН"}
+                    {!(sys as any)?.openrouter?.configured
+                      ? "НЕ НАСТРОЕН"
+                      : !(sys as any)?.openrouter?.probed
+                        ? "НАСТРОЕН, НЕ ПРОВЕРЕН"
+                        : (sys as any)?.openrouter?.ok
+                          ? "ПОДКЛЮЧЕНИЕ РАБОТАЕТ"
+                          : "ПРОВЕРКА НЕ ПРОШЛА"}
                   </div>
                   <div className="mt-2 break-all text-[10px] font-bold text-zinc-600">
                     {String((sys as any)?.openrouter?.model || "—")} · {String((sys as any)?.openrouter?.base_url || "—")}
@@ -247,14 +262,30 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                   {(sys as any)?.openrouter?.reason ? (
                     <div className="mt-1 break-all text-[10px] font-bold text-rose-700">{String((sys as any)?.openrouter?.reason)}</div>
                   ) : null}
-                  <a href="/admin/settings#ai" className="mt-3 inline-block text-[10px] font-black uppercase tracking-widest text-amber-700 underline">
-                    Настроить AI →
-                  </a>
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      className="text-[10px] font-black uppercase tracking-widest text-zinc-700 underline disabled:opacity-50"
+                      disabled={sysLoading || !(sys as any)?.openrouter?.configured}
+                      onClick={() => void probeStatus()}
+                    >
+                      {sysLoading ? "Проверяем…" : (sys as any)?.openrouter?.probed ? "Проверить снова" : "Проверить подключение"}
+                    </button>
+                    <a href="/admin/settings#ai" className="text-[10px] font-black uppercase tracking-widest text-amber-700 underline">
+                      Настроить AI →
+                    </a>
+                  </div>
                 </div>
                 <div className="rounded-2xl border border-zinc-200 bg-white p-5">
                   <div className="text-[9px] font-black uppercase tracking-widest text-zinc-500">ХРАНИЛИЩЕ ФАЙЛОВ</div>
                   <div className="mt-2 text-[11px] font-black uppercase tracking-wide text-zinc-950">
-                    {(sys as any)?.s3?.ok ? "BUCKET ДОСТУПЕН" : "НЕТ ДОСТУПА"}
+                    {!(sys as any)?.s3?.configured
+                      ? "НЕ НАСТРОЕНО"
+                      : !(sys as any)?.s3?.probed
+                        ? "НАСТРОЕНО, НЕ ПРОВЕРЕНО"
+                        : (sys as any)?.s3?.ok
+                          ? "BUCKET ДОСТУПЕН"
+                          : "НЕТ ДОСТУПА"}
                   </div>
                   <div className="mt-2 break-all text-[10px] font-bold text-zinc-600">
                     {String((sys as any)?.s3?.bucket || "—")} · {String((sys as any)?.s3?.endpoint || "—")}
@@ -262,9 +293,19 @@ export function DiagnosticsTab(props: DiagnosticsTabProps) {
                   {(sys as any)?.s3?.reason ? (
                     <div className="mt-1 break-all text-[10px] font-bold text-rose-700">{String((sys as any)?.s3?.reason)}</div>
                   ) : null}
-                  <a href="/admin/settings#storage" className="mt-3 inline-block text-[10px] font-black uppercase tracking-widest text-amber-700 underline">
-                    Настроить хранилище →
-                  </a>
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      className="text-[10px] font-black uppercase tracking-widest text-zinc-700 underline disabled:opacity-50"
+                      disabled={sysLoading || !(sys as any)?.s3?.configured}
+                      onClick={() => void probeStatus()}
+                    >
+                      {sysLoading ? "Проверяем…" : (sys as any)?.s3?.probed ? "Проверить снова" : "Проверить доступ"}
+                    </button>
+                    <a href="/admin/settings#storage" className="text-[10px] font-black uppercase tracking-widest text-amber-700 underline">
+                      Настроить хранилище →
+                    </a>
+                  </div>
                 </div>
               </div>
             </div>

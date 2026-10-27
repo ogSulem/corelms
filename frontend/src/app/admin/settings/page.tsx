@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, HardDrive, KeyRound, Loader2, PlugZap, RefreshCw, Save, ShieldCheck, Sparkles, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, HardDrive, KeyRound, Loader2, PlugZap, RefreshCw, Save, ShieldCheck, SlidersHorizontal, Sparkles, Trash2 } from "lucide-react";
 
 import { AdminNav } from "@/components/admin/admin-nav";
 import { AppShell } from "@/components/app/shell";
@@ -44,13 +44,28 @@ type SalesSettings = {
 };
 
 type StorageSettings = {
-  editable: boolean;
-  redis_ok: boolean;
+  configured: boolean;
+  stored: boolean;
+  updated_at: string | null;
+  fields: Record<string, string>;
   overrides: Record<string, string>;
   access_key_masked: string;
   secret_key_masked: string;
+  sources: Record<string, string>;
+  credentials_error: boolean;
+  legacy: boolean;
   effective: { bucket: string; endpoint: string; public_endpoint: string };
+  command?: never;
+};
+
+type PlatformSettings = {
+  upload_max_bytes: number;
+  allow_public_register: boolean;
+  sources: Record<string, string>;
   stored: boolean;
+  updated_at: string | null;
+  env: { upload_max_bytes: number; allow_public_register: boolean };
+  limits: { min_upload_bytes: number; max_upload_bytes: number };
 };
 
 type Overview = {
@@ -95,6 +110,9 @@ export default function AdminSettingsPage() {
   const [savingStorage, setSavingStorage] = useState(false);
   const [testingStorage, setTestingStorage] = useState(false);
   const [storageTest, setStorageTest] = useState<{ ok: boolean; message: string } | null>(null);
+  const [platform, setPlatform] = useState<PlatformSettings | null>(null);
+  const [platformDraft, setPlatformDraft] = useState({ upload_mb: 512, allow_public_register: false });
+  const [savingPlatform, setSavingPlatform] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadingData, setLoadingData] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +141,16 @@ export default function AdminSettingsPage() {
     });
   }, []);
 
+  const platformValid = Number.isFinite(platformDraft.upload_mb) && platformDraft.upload_mb >= 1 && platformDraft.upload_mb <= 20480;
+
+  const applyPlatform = useCallback((data: PlatformSettings) => {
+    setPlatform(data);
+    setPlatformDraft({
+      upload_mb: Math.max(1, Math.round(data.upload_max_bytes / (1024 * 1024))),
+      allow_public_register: data.allow_public_register,
+    });
+  }, []);
+
   const applySales = useCallback((data: SalesSettings) => {
     setSales(data);
     setSalesDraft({ spreadsheet_id: data.spreadsheet_id, service_account_json: "", api_key: "", clear_service_account: false, clear_api_key: false });
@@ -132,14 +160,16 @@ export default function AdminSettingsPage() {
     setError(null);
     setLoadingData(true);
     try {
-      const [aiData, overviewData, storageData] = await Promise.all([
+      const [aiData, overviewData, storageData, platformData] = await Promise.all([
         apiFetch<AISettings>("/admin/settings/ai"),
         apiFetch<Overview>("/admin/settings/overview"),
         apiFetch<StorageSettings>("/admin/settings/storage"),
+        apiFetch<PlatformSettings>("/admin/settings/platform"),
       ]);
       applyAI(aiData);
       setOverview(overviewData);
       applyStorage(storageData);
+      applyPlatform(platformData);
       if (isSuperadmin) {
         try {
           applySales(await apiFetch<SalesSettings>("/admin/settings/sales"));
@@ -152,7 +182,7 @@ export default function AdminSettingsPage() {
     } finally {
       setLoadingData(false);
     }
-  }, [applyAI, applySales, applyStorage, isSuperadmin]);
+  }, [applyAI, applyPlatform, applySales, applyStorage, isSuperadmin]);
 
   useEffect(() => {
     if (!loading && isAdmin) void load();
@@ -304,7 +334,7 @@ export default function AdminSettingsPage() {
     setSavingStorage(true);
     setError(null);
     try {
-      const data = await apiFetch<StorageSettings & { ok: boolean }>("/admin/settings/storage", {
+      const data = await apiFetch<{ settings: StorageSettings }>("/admin/settings/storage", {
         method: "PUT",
         body: JSON.stringify({
           s3_endpoint_url: storageDraft.s3_endpoint_url.trim(),
@@ -316,7 +346,7 @@ export default function AdminSettingsPage() {
           s3_secret_access_key: storageDraft.s3_secret_access_key.trim() || null,
         }),
       });
-      applyStorage(data);
+      applyStorage(data.settings);
       setStorageTest(null);
       toast("Хранилище сохранено", "Новые значения уже действуют для загрузок и воркеров");
       setOverview(await apiFetch<Overview>("/admin/settings/overview"));
@@ -351,8 +381,8 @@ export default function AdminSettingsPage() {
     setSavingStorage(true);
     setError(null);
     try {
-      const data = await apiFetch<StorageSettings & { ok: boolean }>("/admin/settings/storage", { method: "DELETE" });
-      applyStorage(data);
+      const data = await apiFetch<{ settings: StorageSettings }>("/admin/settings/storage", { method: "DELETE" });
+      applyStorage(data.settings);
       setStorageTest(null);
       toast("Хранилище сброшено к серверу", "Используются значения из .env");
       setOverview(await apiFetch<Overview>("/admin/settings/overview"));
@@ -360,6 +390,42 @@ export default function AdminSettingsPage() {
       setError(errorText(resetError, "Не удалось сбросить настройки хранилища"));
     } finally {
       setSavingStorage(false);
+    }
+  }
+
+  async function savePlatform() {
+    if (savingPlatform) return;
+    setSavingPlatform(true);
+    setError(null);
+    try {
+      const bytes = Math.round(Number(platformDraft.upload_mb) * 1024 * 1024);
+      const data = await apiFetch<{ settings: PlatformSettings }>("/admin/settings/platform", {
+        method: "PUT",
+        body: JSON.stringify({ upload_max_bytes: bytes, allow_public_register: platformDraft.allow_public_register }),
+      });
+      applyPlatform(data.settings);
+      toast("Настройки платформы сохранены", "Действуют сразу для загрузок и регистрации");
+      setOverview(await apiFetch<Overview>("/admin/settings/overview"));
+    } catch (saveError) {
+      setError(errorText(saveError, "Не удалось сохранить настройки платформы"));
+    } finally {
+      setSavingPlatform(false);
+    }
+  }
+
+  async function resetPlatform() {
+    if (!window.confirm("Вернуть лимиты и регистрацию к значениям сервера (.env)?")) return;
+    setSavingPlatform(true);
+    setError(null);
+    try {
+      const data = await apiFetch<{ settings: PlatformSettings }>("/admin/settings/platform", { method: "DELETE" });
+      applyPlatform(data.settings);
+      toast("Возвращены значения сервера", "Правила .env снова действуют");
+      setOverview(await apiFetch<Overview>("/admin/settings/overview"));
+    } catch (resetError) {
+      setError(errorText(resetError, "Не удалось сбросить настройки платформы"));
+    } finally {
+      setSavingPlatform(false);
     }
   }
 
@@ -390,6 +456,7 @@ export default function AdminSettingsPage() {
             { href: "#ai", label: "AI для тестов" },
             { href: "#sales", label: "Продажи (Sheets)" },
             { href: "#storage", label: "Хранилище файлов" },
+            { href: "#platform", label: "Платформа" },
             { href: "#system", label: "Сервер и схема" },
           ].map((item) => (
             <a key={item.href} href={item.href} className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-zinc-600 transition hover:border-zinc-300 hover:text-zinc-900">
@@ -575,47 +642,47 @@ export default function AdminSettingsPage() {
                 </div>
               </div>
 
-              {storageSettings && !storageSettings.editable ? (
-                <p className="mt-4 rounded-xl bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
-                  На этом сервере изменение хранилища из интерфейса отключено (<code className="rounded bg-white px-1.5 py-0.5 text-xs">ALLOW_RUNTIME_S3_OVERRIDES=false</code>). Показаны действующие значения.
+              {storageSettings?.credentials_error ? (
+                <p role="alert" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  Сохранённые ключи хранилища не читаются (изменился ключ шифрования). Загрузите файлы пока работают значения сервера — введите ключи заново.
                 </p>
               ) : null}
-              {storageSettings && !storageSettings.redis_ok ? (
-                <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  Нет связи с Redis: настройки хранилища не сохранятся, пока Redis недоступен.
+              {storageSettings?.legacy ? (
+                <p role="status" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                  Действуют старые настройки из Redis. Сохраните значения здесь — они перейдут в защищённое хранилище приложения.
                 </p>
               ) : null}
 
               <div className="mt-5 grid gap-4 sm:grid-cols-2">
                 <label className="block space-y-2 text-sm font-medium">
                   Bucket
-                  <input className={field} value={storageDraft.s3_bucket} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_bucket: event.target.value }))} placeholder="corelms-content" disabled={!storageSettings?.editable} />
+                  <input className={field} value={storageDraft.s3_bucket} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_bucket: event.target.value }))} placeholder="corelms-content"  />
                 </label>
                 <label className="block space-y-2 text-sm font-medium">
                   Адрес API хранилища
-                  <input className={field} value={storageDraft.s3_endpoint_url} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_endpoint_url: event.target.value }))} placeholder="https://s3.regru.cloud" disabled={!storageSettings?.editable} />
+                  <input className={field} value={storageDraft.s3_endpoint_url} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_endpoint_url: event.target.value }))} placeholder="https://s3.regru.cloud"  />
                 </label>
                 <label className="block space-y-2 text-sm font-medium">
                   Публичный адрес для браузера
-                  <input className={field} value={storageDraft.s3_public_endpoint_url} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_public_endpoint_url: event.target.value }))} placeholder="тот же адрес, если доступен извне" disabled={!storageSettings?.editable} />
+                  <input className={field} value={storageDraft.s3_public_endpoint_url} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_public_endpoint_url: event.target.value }))} placeholder="тот же адрес, если доступен извне"  />
                 </label>
                 <label className="block space-y-2 text-sm font-medium">
                   Регион
-                  <input className={field} value={storageDraft.s3_region_name} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_region_name: event.target.value }))} placeholder="us-east-1" disabled={!storageSettings?.editable} />
+                  <input className={field} value={storageDraft.s3_region_name} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_region_name: event.target.value }))} placeholder="us-east-1"  />
                 </label>
                 <label className="block space-y-2 text-sm font-medium">
                   Access key ID
-                  <input className={field} value={storageDraft.s3_access_key_id} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_access_key_id: event.target.value }))} placeholder={storageSettings?.access_key_masked ? `Сохранён: ${storageSettings.access_key_masked}` : "Ключ доступа"} disabled={!storageSettings?.editable} />
+                  <input className={field} value={storageDraft.s3_access_key_id} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_access_key_id: event.target.value }))} placeholder={storageSettings?.access_key_masked ? `Сохранён: ${storageSettings.access_key_masked}` : "Ключ доступа"}  />
                 </label>
                 <label className="block space-y-2 text-sm font-medium">
                   Secret access key
-                  <input type="password" autoComplete="new-password" className={field} value={storageDraft.s3_secret_access_key} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_secret_access_key: event.target.value }))} placeholder={storageSettings?.secret_key_masked ? `Сохранён: ${storageSettings.secret_key_masked}` : "Секретный ключ"} disabled={!storageSettings?.editable} />
+                  <input type="password" autoComplete="new-password" className={field} value={storageDraft.s3_secret_access_key} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_secret_access_key: event.target.value }))} placeholder={storageSettings?.secret_key_masked ? `Сохранён: ${storageSettings.secret_key_masked}` : "Секретный ключ"}  />
                 </label>
                 <details className="sm:col-span-2">
                   <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-zinc-500">Дополнительно</summary>
                   <label className="mt-3 block space-y-2 text-sm font-medium">
                     Стиль адресации
-                    <input className={field} value={storageDraft.s3_addressing_style} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_addressing_style: event.target.value }))} placeholder="path" disabled={!storageSettings?.editable} />
+                    <input className={field} value={storageDraft.s3_addressing_style} onChange={(event) => setStorageDraft((prev) => ({ ...prev, s3_addressing_style: event.target.value }))} placeholder="path"  />
                     <span className="block text-xs font-normal leading-5 text-zinc-500">Пусто — значение сервера. Для REG.RU и MinIO обычно <code className="rounded bg-zinc-100 px-1 py-0.5">path</code>.</span>
                   </label>
                 </details>
@@ -626,7 +693,7 @@ export default function AdminSettingsPage() {
               )}
 
               <div className="mt-5 flex flex-wrap gap-2">
-                <Button className={btn} onClick={() => void saveStorage()} disabled={savingStorage || !storageSettings?.editable}>
+                <Button className={btn} onClick={() => void saveStorage()} disabled={savingStorage}>
                   {savingStorage ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}Сохранить
                 </Button>
                 <Button variant="outline" className={btn} onClick={() => void testStorage()} disabled={testingStorage}>
@@ -641,6 +708,64 @@ export default function AdminSettingsPage() {
                 Проверка использует уже сохранённые значения: если только что изменили поля, сначала нажмите «Сохранить».
                 Действующие bucket: <span className="font-medium text-zinc-700">{storageSettings?.effective.bucket || overview?.s3_bucket || "—"}</span>
                 {storageSettings?.effective.endpoint ? ` · ${storageSettings.effective.endpoint}` : ""}
+                {storageSettings?.sources?.s3_bucket === "environment" ? " · из .env" : ""}
+              </p>
+            </section>
+
+            <section id="platform" className={`${card} scroll-mt-24`} aria-labelledby="platform-title">
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 rounded-xl bg-violet-50 p-2 text-violet-700"><SlidersHorizontal size={18} /></span>
+                <div>
+                  <h2 id="platform-title" className="text-lg font-semibold text-zinc-950">Платформа</h2>
+                  <p className="mt-1 text-sm leading-6 text-zinc-600">
+                    Ограничения, которые чаще всего приходится менять: размер файла и самостоятельная регистрация. Применяются сразу, без перезапуска.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                <label className="block space-y-2 text-sm font-medium">
+                  Максимальный размер файла, МБ
+                  <input
+                    type="number"
+                    min={1}
+                    max={20480}
+                    className={field}
+                    value={platformDraft.upload_mb}
+                    onChange={(event) => setPlatformDraft((prev) => ({ ...prev, upload_mb: Number(event.target.value) }))}
+                  />
+                  <span className="block text-xs font-normal leading-5 text-zinc-500">
+                    От 1 МБ до 20 ГБ. Действует для материалов, видео и файлов продаж. В <code className="rounded bg-zinc-100 px-1 py-0.5">.env</code>: {platform ? Math.round(platform.env.upload_max_bytes / (1024 * 1024)) : "—"} МБ.
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 rounded-xl border border-zinc-200 px-3 py-2.5 text-sm">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={platformDraft.allow_public_register}
+                    onChange={(event) => setPlatformDraft((prev) => ({ ...prev, allow_public_register: event.target.checked }))}
+                  />
+                  <span>
+                    Открытая регистрация
+                    <span className="mt-1 block text-xs leading-5 text-zinc-500">
+                      Если выключено, новых учеников создаёт администратор в разделе «Пользователи» — это безопасный режим по умолчанию.
+                    </span>
+                  </span>
+                </label>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-2">
+                <Button className={btn} onClick={() => void savePlatform()} disabled={savingPlatform || !platformValid}>
+                  {savingPlatform ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}Сохранить
+                </Button>
+                <Button variant="outline" className={btn} onClick={() => void resetPlatform()} disabled={savingPlatform || !platform?.stored}>
+                  <RefreshCw size={16} />Сбросить к серверу
+                </Button>
+              </div>
+
+              <p className="mt-4 text-xs leading-5 text-zinc-500">
+                Источник: {platform?.sources?.upload_max_bytes === "database" ? "сохранено в LMS" : "переменная окружения"}.
+                Остальные параметры сервера (публичный адрес, CORS, таймауты сессий, очереди) задаются в <code className="rounded bg-zinc-100 px-1.5 py-0.5">.env</code> и требуют перезапуска — они показаны в разделе «Сервер и схема».
               </p>
             </section>
 
@@ -651,7 +776,7 @@ export default function AdminSettingsPage() {
                 {[
                   ["Окружение", overview?.app_env || "—"],
                   ["Публичный адрес", overview?.public_app_url || "—"],
-                  ["Максимальный размер файла", overview ? `${Math.round(overview.upload_max_bytes / (1024 * 1024))} МБ` : "—"],
+                  ["Лимит файла (действующий)", overview ? `${Math.round(overview.upload_max_bytes / (1024 * 1024))} МБ` : "—"],
                   ["Хранилище S3", overview ? `${overview.s3_bucket || "—"}${overview.s3_endpoint ? ` · ${overview.s3_endpoint}` : ""}` : "—"],
                   ["Схема БД", overview ? `${overview.schema.current || "не определена"} / ожидается ${overview.schema.expected}` : "—"],
                   ["Браузерные копии файлов", overview?.media_dispatcher_enabled ? "включены" : "выключены"],

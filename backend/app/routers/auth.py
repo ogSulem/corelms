@@ -21,6 +21,7 @@ from app.core.security_audit_log import audit_log
 from app.core.security import get_current_user
 from app.core.tokens import create_access_token, password_version
 from app.services import auth_sessions
+from app.services.app_settings import get_platform_settings
 from app.db.session import get_db
 from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User, UserRole
@@ -319,7 +320,7 @@ def register(
     db: Session = Depends(get_db),
     _: object = rate_limit(key_prefix="auth_register", limit=10, window_seconds=60),
 ):
-    if not settings.allow_public_register:
+    if not get_platform_settings(db).allow_public_register:
         raise HTTPException(status_code=403, detail="registration disabled")
 
     if not payload.password or len(payload.password) < int(settings.password_min_length or 0):

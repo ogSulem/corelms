@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import mimetypes
 import pathlib
 import uuid
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy import delete, func, select
@@ -24,7 +22,7 @@ from app.models.module import Module, Submodule
 from app.models.lesson_revision import LessonRevision
 from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.schemas.authoring import FinalQuizSave, GenerateDraft, GenerateModuleDrafts, QuizSave
-from app.services.app_settings import get_ai_settings
+from app.services.app_settings import get_ai_settings, get_platform_settings
 from app.services.quiz_drafts import prepare_module_drafts, module_draft_status
 from app.services.authoring import format_prompt, generate_quiz_draft_job, question_payload, quiz_payload, source_revision, request_signature
 from app.models.submodule_asset import SubmoduleAssetMap
@@ -275,7 +273,7 @@ def upload_asset(
     db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="content_upload", limit=120, window_seconds=60),
 ):
-    filename, size, checksum = _inspect_upload(file, max_bytes=int(getattr(settings, "content_upload_max_bytes", 512 * 1024 * 1024)))
+    filename, size, checksum = _inspect_upload(file, max_bytes=get_platform_settings(db).upload_max_bytes)
     if create_lesson and (submodule_id or replace_asset_id):
         raise HTTPException(422, "Создание урока нельзя объединять с заменой или перемещением файла")
     # Validate before transferring bytes, then recheck revision under lock after upload.

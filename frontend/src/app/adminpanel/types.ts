@@ -37,7 +37,7 @@ export type RegenJobItem = {
   error?: string | null;
 };
 
-export type UserModuleProgress = {
+type UserModuleProgress = {
   module_id: string;
   title: string;
   total: number;
@@ -46,7 +46,7 @@ export type UserModuleProgress = {
   completed: boolean;
 };
 
-export type UserHistoryItem = {
+type UserHistoryItem = {
   id: string;
   event_type: string;
   created_at: string;
@@ -116,42 +116,6 @@ export type AdminModuleItem = {
     ai_current: number;
     heur_current: number;
   };
-};
-
-export type AdminSubmoduleItem = {
-  id: string;
-  module_id: string;
-  title: string;
-  order: number;
-  quiz_id: string;
-  requires_quiz?: boolean;
-  is_folder?: boolean;
-  outline_path?: string | null;
-};
-
-export type AdminSubmoduleQualityItem = {
-  submodule_id: string;
-  order: number;
-  title: string;
-  quiz_id: string | null;
-  total: number;
-  needs_regen: number;
-  fallback: number;
-  ai: number;
-  heur: number;
-  ok: boolean;
-};
-
-export type AdminQuestionItem = {
-  id: string;
-  quiz_id: string;
-  type: string;
-  difficulty: number;
-  prompt: string;
-  correct_answer: string;
-  explanation?: string | null;
-  concept_tag?: string | null;
-  variant_group?: string | null;
 };
 
 export type UserItem = {

@@ -7,7 +7,7 @@ import asyncio
 import threading
 import os
 import socket
-from datetime import datetime, timedelta
+from datetime import datetime
 import hashlib
 import secrets
 import string
@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from passlib.context import CryptContext
-from sqlalchemy import and_, bindparam, case, delete, func, or_, select, text
+from sqlalchemy import case, delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.queue import get_job_status, normalize_job_status, release_job_lock
@@ -36,7 +36,7 @@ from app.db.session import SessionLocal, get_db
 from app.models.assignment import Assignment, AssignmentStatus, AssignmentType
 from app.models.attempt import QuizAttempt
 from app.models.attempt import QuizAttemptAnswer
-from app.models.audit import LearningEvent, LearningEventType
+from app.models.audit import LearningEvent
 from app.models.completion import LessonQuizVersion
 from app.models.asset import ContentAsset
 from app.models.module import Module, Submodule
@@ -95,7 +95,6 @@ from app.services.content import lock_module, preserve_progress
 from app.core.queue import fetch_job, get_queue
 from app.services.module_import_jobs import import_module_zip_job
 from app.services.modules import modules_bump_rev, modules_invalidate_storage_cache
-from app.services.content_migration_jobs import migrate_legacy_submodule_content_job
 from app.services.module_storage_prefix_jobs import backfill_module_storage_prefix_job
 from app.services.llm_handler import generate_quiz_questions_ai
 from app.services.storage import (
@@ -106,15 +105,13 @@ from app.services.storage import (
     multipart_create,
     multipart_list_parts,
     multipart_presign_upload_part,
-    multipart_upload_exists,
-    presign_get,
     presign_put,
     s3_list_common_prefixes,
     s3_list_objects,
     s3_prefix_has_objects,
 )
 from app.services.openrouter_health import openrouter_healthcheck
-from app.services.app_settings import get_ai_settings
+from app.services.app_settings import get_ai_settings, get_storage_settings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -500,15 +497,14 @@ def _looks_like_uuid(s: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", s, re.IGNORECASE))
 
 
-
-
 @router.get("/system/status")
 def system_status(
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
+    probe: bool = Query(default=False),
 ):
-    env = (getattr(settings, "app_env", "") or "").strip().lower()
-    allow_s3_rt = bool(getattr(settings, "allow_runtime_s3_overrides", False))
+    # Both checks below talk to the network, so they only run when the
+    # administrator presses «Проверить»: opening diagnostics must be instant.
 
     ai = get_ai_settings(db)
     eff_or_enabled = bool(ai.enabled)
@@ -541,6 +537,7 @@ def system_status(
             "cors_allow_origins": str(getattr(settings, "cors_allow_origins", "") or ""),
         }
 
+    config_storage = get_storage_settings(db)
     try:
         out["config"] = {
             "jwt_access_token_minutes": int(getattr(settings, "jwt_access_token_minutes", 0) or 0),
@@ -560,11 +557,12 @@ def system_status(
                 "max_compression_ratio": int(getattr(settings, "import_zip_max_compression_ratio", 0) or 0),
             },
             "s3": {
-                "endpoint_url": str(getattr(settings, "s3_endpoint_url", "") or ""),
-                "public_endpoint_url": str(getattr(settings, "s3_public_endpoint_url", "") or ""),
-                "bucket": str(getattr(settings, "s3_bucket", "") or ""),
-                "region": str(getattr(settings, "s3_region_name", "") or ""),
-                "addressing_style": str(getattr(settings, "s3_addressing_style", "") or ""),
+                # Effective values (settings saved in the UI win over .env).
+                "endpoint_url": str(config_storage.endpoint_url or ""),
+                "public_endpoint_url": str(config_storage.public_endpoint_url or ""),
+                "bucket": str(config_storage.bucket or ""),
+                "region": str(config_storage.region_name or ""),
+                "addressing_style": str(config_storage.addressing_style or ""),
                 "connect_timeout_seconds": float(getattr(settings, "s3_connect_timeout_seconds", 0.0) or 0.0),
                 "read_timeout_seconds": float(getattr(settings, "s3_read_timeout_seconds", 0.0) or 0.0),
                 "max_attempts": int(getattr(settings, "s3_max_attempts", 0) or 0),
@@ -629,35 +627,37 @@ def system_status(
     except Exception:
         out["rq"] = {"ok": False, "workers": 0, "queued": 0, "started": 0, "failed": 0, "deferred": 0, "scheduled": 0}
 
-    # S3 (do not expose secrets)
-    try:
-        eff_bucket = str(getattr(settings, "s3_bucket", "") or "")
-        eff_ep = str(getattr(settings, "s3_endpoint_url", "") or "")
-        if not (env in {"prod", "production"} and not allow_s3_rt):
-            try:
-                r = get_redis()
-                raw2 = r.hgetall("runtime:s3") or {}
-                rt_s3: dict[str, str] = {}
-                for k, v in (raw2 or {}).items():
-                    kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-                    vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-                    rt_s3[str(kk)] = str(vv)
-                eff_bucket = str(rt_s3.get("s3_bucket") or eff_bucket)
-                eff_ep = str(rt_s3.get("s3_endpoint_url") or eff_ep)
-            except Exception:
-                pass
+    # S3: the same values the uploads use (database overrides first), never secrets.
+    storage = get_storage_settings(db)
+    eff_bucket = storage.bucket
+    eff_ep = storage.endpoint_url
+    out["s3"] = {
+        "configured": bool(eff_bucket),
+        "probed": bool(probe),
+        "ok": False,
+        "bucket": eff_bucket,
+        "endpoint": eff_ep,
+        "source": storage.sources.get("s3_bucket") or ("environment" if eff_bucket else "unconfigured"),
+        "reason": None,
+    }
+    if probe and eff_bucket:
+        try:
+            get_s3_client().head_bucket(Bucket=eff_bucket)
+            out["s3"]["ok"] = True
+        except Exception as e:  # noqa: BLE001 - the reason is shown to the administrator
+            msg = str(e or "").splitlines()[0][:240] if str(e or "") else ""
+            out["s3"]["reason"] = msg or "Хранилище не ответило"
+    elif probe:
+        out["s3"]["reason"] = "Bucket не указан: заполните настройки хранилища."
 
-        s3 = get_s3_client()
-        s3.head_bucket(Bucket=eff_bucket)
-        out["s3"] = {"ok": True, "bucket": eff_bucket, "endpoint": eff_ep}
-    except Exception as e:
-        msg = str(e or "")
-        msg = msg.splitlines()[0][:240] if msg else ""
-        out["s3"] = {"ok": False, "bucket": str(getattr(settings, "s3_bucket", "")), "endpoint": str(getattr(settings, "s3_endpoint_url", "")), "reason": msg or None}
-
-    ok_or, reason_or = openrouter_healthcheck(base_url=str(eff_or_base_url or "").strip() or None)
+    if probe and ai.configured:
+        ok_or, reason_or = openrouter_healthcheck(base_url=str(eff_or_base_url or "").strip() or None)
+    else:
+        ok_or, reason_or = False, None
     out["openrouter"] = {
         "enabled": bool(eff_or_enabled),
+        "configured": bool(ai.configured),
+        "probed": bool(probe and ai.configured),
         "ok": bool(ok_or),
         "reason": reason_or,
         "base_url": eff_or_base_url,

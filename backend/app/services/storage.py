@@ -3,7 +3,6 @@ from __future__ import annotations
 import boto3
 import json
 import logging
-import os
 from botocore.client import Config
 from botocore.exceptions import ClientError
 from boto3.s3.transfer import TransferConfig
@@ -16,34 +15,19 @@ log = logging.getLogger(__name__)
 
 
 def _runtime_s3() -> dict[str, str]:
-    """Runtime S3 overrides stored in Redis.
+    """Storage overrides saved by an administrator (database before legacy Redis).
 
-    IMPORTANT: this is used for admin diagnostics and emergency operations.
-    It intentionally does not persist into git/files.
+    Values are stored encrypted next to the other integrations, so they survive
+    Redis restarts. Resolution is cached for a few seconds per process because
+    every S3 call needs it; saving settings invalidates the cache immediately.
     """
     try:
-        env = (getattr(settings, "app_env", "") or "").strip().lower()
-    except Exception:
-        env = ""
-    if env in {"prod", "production"}:
-        allow = str(os.getenv("ALLOW_RUNTIME_S3_OVERRIDES") or "").strip().lower() == "true"
-        if not allow:
-            return {}
-    try:
-        r = get_redis()
-        raw = r.hgetall("runtime:s3") or {}
-    except Exception:
-        raw = {}
+        from app.services.app_settings import storage_overrides
 
-    out: dict[str, str] = {}
-    for k, v in (raw or {}).items():
-        try:
-            kk = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-            vv = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-            out[str(kk)] = str(vv)
-        except Exception:
-            continue
-    return out
+        return storage_overrides()
+    except Exception:
+        log.debug("_runtime_s3: falling back to environment", exc_info=True)
+        return {}
 
 
 def s3_invalidate_common_prefixes(*, prefix: str, delimiter: str = "/") -> None:

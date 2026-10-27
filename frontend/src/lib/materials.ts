@@ -10,7 +10,7 @@ export type Material = {
   order?: number;
 };
 
-export type MaterialKind = "table" | "document" | "text" | "pdf" | "image" | "video" | "audio" | "download";
+type MaterialKind = "table" | "document" | "text" | "pdf" | "image" | "video" | "audio" | "download";
 
 export function fileExtension(name: string): string {
   return name.split(/[\\/]/).pop()?.split(".").slice(1).pop()?.toLowerCase() || "";

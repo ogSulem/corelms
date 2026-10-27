@@ -9,11 +9,11 @@ import { Modal } from "@/components/ui/modal";
 import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { downloadMaterial, formatBytes, uploadMaterial, type Material } from "@/lib/materials";
+import { AssetVersionList, type AssetVersion } from "./asset-version-list";
 import { useLeaveGuard } from "@/lib/hooks/use-leave-guard";
 
 type Entry = { id: string; name: string; kind: "folder" | "file"; path: string; is_archived: boolean; asset: Material | null };
 type Listing = { section: string; path: string; revision: number; entries: Entry[]; total: number; offset: number; next_offset: number | null; legacy_cursor: string | null; notice: string | null; path_archived: boolean };
-type Version = { version: number; filename: string; size_bytes: number | null; created_at: string };
 type Dialog = { kind: "folder" } | { kind: "rename" | "history"; entry: Entry };
 type UploadTask = { name: string; state: "waiting" | "uploading" | "done" | "error" | "stopped"; progress: number; error?: string };
 const btn = "gap-2 rounded-xl text-sm font-medium normal-case tracking-normal";
@@ -34,7 +34,7 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
   const [preview, setPreview] = useState<Material | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [name, setName] = useState("");
-  const [versions, setVersions] = useState<Version[]>([]);
+  const [versions, setVersions] = useState<AssetVersion[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -114,7 +114,7 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
     historyRequest.current?.abort(); const controller = new AbortController(); historyRequest.current = controller;
     setDialog({ kind: "history", entry }); setVersions([]); setHistoryLoading(true); setError(null);
     try {
-      const result = await apiFetch<{ items: Version[] }>(`/sales-files/entries/${entry.id}/versions`, { signal: controller.signal });
+      const result = await apiFetch<{ items: AssetVersion[] }>(`/sales-files/entries/${entry.id}/versions`, { signal: controller.signal });
       if (!controller.signal.aborted) setVersions(result.items);
     } catch (e) { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "Не удалось получить версии"); }
     finally { if (!controller.signal.aborted) setHistoryLoading(false); }
@@ -150,7 +150,21 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
     <p className="flex items-start gap-2 px-1 text-xs leading-6 text-zinc-500"><ShieldCheck size={16} className="mt-1 shrink-0 text-emerald-700" />Файлы хранятся отдельно от Google Sheets. Замена создаёт новую версию, архив скрывает материал без удаления оригиналов. Видео готовится для браузера в фоне.</p>
     <Modal open={!!dialog} title={dialog?.kind === "history" ? "История файла" : dialog?.kind === "rename" ? "Переименовать файл" : "Новая папка"} onClose={closeDialog} disableClose={busy} className="max-w-xl" footer={dialog?.kind === "history" ? <Button variant="outline" className={btn} onClick={closeDialog}>Закрыть</Button> : <div className="flex justify-end gap-2"><Button variant="ghost" className={btn} disabled={busy} onClick={closeDialog}>Отмена</Button><Button className={btn} disabled={busy || !name.trim()} onClick={() => void saveDialog()}>{busy && <Loader2 size={16} className="animate-spin" />}Сохранить</Button></div>}>
       {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
-      {dialog?.kind !== "history" ? <label className="block space-y-2 text-sm font-medium">Название<input autoFocus className={field} value={name} maxLength={400} onChange={e => setName(e.target.value)} disabled={busy} /></label> : <div className="space-y-3"><p className="break-words text-sm font-medium">{dialog.entry.name}</p><p className="text-xs text-zinc-500">Текущая версия: {dialog.entry.asset?.version}. Восстановление не удалит другие версии.</p>{historyLoading ? <p role="status" className="py-5 text-sm text-zinc-500">Загружаем версии…</p> : versions.length ? versions.map(version => <div key={version.version} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 p-4"><div><p className="text-sm font-medium">Версия {version.version}</p><p className="mt-1 text-xs text-zinc-500">{formatBytes(version.size_bytes)} · {new Date(version.created_at).toLocaleString("ru-RU")}</p></div><Button variant="outline" size="sm" className={btn} disabled={busy} onClick={() => { if (window.confirm(`Восстановить версию ${version.version}? Текущая останется в истории.`)) void mutate(`/sales-files/entries/${dialog.entry.id}/restore-version`, "POST", { version: version.version }).then(ok => { if (ok) setDialog(null); }); }}><RotateCcw size={14} />Восстановить</Button></div>) : <p className="py-5 text-sm text-zinc-500">Этот файл ещё не заменяли.</p>}</div>}
+      {dialog?.kind !== "history" ? <label className="block space-y-2 text-sm font-medium">Название<input autoFocus className={field} value={name} maxLength={400} onChange={e => setName(e.target.value)} disabled={busy} /></label> : <div className="space-y-3">
+  <p className="break-words text-sm font-medium">{dialog.entry.name}</p>
+  <AssetVersionList
+    versions={versions}
+    loading={historyLoading}
+    current={<p className="text-xs text-zinc-500">Текущая версия: {dialog.entry.asset?.version}. Восстановление не удалит другие версии.</p>}
+    empty="Этот файл ещё не заменяли."
+    disabled={busy}
+    onRestore={version => {
+      if (window.confirm(`Восстановить версию ${version.version}? Текущая останется в истории.`)) {
+        void mutate(`/sales-files/entries/${dialog.entry!.id}/restore-version`, "POST", { version: version.version }).then(ok => { if (ok) setDialog(null); });
+      }
+    }}
+  />
+</div>}
     </Modal>
   </div>;
 }
