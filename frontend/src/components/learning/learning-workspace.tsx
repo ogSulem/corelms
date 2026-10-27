@@ -115,6 +115,12 @@ export function LearningWorkspace({ moduleId, initialLessonId = "" }: { moduleId
   const finalReady = !!progress && (progress.completed || progress.submodules.every(s => s.requires_quiz ? s.passed : s.read));
   const percent = progress?.completed ? 100 : progress?.total ? Math.round(progress.passed / progress.total * 100) : 0;
   const lessonHref = (id: string) => `/modules/${moduleId}?lesson=${encodeURIComponent(id)}`;
+  // После последнего урока путь ведёт к итоговому тесту, а не обрывается.
+  const nextStep = following
+    ? { href: lessonHref(following.id), title: following.title }
+    : progress?.final_quiz_id && finalReady
+      ? { href: `/quizzes/${progress.final_quiz_id}?module=${moduleId}`, title: progress.final_passed ? "Итоговый тест (пройден)" : "Итоговый тест" }
+      : null;
 
   async function confirmRead() {
     if (!lesson || reading) return;
@@ -173,7 +179,7 @@ export function LearningWorkspace({ moduleId, initialLessonId = "" }: { moduleId
               {lesson && !lesson.is_folder && <section className="rounded-2xl border border-zinc-200 bg-white p-5 sm:p-6">
                 {lessonError && <p role="alert" className="mb-4 text-sm text-rose-700">{lessonError}</p>}
                 <div className="flex flex-wrap items-center justify-between gap-4"><div><h3 className="text-sm font-semibold">{currentStatus?.read ? "Прочтение сохранено" : "Готовы двигаться дальше?"}</h3><p className="mt-1 text-xs leading-relaxed text-zinc-500">{lesson.requires_quiz ? "Подтвердите изучение материала, затем пройдите тест." : "Подтвердите изучение, чтобы сохранить результат урока."}</p></div><div className="flex flex-wrap items-center gap-2"><Button variant={currentStatus?.read ? "outline" : "primary"} className={actionClass} disabled={reading || currentStatus?.read} onClick={() => void confirmRead()}>{reading ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}{currentStatus?.read ? "Материал изучен" : "Я изучил материал"}</Button>{lesson.requires_quiz && <Button disabled={!currentStatus?.read} className={actionClass} onClick={() => router.push(`/quizzes/${lesson.quiz_id}?module=${moduleId}&submodule=${lesson.id}`)}>{currentStatus?.passed ? "Результат теста" : "Перейти к тесту"}<ArrowRight size={16} /></Button>}</div></div>
-                {following && <div className="mt-5 border-t border-zinc-100 pt-4"><Link href={lessonHref(following.id)} className="flex items-center justify-between gap-3 text-sm text-zinc-600 hover:text-zinc-900"><span><span className="mb-1 block text-[11px] text-zinc-400">Далее</span>{following.title}</span><ArrowRight size={18} className="shrink-0" /></Link></div>}
+                {nextStep && <div className="mt-5 border-t border-zinc-100 pt-4"><Link href={nextStep.href} className="flex items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-sm text-zinc-600 hover:bg-zinc-50 hover:text-zinc-900"><span className="min-w-0"><span className="mb-1 block text-[11px] text-zinc-400">Далее</span><span className="block truncate">{nextStep.title}</span></span><ArrowRight size={18} className="shrink-0" /></Link></div>}
               </section>}
             </>}
           </section>
