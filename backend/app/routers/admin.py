@@ -24,6 +24,7 @@ from sqlalchemy import case, delete, func, select, text
 from sqlalchemy.orm import Session
 
 from app.core.queue import get_job_status, normalize_job_status, release_job_lock
+from app.services import error_log
 from app.services.content import require_unused_temporary_object
 from app.services.quiz_versions import version_quiz_for_edit, question_id_map
 from app.services.learning import remember_quiz_version
@@ -527,6 +528,23 @@ def _looks_like_uuid(s: str) -> bool:
     if not s:
         return False
     return bool(re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", s, re.IGNORECASE))
+
+
+@router.get("/diagnostics/errors")
+def diagnostics_errors(
+    _: User = Depends(require_roles(UserRole.admin)),
+    limit: int = Query(default=50),
+    request_id: str | None = Query(default=None),
+):
+    """Последние серверные ошибки с traceback — без SSH и без docker logs."""
+    items, path = error_log.read_recent(limit=limit, rid=request_id)
+    return {
+        "ok": True,
+        "items": items,
+        "count": len(items),
+        "log_file": str(path) if path else None,
+        "hint": None if items else "Серверных ошибок не зафиксировано с момента запуска журнала.",
+    }
 
 
 @router.get("/system/status")

@@ -67,6 +67,20 @@ type PlatformSettings = {
   limits: { min_upload_bytes: number; max_upload_bytes: number };
 };
 
+type ServerError = {
+  ts: string;
+  rid: string;
+  method: string;
+  path: string;
+  status: number;
+  user_id: string | null;
+  duration_ms: number | null;
+  error?: string;
+  traceback?: string;
+};
+
+type ServerErrors = { items: ServerError[]; count: number; log_file: string | null; hint: string | null };
+
 type Overview = {
   app_env: string;
   public_app_url: string;
@@ -107,6 +121,8 @@ export default function AdminSettingsPage() {
   const [aiDraft, setAiDraft] = useState({ enabled: true, api_key: "", clear_api_key: false, model: "", base_url: "", http_referer: "", app_title: "" });
   const [sales, setSales] = useState<SalesSettings | null>(null);
   const [salesDraft, setSalesDraft] = useState({ spreadsheet_id: "", service_account_json: "", api_key: "", clear_service_account: false, clear_api_key: false });
+  const [serverErrors, setServerErrors] = useState<ServerErrors | null>(null);
+  const [loadingErrors, setLoadingErrors] = useState(false);
   const [storageSettings, setStorageSettings] = useState<StorageSettings | null>(null);
   const [storageDraft, setStorageDraft] = useState({ s3_endpoint_url: "", s3_public_endpoint_url: "", s3_bucket: "", s3_region_name: "", s3_addressing_style: "", s3_access_key_id: "", s3_secret_access_key: "" });
   const [savingStorage, setSavingStorage] = useState(false);
@@ -193,6 +209,21 @@ export default function AdminSettingsPage() {
   useEffect(() => {
     if (!loading && isAdmin) void load();
   }, [isAdmin, load, loading]);
+
+  const loadErrors = useCallback(async () => {
+    setLoadingErrors(true);
+    try {
+      setServerErrors(await apiFetch<ServerErrors>("/admin/diagnostics/errors?limit=20"));
+    } catch (errorsError) {
+      setServerErrors({ items: [], count: 0, log_file: null, hint: errorText(errorsError, "Не удалось прочитать журнал ошибок") });
+    } finally {
+      setLoadingErrors(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!loading && isAdmin) void loadErrors();
+  }, [isAdmin, loadErrors, loading]);
 
   const checkHealth = useCallback(async () => {
     if (checkingHealth) return;
@@ -511,6 +542,7 @@ export default function AdminSettingsPage() {
             { href: "#storage", label: "Хранилище файлов" },
             { href: "#platform", label: "Платформа" },
             { href: "#system", label: "Сервер и схема" },
+            { href: "#errors", label: "Ошибки сервера" },
           ].map((item) => (
             <a key={item.href} href={item.href} className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-zinc-600 transition hover:border-zinc-300 hover:text-zinc-900">
               {item.label}
@@ -872,6 +904,56 @@ export default function AdminSettingsPage() {
                   Проверяются база данных, Redis и хранилище S3. Обновление схемы: <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs">alembic upgrade head</code>.
                 </p>
               </div>
+            </section>
+
+            <section id="errors" className={`${card} scroll-mt-24`} aria-labelledby="errors-title">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <span className="mt-0.5 rounded-xl bg-rose-50 p-2 text-rose-700"><AlertTriangle size={18} /></span>
+                  <div>
+                    <h2 id="errors-title" className="text-lg font-semibold text-zinc-950">Ошибки сервера</h2>
+                    <p className="mt-1 text-sm leading-6 text-zinc-600">
+                      Последние ответы 5xx с местом падения. Код из сообщения «Код для поддержки» совпадает с полем{" "}
+                      <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs">Код</code> ниже — по нему видно, что именно сломалось.
+                    </p>
+                  </div>
+                </div>
+                <Button variant="outline" className={btn} disabled={loadingErrors} onClick={() => void loadErrors()}>
+                  {loadingErrors ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}Обновить
+                </Button>
+              </div>
+
+              {!serverErrors || serverErrors.items.length === 0 ? (
+                <p role="status" className="mt-4 flex items-center gap-2 rounded-xl border border-zinc-200 px-4 py-3 text-sm text-zinc-600">
+                  <CheckCircle2 size={16} className="text-emerald-600" />
+                  {loadingErrors ? "Читаем журнал…" : serverErrors?.hint || "Серверных ошибок не зафиксировано."}
+                </p>
+              ) : (
+                <ul className="mt-4 space-y-3">
+                  {serverErrors.items.map((item) => (
+                    <li key={`${item.rid}-${item.ts}`} className="rounded-xl border border-zinc-200 px-4 py-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-zinc-900">
+                          <span className="rounded bg-rose-50 px-1.5 py-0.5 font-mono text-xs text-rose-700">{item.status}</span>{" "}
+                          <span className="font-mono text-xs text-zinc-700">{item.method} {item.path}</span>
+                        </p>
+                        <span className="text-xs text-zinc-500">{new Date(item.ts).toLocaleString("ru-RU")}</span>
+                      </div>
+                      <p className="mt-2 break-all font-mono text-xs text-zinc-500">Код: {item.rid}</p>
+                      {item.error ? <p className="mt-1 break-words text-sm text-rose-800">{item.error}</p> : null}
+                      {item.traceback ? (
+                        <details className="mt-2">
+                          <summary className="cursor-pointer text-xs font-medium text-zinc-600">Где именно упало</summary>
+                          <pre className="mt-2 max-h-72 overflow-auto rounded-lg bg-zinc-950 p-3 text-[11px] leading-5 text-zinc-100">{item.traceback}</pre>
+                        </details>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {serverErrors?.log_file ? (
+                <p className="mt-3 break-all text-xs text-zinc-400">Журнал: {serverErrors.log_file}</p>
+              ) : null}
             </section>
           </div>
         )}
