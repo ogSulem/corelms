@@ -220,7 +220,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           </div>
         </div>
       ) : null}
-      <Modal open={quickStartOpen} title="Как начать обучение" onClose={closeQuickStart} className="max-w-3xl" footer={<div className="flex flex-wrap justify-end gap-3"><Button variant="outline" asChild><Link href="/faq" onClick={closeQuickStart}>Открыть справку</Link></Button><Button onClick={closeQuickStart}>Понятно</Button></div>}>
+      <Modal open={quickStartOpen} title="Как начать обучение" onClose={closeQuickStart} className="max-w-3xl" footer={<div className="flex flex-wrap justify-end gap-3"><Button onClick={closeQuickStart}>Понятно</Button></div>}>
         {quickStartVideoUrl && !quickStartVideoFailed && <div className="mb-6 overflow-hidden rounded-xl bg-zinc-950">{isYouTube ? <iframe className="block aspect-video w-full" src={quickStartVideoUrl} title="Видео: быстрый старт" allow="encrypted-media; picture-in-picture" allowFullScreen loading="lazy" referrerPolicy="strict-origin-when-cross-origin" /> : <video className="block aspect-video w-full" src={quickStartVideoUrl} controls preload="metadata" playsInline onError={() => setQuickStartVideoFailed(true)} />}</div>}
         {quickStartVideoFailed && <p role="status" className="mb-5 text-sm leading-6 text-zinc-600">Видео сейчас недоступно. Начать обучение можно по инструкции ниже.</p>}
         <p className="mb-5 text-sm leading-7 text-zinc-600">Все материалы и результаты собраны в одном месте. Начните с доступного модуля — система подскажет следующий шаг.</p>

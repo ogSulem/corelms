@@ -2,15 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, BookOpen, FilePlus2, LineChart, SlidersHorizontal, Users } from "lucide-react";
+import { BookOpen, LineChart, SlidersHorizontal, Users } from "lucide-react";
 
+// Импорт живёт внутри раздела «Модули» (кнопка «Импорт нового ZIP»),
+// а состояние сервера и схемы — в «Настройках»: отдельные пункты меню не нужны.
 const items = [
   { href: "/admin/modules", title: "Модули", icon: BookOpen },
-  { href: "/admin/import", title: "Импорт и задачи", icon: FilePlus2 },
-  { href: "/admin/analytics", title: "Результаты", icon: LineChart },
   { href: "/admin/users", title: "Пользователи", icon: Users },
+  { href: "/admin/analytics", title: "Результаты", icon: LineChart },
   { href: "/admin/settings", title: "Настройки", icon: SlidersHorizontal },
-  { href: "/admin/diagnostics", title: "Диагностика", icon: Activity },
 ];
 
 export function AdminNav() {
@@ -18,7 +18,9 @@ export function AdminNav() {
   return (
     <nav aria-label="Разделы администрирования" className="mb-8 flex flex-wrap gap-2">
       {items.map(({ href, title, icon: Icon }) => {
-        const active = href === "/admin/modules" ? pathname.startsWith("/admin/modules") : pathname === href || pathname.startsWith(`${href}/`);
+        const active = href === "/admin/modules"
+          ? pathname.startsWith("/admin/modules") || pathname.startsWith("/admin/import")
+          : pathname === href || pathname.startsWith(`${href}/`);
         return (
           <Link
             key={href}

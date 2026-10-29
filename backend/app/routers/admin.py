@@ -7,7 +7,7 @@ import asyncio
 import threading
 import os
 import socket
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import hashlib
 import secrets
 import string
@@ -4951,6 +4951,7 @@ def list_admin_users(
             {
                 "id": str(u.id),
                 "name": u.name,
+                "email": u.email,
                 "role": u.role.value,
                 "position": u.position,
                 "xp": int(u.xp or 0),
@@ -5806,6 +5807,147 @@ def reset_user_password(
     db.commit()
 
     return {"ok": True, "temp_password": temp_password}
+
+
+@router.get("/analytics/overview")
+def analytics_overview(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    """Одна сводка для экрана «Результаты»: обучение по модулям и по людям.
+
+    Считается по тем же правилам, что и прогресс ученика (LearningService),
+    поэтому цифры в админке и в кабинете не могут разойтись.
+    """
+    users = list(db.scalars(select(User).order_by(User.name)))
+    modules = list(db.scalars(select(Module).order_by(Module.title)))
+    matrix = LearningService(db).get_progress_matrix(users, modules)
+
+    lesson_counts = {mid: int(count) for mid, count in db.execute(
+        select(Submodule.module_id, func.count(Submodule.id))
+        .where(Submodule.is_archived.is_(False), Submodule.is_folder.is_(False))
+        .group_by(Submodule.module_id)
+    ).all()}
+
+    # Попытки тестов: привязываем квиз к модулю через урок или финальный тест.
+    quiz_to_module: dict[uuid.UUID, uuid.UUID] = {}
+    for sub_id, module_id, quiz_id in db.execute(
+        select(Submodule.id, Submodule.module_id, Submodule.quiz_id).where(Submodule.quiz_id.is_not(None))
+    ).all():
+        quiz_to_module[quiz_id] = module_id
+    for module_id, final_quiz_id in db.execute(
+        select(Module.id, Module.final_quiz_id).where(Module.final_quiz_id.is_not(None))
+    ).all():
+        quiz_to_module.setdefault(final_quiz_id, module_id)
+
+    attempts_by_module: dict[uuid.UUID, dict[str, float]] = defaultdict(lambda: {"count": 0, "passed": 0, "score_sum": 0.0})
+    attempts_by_user: dict[uuid.UUID, dict[str, float]] = defaultdict(lambda: {"count": 0, "passed": 0, "score_sum": 0.0})
+    for user_id, quiz_id, score, passed in db.execute(
+        select(QuizAttempt.user_id, QuizAttempt.quiz_id, QuizAttempt.score, QuizAttempt.passed)
+        .where(QuizAttempt.finished_at.is_not(None))
+    ).all():
+        score_value = float(score or 0)
+        for bucket, key in ((attempts_by_user, user_id), (attempts_by_module, quiz_to_module.get(quiz_id))):
+            if key is None:
+                continue
+            row = bucket[key]
+            row["count"] += 1
+            row["passed"] += int(bool(passed))
+            row["score_sum"] += score_value
+
+    def _rate(passed: float, count: float) -> int:
+        return round(passed / count * 100) if count else 0
+
+    def _avg(score_sum: float, count: float) -> int:
+        return round(score_sum / count) if count else 0
+
+    now = datetime.now(timezone.utc)
+    week_ago = now - timedelta(days=7)
+    month_ago = now - timedelta(days=30)
+
+    module_rows: dict[uuid.UUID, dict] = {
+        m.id: {
+            "id": str(m.id), "title": m.title, "is_active": bool(m.is_active),
+            "is_archived": bool(m.is_archived), "lesson_count": lesson_counts.get(m.id, 0),
+            "started": 0, "completed": 0, "in_progress": 0, "percent_sum": 0,
+            "attempts": int(attempts_by_module[m.id]["count"]),
+            "pass_rate": _rate(attempts_by_module[m.id]["passed"], attempts_by_module[m.id]["count"]),
+            "avg_score": _avg(attempts_by_module[m.id]["score_sum"], attempts_by_module[m.id]["count"]),
+        }
+        for m in modules
+    }
+    user_rows: dict[uuid.UUID, dict] = {}
+    for u in users:
+        row = {
+            "id": str(u.id), "name": u.name, "email": u.email,
+            "role": u.role.value, "position": u.position,
+            "completed": 0, "in_progress": 0, "started": 0, "percent_sum": 0,
+            "attempts": int(attempts_by_user[u.id]["count"]),
+            "avg_score": _avg(attempts_by_user[u.id]["score_sum"], attempts_by_user[u.id]["count"]),
+            "pass_rate": _rate(attempts_by_user[u.id]["passed"], attempts_by_user[u.id]["count"]),
+            "last_activity_at": u.last_activity_at.isoformat() if u.last_activity_at else None,
+        }
+        user_rows[u.id] = row
+
+    for u in users:
+        for m in modules:
+            p = matrix.get((u.id, m.id)) or {}
+            total = int(p.get("total") or 0)
+            passed = int(p.get("passed") or 0)
+            read = int(p.get("read_count") or 0)
+            completed = bool(p.get("completed"))
+            started = completed or passed > 0 or read > 0
+            percent = 100 if completed else (round(passed / total * 100) if total else 0)
+            if started:
+                module_rows[m.id]["started"] += 1
+                module_rows[m.id]["percent_sum"] += percent
+                user_rows[u.id]["started"] += 1
+                user_rows[u.id]["percent_sum"] += percent
+            if completed:
+                module_rows[m.id]["completed"] += 1
+                user_rows[u.id]["completed"] += 1
+            elif started:
+                module_rows[m.id]["in_progress"] += 1
+                user_rows[u.id]["in_progress"] += 1
+
+    def _finish(rows: list[dict]) -> list[dict]:
+        for row in rows:
+            row["avg_percent"] = round(row.pop("percent_sum") / row["started"]) if row["started"] else 0
+        return rows
+
+    events_total = int(db.scalar(select(func.count()).select_from(LearningEvent)) or 0)
+    events_30d = int(db.scalar(
+        select(func.count()).select_from(LearningEvent).where(LearningEvent.created_at >= month_ago)
+    ) or 0)
+    active_7d = sum(
+        1 for u in users
+        if u.last_activity_at is not None and u.last_activity_at >= week_ago
+    )
+
+    return {
+        "generated_at": now.isoformat(),
+        "totals": {
+            "users": len(users),
+            "employees": sum(1 for u in users if u.role == UserRole.employee),
+            "admins": sum(1 for u in users if u.role in {UserRole.admin, UserRole.superadmin}),
+            "active_7d": active_7d,
+            "modules": len(modules),
+            "published": sum(1 for m in modules if m.is_active and not m.is_archived),
+            "drafts": sum(1 for m in modules if not m.is_active and not m.is_archived),
+            "archived": sum(1 for m in modules if m.is_archived),
+            "lessons": sum(lesson_counts.values()),
+            "completions": sum(row["completed"] for row in module_rows.values()),
+            "attempts": sum(int(row["count"]) for row in attempts_by_user.values()),
+            "pass_rate": _rate(
+                sum(row["passed"] for row in attempts_by_user.values()),
+                sum(row["count"] for row in attempts_by_user.values()),
+            ),
+            "events_total": events_total,
+            "events_30d": events_30d,
+        },
+        "modules": _finish(list(module_rows.values())),
+        "users": _finish(list(user_rows.values())),
+    }
 
 
 @router.get("/analytics/modules/{module_id}", response_model=ModuleAnalyticsResponse)
