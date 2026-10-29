@@ -151,6 +151,51 @@ def test_ai_connection_test_does_not_expose_the_token(client, admin_headers, mon
     assert calls[0][0].endswith("/key") and calls[1][0].endswith("/models")
 
 
+
+def test_ai_model_catalogue_lists_free_models_first_and_hides_the_token(client, admin_headers, monkeypatch):
+    from app.services import openrouter_health
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"data": [
+                {"id": "openai/gpt-4o-mini", "name": "GPT-4o mini", "context_length": 128000,
+                 "pricing": {"prompt": "0.00000015", "completion": "0.0000006"}},
+                {"id": "meta-llama/free-one", "name": "Free one", "context_length": 8192,
+                 "pricing": {"prompt": "0", "completion": "0"}},
+            ]}
+
+    monkeypatch.setattr(openrouter_health.httpx, "get", lambda url, headers=None, timeout=None: Response())
+    result = client.post("/admin/settings/ai/models", headers=admin_headers,
+                         json={"api_key": TOKEN, "base_url": "https://openrouter.ai/api/v1"})
+    assert result.status_code == 200, result.text
+    body = result.json()
+    assert body["ok"] is True and body["count"] == 2 and body["free_count"] == 1
+    assert [row["id"] for row in body["models"]] == ["meta-llama/free-one", "openai/gpt-4o-mini"]
+    assert body["models"][0]["free"] is True and body["models"][1]["context"] == 128000
+    assert TOKEN not in result.text
+
+
+def test_ai_model_catalogue_is_admin_only_and_reports_a_rejected_key(client, make_user, monkeypatch):
+    from app.services import openrouter_health
+
+    employee = make_user(UserRole.employee)[1]
+    assert client.post("/admin/settings/ai/models", headers=employee, json={}).status_code == 403
+
+    class Response:
+        status_code = 401
+
+        def json(self):
+            return {"error": "no"}
+
+    monkeypatch.setattr(openrouter_health.httpx, "get", lambda url, headers=None, timeout=None: Response())
+    result = client.post("/admin/settings/ai/models", headers=make_user(UserRole.admin)[1],
+                         json={"api_key": TOKEN, "base_url": "https://openrouter.ai/api/v1"})
+    assert result.status_code == 200, result.text
+    assert result.json()["ok"] is False and result.json()["reason"] == "http_401"
+
+
 def test_sales_settings_are_superadmin_only_and_store_the_key_encrypted(client, db, make_user):
     admin = make_user(UserRole.admin)[1]
     superadmin = make_user(UserRole.superadmin)[1]

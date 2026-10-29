@@ -112,6 +112,92 @@ def probe_ai_connection(*, api_key: str, base_url: str, model: str | None = None
                              message="Сервер AI недоступен. Проверьте адрес API и сеть.")
 
 
+@dataclass(frozen=True)
+class AIModelsResult:
+    """Catalogue of models a gateway actually offers to this token."""
+
+    ok: bool
+    reason: str | None = None
+    http_status: int | None = None
+    models: list[dict] | None = None
+    message: str | None = None
+
+    def as_dict(self) -> dict:
+        rows = self.models or []
+        return {
+            "ok": self.ok,
+            "reason": self.reason,
+            "http_status": self.http_status,
+            "count": len(rows),
+            "free_count": sum(1 for row in rows if row.get("free")),
+            "models": rows,
+            "message": self.message,
+        }
+
+
+def _price_is_zero(value: object) -> bool:
+    try:
+        return float(str(value).strip() or "0") == 0.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _model_catalogue(base: str, token: str) -> tuple[int, list[dict]]:
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    response = httpx.get(base + "/models", headers=headers, timeout=MODELS_TIMEOUT)
+    rows: list[dict] = []
+    try:
+        payload = response.json()
+        items = payload.get("data") if isinstance(payload, dict) else payload
+    except ValueError:
+        return int(response.status_code), []
+    for item in items or []:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        pricing = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+        free = bool(pricing) and _price_is_zero(pricing.get("prompt")) and _price_is_zero(pricing.get("completion"))
+        rows.append({
+            "id": str(item["id"]),
+            "name": str(item.get("name") or item["id"]),
+            "free": free,
+            "context": int(item.get("context_length") or 0),
+        })
+    # Free models first, then alphabetical: an operator with a small budget can pick in one screen.
+    rows.sort(key=lambda row: (not row["free"], row["id"]))
+    return int(response.status_code), rows
+
+
+def list_ai_models(*, api_key: str, base_url: str) -> AIModelsResult:
+    """Return the models the gateway offers, so the UI can pick a working one.
+
+    OpenRouter publishes ``/models`` without a token; other OpenAI-compatible
+    gateways may require it. A missing token is not an error here — the request
+    simply goes out unauthenticated and the gateway decides.
+    """
+    token = str(api_key or "").strip()
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return AIModelsResult(False, "missing_base_url", message="Укажите адрес API")
+    try:
+        status, rows = _model_catalogue(base, token)
+    except Exception as exc:  # network/DNS/TLS/timeouts
+        return AIModelsResult(False, f"unreachable:{type(exc).__name__}",
+                              message="Сервер AI недоступен. Проверьте адрес API и сеть.")
+    if status in {401, 403}:
+        return AIModelsResult(False, f"http_{status}", http_status=status,
+                              message="Токен отклонён сервером — список моделей недоступен. Проверьте ключ.")
+    if status >= 400:
+        return AIModelsResult(False, f"http_{status}", http_status=status,
+                              message=f"Сервер ответил HTTP {status}. Проверьте адрес API.")
+    if not rows:
+        return AIModelsResult(False, "empty_catalogue", http_status=status,
+                              message="Сервер не вернул список моделей. Имя модели можно ввести вручную.")
+    free = sum(1 for row in rows if row["free"])
+    message = f"Доступно моделей: {len(rows)}"
+    message += f", из них бесплатных: {free}." if free else "."
+    return AIModelsResult(True, None, http_status=status, models=rows, message=message)
+
+
 def openrouter_healthcheck(*, base_url: str | None = None) -> tuple[bool, str | None]:
     cfg = get_ai_settings()
     if not cfg.enabled:

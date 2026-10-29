@@ -27,7 +27,7 @@ from app.services.app_settings import (ai_settings_payload, get_ai_settings, get
     save_platform_settings, save_sales_settings, save_storage_settings, sales_settings_payload,
     SettingsValidationError, storage_settings_payload)
 from app.services.google_sheets import list_sheet_titles
-from app.services.openrouter_health import probe_ai_connection
+from app.services.openrouter_health import list_ai_models, probe_ai_connection
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +82,11 @@ class AITestRequest(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     model: str | None = None
+
+
+class AIModelsRequest(BaseModel):
+    api_key: str | None = None
+    base_url: str | None = None
 
 
 class SalesSettingsSave(BaseModel):
@@ -153,6 +158,29 @@ def clear_ai_settings(
     audit_log(db=db, request=request, actor_user_id=user.id, event_type="admin_ai_settings_reset", meta={})
     db.commit()
     return _ok({"settings": ai_settings_payload(get_ai_settings(db))})
+
+
+@router.post("/ai/models")
+def list_ai_settings_models(
+    body: AIModelsRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+    __: object = rate_limit(key_prefix="admin_ai_models", limit=20, window_seconds=60),
+):
+    """Catalogue of models the configured gateway really offers.
+
+    The saved token is used when the field is empty, so the operator can pick a
+    working model before saving anything. A rejected token is reported instead of
+    being echoed back.
+    """
+    saved = get_ai_settings(db)
+    token = str(body.api_key or "").strip() or saved.api_key
+    base_url = str(body.base_url or "").strip() or saved.base_url
+    if not base_url:
+        raise HTTPException(422, "Укажите адрес API (например, https://openrouter.ai/api/v1)")
+    result = list_ai_models(api_key=token, base_url=base_url)
+    return {**result.as_dict(), "using_saved_token": not bool(str(body.api_key or "").strip()),
+            "base_url": base_url}
 
 
 @router.post("/ai/test")
