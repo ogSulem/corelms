@@ -115,6 +115,38 @@ from app.services.app_settings import get_ai_settings, get_storage_settings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+
+def _storage_problem(timeout: float = 10.0) -> str | None:
+    """Проверить хранилище, не подвешивая запрос при недоступном S3.
+
+    Диагностические экраны администратора должны показывать причину, а не 500,
+    и не должны висеть, если S3 не отвечает (DNS/сеть).
+    """
+    result: dict[str, str | None] = {"error": None}
+
+    def probe() -> None:
+        try:
+            ensure_bucket_exists()
+        except Exception as exc:  # noqa: BLE001 - текст нужен администратору
+            result["error"] = f"{type(exc).__name__}: {exc}"[:300]
+
+    worker = threading.Thread(target=probe, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        return "хранилище не ответило за 10 секунд"
+    return result["error"]
+
+
+def _degraded_storage_payload(problem: str, **extra: object) -> dict[str, object]:
+    return {
+        "ok": True,
+        "degraded": True,
+        "storage_error": problem,
+        "warning": "Хранилище недоступно: показан только срез из базы данных.",
+        **extra,
+    }
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -772,7 +804,9 @@ def maintenance_modules_storage_scan(
     take = max(1, min(int(limit or 80), 400))
     sk = max(1, min(int(sample_keys or 40), 200))
 
-    ensure_bucket_exists()
+    problem = _storage_problem()
+    if problem:
+        return _degraded_storage_payload(problem, items=[], limit=int(take), sample_keys=int(sk))
     s3 = get_s3_client()
 
     mods = db.scalars(select(Module).order_by(Module.title).limit(take)).all()
@@ -896,7 +930,9 @@ def maintenance_storage_module_prefixes(
     if not pfx.endswith("/"):
         pfx += "/"
 
-    ensure_bucket_exists()
+    problem = _storage_problem()
+    if problem:
+        return _degraded_storage_payload(problem, prefix=pfx, items=[], truncated=False)
     s3 = get_s3_client()
 
     resp = s3.list_objects_v2(Bucket=settings.s3_bucket, Prefix=pfx, Delimiter="/", MaxKeys=1000)
@@ -931,7 +967,9 @@ def maintenance_storage_orphan_module_prefixes(
             pfx += "/"
         known.add(pfx)
 
-    ensure_bucket_exists()
+    problem = _storage_problem()
+    if problem:
+        return _degraded_storage_payload(problem, items=[], truncated=False)
     s3 = get_s3_client()
     resp = s3.list_objects_v2(Bucket=settings.s3_bucket, Prefix="modules/", Delimiter="/", MaxKeys=1000)
     cps = resp.get("CommonPrefixes") or []

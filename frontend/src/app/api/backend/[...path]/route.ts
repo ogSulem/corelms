@@ -101,8 +101,22 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (init as any).signal = ac.signal;
     res = await fetch(url, init);
-  } catch {
-    return new NextResponse("upstream unavailable", { status: 502 });
+  } catch (err) {
+    // Backend недоступен (рестарт, OOM, сеть). Отдаём понятный JSON-контракт,
+    // чтобы интерфейс показал причину, а не общее «неизвестно что».
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`[corelms] proxy upstream failure ${req.method} ${url}: ${reason}`);
+    const timedOut = ac.signal.aborted;
+    return NextResponse.json(
+      {
+        ok: false,
+        error_code: timedOut ? "upstream_timeout" : "upstream_unavailable",
+        error_message: timedOut
+          ? "Сервер не ответил вовремя. Обновите страницу и повторите действие."
+          : "Сервер перезапускается или недоступен. Повторите попытку через минуту.",
+      },
+      { status: timedOut ? 504 : 502 },
+    );
   } finally {
     if (t) clearTimeout(t);
   }

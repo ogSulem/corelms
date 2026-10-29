@@ -131,9 +131,23 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
 
     const rawLower = raw.toLowerCase();
     if (res.status >= 500) {
+      // Всегда оставляем след в консоли: по этому пути и request_id администратор
+      // находит точную причину в логах backend (docker compose logs backend).
+      if (typeof console !== "undefined") {
+        console.error(
+          `[corelms] ${res.status} ${res.statusText || ""} ${clean}` +
+            `${requestId ? ` request_id=${requestId}` : ""}` +
+            `${raw ? ` body=${raw.slice(0, 300)}` : ""}`,
+        );
+      }
       const friendly = "Ошибка сервера. Повторите попытку позже.";
-      const isGeneric = !raw || rawLower === "internal server error" || rawLower.includes("internal server error");
-      throw new CoreApiError(isGeneric ? friendly : raw, {
+      const isGeneric =
+        !raw ||
+        rawLower === "internal server error" ||
+        rawLower.includes("internal server error") ||
+        rawLower === "upstream unavailable";
+      const suffix = requestId ? ` Код для поддержки: ${requestId}.` : "";
+      throw new CoreApiError(isGeneric ? `${friendly}${suffix}` : raw, {
         status: res.status,
         errorCode: errorCode || undefined,
         requestId: requestId || undefined,
