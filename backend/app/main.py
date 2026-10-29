@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.core.client_ip import client_ip_from_request
 from app.core.redis_client import get_redis
 from app.core.queue import get_queue
+from app.services import error_log
 from app.services.storage_cleanup_jobs import cleanup_admin_multipart_uploads_job, cleanup_admin_uploads_job
 from app.routers import admin, content, assets, auth, events, health, linear, me, modules, progress, quickstart, quizzes, sales_files, sales_links, settings as settings_router, submodules
 from app.db.session import SessionLocal
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
         rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
         request.state.request_id = rid
         status_code: int | None = None
+        crashed = False
         try:
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 origin = (request.headers.get("origin") or "").strip()
@@ -89,11 +91,25 @@ def create_app() -> FastAPI:
             status_code = int(getattr(response, "status_code", 0) or 0)
         except Exception:
             status_code = 500
+            crashed = True
             raise
         finally:
             try:
                 dur_ms = int((time.perf_counter() - t0) * 1000)
                 path = getattr(getattr(request, "url", None), "path", "")
+                # Серверные ошибки складываем в журнал, который виден администратору
+                # в настройках: 500 в браузере бесполезен без места падения.
+                # Падения записывает обработчик исключений (там есть traceback),
+                # здесь — только ответы 5xx без исключения.
+                if int(status_code or 0) >= 500 and not crashed and not error_log.has_recorded(rid):
+                    error_log.record(
+                        rid=rid,
+                        method=request.method,
+                        path=path,
+                        status=int(status_code or 500),
+                        user_id=getattr(getattr(request, "state", None), "user_id", None),
+                        duration_ms=dur_ms,
+                    )
                 if not (
                     path.startswith("/health")
                     or path == "/healthz"
@@ -165,7 +181,20 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         rid = _request_id(request)
-        logger.exception("unhandled exception", extra={"rid": rid})
+        # rid прямо в тексте строки: формат лога его не включает, а искать
+        # причину приходится именно по коду из интерфейса.
+        logger.exception("unhandled exception rid=%s path=%s", rid, getattr(getattr(request, "url", None), "path", ""))
+        try:
+            error_log.record(
+                rid=rid,
+                method=request.method,
+                path=str(getattr(getattr(request, "url", None), "path", "")),
+                status=500,
+                user_id=getattr(getattr(request, "state", None), "user_id", None),
+                exc=exc,
+            )
+        except Exception:
+            logger.debug("error log record failed", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={

@@ -289,6 +289,32 @@ def infrastructure_report() -> tuple[list[str], list[str]]:
     return lines, problems
 
 
+def error_report(limit: int = 5) -> tuple[list[str], list[str]]:
+    """Последние серверные ошибки из журнала, который виден в настройках."""
+    from app.services import error_log
+
+    items, path = error_log.read_recent(limit=limit)
+    lines = ["", "ЖУРНАЛ ОШИБОК (последние)"]
+    if not items:
+        lines.append("  пусто — с момента запуска 5xx не было")
+        return lines, []
+
+    lines.append(f"  файл: {path}")
+    problems: list[str] = []
+    for item in items:
+        lines.append(
+            f"  {item.get('ts', '')}  {item.get('status')}  {item.get('method')} {item.get('path')}  "
+            f"код={item.get('rid')}"
+        )
+        if item.get("error"):
+            lines.append(f"      {item['error']}")
+        tb = str(item.get("traceback") or "").strip().splitlines()
+        if tb:
+            lines.append(f"      {tb[-1].strip()}")
+        problems.append(f"Серверная ошибка {item.get('rid')}: {item.get('method')} {item.get('path')} → {item.get('status')}")
+    return lines, problems
+
+
 def _sample_ids(db) -> dict[str, str]:
     from sqlalchemy import select
 
@@ -430,6 +456,7 @@ def main(client=None) -> int:
         env_lines, env_problems = environment_report(db)
         infra_lines, infra_problems = infrastructure_report()
         sys_lines, sys_problems = system_report()
+        err_lines, err_problems = error_report()
         token, admin_id, admin_sid = _admin_token(db)
 
         if client is None:
@@ -444,9 +471,10 @@ def main(client=None) -> int:
         print("\n".join(env_lines))
         print("\n".join(sys_lines))
         print("\n".join(infra_lines))
+        print("\n".join(err_lines))
         print("\n".join(ep_lines))
 
-        problems = env_problems + sys_problems + infra_problems
+        problems = env_problems + sys_problems + infra_problems + err_problems
         print()
         if problems:
             print("НАЙДЕННЫЕ ПРОБЛЕМЫ НАСТРОЙКИ:")
