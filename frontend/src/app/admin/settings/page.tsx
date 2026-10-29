@@ -83,7 +83,10 @@ const field = "w-full rounded-xl border border-zinc-200 bg-white px-3 py-2.5 tex
 const card = "rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm shadow-zinc-950/5 sm:p-6";
 const btn = "h-10";
 
-const MODELS = ["openai/gpt-4o-mini", "openai/gpt-4.1-mini", "anthropic/claude-3.5-sonnet", "google/gemini-2.0-flash-001"];
+// Shown until the live catalogue arrives; the server list is authoritative.
+const FALLBACK_MODELS = ["openai/gpt-4o-mini", "openai/gpt-4.1-mini", "google/gemini-2.0-flash-001"];
+
+type AIModelRow = { id: string; name: string; free: boolean; context: number };
 
 const sourceLabel = (source?: string) =>
   source === "database" ? "сохранено в LMS" : source === "runtime" ? "старое серверное переопределение" : source === "environment" ? "переменная окружения" : source === "unreadable" ? "не читается" : "не задано";
@@ -119,6 +122,8 @@ export default function AdminSettingsPage() {
   const [savingAI, setSavingAI] = useState(false);
   const [testingAI, setTestingAI] = useState(false);
   const [aiTest, setAiTest] = useState<{ ok: boolean; message: string } | null>(null);
+  const [aiModels, setAiModels] = useState<AIModelRow[] | null>(null);
+  const [loadingModels, setLoadingModels] = useState(false);
   const [savingSales, setSavingSales] = useState(false);
   const [testingSales, setTestingSales] = useState(false);
   const [salesTest, setSalesTest] = useState<{ ok: boolean; message: string } | null>(null);
@@ -220,6 +225,34 @@ export default function AdminSettingsPage() {
       setError(errorText(saveError, "Не удалось сохранить настройки AI"));
     } finally {
       setSavingAI(false);
+    }
+  }
+
+  async function loadModels() {
+    if (loadingModels) return;
+    setLoadingModels(true);
+    setError(null);
+    try {
+      const result = await apiFetch<{ ok: boolean; count: number; free_count: number; models: AIModelRow[]; message: string }>(
+        "/admin/settings/ai/models",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            api_key: aiDraft.api_key.trim() || null,
+            base_url: aiDraft.base_url.trim() || null,
+          }),
+          timeoutMs: 30_000,
+        },
+      );
+      setAiModels(result.models || []);
+      setAiTest({ ok: Boolean(result.ok), message: String(result.message || "") });
+      if (result.ok && result.models?.length) {
+        toast("Список моделей загружен", `Доступно ${result.count}, бесплатных ${result.free_count}`);
+      }
+    } catch (modelsError) {
+      setAiTest({ ok: false, message: errorText(modelsError, "Не удалось загрузить список моделей") });
+    } finally {
+      setLoadingModels(false);
     }
   }
 
@@ -514,8 +547,22 @@ export default function AdminSettingsPage() {
                 </label>
                 <label className="block space-y-2 text-sm font-medium">
                   Модель
-                  <input list="ai-models" className={field} value={aiDraft.model} placeholder="openai/gpt-4o-mini" onChange={(event) => setAiDraft((prev) => ({ ...prev, model: event.target.value }))} />
-                  <datalist id="ai-models">{MODELS.map((model) => <option key={model} value={model} />)}</datalist>
+                  <div className="flex flex-wrap gap-2">
+                    <input list="ai-models" className={`${field} min-w-0 flex-1`} value={aiDraft.model} placeholder="openai/gpt-4o-mini" onChange={(event) => setAiDraft((prev) => ({ ...prev, model: event.target.value }))} />
+                    <Button variant="outline" className={btn} onClick={() => void loadModels()} disabled={loadingModels}>
+                      {loadingModels ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}Загрузить модели
+                    </Button>
+                  </div>
+                  <datalist id="ai-models">
+                    {(aiModels ?? FALLBACK_MODELS.map((id) => ({ id, name: id, free: false, context: 0 }))).map((model) => (
+                      <option key={model.id} value={model.id}>{model.free ? `${model.name} · бесплатно` : model.name}</option>
+                    ))}
+                  </datalist>
+                  <span className="block text-xs font-normal leading-5 text-zinc-500">
+                    {aiModels
+                      ? `Список с сервера: ${aiModels.length} моделей, бесплатных ${aiModels.filter((model) => model.free).length}. Начните вводить название — браузер подскажет доступные.`
+                      : "Нажмите «Загрузить модели», чтобы увидеть, что реально доступно вашему токену (бесплатные — первыми)."}
+                  </span>
                 </label>
                 <label className="block space-y-2 text-sm font-medium">
                   Адрес API
