@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, HardDrive, KeyRound, Loader2, PlugZap, RefreshCw, Save, ShieldCheck, SlidersHorizontal, Sparkles, Trash2 } from "lucide-react";
 
@@ -127,6 +126,8 @@ export default function AdminSettingsPage() {
   const [savingSales, setSavingSales] = useState(false);
   const [testingSales, setTestingSales] = useState(false);
   const [salesTest, setSalesTest] = useState<{ ok: boolean; message: string } | null>(null);
+  const [health, setHealth] = useState<{ ok: boolean; message: string; at: string } | null>(null);
+  const [checkingHealth, setCheckingHealth] = useState(false);
 
   const applyAI = useCallback((data: AISettings) => {
     setAi(data);
@@ -192,6 +193,25 @@ export default function AdminSettingsPage() {
   useEffect(() => {
     if (!loading && isAdmin) void load();
   }, [isAdmin, load, loading]);
+
+  const checkHealth = useCallback(async () => {
+    if (checkingHealth) return;
+    setCheckingHealth(true);
+    try {
+      // /health/ready проверяет базу, Redis и S3 одним запросом.
+      await apiFetch<{ status: string }>("/health/ready", { timeoutMs: 20_000 });
+      setHealth({ ok: true, message: "База данных, Redis и хранилище S3 отвечают.", at: new Date().toLocaleTimeString("ru-RU") });
+    } catch (healthError) {
+      setHealth({ ok: false, message: errorText(healthError, "Сервис не отвечает"), at: new Date().toLocaleTimeString("ru-RU") });
+    } finally {
+      setCheckingHealth(false);
+    }
+  }, [checkingHealth]);
+
+  useEffect(() => {
+    if (!loading && isAdmin) void checkHealth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, isAdmin]);
 
   const aiStatus = useMemo(() => {
     if (!ai) return { label: "Проверяем…", tone: "zinc" as const };
@@ -480,7 +500,7 @@ export default function AdminSettingsPage() {
               Все ключи платформы в одном месте: AI для черновиков тестов, таблица продаж, файловое хранилище и состояние сервера. Секреты шифруются и никогда не показываются целиком.
             </p>
           </div>
-          <Link href="/faq#authoring" className="rounded-lg px-3 py-2 text-sm text-zinc-500 hover:bg-white hover:text-zinc-800">Как это работает</Link>
+          
         </div>
         <AdminNav />
 
@@ -835,10 +855,22 @@ export default function AdminSettingsPage() {
                   </div>
                 ))}
               </dl>
-              <div className="mt-4 flex flex-wrap gap-3 text-sm">
-                <Link href="/admin/diagnostics" className="text-amber-800 underline">Расширенная диагностика</Link>
-                <span className="text-zinc-300">·</span>
-                <span className="text-zinc-500">Обновление схемы: <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs">alembic upgrade head</code></span>
+              <div className="mt-4 rounded-xl border border-zinc-200 px-4 py-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-zinc-500">Состояние сервисов</p>
+                    <p className={`mt-1 text-sm font-medium ${health ? (health.ok ? "text-emerald-700" : "text-rose-700") : "text-zinc-600"}`}>
+                      {checkingHealth ? "Проверяем…" : health ? health.message : "Ещё не проверяли"}
+                      {health && !checkingHealth ? <span className="ml-2 text-xs font-normal text-zinc-400">{health.at}</span> : null}
+                    </p>
+                  </div>
+                  <Button variant="outline" className={btn} disabled={checkingHealth} onClick={() => void checkHealth()}>
+                    {checkingHealth ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}Проверить
+                  </Button>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-zinc-500">
+                  Проверяются база данных, Redis и хранилище S3. Обновление схемы: <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs">alembic upgrade head</code>.
+                </p>
               </div>
             </section>
           </div>

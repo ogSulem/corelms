@@ -11,7 +11,6 @@ const baseItems = [
   { href: "/modules", label: "Обучение" },
   { href: "/sales", label: "Продажи" },
   { href: "/account", label: "Кабинет" },
-  { href: "/faq", label: "Справка" },
 ];
 
 export function AppNav({ role, authenticated = true }: { role?: string; authenticated?: boolean }) {
@@ -23,7 +22,7 @@ export function AppNav({ role, authenticated = true }: { role?: string; authenti
   return (
     <nav ref={nav} aria-label="Основная навигация" className="flex w-full min-w-0 max-w-full items-center gap-1 overflow-x-auto rounded-2xl border border-zinc-200 bg-white/85 backdrop-blur-xl p-1.5 shadow-sm shadow-zinc-950/5">
       {items.map((it) => {
-        const active = it.href === "/admin/modules" ? pathname.startsWith("/admin/") || pathname === "/adminpanel" : pathname === it.href || pathname.startsWith(it.href + "/");
+        const active = it.href === "/admin/modules" ? pathname.startsWith("/admin/") : pathname === it.href || pathname.startsWith(it.href + "/");
         return (
           <Link
             key={it.href}
