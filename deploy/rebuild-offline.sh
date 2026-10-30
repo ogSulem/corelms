@@ -8,11 +8,15 @@
 # внутрь копируются только исходники и свежая сборка Next.js.
 #
 # Использование:
-#   bash deploy/rebuild-offline.sh            # backend и frontend
+#   bash deploy/rebuild-offline.sh            # backend, frontend и воркеры
 #   bash deploy/rebuild-offline.sh backend    # только backend
 #   bash deploy/rebuild-offline.sh frontend   # только frontend
+#   bash deploy/rebuild-offline.sh workers    # только воркеры очередей
 #
 # Данные не затрагиваются: меняются только образы. Теги для отката — *:rollback-<дата>.
+#
+# Сборка идёт в тег `*:next`, проверяется и только потом подменяет `:latest`.
+# Поэтому неудачная сборка никогда не оставляет рабочий тег нерабочим.
 
 set -euo pipefail
 
@@ -21,7 +25,10 @@ ROOT="$(pwd)"
 STAMP="$(date +%F_%H-%M)"
 WHAT="${1:-all}"
 
+WORKER_IMAGES="corelms-worker_import corelms-worker_regen corelms-worker_media corelms-worker_default"
+
 say() { printf '\n== %s\n' "$1"; }
+die() { printf '\n!! %s\n' "$1"; exit 1; }
 
 # Значение из .env (без кавычек), пусто — если ключа нет.
 env_get() {
@@ -38,26 +45,59 @@ tag_rollback() {
   fi
 }
 
-build_backend() {
-  say "Backend: новый слой поверх текущего образа"
-  docker image inspect corelms-backend:latest >/dev/null 2>&1 || {
-    echo "нет образа corelms-backend:latest — сначала нужен хотя бы один собранный образ"; exit 1; }
-  tag_rollback "corelms-backend:latest"
-  cat > backend/Dockerfile.offline <<'DOCKER'
-FROM corelms-backend:latest
+# Общий слой для всех python-образов: исходники + бит исполнения у скриптов.
+python_layer() {
+  local base="$1"
+  local target="$2"
+  cat > backend/Dockerfile.offline <<DOCKER
+FROM ${base}:latest
 USER root
 COPY --chown=app:app . /app
+RUN chmod +x /app/scripts/*.sh
 USER app
 DOCKER
-  docker build -f backend/Dockerfile.offline -t corelms-backend:latest backend
+  docker build -f backend/Dockerfile.offline -t "${target}:next" backend
+}
+
+build_backend() {
+  say "Backend: новый слой поверх текущего образа"
+  docker image inspect corelms-backend:latest >/dev/null 2>&1 \
+    || die "нет образа corelms-backend:latest — не от чего собирать"
+  chmod +x backend/scripts/*.sh 2>/dev/null || true
+  tag_rollback "corelms-backend:latest"
+  python_layer corelms-backend corelms-backend
   rm -f backend/Dockerfile.offline
+
+  docker run --rm --entrypoint sh corelms-backend:next \
+    -c 'test -x /app/scripts/entrypoint.sh && test -f /app/app/main.py' \
+    || die "в новом образе entrypoint.sh не исполняемый — latest не меняю, старый образ цел"
+
+  docker tag corelms-backend:next corelms-backend:latest
   echo "backend готов"
+}
+
+build_workers() {
+  local image
+  for image in $WORKER_IMAGES; do
+    if ! docker image inspect "${image}:latest" >/dev/null 2>&1; then
+      echo "нет образа ${image}:latest — пропускаю"
+      continue
+    fi
+    say "Воркер ${image}: новый слой поверх текущего образа"
+    tag_rollback "${image}:latest"
+    python_layer "$image" "$image"
+    docker run --rm --entrypoint sh "${image}:next" -c 'test -f /app/app/main.py' \
+      || die "в образе ${image}:next нет кода — latest не меняю"
+    docker tag "${image}:next" "${image}:latest"
+  done
+  rm -f backend/Dockerfile.offline
+  echo "воркеры готовы"
 }
 
 build_frontend() {
   say "Frontend: пересборка Next.js внутри текущего образа"
-  docker image inspect corelms-frontend:latest >/dev/null 2>&1 || {
-    echo "нет образа corelms-frontend:latest — сначала нужен хотя бы один собранный образ"; exit 1; }
+  docker image inspect corelms-frontend:latest >/dev/null 2>&1 \
+    || die "нет образа corelms-frontend:latest — не от чего собирать"
   tag_rollback "corelms-frontend:latest"
 
   # Публичный адрес API зашивается в браузерный бандл на этапе сборки.
@@ -69,7 +109,7 @@ build_frontend() {
   local out=/tmp/corelms-frontend-layer
   rm -rf "$out"; mkdir -p "$out"
 
-  # node_modules уже есть в образе — берём их оттуда, исходники монтируем только на чтение.
+  # node_modules уже есть в образе — исходники монтируем только на чтение.
   docker run --rm -u root \
     -v "$ROOT/frontend:/src:ro" \
     -v "$out:/out" \
@@ -86,7 +126,10 @@ build_frontend() {
 FROM corelms-frontend:latest
 COPY --chown=node:node .next /app/.next
 DOCKER
-  docker build -t corelms-frontend:latest "$out"
+  docker build -t corelms-frontend:next "$out"
+  docker run --rm --entrypoint sh corelms-frontend:next -c 'test -f /app/.next/BUILD_ID' \
+    || die "новый .next не попал в образ — latest не меняю"
+  docker tag corelms-frontend:next corelms-frontend:latest
   rm -rf "$out"
   echo "frontend готов (NEXT_PUBLIC_API_BASE_URL=$public_base)"
 }
@@ -94,8 +137,9 @@ DOCKER
 case "$WHAT" in
   backend) build_backend ;;
   frontend) build_frontend ;;
-  all) build_backend; build_frontend ;;
-  *) echo "Неизвестный аргумент: $WHAT (backend | frontend | all)"; exit 1 ;;
+  workers) build_workers ;;
+  all) build_backend; build_workers; build_frontend ;;
+  *) die "Неизвестный аргумент: $WHAT (backend | frontend | workers | all)" ;;
 esac
 
 say "Готово. Дальше по порядку:"
