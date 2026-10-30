@@ -176,6 +176,8 @@ services:
       - AUTO_MIGRATE_ON_START=${AUTO_MIGRATE_ON_START:-false}
       - BOOTSTRAP_ADMIN_NAME=${BOOTSTRAP_ADMIN_NAME:-}
       - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-}
+      # Версия кода: её показывает /health/version и диагностика на форме входа.
+      - APP_VERSION=${APP_VERSION:-}
     healthcheck:
       test:
         [
@@ -203,6 +205,8 @@ services:
         NEXT_PUBLIC_QUICKSTART_ASSET_ID: ${NEXT_PUBLIC_QUICKSTART_ASSET_ID:-}
         NEXT_PUBLIC_QUICKSTART_VIDEO_URL: ${NEXT_PUBLIC_QUICKSTART_VIDEO_URL:-}
         NEXT_PUBLIC_TELEGRAM_SUPPLIERS_BASE_URL: ${NEXT_PUBLIC_TELEGRAM_SUPPLIERS_BASE_URL:-}
+    environment:
+      - APP_VERSION=${APP_VERSION:-}
     depends_on:
       backend:
         condition: service_healthy

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Eye, EyeOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ConnectionCheck } from "@/components/auth/connection-check";
 import { useAuth } from "@/lib/hooks/use-auth";
 
 export function LoginClient() {
@@ -25,6 +26,7 @@ export function LoginClient() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   const loginRef = useRef<HTMLInputElement | null>(null);
   const canSubmit = useMemo(() => {
@@ -91,14 +93,22 @@ export function LoginClient() {
       router.push(redirectTo);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const lower = msg.toLowerCase();
+      // Любая ошибка входа = повод показать диагностику: пользователь сразу
+      // видит причину (домен, HTTPS, недоступный API), а не только «не вошёл».
+      setShowDiagnostics(true);
       if (msg.includes("COOKIE_BLOCKED")) {
-        setError("ВХОД ВЫПОЛНЕН, НО БРАУЗЕР НЕ СОХРАНИЛ СЕССИЮ. ОТКРОЙТЕ САЙТ В ОБЫЧНОМ БРАУЗЕРЕ (CHROME/SAFARI), ВЫКЛЮЧИТЕ ПРИВАТНЫЙ РЕЖИМ И «ЭКОНОМИЮ ТРАФИКА».");
+        setError("Вход выполнен, но браузер не сохранил сессию. Откройте сайт в обычном браузере (Chrome/Safari), выключите приватный режим и «экономию трафика».");
       } else if (msg.includes("SESSION_UNCONFIRMED")) {
-        setError("ВХОД ПРИНЯТ, НО СЕРВЕР НЕ ПОДТВЕРДИЛ СЕССИЮ. ПОВТОРИТЕ ЧЕРЕЗ МИНУТУ.");
-      } else if ((msg || "").toLowerCase().includes("invalid_credentials") || (msg || "").toLowerCase().includes("invalid")) {
-        setError("НЕВЕРНЫЕ ДАННЫЕ ВХОДА");
-      } else if ((msg || "").toLowerCase().includes("upstream_unavailable") || (msg || "").toLowerCase().includes("unavailable") || (msg || "").includes("502")) {
-        setError("СЕРВИС ВРЕМЕННО НЕДОСТУПЕН. ПОВТОРИТЕ ПОПЫТКУ.");
+        setError("Вход принят, но сервер не подтвердил сессию. Повторите через минуту.");
+      } else if (lower.includes("invalid_origin")) {
+        setError("Сервер отклонил адрес сайта. Адрес, по которому вы открыли сайт, не совпадает с PUBLIC_APP_URL / CORS_ALLOW_ORIGINS в настройках сервера.");
+      } else if (lower.includes("rate_limited") || lower.includes("many")) {
+        setError("Слишком много попыток входа. Подождите минуту и повторите.");
+      } else if (lower.includes("invalid_credentials") || lower.includes("invalid")) {
+        setError("Неверные логин или пароль.");
+      } else if (lower.includes("upstream_unavailable") || lower.includes("temporarily") || lower.includes("502")) {
+        setError("Сервис временно недоступен. Повторите попытку через минуту.");
       } else {
         setError((err as Error)?.name === "AbortError" ? "Сервер долго не отвечает. Повторите попытку." : err instanceof TypeError ? "Нет связи с сервером. Проверьте соединение." : msg || "Не удалось войти. Повторите попытку.");
       }
@@ -196,7 +206,11 @@ export function LoginClient() {
             </div>
 
             {error && (
-              <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-700 font-black uppercase tracking-widest text-center animate-in fade-in zoom-in-95">
+              <div
+                role="alert"
+                aria-live="assertive"
+                className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-semibold leading-relaxed text-rose-700 text-center animate-in fade-in zoom-in-95"
+              >
                 {error}
               </div>
             )}
@@ -209,6 +223,8 @@ export function LoginClient() {
               {loading ? "Вход..." : "Войти в систему"}
             </Button>
           </form>
+
+          <ConnectionCheck autoOpen={showDiagnostics} />
         </div>
       </div>
     </main>

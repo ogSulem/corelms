@@ -383,6 +383,11 @@ def token(
         # Name-based login is a compatibility mode. Names are not unique.
         # If the name is ambiguous, force login by email.
         matches = list(db.scalars(select(User).where(User.name == login_raw)).all())
+        if not matches and login_raw:
+            # Телефонная клавиатура приводит первую букву к заглавной, а имена
+            # хранятся в том виде, как их завёл администратор: `Иван` и `иван`
+            # должны открывать один и тот же аккаунт, если он единственный.
+            matches = list(db.scalars(select(User).where(func.lower(User.name) == login_norm)).all())
         if len(matches) == 1:
             user = matches[0]
         elif len(matches) > 1:

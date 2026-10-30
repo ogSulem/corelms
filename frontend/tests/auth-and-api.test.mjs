@@ -352,3 +352,90 @@ test("выход гасит и доменную, и host-only копию кук�
     if (previous === undefined) delete process.env.COOKIE_DOMAIN; else process.env.COOKIE_DOMAIN = previous;
   }
 });
+
+test("login accepts a cyrillic origin that matches the site (idn)", async t => {
+  const { allowedAuthRequest, asciiOrigin } = await loadSource("src/app/api/auth/_request.ts");
+  assert.equal(asciiOrigin("https://edu.каркастайги.рф"), "https://edu.xn--80aaamzedb7cml.xn--p1ai");
+  // Браузер (и node:undici) не дают положить в заголовок не-ASCII: на провод
+  // уходят байты UTF-8, и до Node они доезжают как latin1-искажение.
+  const rawUtf8 = "https://edu.каркастайги.рф";
+  const mojibake = Buffer.from(rawUtf8, "utf8").toString("latin1");
+  const request = new Request("http://frontend:3000/api/auth/login", {
+    method: "POST",
+    headers: { origin: mojibake, host: "edu.xn--80aaamzedb7cml.xn--p1ai" },
+  });
+  assert.equal(allowedAuthRequest(request), true);
+});
+
+test("login rejects foreign, opaque and cross-site origins", async t => {
+  const { allowedAuthRequest } = await loadSource("src/app/api/auth/_request.ts");
+  const make = headers => new Request("http://frontend:3000/api/auth/login", { method: "POST", headers });
+  assert.equal(allowedAuthRequest(make({ origin: "https://evil.example", host: "edu.xn--80aaamzedb7cml.xn--p1ai" })), false);
+  assert.equal(allowedAuthRequest(make({ origin: "null", host: "edu.xn--80aaamzedb7cml.xn--p1ai" })), false);
+  assert.equal(allowedAuthRequest(make({ origin: "https://edu.xn--80aaamzedb7cml.xn--p1ai/path", host: "edu.xn--80aaamzedb7cml.xn--p1ai" })), false);
+  assert.equal(allowedAuthRequest(make({ origin: "https://edu.xn--80aaamzedb7cml.xn--p1ai", host: "edu.xn--80aaamzedb7cml.xn--p1ai", "sec-fetch-site": "cross-site" })), false);
+});
+
+test("login without an origin header still works for native clients", async t => {
+  const { allowedAuthRequest } = await loadSource("src/app/api/auth/_request.ts");
+  assert.equal(allowedAuthRequest(new Request("http://frontend:3000/api/auth/login", { method: "POST" })), true);
+});
+
+test("https requests never accept a downgraded http origin", async t => {
+  const { allowedAuthRequest } = await loadSource("src/app/api/auth/_request.ts");
+  const request = new Request("http://frontend:3000/api/auth/login", {
+    method: "POST",
+    headers: { origin: "http://edu.xn--80aaamzedb7cml.xn--p1ai", host: "edu.xn--80aaamzedb7cml.xn--p1ai", "x-forwarded-proto": "https" },
+  });
+  assert.equal(allowedAuthRequest(request), false);
+});
+
+test("upstream headers carry the ascii origin and the client ip", async t => {
+  const { authHeaders } = await loadSource("src/app/api/auth/_request.ts");
+  const request = new Request("http://frontend:3000/api/auth/login", {
+    method: "POST",
+    headers: { origin: Buffer.from("https://edu.каркастайги.рф", "utf8").toString("latin1"), "x-forwarded-for": "203.0.113.9", "user-agent": "iPhone" },
+  });
+  const headers = authHeaders(request, { "Content-Type": "application/json" });
+  assert.equal(headers.get("origin"), "https://edu.xn--80aaamzedb7cml.xn--p1ai");
+  assert.equal(headers.get("x-forwarded-for"), "203.0.113.9");
+  assert.equal(headers.get("user-agent"), "iPhone");
+  assert.equal(headers.get("content-type"), "application/json");
+});
+
+test("login payload rejects empty logins and oversized bcrypt passwords", async t => {
+  const { loginPayload } = await loadSource("src/app/api/auth/_request.ts");
+  assert.deepEqual(loginPayload({ email: " operator ", password: "x" }), { username: "operator", password: "x" });
+  assert.deepEqual(loginPayload({ name: "operator", password: "x" }), { username: "operator", password: "x" });
+  assert.equal(loginPayload({ email: "   ", password: "x" }), null);
+  assert.equal(loginPayload({ email: "operator", password: "" }), null);
+  assert.equal(loginPayload({ email: "operator", password: "я".repeat(40) }), null); // 80 байт > лимита bcrypt
+  assert.equal(loginPayload(null), null);
+  assert.equal(loginPayload("operator"), null);
+});
+
+test("timeoutSignal aborts like AbortSignal.timeout on older safari", async t => {
+  const { timeoutSignal } = await loadSource("src/lib/fetch-timeout.ts");
+  const signal = timeoutSignal(1000);
+  assert.equal(signal.aborted, false);
+  assert.equal(typeof signal.addEventListener, "function");
+  const controller = new AbortController();
+  controller.abort();
+  assert.equal(controller.signal.aborted, true);
+});
+
+test("file names split on windows and unix separators without Array.at", async t => {
+  const { splitPath, baseName, folderPath } = await loadSource("src/lib/folder-tree.ts");
+  assert.deepEqual(splitPath("Папка\\Подпапка/файл.pdf"), ["Папка", "Подпапка", "файл.pdf"]);
+  assert.equal(baseName("Папка\\Подпапка/файл.pdf"), "файл.pdf");
+  assert.deepEqual(folderPath("Папка/файл.pdf"), ["Папка"]);
+  assert.equal(baseName(""), "");
+});
+
+test("login ignores invisible characters pasted on a phone keyboard", async t => {
+  const { loginPayload, passwordTooLong } = await loadSource("src/app/api/auth/_request.ts");
+  assert.deepEqual(loginPayload({ email: "\u200Boperator\uFEFF", password: "x" }), { username: "operator", password: "x" });
+  assert.equal(passwordTooLong("x".repeat(73)), true);
+  assert.equal(passwordTooLong("x".repeat(72)), false);
+  assert.equal(passwordTooLong("я".repeat(37)), true); // 74 байта
+});

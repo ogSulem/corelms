@@ -59,3 +59,22 @@ def test_successful_login_resets_the_failure_counter(client, db):
     assert _login(client, user.name, LOGIN_VALUE).status_code == 200
     # Счётчик обнулён: опять есть полный запас попыток.
     assert _login(client, user.name, "wrong-password").status_code == 401
+
+
+def test_login_by_name_ignores_keyboard_capitalisation(client, db):
+    """Телефон приводит первую букву к заглавной — вход всё равно проходит."""
+    user = _make(db)
+    response = _login(client, user.name.capitalize(), LOGIN_VALUE)
+    assert response.status_code == 200, response.text
+
+
+def test_login_by_name_prefers_the_exact_spelling(client, db):
+    """Если заведены `ivan` и `Ivan`, каждый входит под своим написанием."""
+    lower = User(name=f"ivan_{uuid.uuid4().hex[:6]}", role=UserRole.employee,
+                 password_hash=pwd_context.hash(LOGIN_VALUE), must_change_password=False)
+    upper = User(name=lower.name.capitalize(), role=UserRole.employee,
+                 password_hash=pwd_context.hash(LOGIN_VALUE), must_change_password=False)
+    db.add_all([lower, upper])
+    db.commit()
+    assert _login(client, lower.name, LOGIN_VALUE).status_code == 200
+    assert _login(client, upper.name, LOGIN_VALUE).status_code == 200

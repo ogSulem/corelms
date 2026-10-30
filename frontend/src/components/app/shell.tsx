@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { AppNav } from "@/components/app/nav";
 import { useAuth } from "@/lib/hooks/use-auth";
+import { timeoutSignal } from "@/lib/fetch-timeout";
 
 export function AppShell({ children }: { children?: React.ReactNode }) {
   const { user, loading, error, refresh } = useAuth();
@@ -333,7 +334,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                   if (!window.dispatchEvent(new Event("corelms:before-navigate", { cancelable: true }))) return;
                   setLoggingOut(true);
                   try {
-                    const response = await fetch("/api/auth/logout", { method: "POST", signal: AbortSignal.timeout(15000) });
+                    const response = await fetch("/api/auth/logout", { method: "POST", signal: timeoutSignal(15000) });
                     if (!response.ok) throw new Error("Не удалось выйти. Проверьте соединение и повторите действие.");
                     const result = await response.json();
                     if (result.session_revoked === false) window.alert("Выход на этом устройстве выполнен, но сервер не подтвердил завершение сеанса. При следующем входе проверьте активные сеансы в личном кабинете.");

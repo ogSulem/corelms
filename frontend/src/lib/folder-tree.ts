@@ -8,13 +8,15 @@ export type NamedFile = { original_filename: string };
 
 /** Путь файла сегментами: `Папка\\Файл.pdf` и `Папка/Файл.pdf` дают одно дерево. */
 export function splitPath(name: string): string[] {
-  return String(name || "").replaceAll("\\", "/").split("/").filter(Boolean);
+  // Разделитель меняем через split/join: `String.prototype.replaceAll` нет в
+  // старых WebView (iOS < 13.4), а путь строится в том числе на телефонах.
+  return String(name || "").split("\\").join("/").split("/").filter(Boolean);
 }
 
 /** Имя файла без каталогов. */
 export function baseName(name: string): string {
   const parts = splitPath(name);
-  return parts.at(-1) || String(name || "");
+  return (parts.length ? parts[parts.length - 1] : "") || String(name || "");
 }
 
 /** Каталоги, в которых лежит файл (пустой массив — корень). */

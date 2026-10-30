@@ -102,7 +102,7 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
   const settingsDirty = !!moduleMeta && (moduleDraft.title !== moduleMeta.title || moduleDraft.description !== (moduleMeta.description || "") || moduleDraft.category !== (moduleMeta.category || "") || moduleDraft.visibility !== moduleMeta.visibility || JSON.stringify([...moduleDraft.tag_ids].sort()) !== JSON.stringify([...(moduleMeta.tag_ids || [])].sort()));
   const editingDirty = dialog?.kind === "lesson" && (draftTitle !== (dialog.lesson?.title || "") || draftContent !== (dialog.lesson?.content || "") || draftOutline !== (dialog.lesson?.outline_path || "") || draftPresentation !== (dialog.lesson?.presentation_mode || "auto") || draftPrimary !== (dialog.lesson?.primary_asset_id || "") || draftMode !== (dialog.lesson?.content_mode || "manual"));
   const moduleTitleDirty = dialog?.kind === "moduleTitle" && draftTitle.trim() !== (moduleMeta?.title || "");
-  const dirty = quizDirty || settingsDirty || editingDirty || moduleTitleDirty || (dialog?.kind === "rename" && draftTitle !== dialog.asset.original_filename.split("/").at(-1)) || (dialog?.kind === "move" && (draftTarget !== (dialog.asset.submodule_id || "") || draftFolder !== folderOf(dialog.asset.original_filename)));
+  const dirty = quizDirty || settingsDirty || editingDirty || moduleTitleDirty || (dialog?.kind === "rename" && draftTitle !== dialog.asset.original_filename.split("/").slice(-1)[0]) || (dialog?.kind === "move" && (draftTarget !== (dialog.asset.submodule_id || "") || draftFolder !== folderOf(dialog.asset.original_filename)));
   settingsDirtyRef.current = settingsDirty;
   const locked = !!busy || !!moduleMeta?.is_archived;
   const jobRunning = !!jobId && !["finished", "failed", "canceled", "stopped", "missing"].includes(job?.status || "queued");
@@ -250,7 +250,7 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
   }
   function closeDialog() {
     if (busy) return;
-    if ((editingDirty || moduleTitleDirty || (dialog?.kind === "rename" && draftTitle !== dialog.asset.original_filename.split("/").at(-1)) || (dialog?.kind === "move" && draftTarget !== (dialog.asset.submodule_id || ""))) && !window.confirm("Закрыть без сохранения изменений?")) return;
+    if ((editingDirty || moduleTitleDirty || (dialog?.kind === "rename" && draftTitle !== dialog.asset.original_filename.split("/").slice(-1)[0]) || (dialog?.kind === "move" && draftTarget !== (dialog.asset.submodule_id || ""))) && !window.confirm("Закрыть без сохранения изменений?")) return;
     versionRequest.current?.abort();
     setDialog(null);
   }
@@ -284,7 +284,7 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
         presentation_mode: draftPresentation,
         ...(dialog.lesson ? { primary_asset_id: draftPrimary || null, content_mode: draftMode } : { is_folder: dialog.folder }),
       }, dialog.lesson ? "Урок обновлён" : "Материал создан", dialog.revision);
-      if (saved && !dialog.lesson) setSelected(dataRef.current?.lessons.at(-1)?.id || null);
+      if (saved && !dialog.lesson) setSelected(dataRef.current?.lessons[dataRef.current.lessons.length - 1]?.id || null);
     } else if (dialog.kind === "moduleTitle") {
       if (!draftTitle.trim()) { setError("Введите название модуля"); return; }
       saved = draftTitle.trim() === dataRef.current?.module.title ? true : await mutate("", "PATCH", { title: draftTitle.trim() }, "Название модуля обновлено");
@@ -301,7 +301,7 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
     } });
   }
   function folderOf(name: string): string {
-    const parts = name.replaceAll("\\", "/").split("/").filter(Boolean);
+    const parts = String(name || "").split("\\").join("/").split("/").filter(Boolean);
     return parts.slice(0, -1).join("/");
   }
   /** Перетаскивание в проводнике: папка внутри текущего раздела или другой урок/каталог. */
