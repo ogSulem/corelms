@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, BookOpen, Check, CheckCircle2, ChevronDown, ChevronRight, Circle, FileText, Folder, GraduationCap, Loader2, Pencil, RefreshCw, Search, ShieldCheck } from "lucide-react";
 import { LessonPresentation, type PresentationLesson } from "@/components/learning/lesson-presentation";
 import { AppShell } from "@/components/app/shell";
-import { AssetPreview } from "@/components/materials/asset-preview";
+import { AssetPreviewModal } from "@/components/materials/asset-preview";
 import { MaterialBrowser } from "@/components/materials/material-browser";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
@@ -41,7 +41,6 @@ export function LearningWorkspace({ moduleId, initialLessonId = "" }: { moduleId
   const [contentRefresh, setContentRefresh] = useState(0);
   const selectedId = search.get("lesson") || initialLessonId;
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
-  const previewRef = useRef<HTMLDivElement>(null);
   const loadedLesson = useRef("");
 
   const load = useCallback(async (signal?: AbortSignal) => {
@@ -134,10 +133,7 @@ export function LearningWorkspace({ moduleId, initialLessonId = "" }: { moduleId
     finally { setReading(false); }
   }
 
-  function openAsset(asset: Material) {
-    setPreview(asset);
-    setTimeout(() => previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 40);
-  }
+  function openAsset(asset: Material) { setPreview(asset); }
 
   return <AppShell>
     <div className="mx-auto w-full max-w-[1440px] px-4 py-7 sm:px-6 lg:py-10">
@@ -175,7 +171,7 @@ export function LearningWorkspace({ moduleId, initialLessonId = "" }: { moduleId
               </section>
               {lesson && !lesson.is_folder && <LessonPresentation key={lesson.id} lesson={lesson} assets={assets} />}
               {(!lesson || lesson.is_folder) && (currentAssets.length > 0 || lesson?.is_folder) && <section className="rounded-2xl border border-zinc-200 bg-white p-4 sm:p-6"><div className="mb-4 flex items-center justify-between"><h2 className="flex items-center gap-2 text-sm font-semibold"><FileText size={17} className="text-zinc-400" />{lesson ? "Файлы урока" : "Общие материалы"}</h2><span className="text-xs text-zinc-400">{formatFileCount(currentAssets.length)}</span></div><MaterialBrowser key={selectedId || "general"} materials={currentAssets} onSelect={openAsset} selectedId={preview?.asset_id} /></section>}
-              {(!lesson || lesson.is_folder) && preview && <div ref={previewRef} className="scroll-mt-24"><AssetPreview asset={preview} onClose={() => setPreview(null)} /></div>}
+              
               {lesson && !lesson.is_folder && <section className="rounded-2xl border border-zinc-200 bg-white p-5 sm:p-6">
                 {lessonError && <p role="alert" className="mb-4 text-sm text-rose-700">{lessonError}</p>}
                 <div className="flex flex-wrap items-center justify-between gap-4"><div><h3 className="text-sm font-semibold">{currentStatus?.read ? "Прочтение сохранено" : "Готовы двигаться дальше?"}</h3><p className="mt-1 text-xs leading-relaxed text-zinc-500">{lesson.requires_quiz ? "Подтвердите изучение материала, затем пройдите тест." : "Подтвердите изучение, чтобы сохранить результат урока."}</p></div><div className="flex flex-wrap items-center gap-2"><Button variant={currentStatus?.read ? "outline" : "primary"} className={actionClass} disabled={reading || currentStatus?.read} onClick={() => void confirmRead()}>{reading ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />}{currentStatus?.read ? "Материал изучен" : "Я изучил материал"}</Button>{lesson.requires_quiz && <Button disabled={!currentStatus?.read} className={actionClass} onClick={() => router.push(`/quizzes/${lesson.quiz_id}?module=${moduleId}&submodule=${lesson.id}`)}>{currentStatus?.passed ? "Результат теста" : "Перейти к тесту"}<ArrowRight size={16} /></Button>}</div></div>
@@ -185,6 +181,7 @@ export function LearningWorkspace({ moduleId, initialLessonId = "" }: { moduleId
           </section>
         </div>
       </>}
+      <AssetPreviewModal asset={preview} onClose={() => setPreview(null)} />
     </div>
   </AppShell>;
 }

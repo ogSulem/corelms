@@ -318,6 +318,24 @@ def test_new_lesson_from_a_file_is_ready_to_read(client, db, admin_headers, make
     assert str(lesson.primary_asset_id) == state['assets'][0]['asset_id']
 
 
+def test_module_rename_uses_fresh_revision_after_an_upload(client, db, admin_headers, make_module, storage):
+    """Загрузка файла поднимает редакцию модуля: форма настроек должна отправлять актуальную,
+    иначе переименование модуля падает с 409 «Модуль изменён»."""
+    module, _, _ = make_module()
+    before = module.content_revision
+    upload = client.post(f'/admin/content/modules/{module.id}/assets', headers=admin_headers,
+        data={'revision': str(before)},
+        files={'file': ('Прайс.xlsx', io.BytesIO(b'PK\x03\x04synthetic'), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')})
+    assert upload.status_code == 201, upload.text
+    fresh = upload.json()['module']['content_revision']
+    assert fresh != before
+    stale = client.patch(f'/admin/content/modules/{module.id}', headers=admin_headers, json={'revision': before, 'title': 'Новое имя'})
+    assert stale.status_code == 409
+    renamed = client.patch(f'/admin/content/modules/{module.id}', headers=admin_headers, json={'revision': fresh, 'title': 'Новое имя'})
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()['module']['title'] == 'Новое имя'
+
+
 def test_grading_requires_exact_option_letters(client, db, make_module, make_user):
     from app.routers.quizzes import _is_correct
     _, lesson, quiz = make_module(required=True)
