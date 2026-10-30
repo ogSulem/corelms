@@ -1,5 +1,8 @@
 import { materialDownloadUrl } from "./download-url";
 import { apiFetch, refreshSession } from "@/lib/api";
+import { baseName, browseMaterials, folderPath, folderSummary, splitPath } from "./folder-tree";
+
+export { baseName, browseMaterials, folderPath, folderSummary, splitPath };
 
 export type Material = {
   asset_id: string;
@@ -13,7 +16,17 @@ export type Material = {
 type MaterialKind = "table" | "document" | "text" | "pdf" | "image" | "video" | "audio" | "download";
 
 export function fileExtension(name: string): string {
-  return name.split(/[\\/]/).pop()?.split(".").slice(1).pop()?.toLowerCase() || "";
+  return baseName(name).split(".").slice(1).pop()?.toLowerCase() || "";
+}
+
+/**
+ * Адрес превью файла. `thumb=1` отключает запись события обучения и разрешает кэш:
+ * иконки в списке не должны попадать в журнал «просмотрено».
+ */
+export function materialThumbUrl(assetId: string, version?: number | null): string {
+  const query = new URLSearchParams({ variant: "original", thumb: "1" });
+  if (version) query.set("v", String(version));
+  return `/api/backend/assets/${encodeURIComponent(assetId)}/stream?${query.toString()}`;
 }
 
 export function materialKind(name: string): MaterialKind {

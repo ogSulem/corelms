@@ -5,6 +5,7 @@ import { AlertCircle, Download, FileText, Loader2, Maximize2, RefreshCw, ShieldC
 import { apiFetch } from "@/lib/api";
 import { columnLabel, downloadMaterial, fileExtension, formatBytes, materialKind, type Material } from "@/lib/materials";
 import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
 
 type ViewerState = { state: string; source_version: number; mime_type: string | null; error: string | null; can_retry: boolean };
@@ -20,11 +21,45 @@ type PreviewData = {
   notice?: string;
 };
 
-export function AssetPreview({ asset, onClose, className }: { asset: Material; onClose?: () => void; className?: string }) {
-  return <PreviewContent key={`${asset.asset_id}:${asset.version || 1}`} asset={asset} onClose={onClose} className={className} />;
+export function AssetPreview({ asset, onClose, className, embedded = false }: { asset: Material; onClose?: () => void; className?: string; embedded?: boolean }) {
+  return <PreviewContent key={`${asset.asset_id}:${asset.version || 1}`} asset={asset} onClose={onClose} className={className} embedded={embedded} />;
 }
 
-function PreviewContent({ asset, onClose, className }: { asset: Material; onClose?: () => void; className?: string }) {
+/**
+ * Просмотр материала в модальном окне: не сдвигает список и не теряет место в списке файлов.
+ * Внутри — тот же просмотрщик, что и раньше (PDF/видео/картинки/таблицы/текст).
+ */
+export function AssetPreviewModal({ asset, onClose }: { asset: Material | null; onClose: () => void }) {
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function download() {
+    if (!asset) return;
+    setDownloading(true); setError(null);
+    try { await downloadMaterial(asset.asset_id); }
+    catch (e) { setError(e instanceof Error ? e.message : "Не удалось скачать файл"); }
+    finally { setDownloading(false); }
+  }
+  return <Modal
+    open={!!asset}
+    title={asset ? asset.original_filename.split(/[\\/]/).filter(Boolean).at(-1) || asset.original_filename : ""}
+    onClose={onClose}
+    className="max-w-[min(96vw,1180px)]"
+    footer={<div className="flex flex-wrap items-center justify-between gap-2">
+      <p className="text-[11px] text-zinc-500">{asset ? `${formatBytes(asset.size_bytes)} · ${fileExtension(asset.original_filename).toUpperCase() || "файл"}` : ""}</p>
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" className="gap-2 rounded-xl text-sm font-medium normal-case tracking-normal" onClick={onClose}>Закрыть</Button>
+        <Button variant="outline" className="gap-2 rounded-xl text-sm font-medium normal-case tracking-normal" onClick={() => void download()} disabled={downloading}>
+          {downloading ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}Скачать оригинал
+        </Button>
+      </div>
+    </div>}
+  >
+    {error && <p role="alert" className="mb-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
+    {asset && <AssetPreview asset={asset} embedded />}
+  </Modal>;
+}
+
+function PreviewContent({ asset, onClose, className, embedded = false }: { asset: Material; onClose?: () => void; className?: string; embedded?: boolean }) {
   const [data, setData] = useState<PreviewData | null>(null);
   const [sheet, setSheet] = useState(0);
   const [retry, setRetry] = useState(0);
@@ -128,8 +163,8 @@ function PreviewContent({ asset, onClose, className }: { asset: Material; onClos
   const width = data?.rows?.reduce((max, row) => Math.max(max, row.length), 0) || 0;
 
   return (
-    <section aria-label={`Просмотр: ${asset.original_filename}`} className={cn("overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm", className)}>
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 sm:px-5">
+    <section aria-label={`Просмотр: ${asset.original_filename}`} className={cn(embedded ? "overflow-hidden" : "overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm", className)}>
+      {!embedded && <header className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 sm:px-5">
         <div className="flex min-w-0 flex-[1_1_192px] items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-50 text-amber-700"><FileText size={20} /></div>
           <div className="min-w-0">
@@ -144,7 +179,7 @@ function PreviewContent({ asset, onClose, className }: { asset: Material; onClos
           </Button>
           {onClose && <button type="button" onClick={onClose} aria-label="Закрыть предпросмотр" className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100"><X size={18} /></button>}
         </div>
-      </header>
+      </header>}
       {needsPreparation && <div className={cn("flex flex-wrap items-center justify-between gap-2 border-b px-5 py-3 text-xs leading-6", copyAvailable ? "border-emerald-100 bg-emerald-50/60 text-emerald-800" : "border-amber-100 bg-amber-50/60 text-amber-900")}>
         <p className="min-w-0 flex-1">{copyAvailable ? originalKind === "video" ? "Для браузера: MP4 · H.264/AAC. Исходный файл не изменён." : "Для браузера подготовлена PDF-копия. Исходный документ не изменён." : viewerError || rendition?.error || (originalKind === "video" ? "Готовится совместимая видеокопия. Оригинал уже можно скачать." : "Готовится PDF-копия с оформлением документа. Пока доступен оригинал и быстрый просмотр текста.")}</p>
         {copyAvailable && textFallback && <button type="button" className="font-medium underline" onClick={() => setTextFallback(false)}>Открыть PDF-копию</button>}
@@ -179,7 +214,7 @@ function PreviewContent({ asset, onClose, className }: { asset: Material; onClos
       ) : native && ready ? (
         <div className="bg-zinc-50">
           {kind === "pdf" && !pdfSupported && <p className="px-6 py-12 text-center text-sm leading-7 text-zinc-600">Встроенный просмотр PDF в этом браузере недоступен. Скачайте оригинал или откройте файл в отдельной вкладке.</p>}
-          {kind === "pdf" && pdfSupported && <iframe key={retry} title={`PDF: ${asset.original_filename}`} src={source} className="h-[72vh] min-h-[400px] w-full border-0" />}
+          {kind === "pdf" && pdfSupported && <iframe key={retry} title={`PDF: ${asset.original_filename}`} src={source} className={cn("w-full border-0", embedded ? "h-[66vh]" : "h-[72vh] min-h-[400px]")} />}
           {kind === "image" && <img src={source} alt={asset.original_filename} onError={mediaError} className="mx-auto max-h-[75vh] max-w-full object-contain" />}
           {kind === "video" && <video ref={videoRef} src={source} onLoadedMetadata={() => {
             const video = videoRef.current, saved = playback.current;

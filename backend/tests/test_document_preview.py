@@ -4,9 +4,10 @@ import zipfile
 import pytest
 from fastapi import HTTPException
 from openpyxl import Workbook
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models.asset import ContentAsset
+from app.models.audit import LearningEvent
 from app.models.module import Module
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.tag import Tag, ModuleTagMap, UserTagMap
@@ -168,6 +169,21 @@ def test_pdf_ranges_and_dangerous_inline_mime(client, db, make_module, make_user
     assert download.status_code == 200
     assert download.headers["content-disposition"].startswith("attachment")
     assert all(body.closed for body in storage.bodies)
+
+
+def test_stream_thumbnail_is_cacheable_and_not_a_learning_event(client, db, make_module, make_user, storage):
+    module, lesson, _ = make_module()
+    _learner, headers = make_user()
+    asset = attach(db, module, lesson, storage, name="Превью.png", content=b"\x89PNG\r\n\x1a\n0123456789")
+    events_before = db.scalar(select(func.count()).select_from(LearningEvent))
+    thumb = client.get(f"/assets/{asset.id}/stream?thumb=1", headers=headers)
+    assert thumb.status_code == 200, thumb.text
+    assert thumb.headers["cache-control"] == "private, max-age=600"
+    assert db.scalar(select(func.count()).select_from(LearningEvent)) == events_before
+    full = client.get(f"/assets/{asset.id}/stream", headers=headers)
+    assert full.status_code == 200, full.text
+    assert full.headers["cache-control"].startswith("no-store")
+    assert db.scalar(select(func.count()).select_from(LearningEvent)) == events_before + 1
 
 
 def rewrite_zip(data, replacements):

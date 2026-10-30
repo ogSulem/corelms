@@ -229,6 +229,8 @@ def stream_asset(
     user: User = Depends(get_current_user),
     range_header: str | None = Header(default=None, alias="Range"),
     variant: Literal["original", "browser"] = Query(default="original"),
+    # `thumb=1` is used by list previews: it never writes a learning event and may be cached.
+    thumb: bool = Query(default=False),
     _: object = rate_limit(key_prefix="asset_stream", limit=240, window_seconds=60),
 ):
     try:
@@ -251,30 +253,32 @@ def stream_asset(
             original_filename=str(PurePath(asset.original_filename).with_suffix(".mp4" if rendition.mime_type == "video/mp4" else ".pdf")))
 
 
-    record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
-    try:
-        meta = {
-            "action": "download" if downloading else "stream",
-            "filename": str(asset.original_filename or ""),
-            "object_key": str(asset.object_key or ""),
-            "mime_type": str(asset.mime_type or ""),
-            "module_id": module_id,
-            "submodule_id": submodule_id,
-        }
-        db.add(
-            LearningEvent(
-                user_id=user.id,
-                type=LearningEventType.asset_viewed,
-                ref_id=asset.id,
-                meta=json.dumps(meta, ensure_ascii=False),
-            )
-        )
-        db.commit()
-    except Exception:
+    # Thumbnails stay out of the learning journal: a file listed in a cabinet is not «просмотр материала».
+    if not thumb:
+        record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
         try:
-            db.rollback()
+            meta = {
+                "action": "download" if downloading else "stream",
+                "filename": str(asset.original_filename or ""),
+                "object_key": str(asset.object_key or ""),
+                "mime_type": str(asset.mime_type or ""),
+                "module_id": module_id,
+                "submodule_id": submodule_id,
+            }
+            db.add(
+                LearningEvent(
+                    user_id=user.id,
+                    type=LearningEventType.asset_viewed,
+                    ref_id=asset.id,
+                    meta=json.dumps(meta, ensure_ascii=False),
+                )
+            )
+            db.commit()
         except Exception:
-            pass
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     asset = SimpleNamespace(**snapshot)
     s3 = get_s3_client()
@@ -410,7 +414,7 @@ def stream_asset(
         headers = {
             "Content-Disposition": disposition,
             "Accept-Ranges": "bytes",
-            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Cache-Control": "private, max-age=600" if thumb else "no-store, no-cache, must-revalidate, max-age=0",
             "Pragma": "no-cache",
             "X-Frame-Options": "SAMEORIGIN",
             "X-Content-Type-Options": "nosniff",

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Archive, ArrowLeft, ChevronRight, Download, Folder, FolderPlus, History, Loader2, MoreHorizontal, Pencil, RefreshCw, RotateCcw, Search, ShieldCheck, UploadCloud } from "lucide-react";
-import { AssetPreview } from "./asset-preview";
+import { AssetPreviewModal } from "./asset-preview";
 import { MaterialIcon } from "./material-browser";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
@@ -44,7 +44,6 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
   const stopped = useRef(false);
   const alive = useRef(true);
   const running = useRef(false);
-  const previewRef = useRef<HTMLDivElement>(null);
   const historyRequest = useRef<AbortController | null>(null);
   const dirty = dialog?.kind === "folder" ? !!name.trim() : dialog?.kind === "rename" && name !== dialog.entry.name;
   useLeaveGuard(!!busy || !!dirty, busy ? "Идёт загрузка или сохранение. Покинуть раздел? Уже отправленный файл может сохраниться, остальные не будут загружены." : "Покинуть раздел без сохранения изменений?", () => { stopped.current = true; }, () => { stopped.current = false; });
@@ -64,7 +63,7 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
     return () => controller.abort();
   }, [section, path, search, archived, offset, cursor, refresh, canManage, accept]);
 
-  function showPreview(asset: Material) { setPreview(asset); setTimeout(() => previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 30); }
+  function showPreview(asset: Material) { setPreview(asset); }
   async function download(asset: Material) { try { await downloadMaterial(asset.asset_id); } catch (e) { setError(e instanceof Error ? e.message : "Не удалось скачать файл"); } }
   async function mutate(url: string, method: string, payload: object): Promise<boolean> {
     if (!dataRef.current || running.current) return false;
@@ -146,7 +145,7 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
       </div>)}</div>}
       {data && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-400"><span>Записей в папке: {data.total}</span><div className="flex items-center gap-3">{offset > 0 && <button type="button" disabled={busy || loading} onClick={() => setOffset(n => Math.max(0, n - 100))} className="text-zinc-600 underline">Предыдущие</button>}{data.next_offset != null && <button type="button" disabled={busy || loading} onClick={() => setOffset(data.next_offset!)} className="text-zinc-600 underline">Следующие</button>}{data.legacy_cursor && <button type="button" disabled={busy || loading} onClick={() => { setCursor(data.legacy_cursor); setOffset(0); }} className="text-amber-800 underline">Загрузить ещё из хранилища</button>}</div></div>}
     </section>
-    {preview && <div ref={previewRef} className="scroll-mt-24"><AssetPreview asset={preview} onClose={() => setPreview(null)} /></div>}
+    <AssetPreviewModal asset={preview} onClose={() => setPreview(null)} />
     <p className="flex items-start gap-2 px-1 text-xs leading-6 text-zinc-500"><ShieldCheck size={16} className="mt-1 shrink-0 text-emerald-700" />Файлы хранятся отдельно от Google Sheets. Замена создаёт новую версию, архив скрывает материал без удаления оригиналов. Видео готовится для браузера в фоне.</p>
     <Modal open={!!dialog} title={dialog?.kind === "history" ? "История файла" : dialog?.kind === "rename" ? "Переименовать файл" : "Новая папка"} onClose={closeDialog} disableClose={busy} className="max-w-xl" footer={dialog?.kind === "history" ? <Button variant="outline" className={btn} onClick={closeDialog}>Закрыть</Button> : <div className="flex justify-end gap-2"><Button variant="ghost" className={btn} disabled={busy} onClick={closeDialog}>Отмена</Button><Button className={btn} disabled={busy || !name.trim()} onClick={() => void saveDialog()}>{busy && <Loader2 size={16} className="animate-spin" />}Сохранить</Button></div>}>
       {error && <p role="alert" className="mb-4 rounded-xl bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
