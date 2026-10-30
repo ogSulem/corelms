@@ -505,6 +505,11 @@ def read_security_posture(
     secure_env = _cookie_flag(getattr(settings, "cookie_secure", None))
     is_prod = str(getattr(settings, "app_env", "") or "").lower() in {"prod", "production"}
     cookie_secure = secure_env if secure_env is not None else is_prod
+    # Что браузер получит на самом деле: фронтенд ставит Secure только на HTTPS
+    # и никогда при явном COOKIE_SECURE=false. Без HTTPS Secure-куку браузер
+    # молча выбрасывает — именно так мобильный вход «терялся» после логина.
+    is_https = proto == "https"
+    effective_secure = is_https and secure_env is not False
     domain = str(getattr(settings, "cookie_domain", "") or "").strip()
     access_ttl = int(getattr(settings, "core_token_max_age_seconds", 0) or 0)
     refresh_days, idle_seconds, absolute_seconds = _limits()
@@ -529,9 +534,12 @@ def read_security_posture(
         {"key": "https", "ok": proto == "https",
          "title": "HTTPS",
          "detail": f"Запрос пришёл по {proto or 'неизвестной схеме'}." + ("" if proto == "https" else " Вход и файлы должны идти только по HTTPS: иначе куки и пароли идут открытым текстом.")},
-        {"key": "cookie_secure", "ok": bool(cookie_secure),
+        {"key": "cookie_secure", "ok": bool(effective_secure),
          "title": "Куки только по HTTPS",
-         "detail": "Флаг Secure включён." if cookie_secure else "Флаг Secure выключен (COOKIE_SECURE=false). Включайте его, когда сайт открывается по HTTPS."},
+         "detail": ("Браузер получит Secure-cookie: она уходит только по HTTPS." if effective_secure
+                    else "Сайт открыт по HTTP, поэтому Secure-куки браузер не сохранит — на телефоне вход будет теряться. Включите HTTPS."
+                    if not is_https and secure_env is not False
+                    else "COOKIE_SECURE=false: флаг Secure отключён принудительно.")},
         {"key": "cookie_domain_matches", "ok": not domain or host.endswith(domain.lstrip(".")),
          "title": "Домен куки",
          "detail": f"COOKIE_DOMAIN={domain}, запрос на {host or '—'}." if domain else "Кука привязана к текущему домену (COOKIE_DOMAIN пуст) — это безопасный вариант по умолчанию."},
@@ -557,9 +565,11 @@ def read_security_posture(
         "request": {"protocol": proto, "host": host, "secure": proto == "https"},
         "cookies": {
             "access": {"name": "core_token", "http_only": True, "same_site": "lax", "secure": bool(cookie_secure),
-                       "domain": domain or None, "max_age_seconds": access_ttl or None},
+                       "effective_secure": bool(effective_secure), "domain": domain or None,
+                       "max_age_seconds": access_ttl or None},
             "refresh": {"name": "core_refresh", "http_only": True, "same_site": "lax", "secure": bool(cookie_secure),
-                        "domain": domain or None, "max_age_days": platform.session_refresh_days},
+                        "effective_secure": bool(effective_secure), "domain": domain or None,
+                        "max_age_days": platform.session_refresh_days},
         },
         "sessions": {"idle_hours": platform.session_idle_hours, "absolute_days": platform.session_absolute_days,
                      "refresh_days": platform.session_refresh_days, "tracked_sessions": tracked,

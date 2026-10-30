@@ -90,8 +90,8 @@ type SecurityPosture = {
   proxy: { trust_headers: boolean; trusted: boolean; trusted_ranges: string[] };
   request: { protocol: string; host: string; secure: boolean };
   cookies: {
-    access: { name: string; http_only: boolean; same_site: string; secure: boolean; domain: string | null; max_age_seconds: number | null };
-    refresh: { name: string; http_only: boolean; same_site: string; secure: boolean; domain: string | null; max_age_days: number };
+    access: { name: string; http_only: boolean; same_site: string; secure: boolean; effective_secure?: boolean; domain: string | null; max_age_seconds: number | null };
+    refresh: { name: string; http_only: boolean; same_site: string; secure: boolean; effective_secure?: boolean; domain: string | null; max_age_days: number };
   };
   sessions: { idle_hours: number; absolute_days: number; refresh_days: number; tracked_sessions: number; sources: Record<string, string | undefined> };
   checks: SecurityCheck[];
@@ -1031,7 +1031,7 @@ export default function AdminSettingsPage() {
                       ["Источник адреса", security.client.source === "direct" ? "прямое соединение" : security.client.source],
                       ["Доверенные сети", security.proxy.trusted_ranges.length ? security.proxy.trusted_ranges.join(", ") : "не заданы (TRUSTED_PROXY_IPS пуст)"],
                       ["Адрес сайта", `${security.request.protocol}://${security.request.host || "—"}`],
-                      ["Куки", `${security.cookies.access.name} · HttpOnly · SameSite=${security.cookies.access.same_site} · ${security.cookies.access.secure ? "Secure" : "без Secure"}${security.cookies.access.domain ? ` · домен ${security.cookies.access.domain}` : ""}`],
+                      ["Куки", `${security.cookies.access.name} · HttpOnly · SameSite=${security.cookies.access.same_site} · ${(security.cookies.access.effective_secure ?? security.cookies.access.secure) ? "Secure" : "без Secure (браузер сохранит и по HTTP)"}${security.cookies.access.domain ? ` · домен ${security.cookies.access.domain}` : ""}`],
                       ["Сроки сессии", `простой ${security.sessions.idle_hours} ч · всего ${security.sessions.absolute_days} дн. · обновление ${security.sessions.refresh_days} дн.`],
                       ["Активных сессий", security.sessions.tracked_sessions < 0 ? "Redis недоступен" : String(security.sessions.tracked_sessions)],
                     ].map(([label, value]) => (

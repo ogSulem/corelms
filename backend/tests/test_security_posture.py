@@ -86,3 +86,24 @@ def test_reset_returns_session_limits_to_server_defaults(client, admin_headers, 
     assert reset.status_code == 200
     assert reset.json()["settings"]["session_idle_hours"] == 9
     assert reset.json()["settings"]["sources"]["session_idle_hours"] == "environment"
+
+
+def test_cookie_secure_check_reports_what_the_browser_will_actually_get(client, admin_headers, monkeypatch):
+    """Secure-кука на HTTP — не защита, а потерянная сессия на телефоне."""
+    checks = lambda body: {item["key"]: item for item in body["checks"]}
+
+    monkeypatch.setattr(settings, "cookie_secure", None)
+    over_http = client.get("/admin/settings/security", headers={**admin_headers, "X-Forwarded-Proto": "http"}).json()
+    assert over_http["cookies"]["access"]["effective_secure"] is False
+    assert checks(over_http)["cookie_secure"]["ok"] is False
+    assert "HTTP" in checks(over_http)["cookie_secure"]["detail"]
+
+    over_https = client.get("/admin/settings/security", headers={**admin_headers, "X-Forwarded-Proto": "https"}).json()
+    assert over_https["cookies"]["access"]["effective_secure"] is True
+    assert checks(over_https)["cookie_secure"]["ok"] is True
+
+    # Явный COOKIE_SECURE=false — это осознанное решение администратора.
+    monkeypatch.setattr(settings, "cookie_secure", False)
+    forced_off = client.get("/admin/settings/security", headers={**admin_headers, "X-Forwarded-Proto": "https"}).json()
+    assert forced_off["cookies"]["access"]["effective_secure"] is False
+    assert "COOKIE_SECURE=false" in checks(forced_off)["cookie_secure"]["detail"]
