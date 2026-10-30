@@ -46,6 +46,11 @@ body {
     radial-gradient(at 100% 100%, rgba(254, 153, 0, 0.08) 0px, transparent 55%);
 }
 
+/* Размытие и фиксированный фон дорого стоят на телефоне и дают рывки при прокрутке. */
+@media (pointer: coarse) {
+  body { background-attachment: scroll; }
+}
+
 .glass-card {
   @apply border border-zinc-200 bg-white/70 backdrop-blur-md transition-all hover:bg-white;
 }
@@ -73,3 +78,42 @@ body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---------- Мобильные устройства ----------
+   Внешний вид на десктопе не меняется: все правила ниже включаются только
+   на узких экранах или на устройствах с пальцевым вводом. */
+@media (max-width: 640px) {
+  /* Длинные названия файлов и папок не должны растягивать страницу.
+     `clip` не создаёт новый контейнер прокрутки, поэтому «липкая» шапка работает. */
+  html { overflow-x: hidden; }
+  body { overflow-x: clip; }
+  .learning-prose, .learning-prose * { overflow-wrap: anywhere; }
+}
+
+/* iPhone/iPad сам увеличивает страницу, если шрифт поля меньше 16px.
+   Это ломало ввод в поиске и диалогах: масштаб «залипал» после фокуса. */
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 860px) {
+    input:not([type="checkbox"]):not([type="radio"]),
+    select,
+    textarea { font-size: 16px; }
+  }
+}
+
+/* Пальцем нужно попадать в кнопку без прицеливания: минимум 44×44 пункта. */
+@media (pointer: coarse) {
+  button, [role="button"], a[role="button"], summary { touch-action: manipulation; }
+  summary, button[aria-label] { min-height: 40px; min-width: 40px; }
+  /* Служебные кнопки в строках не должны «прыгать» при нажатии. */
+  .touch-row { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+}
+
+/* Модальные окна на телефоне занимают высоту целиком, но с отступом от «челки». */
+@supports (padding: max(0px)) {
+  @media (max-width: 640px) {
+    [data-core-dialog] { padding-bottom: max(0px, env(safe-area-inset-bottom)); }
+  }
+}
+
+/* Горизонтальные прокручиваемые панели не должны подхватывать вертикальный жест. */
+.overflow-x-auto { overscroll-behavior-x: contain; }

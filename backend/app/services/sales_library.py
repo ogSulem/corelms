@@ -9,11 +9,12 @@ from pathlib import PurePosixPath
 
 from botocore.exceptions import ClientError
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.asset import ContentAsset
+from app.models.asset import AssetRevision, ContentAsset
+from app.models.media import AssetRendition
 from app.models.sales import SalesEntry, SalesSection
 from app.services.content import normalize_name, safe_filename, serialize_asset
 from app.services.storage import effective_bucket, get_s3_client
@@ -197,11 +198,96 @@ def listing_payload(db: Session, section: str, path: str, *, include_archived: b
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
     entries = list(db.scalars(stmt.order_by(SalesEntry.kind.desc(), SalesEntry.name, SalesEntry.id).offset(offset).limit(100)))
     assets = {a.id: a for a in db.scalars(select(ContentAsset).where(ContentAsset.id.in_([e.asset_id for e in entries if e.asset_id])))}
+    counts = dict(db.execute(select(SalesEntry.path, func.count()).where(
+        SalesEntry.section == section, SalesEntry.path.in_([join_path(path, e.name) for e in entries if e.kind == "folder"]),
+        SalesEntry.is_archived.is_(False)).group_by(SalesEntry.path)).all())
+    from app.services.app_settings import get_platform_settings
     return {"section": section, "path": path, "revision": root.revision, "total": total, "offset": offset,
+        "upload_max_bytes": get_platform_settings(db).upload_max_bytes,
+        "folder_counts": {join_path(path, e.name): counts.get(join_path(path, e.name), 0) for e in entries if e.kind == "folder"},
         "next_offset": offset + 100 if offset + 100 < total else None, "legacy_cursor": legacy_cursor, "notice": notice,
         "path_archived": not path_is_visible(db, section, path),
         "entries": [{"id": str(e.id), "kind": e.kind, "name": e.name, "path": join_path(e.path, e.name),
                      "is_archived": e.is_archived, "asset": serialize_asset(assets[e.asset_id]) if e.asset_id in assets else None} for e in entries]}
+
+
+def subtree(db: Session, entry: SalesEntry) -> list[SalesEntry]:
+    """Папка вместе со всем содержимым: перенос и удаление идут по всему дереву."""
+    if entry.kind != "folder":
+        return [entry]
+    full = join_path(entry.path, entry.name)
+    rows = list(db.scalars(select(SalesEntry).where(
+        SalesEntry.section == entry.section,
+        (SalesEntry.path == full) | SalesEntry.path.startswith(full + "/"))))
+    return [entry, *[row for row in rows if row.id != entry.id]]
+
+
+def move_subtree(db: Session, entry: SalesEntry, *, destination: str | None = None, new_name: str | None = None) -> None:
+    """Переносит файл или папку с содержимым в другую папку (или переименовывает).
+
+    Оригиналы в хранилище не трогаем: меняется только адрес записи в каталоге.
+    """
+    section = entry.section
+    name = safe_filename(new_name) if new_name is not None else entry.name
+    target_parent = entry.path if destination is None else clean_path(destination)
+    if entry.kind == "folder":
+        own = join_path(entry.path, entry.name)
+        if target_parent == own or target_parent.startswith(own + "/"):
+            raise HTTPException(422, "Нельзя переместить папку внутрь самой себя")
+    if target_parent == entry.path and name == entry.name:
+        return
+    require_directory(db, section, target_parent)
+    rows = subtree(db, entry)
+    old_prefix = join_path(entry.path, entry.name) if entry.kind == "folder" else ""
+    new_prefix = join_path(target_parent, name) if entry.kind == "folder" else ""
+    plan: list[tuple[SalesEntry, str, str]] = []
+    for row in rows:
+        if row.id == entry.id:
+            path, row_name = target_parent, name
+        else:
+            tail = row.path[len(old_prefix):].lstrip("/")
+            path, row_name = (join_path(new_prefix, tail) if tail else new_prefix), row.name
+        if path == row.path and row_name == row.name:
+            continue
+        plan.append((row, path, row_name))
+    for row, path, row_name in plan:
+        digest = identity(section, path, row_name, row.kind)
+        clash = db.scalar(select(SalesEntry.id).where(SalesEntry.identity_key == digest))
+        if clash and clash != row.id:
+            raise HTTPException(409, f"В папке уже есть «{row_name}». Переименуйте объект или выберите другую папку.")
+    for row, path, row_name in plan:
+        row.path, row.name = path, row_name
+        row.identity_key = identity(section, path, row_name, row.kind)
+    db.flush()
+
+
+def delete_subtree(db: Session, entry: SalesEntry) -> list[tuple[str, str]]:
+    """Удаляет записи дерева и возвращает объекты хранилища к удалению после коммита.
+
+    Сначала записи каталога, потом сами файлы: ссылка sales_entries.asset_id
+    не даст удалить файл, пока на него смотрит запись.
+    """
+    rows = subtree(db, entry)
+    keys: list[tuple[str, str]] = []
+    assets: list[ContentAsset] = []
+    for row in rows:
+        asset = db.get(ContentAsset, row.asset_id) if row.asset_id else None
+        if asset is not None:
+            assets.append(asset)
+            keys.append((asset.bucket, asset.object_key))
+            for revision in db.scalars(select(AssetRevision).where(AssetRevision.asset_id == asset.id)):
+                keys.append((revision.bucket, revision.object_key))
+            for rendition in db.scalars(select(AssetRendition).where(AssetRendition.asset_id == asset.id)):
+                if rendition.object_key:
+                    keys.append((rendition.bucket, rendition.object_key))
+        db.delete(row)
+    db.flush()
+    for asset in assets:
+        db.execute(delete(AssetRendition).where(AssetRendition.asset_id == asset.id))
+        db.execute(delete(AssetRevision).where(AssetRevision.asset_id == asset.id))
+        db.delete(asset)
+    db.flush()
+    return keys
 
 
 def require_entry(db: Session, entry_id: uuid.UUID) -> SalesEntry:

@@ -91,8 +91,11 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   };
 
   const isContentUpload = req.method === "POST" && path[0] === "admin" && path[1] === "content" && ["assets", "reimport"].includes(path[path.length - 1]);
-  const defaultTimeout = isContentUpload ? 900000 : 180000;
-  const timeoutMs = Number.parseInt((isContentUpload ? process.env.BACKEND_PROXY_UPLOAD_TIMEOUT_MS : process.env.BACKEND_PROXY_TIMEOUT_MS) || String(defaultTimeout), 10) || defaultTimeout;
+  // Частичная загрузка: кусок файла (PUT) и сборка (POST .../complete) идут так же долго,
+  // как обычная загрузка: на них нельзя вешать трёхминутный лимит прокси.
+  const longUpload = isContentUpload || req.method === "PUT" || path[path.length - 1] === "complete";
+  const defaultTimeout = longUpload ? 3600000 : 180000;
+  const timeoutMs = Number.parseInt((longUpload ? process.env.BACKEND_PROXY_UPLOAD_TIMEOUT_MS : process.env.BACKEND_PROXY_TIMEOUT_MS) || String(defaultTimeout), 10) || defaultTimeout;
   const ac = new AbortController();
   const t = isSse ? null : setTimeout(() => ac.abort(), Math.max(1000, timeoutMs));
 

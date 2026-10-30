@@ -1,10 +1,22 @@
 import "./globals.css";
 
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import type { ReactNode } from "react";
 
 import { ToastHost } from "@/components/ui/toast-host";
+
+/**
+ * Мобильный браузер: `viewport-fit=cover` убирает белые полосы у «челки»,
+ * а `interactiveWidget=resizes-content` не прячет поле ввода под клавиатурой.
+ */
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  interactiveWidget: "resizes-content",
+  themeColor: "#ffffff",
+};
 
 export const metadata: Metadata = {
   title: "Каркас Тайги — Контроль квалификации",
