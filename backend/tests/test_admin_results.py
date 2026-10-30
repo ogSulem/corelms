@@ -3,6 +3,8 @@
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import select
+
 from app.models.attempt import QuizAttempt
 from app.models.user import User, UserRole
 
@@ -84,3 +86,68 @@ def test_admin_users_list_survives_odd_rows(client, db, admin_headers, make_user
     assert all("progress_summary" in item for item in items)
     assert all(isinstance(item["role"], str) and item["role"] for item in items)
     assert all(isinstance(item["tags"], list) for item in items)
+
+
+def test_results_overview_separates_completions_from_module_count(client, db, admin_headers, make_module):
+    """Завершения — пары «человек × модуль»: их больше, чем модулей.
+
+    На экране «Результаты» цифра стояла рядом с «из 40 опубликованных» и читалась
+    как «167 из 40». Поэтому рядом с суммой отдаём охват и число людей.
+    """
+    module_a, _lesson_a, quiz_a = make_module(required=True)
+    module_b, _lesson_b, quiz_b = make_module(required=True)
+    first = _learner(db, "Первый")
+    second = _learner(db, "Второй")
+
+    for learner, quiz in ((first, quiz_a), (second, quiz_a), (second, quiz_b)):
+        db.add(QuizAttempt(user_id=learner.id, quiz_id=quiz.id, score=100, passed=True,
+                           started_at=datetime.now(timezone.utc), finished_at=datetime.now(timezone.utc)))
+    db.commit()
+
+    totals = client.get("/admin/analytics/overview", headers=admin_headers).json()["totals"]
+
+    assert totals["completions"] == 3            # три пары «человек × модуль»
+    assert totals["learners_completed"] == 2     # но всего два человека
+    assert totals["modules_completed"] == 2      # и два модуля
+    assert totals["published"] >= 2
+    assert 0 <= totals["completion_rate"] <= 100
+
+
+def test_superadmin_can_switch_a_user_to_partner(client, db, make_user):
+    """Роль partner должна приниматься API, а не только показываться в списке."""
+    employee = make_user(UserRole.employee)[0]
+    superadmin_headers = make_user(UserRole.superadmin)[1]
+
+    response = client.patch(f"/admin/users/{employee.id}", headers=superadmin_headers, json={"role": "partner"})
+    assert response.status_code == 200, response.text
+
+    db.expire_all()
+    updated = db.get(User, employee.id)
+    assert updated is not None and updated.role == UserRole.partner
+
+
+def test_admin_creates_and_deletes_tags(client, db, admin_headers, make_user):
+    """Кнопка «Теги» на экране пользователей: создание и удаление через API."""
+    from app.models.tag import Tag, UserTagMap
+
+    created = client.post("/admin/tags", headers=admin_headers, json={"name": "Смены ночью"})
+    assert created.status_code == 200, created.text
+    tag_id = created.json()["id"]
+    assert created.json()["name"] == "Смены ночью"
+
+    # Повторное создание не плодит дубли и возвращает тот же тег.
+    again = client.post("/admin/tags", headers=admin_headers, json={"name": "  смены НОЧЬЮ "})
+    assert again.json()["id"] == tag_id
+
+    employee, employee_headers = make_user(UserRole.employee)
+    db.add(UserTagMap(user_id=employee.id, tag_id=__import__("uuid").UUID(tag_id)))
+    db.commit()
+
+    deleted = client.delete(f"/admin/tags/{tag_id}", headers=admin_headers)
+    assert deleted.status_code == 200, deleted.text
+    db.expire_all()
+    assert db.get(Tag, __import__("uuid").UUID(tag_id)) is None
+    assert db.scalar(select(UserTagMap).where(UserTagMap.user_id == employee.id)) is None
+
+    # Ученик не может управлять тегами.
+    assert client.post("/admin/tags", headers=employee_headers, json={"name": "Свои"}).status_code == 403

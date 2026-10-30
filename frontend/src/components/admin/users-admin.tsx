@@ -3,16 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check, Copy, KeyRound, Loader2, Plus, RefreshCw, Search, ShieldCheck,
-  Trash2, UserRound, Users, X,
+  Tags, Trash2, UserRound, Users, X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { apiFetch } from "@/lib/api";
+import { isAdminRole, isEmployeeRole, matchesRoleTab, type AdminRole, type RoleTab } from "@/lib/admin-users-filter";
 import { useAuth } from "@/lib/hooks/use-auth";
 
 // partner встречается в рабочих данных: роль без административных прав.
-type Role = "employee" | "partner" | "admin" | "superadmin";
+type Role = AdminRole;
 
 type ProgressSummary = {
   completed_count: number;
@@ -80,7 +81,10 @@ export function UsersAdmin() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [roleFilter, setRoleFilter] = useState<"all" | Role>("all");
+  // «Сотрудники» — это employee и partner: партнёр тоже учится, просто без прав
+  // администратора. Раньше вкладка показывала только employee и при данных,
+  // где весь штат заведён партнёрами, оказывалась пустой при счётчике 88.
+  const [roleFilter, setRoleFilter] = useState<RoleTab>("all");
   const [onlyActive, setOnlyActive] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -90,6 +94,8 @@ export function UsersAdmin() {
   const [draft, setDraft] = useState({ name: "", email: "", position: "", role: "employee" as Role });
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
 
+  const [tagsOpen, setTagsOpen] = useState(false);
+  const [newTagName, setNewTagName] = useState("");
   const [creating, setCreating] = useState(false);
   const [newUser, setNewUser] = useState({ name: "", email: "", position: "" });
   const [tempPassword, setTempPassword] = useState<{ name: string; password: string } | null>(null);
@@ -126,7 +132,7 @@ export function UsersAdmin() {
   const filtered = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase("ru");
     return items.filter((u) => {
-      if (roleFilter !== "all" && u.role !== roleFilter) return false;
+      if (!matchesRoleTab(u.role, roleFilter)) return false;
       if (onlyActive && !u.last_activity_at) return false;
       if (!needle) return true;
       return `${u.name} ${u.email || ""} ${u.position || ""} ${u.tags.join(" ")}`
@@ -136,9 +142,22 @@ export function UsersAdmin() {
 
   const counters = useMemo(() => ({
     all: items.length,
-    employees: items.filter((u) => u.role === "employee" || u.role === "partner").length,
-    admins: items.filter((u) => u.role === "admin" || u.role === "superadmin").length,
+    employees: items.filter((u) => isEmployeeRole(u.role)).length,
+    partners: items.filter((u) => u.role === "partner").length,
+    admins: items.filter((u) => isAdminRole(u.role)).length,
   }), [items]);
+
+  const tabs = useMemo(() => {
+    const list: { id: RoleTab; label: string; count: number }[] = [
+      { id: "all", label: "Все", count: counters.all },
+      { id: "employees", label: "Сотрудники", count: counters.employees },
+    ];
+    // Вкладка «Партнёры» нужна только когда такие люди есть, иначе это лишний шум.
+    if (counters.partners) list.push({ id: "partner", label: "Партнёры", count: counters.partners });
+    list.push({ id: "admins", label: "Администраторы", count: counters.admins });
+    return list;
+  }, [counters]);
+
 
   async function openUser(target: AdminUser) {
     setSelected(target);
@@ -241,6 +260,41 @@ export function UsersAdmin() {
     }
   }
 
+  async function createTag() {
+    const name = newTagName.trim();
+    if (!name || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await apiFetch<TagItem>("/admin/tags", { method: "POST", body: JSON.stringify({ name }) });
+      setTags((prev) => (prev.some((t) => t.id === created.id) ? prev : [...prev, created].sort((a, b) => a.name.localeCompare(b.name, "ru"))));
+      setNewTagName("");
+      toast("Тег создан", `«${created.name}» появился в карточке каждого сотрудника`);
+    } catch (e) {
+      setError(e instanceof Error ? `Не удалось создать тег: ${e.message}` : "Не удалось создать тег");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteTag(tag: TagItem) {
+    if (busy) return;
+    if (!window.confirm(`Удалить тег «${tag.name}»? Он снимется со всех сотрудников и модулей.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/admin/tags/${tag.id}`, { method: "DELETE" });
+      setTags((prev) => prev.filter((t) => t.id !== tag.id));
+      setSelectedTags((prev) => prev.filter((id) => id !== tag.id));
+      await load();
+      toast("Тег удалён", `«${tag.name}» больше никому не выдаётся`);
+    } catch (e) {
+      setError(e instanceof Error ? `Не удалось удалить тег: ${e.message}` : "Не удалось удалить тег");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function copyPassword() {
     if (!tempPassword) return;
     try {
@@ -251,18 +305,26 @@ export function UsersAdmin() {
     }
   }
 
+  // Правила те же, что на сервере (PATCH /admin/users/{id}): суперадмин правит
+  // всех, обычный админ — сотрудников и себя, но не других администраторов.
+  const canEditSelected = isSuperadmin || !selected || selected.id === me?.id || isEmployeeRole(selected.role);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Пользователи</h2>
           <p className="mt-1.5 text-sm text-zinc-500">
-            Всего {counters.all}: сотрудников {counters.employees}, администраторов {counters.admins}.
+            Всего {counters.all}: сотрудников {counters.employees}
+            {counters.partners ? ` (из них партнёров ${counters.partners})` : ""}, администраторов {counters.admins}.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" className={btn} onClick={() => { setError(null); void load(); }}>
             <RefreshCw size={16} />Обновить
+          </Button>
+          <Button variant="outline" className={btn} onClick={() => { setError(null); setTagsOpen(true); }}>
+            <Tags size={16} />Теги{tags.length ? <span className="text-xs text-zinc-400">{tags.length}</span> : null}
           </Button>
           <Button className={btn} onClick={() => { setError(null); setCreating(true); }}>
             <Plus size={16} />Добавить
@@ -275,12 +337,7 @@ export function UsersAdmin() {
       <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 p-4">
           <div className="flex flex-wrap gap-1">
-            {([
-              { id: "all", label: "Все", count: counters.all },
-              { id: "employee", label: "Сотрудники", count: counters.employees },
-              { id: "admin", label: "Администраторы", count: items.filter((u) => u.role === "admin").length },
-              { id: "superadmin", label: "Суперадмины", count: items.filter((u) => u.role === "superadmin").length },
-            ] as const).map((tab) => (
+            {(tabs).map((tab) => (
               <button key={tab.id} type="button" aria-pressed={roleFilter === tab.id} onClick={() => setRoleFilter(tab.id)}
                 className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium ${roleFilter === tab.id ? "bg-amber-50 text-amber-900" : "text-zinc-500 hover:bg-zinc-50"}`}>
                 {tab.label}<span className="text-[10px] opacity-60">{tab.count}</span>
@@ -360,14 +417,15 @@ export function UsersAdmin() {
       <Modal open={!!selected} title={selected ? `${selected.name}` : ""} onClose={() => { if (!busy) setSelected(null); }} disableClose={busy} className="max-w-3xl"
         footer={<div className="flex flex-wrap justify-between gap-2">
           <Button variant="ghost" className={`${btn} text-rose-600`}
-            disabled={busy || selected?.id === me?.id || (!isSuperadmin && selected?.role !== "employee")}
-            title={!isSuperadmin && selected?.role !== "employee" ? "Удалять администраторов может только суперадмин" : undefined}
+            disabled={busy || selected?.id === me?.id || (!isSuperadmin && !isEmployeeRole(selected?.role || ""))}
+            title={!isSuperadmin && !isEmployeeRole(selected?.role || "") ? "Удалять администраторов может только суперадмин" : undefined}
             onClick={() => void deleteUser()}>
             <Trash2 size={15} />Удалить
           </Button>
           <div className="flex gap-2">
             <Button variant="outline" className={btn} disabled={busy} onClick={() => void resetPassword()}><KeyRound size={15} />Сбросить пароль</Button>
-            <Button className={btn} disabled={busy} onClick={() => void saveUser()}>{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}Сохранить</Button>
+            <Button className={btn} disabled={busy || !canEditSelected} title={canEditSelected ? undefined : "Изменять администраторов может только суперадмин"}
+              onClick={() => void saveUser()}>{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}Сохранить</Button>
           </div>
         </div>}>
         {selected && (
@@ -435,6 +493,41 @@ export function UsersAdmin() {
             </div>
           </div>
         )}
+      </Modal>
+
+      <Modal open={tagsOpen} title="Теги доступа" onClose={() => { if (!busy) setTagsOpen(false); }} disableClose={busy} className="max-w-lg"
+        footer={<div className="flex justify-end"><Button variant="outline" className={btn} disabled={busy} onClick={() => setTagsOpen(false)}>Готово</Button></div>}>
+        <div className="space-y-4">
+          <p className="text-sm leading-6 text-zinc-600">
+            Тег — это группа сотрудников. Модуль можно открыть только тем, у кого есть его тег,
+            поэтому теги создаются здесь, а выдаются в карточке сотрудника.
+          </p>
+          <div className="flex gap-2">
+            <input className={field} value={newTagName} placeholder="Например: Менеджеры продаж"
+              onChange={(e) => setNewTagName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void createTag(); } }} />
+            <Button className={btn} disabled={busy || !newTagName.trim()} onClick={() => void createTag()}>
+              {busy ? <Loader2 size={15} className="animate-spin" /> : <Plus size={15} />}Создать
+            </Button>
+          </div>
+          {tags.length ? (
+            <ul className="divide-y divide-zinc-100 rounded-xl border border-zinc-200">
+              {tags.map((tag) => (
+                <li key={tag.id} className="flex items-center justify-between gap-3 px-4 py-3">
+                  <span className="text-sm text-zinc-900">{tag.name}</span>
+                  <Button variant="ghost" size="sm" className={`${btn} text-rose-600`} disabled={busy}
+                    onClick={() => void deleteTag(tag)}>
+                    <Trash2 size={14} />Удалить
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="rounded-xl bg-zinc-50 p-4 text-sm text-zinc-600">
+              Тегов пока нет. Создайте первый — без тегов доступ к модулям работает по общим правилам.
+            </p>
+          )}
+        </div>
       </Modal>
 
       <Modal open={creating} title="Новый пользователь" onClose={() => { if (!busy) setCreating(false); }} disableClose={busy} className="max-w-lg"
