@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/settings", tags=["admin-settings"])
 
 _SCHEMA_REVISION: str | None = None
-_SCHEMA_REVISION_FALLBACK = "0024"
+_SCHEMA_REVISION_FALLBACK = "0025"
 
 
 def expected_schema_revision() -> str:

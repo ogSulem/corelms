@@ -191,6 +191,10 @@ def environment_report(db) -> tuple[list[str], list[str]]:
     try:
         current = db.execute(text("select version_num from alembic_version")).scalar()
     except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
         current = None
     add("Версия схемы", current or "не определена", None if current else "В alembic_version нет строки")
 
@@ -214,11 +218,21 @@ def environment_report(db) -> tuple[list[str], list[str]]:
 
     lines.append("")
     lines.append("ДАННЫЕ")
+    def _count(sql: str) -> object:
+        try:
+            return db.execute(text(sql)).scalar()
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return f"ошибка: {type(exc).__name__}"
+
     for label, sql in (
         ("пользователей", "select count(*) from users"),
-        ("сотрудников", "select count(*) from users where role = 'employee'"),
+        ("сотрудников", "select count(*) from users where role in ('employee','partner')"),
         ("администраторов", "select count(*) from users where role in ('admin','superadmin')"),
-        ("Пользователей с ролью вне списка", "select count(*) from users where role not in ('employee','admin','superadmin')"),
+        ("Пользователей с ролью вне списка", "select count(*) from users where role::text not in ('employee','partner','admin','superadmin')"),
         ("модулей", "select count(*) from modules"),
         ("уроков", "select count(*) from submodules where is_archived = false"),
         ("файлов", "select count(*) from content_assets"),
@@ -226,11 +240,9 @@ def environment_report(db) -> tuple[list[str], list[str]]:
         ("попыток тестов", "select count(*) from quiz_attempts"),
         ("завершений модулей", "select count(*) from module_completions"),
     ):
-        try:
-            value = db.execute(text(sql)).scalar()
-        except Exception as exc:
-            value = f"ошибка: {type(exc).__name__}"
-            problems.append(f"Запрос «{label}» не выполнился: {exc}")
+        value = _count(sql)
+        if isinstance(value, str) and value.startswith("ошибка:"):
+            problems.append(f"Запрос «{label}» не выполнился: {value}")
         lines.append(f"  {label:<26} {value}")
         if label.startswith("Пользователей с ролью") and value:
             problems.append(f"{value} пользователей с неизвестной ролью — список и прогресс могут падать")

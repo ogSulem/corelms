@@ -168,45 +168,61 @@ ERROR [backend internal] load metadata for docker.io/library/python:3.11-slim-bo
 
 ```bash
 docker images | grep -E 'corelms-(backend|frontend)'
-docker compose build --pull never backend frontend
 ```
 
-`--pull never` запрещает обращаться в реестр за базовыми образами: они уже есть локально
-(из прошлых сборок), а изменённые слои — только исходники, поэтому сеть не нужна.
-Если Compose ругается на неизвестный флаг:
+`docker compose build --pull never …` **не работает**: в compose v2 `--pull` принимает
+только `always|missing|never`, но флаг разбирается как имена сервисов, и получается
+`no such service: never`.
+
+Правильный путь без сети — собрать новый слой поверх уже существующего образа
+(скрипт лежит в репозитории):
 
 ```bash
-DOCKER_BUILDKIT=0 docker compose build backend frontend
+cd /opt/corelms
+bash deploy/rebuild-offline.sh
 ```
 
-Проверка, что новый код действительно в образе (должна быть строка про журнал ошибок):
+Что делает скрипт:
+
+* backend — `FROM corelms-backend:latest` + `COPY` исходников (`backend/`) в `/app`;
+  зависимости не переустанавливаются, поэтому PyPI тоже не нужен;
+* frontend — `yarn build` выполняется внутри старого образа `corelms-frontend:latest`
+  (в нём уже есть `node_modules`), исходники монтируются только на чтение,
+  публичный адрес API и переменные `NEXT_PUBLIC_*` берутся из `.env`;
+* перед сборкой образы помечаются `corelms-backend:rollback-<дата>` /
+  `corelms-frontend:rollback-<дата>` — откат одним `docker tag`.
+
+Проверка, что новый код действительно в образе:
 
 ```bash
-docker compose run --rm --no-deps backend python -c "import app.services.error_log as m; print([n for n in dir(m) if n == 'record'])"
+docker compose exec -T backend python -c "from app.models.user import UserRole; print(sorted(r.value for r in UserRole))"
 ```
 
-Если сборка невозможна вообще, а нужен только Python-фикс, можно временно подменить
-файлы внутри работающего контейнера (исчезнет при пересоздании контейнера):
+(Должно быть `['admin', 'employee', 'partner', 'superadmin']`.)
 
-```bash
-docker cp backend/app/main.py corelms-backend-1:/app/app/main.py
-docker cp backend/app/services/error_log.py corelms-backend-1:/app/app/services/error_log.py
-docker compose restart backend
-```
+`docker compose run --rm --no-deps backend python -c "…"` для таких проверок **не
+подходит**: контейнер стартует со своим entrypoint (alembic + uvicorn) и висит.
+Либо `docker compose exec -T` в уже работающем контейнере, либо
+`docker run --rm --entrypoint python corelms-backend:latest -c "…"`.
 
 ## 9. Обновление без потери данных
 
 ```bash
 cd /opt/corelms
 docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > /srv/backups/pre-deploy-$(date +%F_%H-%M).dump
-git fetch origin
-git checkout main
 git pull --ff-only
-docker compose build --pull never backend frontend
-docker compose up -d --no-deps backend frontend
+bash deploy/rebuild-offline.sh
+docker compose up -d --no-deps backend worker_import worker_regen worker_media worker_default frontend
 docker compose ps
-curl -sSI https://<домен>/health/ready | head -3
+docker compose exec -T backend alembic upgrade head
+docker compose exec -T backend python scripts/selfcheck.py
+curl -sS https://<домен>/health/ready ; echo
 ```
+
+Порядок важен: миграции запускаются уже на новом образе, поэтому `alembic upgrade head`
+идёт **после** `up -d`. Воркеры перезапускаются вместе с backend — они работают на том же
+образе, иначе импорт продолжит работать на старом коде. Перезапуск воркеров прерывает
+текущие задачи, поэтому обновляйся, когда импортов в работе нет.
 
 Никогда не использовать `docker compose down -v`, `docker volume rm pg_data`, `--renew-anon-volumes`:
 Postgres живёт в томе `pg_data`, файлы — в S3, загрузки — в томе `backend_data`.

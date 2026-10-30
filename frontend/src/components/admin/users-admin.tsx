@@ -11,7 +11,8 @@ import { Modal } from "@/components/ui/modal";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/lib/hooks/use-auth";
 
-type Role = "employee" | "admin" | "superadmin";
+// partner встречается в рабочих данных: роль без административных прав.
+type Role = "employee" | "partner" | "admin" | "superadmin";
 
 type ProgressSummary = {
   completed_count: number;
@@ -50,7 +51,12 @@ type TagItem = { id: string; name: string };
 
 const btn = "gap-2 rounded-xl text-sm font-medium normal-case tracking-normal";
 const field = "w-full rounded-xl border border-zinc-200 px-3.5 py-2.5 text-sm text-zinc-900 outline-none focus:border-amber-500";
-const roleLabel: Record<Role, string> = { employee: "Сотрудник", admin: "Администратор", superadmin: "Суперадмин" };
+const roleLabel: Record<Role, string> = {
+  employee: "Сотрудник",
+  partner: "Партнёр",
+  admin: "Администратор",
+  superadmin: "Суперадмин",
+};
 
 function when(value: string | null): string {
   if (!value) return "не заходил";
@@ -130,8 +136,8 @@ export function UsersAdmin() {
 
   const counters = useMemo(() => ({
     all: items.length,
-    employees: items.filter((u) => u.role === "employee").length,
-    admins: items.filter((u) => u.role !== "employee").length,
+    employees: items.filter((u) => u.role === "employee" || u.role === "partner").length,
+    admins: items.filter((u) => u.role === "admin" || u.role === "superadmin").length,
   }), [items]);
 
   async function openUser(target: AdminUser) {
@@ -323,8 +329,10 @@ export function UsersAdmin() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${u.role === "employee" ? "bg-zinc-100 text-zinc-600" : "bg-amber-50 text-amber-800"}`}>
-                        {roleLabel[u.role]}
+                      <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                        u.role === "admin" || u.role === "superadmin" ? "bg-amber-50 text-amber-800" : "bg-zinc-100 text-zinc-600"
+                      }`}>
+                        {roleLabel[u.role] ?? u.role}
                       </span>
                     </td>
                     <td className="px-4 py-3">
@@ -378,6 +386,7 @@ export function UsersAdmin() {
                 <select className={field} value={draft.role} disabled={!isSuperadmin || selected.id === me?.id}
                   onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })}>
                   <option value="employee">Сотрудник</option>
+                  <option value="partner">Партнёр</option>
                   <option value="admin">Администратор</option>
                   <option value="superadmin">Суперадмин</option>
                 </select>

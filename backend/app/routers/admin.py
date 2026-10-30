@@ -6011,7 +6011,7 @@ def analytics_overview(
         "generated_at": now.isoformat(),
         "totals": {
             "users": len(users),
-            "employees": sum(1 for u in users if u.role == UserRole.employee),
+            "employees": sum(1 for u in users if u.role not in {UserRole.admin, UserRole.superadmin}),
             "admins": sum(1 for u in users if u.role in {UserRole.admin, UserRole.superadmin}),
             "active_7d": active_7d,
             "modules": len(modules),
