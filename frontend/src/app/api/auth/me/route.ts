@@ -14,8 +14,8 @@ export async function GET(request: Request) {
   const finish = (response: NextResponse) => {
     // A refresh-only visit also needs the rotated cookies, not just the JSON user.
     if (rotation) {
-      setAccessCookie(response, rotation.access, { upstreamExpiresIn: rotation.expiresIn ?? null });
-      if (rotation.nextRefresh) setRefreshCookie(response, rotation.nextRefresh, { refreshExpiresIn: rotation.refreshExpiresIn ?? null });
+      setAccessCookie(response, rotation.access, { upstreamExpiresIn: rotation.expiresIn ?? null, request });
+      if (rotation.nextRefresh) setRefreshCookie(response, rotation.nextRefresh, { refreshExpiresIn: rotation.refreshExpiresIn ?? null, request });
     }
     response.headers.set("Cache-Control", "private, no-store");
     return response;
@@ -23,7 +23,7 @@ export async function GET(request: Request) {
   const unavailable = () => finish(NextResponse.json({ error: "Сервис авторизации временно недоступен" }, { status: 503 }));
   const unauthenticated = () => {
     const response = NextResponse.json({ authenticated: false });
-    clearAuthCookies(response);
+    clearAuthCookies(response, request);
     response.headers.set("Cache-Control", "private, no-store");
     return response;
   };

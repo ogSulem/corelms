@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from botocore.exceptions import ClientError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -33,6 +33,7 @@ from app.services.access import is_admin, accessible_modules_clause
 from app.services.document_preview import MAX_BYTES, build_preview, preview_slot
 from app.services.content import referenced_storage_keys
 from app.services.storage import get_s3_client, presign_get
+from app.services.thumbs import current_thumb, generate_thumb, thumb_kind
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 
@@ -490,6 +491,72 @@ def preview_asset(
     db.commit()
     from fastapi.responses import JSONResponse
     return JSONResponse({**preview, "asset_id": str(asset.id), "version": asset.version}, headers={"Cache-Control": "private, no-store"})
+
+
+def _iter_body(body):
+    try:
+        while True:
+            chunk = body.read(1024 * 256)
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        body.close()
+
+
+@router.get("/{asset_id}/thumb")
+def asset_thumb(
+    asset_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+    refresh: bool = Query(default=False, description="Пересобрать превью (только админ)"),
+    _: object = rate_limit(key_prefix="asset_thumb", limit=600, window_seconds=60),
+):
+    """Маленькое превью файла для списков: кадр видео или уменьшенное фото.
+
+    Превью — обычная картинка, поэтому список не скачивает видео и не тянет
+    оригинал фото на 12 МБ. Пока превью нет, ответ 404 с `Retry-After`:
+    список покажет иконку и перезапросит картинку позже.
+    """
+    asset = db.scalar(select(ContentAsset).where(ContentAsset.id == asset_id))
+    if asset is None:
+        raise HTTPException(status_code=404, detail="asset not found")
+    _asset_access_guard(db=db, user=user, aid=asset_id, asset=asset)
+    if thumb_kind(asset.original_filename) is None:
+        raise HTTPException(status_code=404, detail="у этого формата нет превью")
+
+    row = current_thumb(db, asset)
+    if refresh and is_admin(user):
+        row = generate_thumb(db, asset, retry=True)
+    elif row is None or row.state != "ready" or not row.object_key:
+        row = generate_thumb(db, asset)
+
+    if row is None or row.state != "ready" or not row.object_key:
+        headers = {"Cache-Control": "no-store", "Retry-After": "6"}
+        raise HTTPException(status_code=404, detail="превью ещё готовится", headers=headers)
+
+    etag = '"' + str(row.object_key).rsplit("/", 1)[-1].split(".")[0] + '"'
+    common = {
+        "Cache-Control": "private, max-age=604800",
+        "ETag": etag,
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+    }
+    if str(request.headers.get("if-none-match") or "").strip() == etag:
+        return Response(status_code=304, headers=common)
+    try:
+        obj = get_s3_client().get_object(Bucket=str(row.bucket), Key=str(row.object_key))
+    except ClientError as exc:
+        code = str((exc.response or {}).get("Error", {}).get("Code") or "")
+        if code in {"NoSuchKey", "NotFound"}:
+            raise HTTPException(status_code=404, detail="превью не найдено в хранилище") from exc
+        raise HTTPException(status_code=503, detail="storage unavailable") from exc
+    body = obj.get("Body")
+    if body is None:
+        raise HTTPException(status_code=404, detail="превью не найдено в хранилище")
+    common["Content-Length"] = str(int(obj.get("ContentLength") or row.size_bytes or 0))
+    return StreamingResponse(_iter_body(body), media_type="image/jpeg", headers=common)
 
 
 @router.get("/{asset_id}/viewer")

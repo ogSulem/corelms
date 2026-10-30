@@ -26,6 +26,6 @@ export async function POST(request: Request) {
   } catch { /* Local logout must still work during an API outage. */ }
   finally { clearTimeout(timer); }
   const response = NextResponse.json({ ok: true, session_revoked: revoked }, { headers: { "Cache-Control": "private, no-store" } });
-  clearAuthCookies(response);
+  clearAuthCookies(response, request);
   return response;
 }

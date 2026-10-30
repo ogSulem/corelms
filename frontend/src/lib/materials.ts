@@ -22,10 +22,21 @@ export function fileExtension(name: string): string {
 }
 
 /**
- * Адрес превью файла. `thumb=1` отключает запись события обучения и разрешает кэш:
- * иконки в списке не должны попадать в журнал «просмотрено».
+ * Адрес картинки-превью (кадр видео или уменьшенное фото).
+ *
+ * Раньше списки показывали оригинал: видео скачивалось в браузер целиком ради
+ * одного кадра, а фото — в полном размере ради квадратика 44×44. Теперь сервер
+ * отдаёт отдельный JPEG на 512 px, он кэшируется браузером на неделю.
  */
-export function materialThumbUrl(assetId: string, version?: number | null, browserCopy = false): string {
+export function materialThumbUrl(assetId: string, version?: number | null): string {
+  const query = new URLSearchParams();
+  if (version) query.set("v", String(version));
+  const suffix = query.toString();
+  return `/api/backend/assets/${encodeURIComponent(assetId)}/thumb${suffix ? `?${suffix}` : ""}`;
+}
+
+/** Полноразмерный файл — только для просмотра, не для списков. */
+export function materialStreamUrl(assetId: string, version?: number | null, browserCopy = false): string {
   const query = new URLSearchParams({ variant: browserCopy ? "browser" : "original", thumb: "1" });
   if (version) query.set("v", String(version));
   return `/api/backend/assets/${encodeURIComponent(assetId)}/stream?${query.toString()}`;
@@ -237,8 +248,9 @@ export async function uploadMaterial<T>(path: string, form: FormData, onProgress
         return await uploadChunked<T>(`${base}${chunkStartPath(path)}`, file, formFields(form), onProgress, signal);
       } catch (error) {
         const failure = error as UploadFailure;
-        // Старая сборка без частичной загрузки: 404/405 без JSON — пробуем обычный путь.
-        if ((failure.status === 404 || failure.status === 405) && !failure.bodyWasJson) continue;
+        // Прямой маршрут недоступен (старая сборка или прокси без /api/upload) —
+        // пробуем обычный путь через Next.js, даже если тело ответа было JSON.
+        if (failure.status === 404 || failure.status === 405) continue;
         throw error;
       }
     }
@@ -255,8 +267,8 @@ export async function uploadMaterial<T>(path: string, form: FormData, onProgress
     return await send(UPLOAD_PATH);
   } catch (error) {
     const failure = error as UploadFailure;
-    // Старая сборка без прямого маршрута: путь /api/upload/ отдаёт 404 без JSON.
-    if ((failure.status === 404 || failure.status === 405) && !failure.bodyWasJson) return send(FALLBACK_UPLOAD_PATH);
+    // Старая сборка без прямого маршрута: 404/405 от /api/upload/ — пробуем Next.js.
+    if (failure.status === 404 || failure.status === 405) return send(FALLBACK_UPLOAD_PATH);
     throw error;
   }
 }

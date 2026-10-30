@@ -821,6 +821,73 @@ def purge_modules_missing_storage(
     raise HTTPException(409, "Автоматическое удаление модулей отключено: недоступность S3 не означает потерю данных. Используйте архив модуля.")
 
 
+@router.get("/maintenance/thumbs/status")
+def maintenance_thumbs_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    """Сколько файлов уже с превью, сколько ждёт и сколько не удалось.
+
+    Превью — производные данные: их отсутствие не влияет на доступ к файлам.
+    """
+    from app.models.media import AssetThumb
+    from app.services.thumbs import thumb_kind
+    from sqlalchemy import func as sa_func
+
+    assets = list(db.execute(select(ContentAsset.id, ContentAsset.original_filename,
+                                    ContentAsset.version, ContentAsset.bucket, ContentAsset.object_key)).all())
+    previewable = [row for row in assets if thumb_kind(row.original_filename)]
+    counts: dict[str, int] = {}
+
+    def add(state: str) -> None:
+        counts[state] = counts.get(state, 0) + 1
+
+    for asset_id, _name, version, bucket, key in previewable:
+        row = db.scalar(select(AssetThumb).where(AssetThumb.asset_id == asset_id,
+            AssetThumb.source_version == version, AssetThumb.source_bucket == bucket,
+            AssetThumb.source_object_key == key))
+        add(row.state if row else "missing")
+    total_bytes = int(db.scalar(select(sa_func.coalesce(sa_func.sum(AssetThumb.size_bytes), 0))) or 0)
+    return {"ok": True, "previewable": len(previewable), "states": counts,
+            "thumb_bytes": total_bytes, "items": [{"asset_id": str(row[0]), "name": row[1], "version": row[2],
+            "state": (db.scalar(select(AssetThumb.state).where(AssetThumb.asset_id == row[0])) or "missing")}
+            for row in previewable[:50]]}
+
+
+@router.post("/maintenance/thumbs/backfill", status_code=202)
+def maintenance_thumbs_backfill(
+    request: Request,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    limit: int = Query(default=200, ge=1, le=2000),
+    _: object = rate_limit(key_prefix="admin_thumbs_backfill", limit=6, window_seconds=60),
+):
+    """Ставит в очередь превью для файлов, у которых их ещё нет.
+
+    Нужно после обновления: старые фото и видео получают картинку в списке,
+    не дожидаясь, пока каждый файл откроют вручную.
+    """
+    from app.models.media import AssetThumb
+    from app.services.thumbs import enqueue_thumb, thumb_kind
+
+    queued = 0
+    for asset in db.scalars(select(ContentAsset).order_by(ContentAsset.created_at.desc()).limit(5000)):
+        if queued >= limit:
+            break
+        if not thumb_kind(asset.original_filename):
+            continue
+        row = db.scalar(select(AssetThumb).where(AssetThumb.asset_id == asset.id,
+            AssetThumb.source_version == asset.version, AssetThumb.source_bucket == asset.bucket,
+            AssetThumb.source_object_key == asset.object_key))
+        if row is not None and row.state in {"ready", "processing"}:
+            continue
+        enqueue_thumb(asset.id)
+        queued += 1
+    audit_log(db=db, request=request, actor_user_id=current.id, event_type="admin_thumbs_backfill", meta={"queued": queued})
+    db.commit()
+    return {"ok": True, "queued": queued}
+
+
 @router.get("/maintenance/modules/storage-scan")
 def maintenance_modules_storage_scan(
     db: Session = Depends(get_db),

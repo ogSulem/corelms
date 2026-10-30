@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     trust_proxy_headers: bool = Field(default=False, validation_alias="TRUST_PROXY_HEADERS")
     trusted_proxy_ips: str | None = Field(default=None, validation_alias="TRUSTED_PROXY_IPS")
 
+    # Те же переменные читает фронтенд, который ставит куку. Дублируем их здесь,
+    # чтобы «Безопасность и доступ» показывала администратору реальный режим,
+    # а не догадку по NODE_ENV.
+    cookie_secure: bool | None = Field(default=None, validation_alias="COOKIE_SECURE")
+    cookie_domain: str | None = Field(default=None, validation_alias="COOKIE_DOMAIN")
+    core_token_max_age_seconds: int | None = Field(default=None, validation_alias="CORE_TOKEN_MAX_AGE_SECONDS")
+
     s3_endpoint_url: str = Field(validation_alias="S3_ENDPOINT_URL")
     s3_public_endpoint_url: str | None = Field(default=None, validation_alias="S3_PUBLIC_ENDPOINT_URL")
     s3_access_key_id: str = Field(validation_alias="S3_ACCESS_KEY_ID")

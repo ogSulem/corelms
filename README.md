@@ -30,7 +30,7 @@ CoreLMS — внутренняя LMS для обучения и контроля
 
 Ограничение: удаление модуля в интерфейсе удаляет его данные из БД; вернуть их можно только из резервной копии.
 
-**Существующую установку нужно обновить до миграции `0024` с резервной копией. Перед первым пересозданием Redis перенесите его данные в новый persistent-том `redis_data`: теперь используются AOF и `noeviction`, а не вытеснение сессий и задач. Не запускайте `up` поверх старой установки без подготовки.**
+**Существующую установку нужно обновить до миграции `0026` с резервной копией. Перед первым пересозданием Redis перенесите его данные в новый persistent-том `redis_data`: теперь используются AOF и `noeviction`, а не вытеснение сессий и задач. Не запускайте `up` поверх старой установки без подготовки.**
 
 → [Возможности, ограничения, безопасное внедрение и проверки](docs/content-lifecycle.md)
 
@@ -146,7 +146,8 @@ docker compose --profile dev up -d --build
 - `CORS_ALLOW_ORIGINS=http://<VPS_IP>:8888`
 - `COOKIE_SECURE=false`
 
-Запуск:
+Запуск (первая установка скачивает базовые образы; если Docker Hub отвечает ошибкой TLS — сначала
+`bash deploy/pull-base-images.sh`, затем повторите):
 
 ```bash
 docker compose up -d --build
@@ -206,7 +207,8 @@ cd /opt/corelms
 # 2) Код на опубликованную версию, без потери .env и backups/
 git fetch origin && git checkout -f -B main origin/main
 
-# 3) Собрать образы, пока старые контейнеры продолжают обслуживать запросы
+# 3) Собрать образы, пока старые контейнеры продолжают обслуживать запросы.
+#    Нет доступа к Docker Hub? Соберите офлайн: bash deploy/update.sh
 docker compose build backend frontend worker_import worker_regen worker_default worker_media
 
 # 4) Миграции отдельным шагом (0024 только добавляет таблицу, старый код с ней работает)
@@ -227,14 +229,14 @@ docker compose ps
 
 Если хочется совсем без обрыва: сделайте шаги 1–4 днём, а на шаге 5 перезапустите сервисы ночью или в обед — окно недоступности меньше десяти секунд, и его видит только тот, кто в этот момент отправляет форму.
 
-Актуальная версия схемы: **`0024`**. Миграция `0024` добавляет таблицу `app_settings` для настроек, которые администратор меняет в интерфейсе: токен AI, доступ к Google Sheets, подключение к S3 и лимиты платформы. Секреты в ней шифруются (`enc:v1:`), в JSON-поле открытого текста нет. Точный head всегда виден в интерфейсе — приложение берёт его из Alembic, а не из константы.
+Актуальная версия схемы: **`0026`**. Миграция `0024` добавляет таблицу `app_settings` для настроек, которые администратор меняет в интерфейсе: токен AI, доступ к Google Sheets, подключение к S3 и лимиты платформы. Секреты в ней шифруются (`enc:v1:`), в JSON-поле открытого текста нет. Точный head всегда виден в интерфейсе — приложение берёт его из Alembic, а не из константы.
 
 Применяйте миграции **явным отдельным шагом**, а не «на глаз» при первом `up`:
 
 ```bash
 # 0) Сначала резервная копия (обязательно)
 mkdir -p backups
-docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > backups/pre-0024.dump
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > backups/pre-0026.dump
 
 # 1) Какая версия сейчас и какая ожидается
 docker compose run --rm --no-deps --entrypoint alembic backend current
@@ -242,6 +244,7 @@ docker compose run --rm --no-deps --entrypoint alembic backend heads
 
 # 2) Собрать API, frontend и все воркеры из одной версии кода
 docker compose build backend frontend worker_import worker_regen worker_default worker_media
+#    или без сети: bash deploy/update.sh
 
 # 3) Остановить писателей и применить схему
 docker compose stop backend worker_import worker_regen worker_default worker_media
@@ -255,7 +258,7 @@ docker compose up -d backend worker_import worker_regen worker_default worker_me
 
 ```bash
 docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select version_num from alembic_version;"'
-# ожидается 0024
+# ожидается 0026
 curl -fsS http://127.0.0.1:8080/api/health/ready
 ```
 
@@ -263,18 +266,43 @@ curl -fsS http://127.0.0.1:8080/api/health/ready
 
 ```bash
 docker compose exec backend alembic upgrade head
-docker compose exec backend alembic current   # ожидается 0024 (head)
+docker compose exec backend alembic current   # ожидается 0026 (head)
 ```
 
 (У `docker compose run ... --entrypoint alembic` тот же результат для остановленного стека.)
 
-Затем откройте **Админ-центр → Настройки**: блок «Сервер и схема данных» показывает текущую версию схемы и ожидаемый head. Если версии совпадают (например, `0024 / ожидается 0024`), миграция применена. Ожидаемый head вычисляется из каталога миграций, поэтому после следующего обновления сравнивать вручную не нужно.
+Затем откройте **Админ-центр → Настройки**: блок «Сервер и схема данных» показывает текущую версию схемы и ожидаемый head. Если версии совпадают (например, `0026 / ожидается 0026`), миграция применена. Ожидаемый head вычисляется из каталога миграций, поэтому после следующего обновления сравнивать вручную не нужно.
 
 Альтернатива: `AUTO_MIGRATE_ON_START=true` заставляет API применить `upgrade head` при старте (с advisory-lock). Для controlled-обновления это менее прозрачно: сначала всё равно сделайте backup и обновите API/воркеры согласованно. В `docker-compose.yml` у воркеров этот флаг принудительно `false`.
 
 Откат: восстановите согласованный backup PostgreSQL вместе с прежней версией приложения. `alembic downgrade` не является безопасным production-откатом после появления новых данных.
 
 Если миграция сообщает, что объект уже существует, не удаляйте данные: проверьте `alembic current`, журналы и восстановите backup/согласуйте схему вручную.
+
+### Если Docker Hub недоступен (`TLS handshake timeout`)
+
+Ошибка вида `failed to fetch anonymous token: ... TLS handshake timeout` означает, что сервер не достучался до `registry-1.docker.io`. Код и данные тут ни при чём. Три способа по порядку:
+
+```bash
+# 1) Повторить с паузами — чаще всего сеть провайдера отходит через минуту
+bash deploy/pull-base-images.sh
+
+# 2) Собрать вообще без внешней сети: новые образы кладутся поверх уже работающих
+bash deploy/update.sh
+
+# 3) Свой registry-зеркало (если доступ к Docker Hub закрыт постоянно)
+#    /etc/docker/daemon.json:
+#    { "registry-mirrors": ["https://mirror.gcr.io"] }
+#    затем: systemctl restart docker && bash deploy/update.sh --build
+```
+
+`deploy/update.sh` собирает образы `corelms-*:next`, проверяет их и только потом подменяет `:latest`; тег `rollback-<дата>` остаётся для отката. Данные (`pg_data`, `redis_data`, `backend_data`, S3) не затрагиваются. Скрипт **не** запускает `docker compose up --build`, поэтому registry не нужен вообще.
+
+> Важно: `docker image prune -af` удаляет промежуточные слои, на которых держится офлайн-сборка. После такой очистки первый `deploy/update.sh` может потребовать доступа к Docker Hub. Если чистите место — используйте `docker image prune -f` (без `-a`).
+
+### Где хранятся файлы
+
+Всё содержимое — в S3-совместимом хранилище: оригиналы, прошлые версии, браузерные копии, превью и файлы продаж. Локальный диск используется только как временный буфер при загрузке (`backend_data/upload-staging`) и очищается. Подробности, ключи объектов и правила очистки — в [docs/storage.md](docs/storage.md).
 
 ---
 

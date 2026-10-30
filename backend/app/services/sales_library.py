@@ -14,10 +14,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.asset import AssetRevision, ContentAsset
-from app.models.media import AssetRendition
+from app.models.media import AssetRendition, AssetThumb
 from app.models.sales import SalesEntry, SalesSection
 from app.services.content import normalize_name, safe_filename, serialize_asset
 from app.services.storage import effective_bucket, get_s3_client
+from app.services.thumbs import thumb_keys
 
 log = logging.getLogger(__name__)
 
@@ -280,9 +281,11 @@ def delete_subtree(db: Session, entry: SalesEntry) -> list[tuple[str, str]]:
             for rendition in db.scalars(select(AssetRendition).where(AssetRendition.asset_id == asset.id)):
                 if rendition.object_key:
                     keys.append((rendition.bucket, rendition.object_key))
+            keys.extend(thumb_keys(db, asset.id))
         db.delete(row)
     db.flush()
     for asset in assets:
+        db.execute(delete(AssetThumb).where(AssetThumb.asset_id == asset.id))
         db.execute(delete(AssetRendition).where(AssetRendition.asset_id == asset.id))
         db.execute(delete(AssetRevision).where(AssetRevision.asset_id == asset.id))
         db.delete(asset)

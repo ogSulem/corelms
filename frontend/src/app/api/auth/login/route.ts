@@ -31,8 +31,8 @@ export async function POST(req: Request) {
       return error(502, "upstream_error", "Сервис входа вернул неполный ответ. Повторите попытку.");
     }
     const response = NextResponse.json({ ok: true }, { headers: { "Cache-Control": "private, no-store" } });
-    setAccessCookie(response, data.access_token, { upstreamExpiresIn: data.expires_in });
-    setRefreshCookie(response, data.refresh_token, { refreshExpiresIn: data.refresh_expires_in });
+    setAccessCookie(response, data.access_token, { upstreamExpiresIn: data.expires_in, request: req });
+    setRefreshCookie(response, data.refresh_token, { refreshExpiresIn: data.refresh_expires_in, request: req });
     return response;
   } catch {
     return error(503, "upstream_unavailable", "Сервис входа временно недоступен. Повторите попытку.");

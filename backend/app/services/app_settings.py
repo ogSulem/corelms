@@ -769,10 +769,17 @@ class PlatformSettings:
     sources: dict[str, str]
     stored: bool
     updated_at: str | None
+    # Сроки жизни сессии: админ может ужесточить их без правки .env.
+    # Значения по умолчанию совпадают с конфигом, чтобы старые вызовы не ломались.
+    session_idle_hours: int = 12
+    session_absolute_days: int = 30
+    session_refresh_days: int = 30
 
 
 MIN_UPLOAD_BYTES = 1024 * 1024
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024 * 1024
+MIN_IDLE_HOURS, MAX_IDLE_HOURS = 1, 168
+MIN_SESSION_DAYS, MAX_SESSION_DAYS = 1, 365
 
 
 def get_platform_settings(db: Session | None = None) -> PlatformSettings:
@@ -795,9 +802,27 @@ def get_platform_settings(db: Session | None = None) -> PlatformSettings:
     else:
         allow_register, sources["allow_public_register"] = stored_register, "database"
 
+    def _bounded(key: str, env_value: int, low: int, high: int) -> int:
+        stored = value.get(key)
+        if isinstance(stored, int) and low <= stored <= high:
+            sources[key] = "database"
+            return stored
+        sources[key] = "environment"
+        return max(low, min(high, int(env_value)))
+
+    idle_hours = _bounded("session_idle_hours", int(f"{getattr(settings, 'session_idle_timeout_hours', 12)}"),
+                          MIN_IDLE_HOURS, MAX_IDLE_HOURS)
+    absolute_days = _bounded("session_absolute_days", int(f"{getattr(settings, 'session_absolute_timeout_days', 30)}"),
+                             MIN_SESSION_DAYS, MAX_SESSION_DAYS)
+    refresh_days = _bounded("session_refresh_days", int(f"{getattr(settings, 'session_refresh_token_days', 30)}"),
+                            MIN_SESSION_DAYS, MAX_SESSION_DAYS)
+
     return PlatformSettings(
         upload_max_bytes=upload,
         allow_public_register=allow_register,
+        session_idle_hours=idle_hours,
+        session_absolute_days=absolute_days,
+        session_refresh_days=refresh_days,
         sources=sources,
         stored=row.exists,
         updated_at=row.updated_at,
@@ -810,13 +835,28 @@ def save_platform_settings(
     actor_id,
     upload_max_bytes: int,
     allow_public_register: bool,
+    session_idle_hours: int | None = None,
+    session_absolute_days: int | None = None,
+    session_refresh_days: int | None = None,
 ) -> PlatformSettings:
     if not isinstance(upload_max_bytes, int) or not (MIN_UPLOAD_BYTES <= upload_max_bytes <= MAX_UPLOAD_BYTES):
         raise SettingsValidationError("Размер файла должен быть от 1 МБ до 20 ГБ")
+    for value, low, high, label in ((session_idle_hours, MIN_IDLE_HOURS, MAX_IDLE_HOURS, "Простой сессии"),
+                                    (session_absolute_days, MIN_SESSION_DAYS, MAX_SESSION_DAYS, "Срок сессии"),
+                                    (session_refresh_days, MIN_SESSION_DAYS, MAX_SESSION_DAYS, "Обновление входа")):
+        if value is not None and (not isinstance(value, int) or not (low <= value <= high)):
+            raise SettingsValidationError(f"{label}: допустимо от {low} до {high}")
     current = _read(db, PLATFORM_KEY)
     value = dict(current.value)
     value["upload_max_bytes"] = int(upload_max_bytes)
     value["allow_public_register"] = bool(allow_public_register)
+    # None = «не менять»: старые клиенты присылают только лимит и регистрацию.
+    if session_idle_hours is not None:
+        value["session_idle_hours"] = int(session_idle_hours)
+    if session_absolute_days is not None:
+        value["session_absolute_days"] = int(session_absolute_days)
+    if session_refresh_days is not None:
+        value["session_refresh_days"] = int(session_refresh_days)
     _write(db, PLATFORM_KEY, value, actor_id=actor_id)
     return get_platform_settings(db)
 
@@ -829,12 +869,20 @@ def platform_settings_payload(config: PlatformSettings) -> dict:
     return {
         "upload_max_bytes": config.upload_max_bytes,
         "allow_public_register": config.allow_public_register,
+        "session_idle_hours": config.session_idle_hours,
+        "session_absolute_days": config.session_absolute_days,
+        "session_refresh_days": config.session_refresh_days,
         "sources": config.sources,
         "stored": config.stored,
         "updated_at": config.updated_at,
         "env": {
             "upload_max_bytes": int(getattr(settings, "content_upload_max_bytes", 0) or 0),
             "allow_public_register": bool(getattr(settings, "allow_public_register", False)),
+            "session_idle_hours": int(getattr(settings, "session_idle_timeout_hours", 12) or 12),
+            "session_absolute_days": int(getattr(settings, "session_absolute_timeout_days", 30) or 30),
+            "session_refresh_days": int(getattr(settings, "session_refresh_token_days", 30) or 30),
         },
-        "limits": {"min_upload_bytes": MIN_UPLOAD_BYTES, "max_upload_bytes": MAX_UPLOAD_BYTES},
+        "limits": {"min_upload_bytes": MIN_UPLOAD_BYTES, "max_upload_bytes": MAX_UPLOAD_BYTES,
+                   "min_session_idle_hours": MIN_IDLE_HOURS, "max_session_idle_hours": MAX_IDLE_HOURS,
+                   "min_session_days": MIN_SESSION_DAYS, "max_session_days": MAX_SESSION_DAYS},
     }

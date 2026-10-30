@@ -37,7 +37,7 @@ export async function POST(req: Request) {
     }
 
     const out = NextResponse.json({ ok: false, error_code: "refresh_failed" }, { status: 401 });
-    clearAuthCookies(out);
+    clearAuthCookies(out, req);
     return out;
   }
 
@@ -46,10 +46,12 @@ export async function POST(req: Request) {
   const response = NextResponse.json({ ok: true });
   setAccessCookie(response, access, {
     upstreamExpiresIn: Number.isFinite(Number(result.expiresIn)) ? Number(result.expiresIn) : null,
+    request: req,
   });
 
   if (result.nextRefresh) setRefreshCookie(response, result.nextRefresh, {
     refreshExpiresIn: Number.isFinite(Number(result.refreshExpiresIn)) ? Number(result.refreshExpiresIn) : null,
+    request: req,
   });
 
   return response;

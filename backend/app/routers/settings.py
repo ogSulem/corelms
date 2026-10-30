@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/settings", tags=["admin-settings"])
 
 _SCHEMA_REVISION: str | None = None
-_SCHEMA_REVISION_FALLBACK = "0025"
+_SCHEMA_REVISION_FALLBACK = "0026"
 
 
 def expected_schema_revision() -> str:
@@ -354,6 +354,9 @@ class StorageSettingsSave(BaseModel):
 class PlatformSettingsSave(BaseModel):
     upload_max_bytes: int
     allow_public_register: bool = False
+    session_idle_hours: int | None = None
+    session_absolute_days: int | None = None
+    session_refresh_days: int | None = None
 
 
 def _storage_payload(db: Session) -> dict:
@@ -455,6 +458,127 @@ def test_storage_settings(
             "message": f"Bucket «{bucket}» доступен, ключи приняты."}
 
 
+# --- Security posture -------------------------------------------------------
+
+
+def _cookie_flag(value: object) -> bool | None:
+    """None = переменная не задана, значит действует значение по умолчанию."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    raw = str(value).strip().lower()
+    return None if not raw else raw == "true"
+
+
+@router.get("/security")
+def read_security_posture(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.admin)),
+):
+    """Что видит сервер: IP клиента, доверие к прокси, куки и сроки сессии.
+
+    Это диагностика, а не новые секреты: значения только читаются, ключи и
+    пароли не возвращаются. Нужна, чтобы админ мог сам проверить, что за
+    прокси и HTTPS вход определяется верно, а не гадать по логам.
+    """
+    from app.core.client_ip import client_ip_from_request, _is_trusted_proxy, _parse_trusted_proxies
+    from app.services.auth_sessions import _limits
+
+    platform = get_platform_settings(db)
+    peer = str(getattr(getattr(request, "client", None), "host", "") or "") or None
+    ip = client_ip_from_request(request)
+    forwarded = str(request.headers.get("x-forwarded-for") or "")
+    real_ip = str(request.headers.get("x-real-ip") or "")
+    forwarded_header = str(request.headers.get("forwarded") or "")
+    if forwarded.strip():
+        source = "x-forwarded-for"
+    elif real_ip.strip():
+        source = "x-real-ip"
+    elif forwarded_header.strip():
+        source = "forwarded"
+    else:
+        source = "direct"
+    proto = str(request.headers.get("x-forwarded-proto") or request.url.scheme or "").split(",")[0].strip()
+    host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or "")
+    secure_env = _cookie_flag(getattr(settings, "cookie_secure", None))
+    is_prod = str(getattr(settings, "app_env", "") or "").lower() in {"prod", "production"}
+    cookie_secure = secure_env if secure_env is not None else is_prod
+    # Что браузер получит на самом деле: фронтенд ставит Secure только на HTTPS
+    # и никогда при явном COOKIE_SECURE=false. Без HTTPS Secure-куку браузер
+    # молча выбрасывает — именно так мобильный вход «терялся» после логина.
+    is_https = proto == "https"
+    effective_secure = is_https and secure_env is not False
+    domain = str(getattr(settings, "cookie_domain", "") or "").strip()
+    access_ttl = int(getattr(settings, "core_token_max_age_seconds", 0) or 0)
+    refresh_days, idle_seconds, absolute_seconds = _limits()
+
+    tracked = 0
+    try:
+        from app.core.redis_client import get_redis
+
+        redis = get_redis()
+        cursor = 0
+        for _ in range(20):
+            cursor, keys = redis.scan(cursor=cursor, match="auth:session:*", count=200)
+            tracked += len(keys or [])
+            if not cursor:
+                break
+    except Exception:
+        tracked = -1  # Redis недоступен — не выдумываем число.
+
+    trusted_raw = str(getattr(settings, "trusted_proxy_ips", "") or "")
+    trusted_nets = [str(net) for net in _parse_trusted_proxies(trusted_raw)]
+    checks = [
+        {"key": "https", "ok": proto == "https",
+         "title": "HTTPS",
+         "detail": f"Запрос пришёл по {proto or 'неизвестной схеме'}." + ("" if proto == "https" else " Вход и файлы должны идти только по HTTPS: иначе куки и пароли идут открытым текстом.")},
+        {"key": "cookie_secure", "ok": bool(effective_secure),
+         "title": "Куки только по HTTPS",
+         "detail": ("Браузер получит Secure-cookie: она уходит только по HTTPS." if effective_secure
+                    else "Сайт открыт по HTTP, поэтому Secure-куки браузер не сохранит — на телефоне вход будет теряться. Включите HTTPS."
+                    if not is_https and secure_env is not False
+                    else "COOKIE_SECURE=false: флаг Secure отключён принудительно.")},
+        {"key": "cookie_domain_matches", "ok": not domain or host.endswith(domain.lstrip(".")),
+         "title": "Домен куки",
+         "detail": f"COOKIE_DOMAIN={domain}, запрос на {host or '—'}." if domain else "Кука привязана к текущему домену (COOKIE_DOMAIN пуст) — это безопасный вариант по умолчанию."},
+        {"key": "trust_proxy", "ok": (not settings.trust_proxy_headers) or _is_trusted_proxy(peer),
+         "title": "Доверенный прокси",
+         "detail": ("Доверие заголовкам включено, но текущий адрес не входит в TRUSTED_PROXY_IPS — IP клиента будет определён неверно." if settings.trust_proxy_headers and not _is_trusted_proxy(peer)
+                    else f"TRUST_PROXY_HEADERS={str(settings.trust_proxy_headers).lower()}, адрес запроса {peer or '—'}.")},
+        {"key": "session_order", "ok": idle_seconds <= absolute_seconds,
+         "title": "Сроки сессии",
+         "detail": f"Простой {platform.session_idle_hours} ч, общий срок {platform.session_absolute_days} дн., обновление входа {platform.session_refresh_days} дн."},
+        {"key": "register", "ok": (not platform.allow_public_register) or not is_prod,
+         "title": "Открытая регистрация",
+         "detail": "Регистрация открыта: любой, кто знает адрес, может создать аккаунт. Закройте её, если сотрудники создаются вручную." if platform.allow_public_register else "Регистрация закрыта: аккаунты создаёт администратор."},
+    ]
+    for check in checks:
+        check["ok"] = bool(check["ok"])
+    return {
+        "ok": True,
+        "client": {"ip": ip, "peer": peer, "source": source,
+                   "x_forwarded_for": forwarded or None, "x_real_ip": real_ip or None},
+        "proxy": {"trust_headers": bool(settings.trust_proxy_headers), "trusted": _is_trusted_proxy(peer),
+                  "trusted_ranges": trusted_nets},
+        "request": {"protocol": proto, "host": host, "secure": proto == "https"},
+        "cookies": {
+            "access": {"name": "core_token", "http_only": True, "same_site": "lax", "secure": bool(cookie_secure),
+                       "effective_secure": bool(effective_secure), "domain": domain or None,
+                       "max_age_seconds": access_ttl or None},
+            "refresh": {"name": "core_refresh", "http_only": True, "same_site": "lax", "secure": bool(cookie_secure),
+                        "effective_secure": bool(effective_secure), "domain": domain or None,
+                        "max_age_days": platform.session_refresh_days},
+        },
+        "sessions": {"idle_hours": platform.session_idle_hours, "absolute_days": platform.session_absolute_days,
+                     "refresh_days": platform.session_refresh_days, "tracked_sessions": tracked,
+                     "sources": {key: platform.sources.get(key) for key in
+                                 ("session_idle_hours", "session_absolute_days", "session_refresh_days")}},
+        "checks": checks,
+    }
+
+
 # --- Platform limits --------------------------------------------------------
 
 
@@ -476,14 +600,23 @@ def write_platform_settings(
 ):
     try:
         save_platform_settings(db, actor_id=user.id, upload_max_bytes=body.upload_max_bytes,
-                               allow_public_register=body.allow_public_register)
+                               allow_public_register=body.allow_public_register,
+                               session_idle_hours=body.session_idle_hours,
+                               session_absolute_days=body.session_absolute_days,
+                               session_refresh_days=body.session_refresh_days)
     except SettingsValidationError as exc:
         db.rollback()
         raise HTTPException(422, str(exc))
     config = get_platform_settings(db)
+    from app.services.auth_sessions import invalidate_limits
+
+    invalidate_limits()
     audit_log(db=db, request=request, actor_user_id=user.id, event_type="admin_platform_settings_saved",
               meta={"upload_max_bytes": config.upload_max_bytes,
-                    "allow_public_register": config.allow_public_register})
+                    "allow_public_register": config.allow_public_register,
+                    "session_idle_hours": config.session_idle_hours,
+                    "session_absolute_days": config.session_absolute_days,
+                    "session_refresh_days": config.session_refresh_days})
     db.commit()
     return _ok({"settings": platform_settings_payload(config), "restart_required": False})
 
@@ -495,6 +628,9 @@ def clear_platform_settings(
     user: User = Depends(require_roles(UserRole.admin)),
 ):
     reset_platform_settings(db)
+    from app.services.auth_sessions import invalidate_limits
+
+    invalidate_limits()
     audit_log(db=db, request=request, actor_user_id=user.id, event_type="admin_platform_settings_reset", meta={})
     db.commit()
     return _ok({"settings": platform_settings_payload(get_platform_settings(db))})

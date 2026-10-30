@@ -206,3 +206,39 @@ test("account tab counts match the rows they show (partner is an employee, not a
   assert.equal(isAdminRole("partner"), false);
   assert.equal(isAdminRole("employee"), false);
 });
+
+test("Secure-кука ставится только на HTTPS: HTTP-вход на телефоне больше не теряет сессию", async () => {
+  const { setAccessCookie, requestIsHttps } = await loadSource("src/app/api/auth/_cookies.ts");
+  const write = (request) => {
+    const written = [];
+    setAccessCookie({ cookies: { set: c => written.push(c) } }, "token-value", { upstreamExpiresIn: 900, request });
+    return written.at(-1);
+  };
+  const http = new Request("http://192.168.1.10:8888/api/auth/login", { method: "POST" });
+  const httpsForwarded = new Request("http://frontend:3000/api/auth/login", { method: "POST", headers: { "x-forwarded-proto": "https" } });
+  const httpForwarded = new Request("https://frontend:3000/api/auth/login", { method: "POST", headers: { "x-forwarded-proto": "http" } });
+
+  const previousSecure = process.env.COOKIE_SECURE;
+  const previousEnv = process.env.NODE_ENV;
+  try {
+    assert.equal(requestIsHttps(http), false);
+    assert.equal(requestIsHttps(httpsForwarded), true);
+
+    process.env.COOKIE_SECURE = "true";
+    assert.equal(write(http).secure, false, "на HTTP cookie с Secure браузер молча выбрасывает");
+    assert.equal(write(httpsForwarded).secure, true);
+    assert.equal(write(httpForwarded).secure, false, "за прокси верим X-Forwarded-Proto");
+
+    process.env.COOKIE_SECURE = "false";
+    assert.equal(write(httpsForwarded).secure, false, "явное false отключает Secure всегда");
+
+    // Продакшн по умолчанию: HTTPS — Secure, HTTP — обычная кука.
+    delete process.env.COOKIE_SECURE;
+    process.env.NODE_ENV = "production";
+    assert.equal(write(httpsForwarded).secure, true);
+    assert.equal(write(http).secure, false);
+  } finally {
+    if (previousSecure === undefined) delete process.env.COOKIE_SECURE; else process.env.COOKIE_SECURE = previousSecure;
+    if (previousEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousEnv;
+  }
+});

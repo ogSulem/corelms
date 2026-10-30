@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, HardDrive, KeyRound, Loader2, PlugZap, RefreshCw, Save, ShieldCheck, SlidersHorizontal, Sparkles, Trash2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, HardDrive, ImageIcon, KeyRound, Loader2, PlugZap, RefreshCw, Save, ShieldCheck, SlidersHorizontal, Sparkles, Trash2 } from "lucide-react";
 
 import { AdminNav } from "@/components/admin/admin-nav";
 import { AppShell } from "@/components/app/shell";
@@ -60,12 +60,44 @@ type StorageSettings = {
 type PlatformSettings = {
   upload_max_bytes: number;
   allow_public_register: boolean;
+  session_idle_hours: number;
+  session_absolute_days: number;
+  session_refresh_days: number;
   sources: Record<string, string>;
   stored: boolean;
   updated_at: string | null;
-  env: { upload_max_bytes: number; allow_public_register: boolean };
-  limits: { min_upload_bytes: number; max_upload_bytes: number };
+  env: {
+    upload_max_bytes: number;
+    allow_public_register: boolean;
+    session_idle_hours: number;
+    session_absolute_days: number;
+    session_refresh_days: number;
+  };
+  limits: {
+    min_upload_bytes: number;
+    max_upload_bytes: number;
+    min_session_idle_hours: number;
+    max_session_idle_hours: number;
+    min_session_days: number;
+    max_session_days: number;
+  };
 };
+
+type SecurityCheck = { key: string; ok: boolean; title: string; detail: string };
+
+type SecurityPosture = {
+  client: { ip: string | null; peer: string | null; source: string; x_forwarded_for: string | null; x_real_ip: string | null };
+  proxy: { trust_headers: boolean; trusted: boolean; trusted_ranges: string[] };
+  request: { protocol: string; host: string; secure: boolean };
+  cookies: {
+    access: { name: string; http_only: boolean; same_site: string; secure: boolean; effective_secure?: boolean; domain: string | null; max_age_seconds: number | null };
+    refresh: { name: string; http_only: boolean; same_site: string; secure: boolean; effective_secure?: boolean; domain: string | null; max_age_days: number };
+  };
+  sessions: { idle_hours: number; absolute_days: number; refresh_days: number; tracked_sessions: number; sources: Record<string, string | undefined> };
+  checks: SecurityCheck[];
+};
+
+type ThumbStatus = { previewable: number; states: Record<string, number>; thumb_bytes: number };
 
 type ServerError = {
   ts: string;
@@ -129,7 +161,7 @@ export default function AdminSettingsPage() {
   const [testingStorage, setTestingStorage] = useState(false);
   const [storageTest, setStorageTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [platform, setPlatform] = useState<PlatformSettings | null>(null);
-  const [platformDraft, setPlatformDraft] = useState({ upload_mb: 512, allow_public_register: false });
+  const [platformDraft, setPlatformDraft] = useState({ upload_mb: 512, allow_public_register: false, session_idle_hours: 12, session_absolute_days: 30, session_refresh_days: 30 });
   const [savingPlatform, setSavingPlatform] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadingData, setLoadingData] = useState(true);
@@ -144,6 +176,10 @@ export default function AdminSettingsPage() {
   const [salesTest, setSalesTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [health, setHealth] = useState<{ ok: boolean; message: string; at: string } | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
+  const [security, setSecurity] = useState<SecurityPosture | null>(null);
+  const [loadingSecurity, setLoadingSecurity] = useState(false);
+  const [thumbs, setThumbs] = useState<ThumbStatus | null>(null);
+  const [warmingThumbs, setWarmingThumbs] = useState(false);
 
   const applyAI = useCallback((data: AISettings) => {
     setAi(data);
@@ -163,13 +199,19 @@ export default function AdminSettingsPage() {
     });
   }, []);
 
-  const platformValid = Number.isFinite(platformDraft.upload_mb) && platformDraft.upload_mb >= 1 && platformDraft.upload_mb <= 20480;
+  const platformValid = Number.isFinite(platformDraft.upload_mb) && platformDraft.upload_mb >= 1 && platformDraft.upload_mb <= 20480
+    && platformDraft.session_idle_hours >= 1 && platformDraft.session_idle_hours <= 168
+    && platformDraft.session_absolute_days >= 1 && platformDraft.session_absolute_days <= 365
+    && platformDraft.session_refresh_days >= 1 && platformDraft.session_refresh_days <= 365;
 
   const applyPlatform = useCallback((data: PlatformSettings) => {
     setPlatform(data);
     setPlatformDraft({
       upload_mb: Math.max(1, Math.round(data.upload_max_bytes / (1024 * 1024))),
       allow_public_register: data.allow_public_register,
+      session_idle_hours: data.session_idle_hours,
+      session_absolute_days: data.session_absolute_days,
+      session_refresh_days: data.session_refresh_days,
     });
   }, []);
 
@@ -192,6 +234,7 @@ export default function AdminSettingsPage() {
       setOverview(overviewData);
       applyStorage(storageData);
       applyPlatform(platformData);
+      void loadThumbs();
       if (isSuperadmin) {
         try {
           applySales(await apiFetch<SalesSettings>("/admin/settings/sales"));
@@ -485,10 +528,16 @@ export default function AdminSettingsPage() {
       const bytes = Math.round(Number(platformDraft.upload_mb) * 1024 * 1024);
       const data = await apiFetch<{ settings: PlatformSettings }>("/admin/settings/platform", {
         method: "PUT",
-        body: JSON.stringify({ upload_max_bytes: bytes, allow_public_register: platformDraft.allow_public_register }),
+        body: JSON.stringify({
+          upload_max_bytes: bytes,
+          allow_public_register: platformDraft.allow_public_register,
+          session_idle_hours: platformDraft.session_idle_hours,
+          session_absolute_days: platformDraft.session_absolute_days,
+          session_refresh_days: platformDraft.session_refresh_days,
+        }),
       });
       applyPlatform(data.settings);
-      toast("Настройки платформы сохранены", "Действуют сразу для загрузок и регистрации");
+      toast("Настройки платформы сохранены", "Действуют сразу: загрузки, регистрация и сроки сессий");
       setOverview(await apiFetch<Overview>("/admin/settings/overview"));
     } catch (saveError) {
       setError(errorText(saveError, "Не удалось сохранить настройки платформы"));
@@ -510,6 +559,42 @@ export default function AdminSettingsPage() {
       setError(errorText(resetError, "Не удалось сбросить настройки платформы"));
     } finally {
       setSavingPlatform(false);
+    }
+  }
+
+  async function loadSecurity() {
+    if (loadingSecurity) return;
+    setLoadingSecurity(true);
+    setError(null);
+    try {
+      setSecurity(await apiFetch<SecurityPosture>("/admin/settings/security"));
+    } catch (securityError) {
+      setError(errorText(securityError, "Не удалось проверить безопасность"));
+    } finally {
+      setLoadingSecurity(false);
+    }
+  }
+
+  async function loadThumbs() {
+    try {
+      setThumbs(await apiFetch<ThumbStatus>("/admin/maintenance/thumbs/status"));
+    } catch {
+      setThumbs(null); // диагностика не критична: файлы работают и без превью
+    }
+  }
+
+  async function warmThumbs() {
+    if (warmingThumbs) return;
+    setWarmingThumbs(true);
+    setError(null);
+    try {
+      const result = await apiFetch<{ queued: number }>("/admin/maintenance/thumbs/backfill", { method: "POST" });
+      toast("Превью поставлены в очередь", result.queued ? `${result.queued} файлов обработаются в фоне` : "Все файлы уже с превью");
+      await loadThumbs();
+    } catch (warmError) {
+      setError(errorText(warmError, "Не удалось поставить превью в очередь"));
+    } finally {
+      setWarmingThumbs(false);
     }
   }
 
@@ -541,6 +626,7 @@ export default function AdminSettingsPage() {
             { href: "#sales", label: "Продажи (Sheets)" },
             { href: "#storage", label: "Хранилище файлов" },
             { href: "#platform", label: "Платформа" },
+            { href: "#security", label: "Безопасность и доступ" },
             { href: "#system", label: "Сервер и схема" },
             { href: "#errors", label: "Ошибки сервера" },
           ].map((item) => (
@@ -791,6 +877,21 @@ export default function AdminSettingsPage() {
                 <p role="status" className={`mt-4 rounded-xl px-4 py-3 text-sm ${storageTest.ok ? "bg-emerald-50 text-emerald-800" : "bg-red-50 text-red-800"}`}>{storageTest.message}</p>
               )}
 
+              <div className="mt-5 rounded-xl border border-zinc-200 bg-zinc-50/60 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-zinc-900">Превью фото и видео</p>
+                    <p className="mt-1 text-xs leading-5 text-zinc-600">
+                      Списки показывают уменьшенный кадр вместо полного файла: фото не грузится целиком, видео не скачивается ради одной картинки.
+                      {thumbs ? ` С превью: ${thumbs.states.ready || 0} из ${thumbs.previewable}${thumbs.states.failed ? `, не удалось: ${thumbs.states.failed}` : ""}.` : ""}
+                    </p>
+                  </div>
+                  <Button variant="outline" className={btn} onClick={() => void warmThumbs()} disabled={warmingThumbs}>
+                    {warmingThumbs ? <Loader2 size={16} className="animate-spin" /> : <ImageIcon size={16} />}Подготовить для старых файлов
+                  </Button>
+                </div>
+              </div>
+
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button className={btn} onClick={() => void saveStorage()} disabled={savingStorage}>
                   {savingStorage ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}Сохранить
@@ -853,6 +954,28 @@ export default function AdminSettingsPage() {
                 </label>
               </div>
 
+              <div className="mt-5 grid gap-4 sm:grid-cols-3">
+                <label className="block space-y-2 text-sm font-medium">
+                  Простой сессии, ч
+                  <input type="number" min={1} max={168} className={field} value={platformDraft.session_idle_hours}
+                    onChange={(event) => setPlatformDraft((prev) => ({ ...prev, session_idle_hours: Number(event.target.value) }))} />
+                  <span className="block text-xs font-normal leading-5 text-zinc-500">После стольких часов без действий вход потребуется заново.</span>
+                </label>
+                <label className="block space-y-2 text-sm font-medium">
+                  Общий срок входа, дней
+                  <input type="number" min={1} max={365} className={field} value={platformDraft.session_absolute_days}
+                    onChange={(event) => setPlatformDraft((prev) => ({ ...prev, session_absolute_days: Number(event.target.value) }))} />
+                  <span className="block text-xs font-normal leading-5 text-zinc-500">Даже при активной работе сессия завершится по этому сроку.</span>
+                </label>
+                <label className="block space-y-2 text-sm font-medium">
+                  Обновление входа, дней
+                  <input type="number" min={1} max={365} className={field} value={platformDraft.session_refresh_days}
+                    onChange={(event) => setPlatformDraft((prev) => ({ ...prev, session_refresh_days: Number(event.target.value) }))} />
+                  <span className="block text-xs font-normal leading-5 text-zinc-500">Сколько браузер помнит вход, не спрашивая пароль снова.</span>
+                </label>
+              </div>
+              <p className="mt-3 text-xs leading-5 text-zinc-500">Новые сроки действуют при следующем входе; уже открытые сессии завершатся по своим прежним правилам. Принудительно завершить все сессии можно в «Профиле».</p>
+
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button className={btn} onClick={() => void savePlatform()} disabled={savingPlatform || !platformValid}>
                   {savingPlatform ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}Сохранить
@@ -864,8 +987,68 @@ export default function AdminSettingsPage() {
 
               <p className="mt-4 text-xs leading-5 text-zinc-500">
                 Источник: {platform?.sources?.upload_max_bytes === "database" ? "сохранено в LMS" : "переменная окружения"}.
-                Остальные параметры сервера (публичный адрес, CORS, таймауты сессий, очереди) задаются в <code className="rounded bg-zinc-100 px-1.5 py-0.5">.env</code> и требуют перезапуска — они показаны в разделе «Сервер и схема».
+                Остальные параметры сервера (публичный адрес, CORS, доверенные прокси, очереди) задаются в <code className="rounded bg-zinc-100 px-1.5 py-0.5">.env</code>; их текущие значения и проверка — в разделе «Безопасность и доступ».
               </p>
+            </section>
+
+            <section id="security" className={`${card} scroll-mt-24`} aria-labelledby="security-title">
+              <div className="flex items-start gap-3">
+                <span className="mt-0.5 rounded-xl bg-emerald-50 p-2 text-emerald-700"><ShieldCheck size={18} /></span>
+                <div className="min-w-0">
+                  <h2 id="security-title" className="text-lg font-semibold text-zinc-950">Безопасность и доступ</h2>
+                  <p className="mt-1 text-sm leading-6 text-zinc-600">
+                    Как сервер видит клиента за прокси: IP, HTTPS, куки и сроки сессии. Проверка ничего не меняет — только показывает фактические значения.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button variant="outline" className={btn} onClick={() => void loadSecurity()} disabled={loadingSecurity}>
+                  {loadingSecurity ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}Проверить сейчас
+                </Button>
+              </div>
+
+              {security ? (
+                <div className="mt-5 space-y-4">
+                  <ul className="space-y-2">
+                    {security.checks.map((check) => (
+                      <li key={check.key} className={`rounded-xl border px-4 py-3 text-sm ${check.ok ? "border-emerald-200 bg-emerald-50/60" : "border-amber-200 bg-amber-50/70"}`}>
+                        <div className="flex items-start gap-2">
+                          {check.ok ? <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-600" /> : <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600" />}
+                          <div className="min-w-0">
+                            <p className={`font-medium ${check.ok ? "text-emerald-900" : "text-amber-900"}`}>{check.title}</p>
+                            <p className={`mt-0.5 text-xs leading-5 ${check.ok ? "text-emerald-800/80" : "text-amber-900/80"}`}>{check.detail}</p>
+                          </div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+
+                  <dl className="grid gap-3 text-sm sm:grid-cols-2">
+                    {[
+                      ["IP клиента", security.client.ip || "не определён"],
+                      ["Адрес прокси", security.client.peer || "—"],
+                      ["Источник адреса", security.client.source === "direct" ? "прямое соединение" : security.client.source],
+                      ["Доверенные сети", security.proxy.trusted_ranges.length ? security.proxy.trusted_ranges.join(", ") : "не заданы (TRUSTED_PROXY_IPS пуст)"],
+                      ["Адрес сайта", `${security.request.protocol}://${security.request.host || "—"}`],
+                      ["Куки", `${security.cookies.access.name} · HttpOnly · SameSite=${security.cookies.access.same_site} · ${(security.cookies.access.effective_secure ?? security.cookies.access.secure) ? "Secure" : "без Secure (браузер сохранит и по HTTP)"}${security.cookies.access.domain ? ` · домен ${security.cookies.access.domain}` : ""}`],
+                      ["Сроки сессии", `простой ${security.sessions.idle_hours} ч · всего ${security.sessions.absolute_days} дн. · обновление ${security.sessions.refresh_days} дн.`],
+                      ["Активных сессий", security.sessions.tracked_sessions < 0 ? "Redis недоступен" : String(security.sessions.tracked_sessions)],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-xl border border-zinc-200 bg-white px-4 py-3">
+                        <dt className="text-xs uppercase tracking-wide text-zinc-500">{label}</dt>
+                        <dd className="mt-1 break-words text-sm text-zinc-900">{value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+
+                  <p className="text-xs leading-5 text-zinc-500">
+                    Сроки сессии меняются в разделе «Платформа». Доверенные прокси, домен куки и HTTPS задаются в <code className="rounded bg-zinc-100 px-1.5 py-0.5">.env</code> и применяются при перезапуске контейнеров.
+                  </p>
+                </div>
+              ) : (
+                <p className="mt-4 text-sm text-zinc-500">Нажмите «Проверить сейчас», чтобы увидеть фактические значения.</p>
+              )}
             </section>
 
             <section id="system" className={`${card} scroll-mt-24`} aria-labelledby="system-title">
