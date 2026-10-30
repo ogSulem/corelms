@@ -35,6 +35,7 @@ from app.services.authoring import format_prompt, generate_quiz_draft_job, quest
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.tag import ModuleTagMap, Tag
 from app.services.media import stage_rendition
+from app.services.thumbs import delete_thumbs, enqueue_thumb, thumb_keys
 from app.models.user import User, UserRole
 from app.schemas.content import (ArchiveAssets, AssetEdit, DeleteAssets, DeleteLesson, LessonDraft, LessonEdit, ModuleDraft, ModuleEdit,
     MoveAssets, ReorderRequest, UploadStart, VersionRestore)
@@ -358,6 +359,8 @@ def _register_content_asset(db: Session, request: Request, user: User, module_id
               meta={"module_id": str(module.id), "asset_id": str(asset.id), "version": asset.version, "size_bytes": size})
     progress["committed"] = True
     db.commit()
+    # Превью греем сразу после фиксации: списки не должны ждать первого открытия.
+    enqueue_thumb(asset.id)
     modules_bump_rev(reason="content_asset_changed")
     state = workspace(db, module)
     if created_lesson:
@@ -624,6 +627,8 @@ def delete_assets(module_id: uuid.UUID, body: DeleteAssets, request: Request, db
         for rendition in db.scalars(select(AssetRendition).where(AssetRendition.asset_id == asset.id)):
             if rendition.object_key:
                 keys.append((rendition.bucket, rendition.object_key))
+        keys.extend(thumb_keys(db, asset.id))
+        delete_thumbs(db, asset.id)
         db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.asset_id == asset.id))
         db.delete(asset)
     state = _finish(db, request, user, module, "content_assets_deleted", asset_ids=[str(aid) for aid in ids])
@@ -706,6 +711,7 @@ def restore_asset_version(module_id: uuid.UUID, asset_id: uuid.UUID, body: Versi
     asset.size_bytes, asset.checksum_sha256, asset.created_by = version.size_bytes, version.checksum_sha256, user.id
     db.flush()
     stage_rendition(db, asset)
+    enqueue_thumb(asset.id)
     # Keep the current display name/location. Restoring is a new version, not history rewriting.
     return _finish(db, request, user, module, "content_asset_version_restored", asset_id=str(asset.id), source_version=body.version)
 

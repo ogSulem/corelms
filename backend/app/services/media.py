@@ -232,6 +232,45 @@ def probe(path: pathlib.Path) -> dict:
     return json.loads(result.stdout)
 
 
+def probe_url(url: str) -> dict:
+    """Те же метаданные, но без скачивания файла: ffprobe читает S3 по ссылке.
+
+    Для проверки «это уже браузерный MP4?» достаточно заголовков атомов, а не
+    гигабайт на диске. Сетевой доступ ограничен теми же 25 секундами.
+    """
+    result = subprocess.run([settings.ffprobe_binary, "-v", "error", "-protocol_whitelist",
+        "http,https,tcp,tls,file", "-show_entries",
+        "stream=codec_type,codec_name,pix_fmt,width,height,level,avg_frame_rate:format=duration,format_name",
+        "-of", "json", url], capture_output=True, timeout=30, check=True,
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8"})
+    if len(result.stdout) > 128 * 1024:
+        raise RuntimeError("Слишком сложная структура видео")
+    return json.loads(result.stdout)
+
+
+def faststart_prefix(prefix: bytes) -> bool:
+    """`moov` раньше `mdat` — значит видео начнёт играть без полной загрузки."""
+    offset = 0
+    while offset + 8 <= len(prefix):
+        size = int.from_bytes(prefix[offset:offset + 4], "big")
+        kind = prefix[offset + 4:offset + 8]
+        base = 8
+        if size == 1:
+            if offset + 16 > len(prefix):
+                return False  # Заголовок вне прочитанного куска: не гадаем.
+            size, base = int.from_bytes(prefix[offset + 8:offset + 16], "big"), 16
+        if kind == b"moov":
+            return True
+        if kind == b"mdat" or size < base:
+            return False
+        offset += size
+    return False
+
+
+def probe_prefix_bytes() -> int:
+    return 1024 * 1024
+
+
 def browser_compatible(info: dict) -> bool:
     streams = info.get("streams") or []
     video = next((s for s in streams if s.get("codec_type") == "video"), {})
@@ -320,6 +359,40 @@ def prepare_office(source: pathlib.Path, target: pathlib.Path) -> str:
     return text
 
 
+def publish_original_without_copy(db: Session, row: AssetRendition, *, size_bytes: int | None = None) -> None:
+    """Оригинал уже годится для браузера: копия не нужна, но строка должна это знать."""
+    asset = db.get(ContentAsset, row.asset_id)
+    row.state, row.bucket, row.object_key = "ready", row.source_bucket, row.source_object_key
+    row.mime_type = "video/mp4"
+    row.size_bytes = size_bytes or (int(asset.size_bytes or 0) if asset else None) or None
+    row.checksum_sha256 = asset.checksum_sha256 if asset else None
+    row.error, row.updated_at = None, utcnow()
+
+
+def quick_video_ready(s3, bucket: str, key: str, filename: str, size_bytes: int | None) -> tuple[bool, str | None]:
+    """Проверяет видео без загрузки оригинала на диск.
+
+    Возвращает (готово_сразу, причина_отказа). Приставка `moov` читается
+    диапазоном в 1 МБ, кодеки — через ffprobe по подписанной ссылке.
+    """
+    if pathlib.PurePosixPath(str(filename or "")).suffix.lower() not in {".mp4", ".m4v"}:
+        return False, "контейнер требует переупаковки"
+    try:
+        head = s3.get_object(Bucket=bucket, Key=key, Range=f"bytes=0-{probe_prefix_bytes() - 1}")
+        prefix = head["Body"].read()
+        head["Body"].close()
+    except Exception as exc:  # noqa: BLE001 — проверка не должна ломать подготовку
+        return False, f"не удалось прочитать заголовок: {exc}"
+    if not faststart_prefix(prefix):
+        return False, "moov в конце файла — нужен faststart"
+    try:
+        info = probe_url(s3.generate_presigned_url("get_object",
+            Params={"Bucket": bucket, "Key": key}, ExpiresIn=900))
+    except Exception as exc:  # noqa: BLE001 — нет ffprobe или ссылка недоступна
+        return False, f"ffprobe недоступен: {exc}"
+    return (True, None) if browser_compatible(info) else (False, "кодеки не браузерные")
+
+
 def process_media_job(rendition_id: str) -> dict:
     rid, token = uuid.UUID(rendition_id), uuid.uuid4().hex
     job = get_current_job()
@@ -334,6 +407,7 @@ def process_media_job(rendition_id: str) -> dict:
             return {"ok": True, "skipped": True}
         aid, version, source_bucket, source_key, filename = asset.id, asset.version, asset.bucket, asset.object_key, asset.original_filename
         checksum, kind = asset.checksum_sha256, media_kind(filename)
+        asset_size = int(asset.size_bytes or 0) or None
         row.state, row.run_token, row.error, row.updated_at = "processing", token, None, utcnow()
         row.attempt_count += 1
         db.commit()
@@ -345,6 +419,20 @@ def process_media_job(rendition_id: str) -> dict:
     try:
         s3 = get_s3_client()
         checkpoint()
+        if kind == "video":
+            # Оригинал уже проигрывается браузером? Тогда не копируем ни байта:
+            # раньше здесь скачивался весь файл только ради проверки кодеков.
+            ready, reason = quick_video_ready(s3, source_bucket, source_key, filename, asset_size)
+            if ready:
+                with SessionLocal() as db:
+                    row = db.scalar(select(AssetRendition).where(AssetRendition.id == rid).with_for_update())
+                    if row and row.run_token == token:
+                        publish_original_without_copy(db, row, size_bytes=asset_size)
+                        db.commit()
+                        committed = True
+                        return {"ok": True, "asset_id": str(aid), "source_version": version, "reused_original": True}
+            else:
+                log.info("media: preparing a copy for %s (%s)", aid, reason)
         with tempfile.TemporaryDirectory(prefix="corelms_media_") as tmp:
             root = pathlib.Path(tmp)
             source = root / ("source" + pathlib.PurePosixPath(filename).suffix.lower())
@@ -379,7 +467,8 @@ def process_media_job(rendition_id: str) -> dict:
                 new_key = f"renditions/{aid}/{version}/{uuid.uuid4().hex}{target.suffix}"
                 checkpoint()
                 with target.open("rb") as stream:
-                    s3.put_object(Bucket=output_bucket, Key=new_key, Body=stream, ContentType=mime)
+                    s3.put_object(Bucket=output_bucket, Key=new_key, Body=stream, ContentType=mime,
+                                  CacheControl="private, max-age=31536000, immutable")
                 final_key, final_bucket = new_key, output_bucket
             else:
                 final_key, final_bucket, output_hash = source_key, source_bucket, digest.hexdigest()

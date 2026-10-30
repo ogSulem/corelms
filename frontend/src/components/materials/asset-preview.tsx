@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AlertCircle, Download, FileText, Loader2, Maximize2, RefreshCw, ShieldCheck, X } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { columnLabel, downloadMaterial, fileExtension, formatBytes, materialKind, type Material } from "@/lib/materials";
+import { columnLabel, downloadMaterial, fileExtension, formatBytes, materialKind, materialThumbUrl, type Material } from "@/lib/materials";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
@@ -82,15 +82,22 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
   const originalKind = materialKind(asset.original_filename);
   const needsPreparation = originalKind === "video" || originalKind === "document";
   const copyAvailable = rendition?.state === "ready";
-  const copyReady = copyAvailable && !textFallback;
+  // Видео показываем прямо из оригинала: браузер сам решает, играть ли MP4/H.264.
+  // Копию включаем только после реальной ошибки декодирования — а не заранее,
+  // иначе любое видео начиналось с надписи «преобразуется в MP4».
+  const [videoFallback, setVideoFallback] = useState(false);
+  const copyReady = copyAvailable && !textFallback && (originalKind === "document" || videoFallback);
   const kind = copyReady ? rendition.mime_type === "application/pdf" ? "pdf" : "video" : originalKind;
   const source = `/api/backend/assets/${encodeURIComponent(asset.asset_id)}/stream?variant=${copyReady ? "browser" : "original"}&v=${asset.version || 1}&retry=${retry}`;
   const native = ["pdf", "image", "audio", "video"].includes(kind);
-  const showPreparation = needsPreparation && !copyReady && (originalKind === "document" ? !textFallback : !["mp4", "webm"].includes(fileExtension(asset.original_filename)));
+  const showPreparation = originalKind === "document" && !copyReady && !textFallback;
   const pending = !rendition || ["pending", "queued", "processing"].includes(rendition.state);
+  const videoPreparing = originalKind === "video" && videoFallback && !copyReady;
+  // Для документов копия нужна всегда; для видео — только если браузер не справился.
+  const watchPreparation = originalKind === "document" || videoFallback;
 
   useEffect(() => {
-    if (!needsPreparation) return;
+    if (!needsPreparation || !watchPreparation) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     let running = false;
@@ -117,7 +124,7 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
     document.addEventListener("visibilitychange", visible);
     void poll();
     return () => { controller.abort(); clearTimeout(timer); document.removeEventListener("visibilitychange", visible); };
-  }, [asset.asset_id, needsPreparation, retry]);
+  }, [asset.asset_id, needsPreparation, watchPreparation, retry]);
 
   async function retryPreparation() {
     setPreparingAgain(true); setViewerError(null);
@@ -133,7 +140,7 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
     setLoading(true);
     setReady(false);
     setError(null);
-    if (showPreparation || kind === "download") { setLoading(false); return () => controller.abort(); }
+    if (showPreparation || videoPreparing || kind === "download") { setLoading(false); return () => controller.abort(); }
     const load = async () => {
       try {
         if (native) {
@@ -154,7 +161,7 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
     };
     void load();
     return () => controller.abort();
-  }, [asset.asset_id, kind, native, retry, sheet, copyReady, showPreparation]);
+  }, [asset.asset_id, kind, native, retry, sheet, copyReady, showPreparation, videoPreparing]);
 
   async function download() {
     setDownloading(true);
@@ -207,8 +214,8 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
           {onClose && <button type="button" onClick={onClose} aria-label="Закрыть предпросмотр" className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100"><X size={18} /></button>}
         </div>
       </header>}
-      {needsPreparation && <div className={cn("flex flex-wrap items-center justify-between gap-2 border-b px-5 py-3 text-xs leading-6", copyAvailable ? "border-emerald-100 bg-emerald-50/60 text-emerald-800" : "border-amber-100 bg-amber-50/60 text-amber-900")}>
-        <p className="min-w-0 flex-1">{copyAvailable ? originalKind === "video" ? "Для браузера: MP4 · H.264/AAC. Исходный файл не изменён." : "Для браузера подготовлена PDF-копия. Исходный документ не изменён." : viewerError || rendition?.error || (originalKind === "video" ? "Готовится совместимая видеокопия. Оригинал уже можно скачать." : "Готовится PDF-копия с оформлением документа. Пока доступен оригинал и быстрый просмотр текста.")}</p>
+      {needsPreparation && watchPreparation && <div className={cn("flex flex-wrap items-center justify-between gap-2 border-b px-5 py-3 text-xs leading-6", copyAvailable ? "border-emerald-100 bg-emerald-50/60 text-emerald-800" : "border-amber-100 bg-amber-50/60 text-amber-900")}>
+        <p className="min-w-0 flex-1">{copyAvailable ? originalKind === "video" ? "Этот формат не открылся в браузере, поэтому показана совместимая копия MP4. Оригинал не изменён." : "Для браузера подготовлена PDF-копия. Исходный документ не изменён." : viewerError || rendition?.error || (originalKind === "video" ? "Браузер не открыл этот формат. Готовим совместимую копию — оригинал можно скачать уже сейчас." : "Готовится PDF-копия с оформлением документа. Пока доступен оригинал и быстрый просмотр текста.")}</p>
         {copyAvailable && textFallback && <button type="button" className="font-medium underline" onClick={() => setTextFallback(false)}>Открыть PDF-копию</button>}
         {viewerError && <button type="button" className="font-medium underline" onClick={() => setRetry(n => n + 1)}>Обновить статус</button>}
         {!pending && !copyAvailable && rendition?.can_retry && <button type="button" disabled={preparingAgain} className="font-medium underline disabled:opacity-40" onClick={() => void retryPreparation()}>{preparingAgain ? "Запускаем…" : "Повторить подготовку"}</button>}
@@ -229,7 +236,7 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
         <div role="status" className="flex min-h-72 flex-col items-center justify-center gap-4 p-6 text-center">
           {pending && !viewerError ? <Loader2 size={30} className="animate-spin text-amber-600" /> : <FileText size={32} className="text-zinc-300" />}
           <h4 className="text-base font-medium text-zinc-800">{pending && !viewerError ? "Подготавливаем материал для браузера" : "Оригинал доступен для скачивания"}</h4>
-          <p className="max-w-lg text-sm leading-7 text-zinc-500">{originalKind === "video" ? "Видео преобразуется в MP4 в фоне. Это может занять несколько минут; страницу можно закрыть." : "Чтобы не потерять таблицы, изображения и разметку, полный документ открывается как PDF. Текстовый просмотр — упрощённый."}</p>
+          <p className="max-w-lg text-sm leading-7 text-zinc-500">Чтобы не потерять таблицы, изображения и разметку, полный документ открывается как PDF. Текстовый просмотр — упрощённый.</p>
           {originalKind === "document" && <Button variant="outline" size="sm" className="rounded-xl text-xs font-medium normal-case tracking-normal" onClick={() => setTextFallback(true)}>Быстрый просмотр текста</Button>}
         </div>
       ) : kind === "download" ? (
@@ -238,15 +245,28 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
           <p className="font-medium text-zinc-800">Файл доступен для скачивания</p>
           <p className="max-w-md text-sm leading-relaxed text-zinc-500">У этого формата нет встроенного просмотра. Откройте оригинал в подходящей программе — файл не потерян.</p>
         </div>
+      ) : videoPreparing ? (
+        <div role="status" className="flex min-h-72 flex-col items-center justify-center gap-4 p-6 text-center">
+          {pending && !viewerError ? <Loader2 size={30} className="animate-spin text-amber-600" /> : <FileText size={32} className="text-zinc-300" />}
+          <h4 className="text-base font-medium text-zinc-800">{pending && !viewerError ? "Готовим совместимую видеокопию" : "Этот формат не открывается в браузере"}</h4>
+          <p className="max-w-lg text-sm leading-7 text-zinc-500">Оригинал сохранён и доступен для скачивания. Копия появится здесь автоматически — страницу можно закрыть и вернуться позже.</p>
+          <Button size="sm" onClick={() => void download()} disabled={downloading} className="rounded-lg text-xs font-medium normal-case tracking-normal">Скачать оригинал</Button>
+        </div>
       ) : native && ready ? (
         <div className="bg-zinc-50">
           {kind === "pdf" && !pdfSupported && <p className="px-6 py-12 text-center text-sm leading-7 text-zinc-600">Встроенный просмотр PDF в этом браузере недоступен. Скачайте оригинал или откройте файл в отдельной вкладке.</p>}
           {kind === "pdf" && pdfSupported && <iframe key={retry} title={`PDF: ${asset.original_filename}`} src={source} className={cn("w-full border-0", embedded ? "h-[64vh] min-h-[320px]" : "h-[72vh] min-h-[400px]")} />}
           {kind === "image" && <img src={source} alt={asset.original_filename} onError={() => void explainMediaFailure()} className="mx-auto max-h-[72vh] max-w-full bg-white object-contain" />}
-          {kind === "video" && <video ref={videoRef} src={source} onError={() => void explainMediaFailure()} onLoadedMetadata={() => {
+          {kind === "video" && <video ref={videoRef} src={source} poster={materialThumbUrl(asset.asset_id, asset.version)} onError={() => {
+            const video = videoRef.current;
+            if (video) playback.current = { time: video.currentTime, paused: video.paused };
+            if (copyAvailable && !videoFallback) { setVideoFallback(true); return; }
+            if (!copyAvailable) { setVideoFallback(true); return; }
+            void explainMediaFailure();
+          }} onLoadedMetadata={() => {
             const video = videoRef.current, saved = playback.current;
             if (video && saved) { video.currentTime = Math.min(saved.time, video.duration || saved.time); if (!saved.paused) void video.play().catch(() => {}); playback.current = null; }
-          }} controls playsInline preload="auto" className="max-h-[72vh] w-full bg-zinc-950"><track kind="captions" /></video>}
+          }} controls playsInline preload="metadata" className="max-h-[72vh] w-full bg-zinc-950"><track kind="captions" /></video>}
           {kind === "audio" && <div className="p-6 sm:p-10"><audio src={source} controls preload="metadata" onError={() => void explainMediaFailure()} className="w-full"><track kind="captions" /></audio></div>}
         </div>
       ) : data?.kind === "table" ? (

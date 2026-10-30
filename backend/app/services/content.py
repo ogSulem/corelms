@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.services.app_settings import get_ai_settings, get_platform_settings
-from app.models.media import AssetRendition
+from app.models.media import AssetRendition, AssetThumb
 from app.models.tag import ModuleTagMap
 from app.models.asset import AssetRevision, ContentAsset
 from app.models.module import Module, Submodule
@@ -241,6 +241,7 @@ def referenced_storage_keys(db: Session) -> set[str]:
     keys = set(db.scalars(select(ContentAsset.object_key)))
     keys.update(db.scalars(select(AssetRevision.object_key)))
     keys.update(db.scalars(select(AssetRendition.object_key).where(AssetRendition.object_key.is_not(None))))
+    keys.update(db.scalars(select(AssetThumb.object_key).where(AssetThumb.object_key.is_not(None))))
     keys.update(db.scalars(select(LessonRevision.content_object_key).where(LessonRevision.content_object_key.is_not(None))))
     keys.update(db.scalars(select(Module.import_object_key).where(Module.import_object_key.is_not(None))))
     keys.update(db.scalars(select(Submodule.content_object_key).where(Submodule.content_object_key.is_not(None))))

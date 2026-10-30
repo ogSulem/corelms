@@ -23,6 +23,7 @@ from app.routers.content import _inspect_upload
 from app.schemas.content import VersionRestore
 from app.services.content import safe_filename, snapshot_asset
 from app.services.media import stage_rendition
+from app.services.thumbs import enqueue_thumb
 from app.services.chunked_uploads import (append_chunk, checksum_and_size, chunk_size, create_session, discard,
     discard_blob, open_blob, read_result, read_session, require_free_space, save_result)
 from app.services.sales_library import (adopt_legacy_page, clean_path, delete_subtree, get_section, identity, join_path,
@@ -142,6 +143,7 @@ def _register_sales_file(db: Session, request: Request, user: User, *, section: 
               meta={"section": section, "entry_id": str(entry.id), "asset_id": str(asset.id), "version": asset.version})
     progress["committed"] = True
     db.commit()
+    enqueue_thumb(asset.id)
     return listing_payload(db, section, path, include_archived=True)
 
 

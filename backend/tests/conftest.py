@@ -253,6 +253,7 @@ def storage(monkeypatch):
     import app.services.module_importer  # register references before patching
     import app.services.module_import_jobs
     import app.services.storage_cleanup_jobs
+    import app.services.thumbs
     class Store:
         def __init__(self):
             self.objects = {}
@@ -284,6 +285,9 @@ def storage(monkeypatch):
         def upload(self, *, s3, object_key, fileobj, **kwargs):
             self.uploaded.append(object_key)
             self.objects[object_key] = fileobj.read()
+        def generate_presigned_url(self, operation, Params=None, ExpiresIn=None, **kwargs):
+            key = (Params or {}).get("Key", "object")
+            return f"https://storage.test/{key}"
         def put_object(self, *, Bucket, Key, Body, **kwargs):
             self.objects[Key] = Body.read() if hasattr(Body, "read") else bytes(Body)
             self.uploaded.append(Key)

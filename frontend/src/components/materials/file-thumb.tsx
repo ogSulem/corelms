@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { File, FileAudio, FileImage, FileSpreadsheet, FileText, FileVideo, Play } from "lucide-react";
 import { cn } from "@/lib/cn";
-import { materialKind, materialThumbUrl, type Material } from "@/lib/materials";
+import { materialKind, materialStreamUrl, materialThumbUrl, type Material } from "@/lib/materials";
 import { useInView } from "@/lib/hooks/use-in-view";
 
 /** Тот же набор иконок, что и в списках: один файл — один узнаваемый знак. */
@@ -28,22 +28,20 @@ type ThumbSize = keyof typeof TILE;
  */
 export function MaterialThumb({ asset, size = "md", className }: { asset: Material; size?: ThumbSize; className?: string }) {
   const [ref, inView] = useInView<HTMLSpanElement>();
-  const [failed, setFailed] = useState(false);
+  // thumb → (для фото) оригинал → иконка. Видео оригинал в список не тянем.
+  const [stage, setStage] = useState<"thumb" | "original" | "icon">("thumb");
   const kind = materialKind(asset.original_filename);
   const { box, icon } = TILE[size];
-  const canPreview = !failed && !!asset.asset_id && (kind === "image" || kind === "video");
-  // Файл не отдался браузеру — показываем иконку с подсказкой, а не пустой серый квадрат.
-  const broken = failed && !!asset.asset_id && (kind === "image" || kind === "video");
-  // Для видео и документов предпочитаем готовую копию: оригинал (например, H.265 .mp4)
-  // браузер не декодирует, и вместо кадра был бы чёрный прямоугольник.
-  const src = materialThumbUrl(asset.asset_id, asset.version, !!asset.browser_copy);
-  return <span ref={ref} title={broken ? "Превью не загрузилось — откройте файл, чтобы увидеть причину" : undefined}
-    className={cn("relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl border bg-zinc-50 text-zinc-500", broken ? "border-amber-200 bg-amber-50/60 text-amber-700" : "border-zinc-200", box, className)}>
-    {canPreview && inView && kind === "image" && <img src={src} alt="" aria-hidden="true" loading="lazy" decoding="async" onError={() => setFailed(true)} className="h-full w-full object-cover" />}
-    {canPreview && inView && kind === "video" && <>
-      <video src={`${src}#t=0.1`} preload="auto" muted playsInline aria-hidden="true" onError={() => setFailed(true)} className="h-full w-full object-cover" />
-      <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-zinc-950/25"><span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/90 text-zinc-900"><Play size={12} fill="currentColor" /></span></span>
-    </>}
-    {!(canPreview && inView) && <MaterialIcon name={asset.original_filename} size={icon} />}
+  const previewable = !!asset.asset_id && (kind === "image" || kind === "video");
+  const src = stage === "original" ? materialStreamUrl(asset.asset_id, asset.version) : materialThumbUrl(asset.asset_id, asset.version);
+  const showPicture = previewable && inView && stage !== "icon";
+  const failed = stage === "icon" && previewable;
+  return <span ref={ref} title={failed && kind === "image" ? "Превью не загрузилось — откройте файл, чтобы увидеть причину" : undefined}
+    className={cn("relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl border bg-zinc-50 text-zinc-500", failed && kind === "image" ? "border-amber-200 bg-amber-50/60 text-amber-700" : "border-zinc-200", box, className)}>
+    {showPicture && <img src={src} alt="" aria-hidden="true" loading="lazy" decoding="async"
+      onError={() => setStage(current => (current === "thumb" && kind === "image" ? "original" : "icon"))}
+      className="h-full w-full object-cover" />}
+    {!showPicture && <MaterialIcon name={asset.original_filename} size={icon} />}
+    {kind === "video" && showPicture && <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-zinc-950/20"><span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/90 text-zinc-900"><Play size={12} fill="currentColor" /></span></span>}
   </span>;
 }

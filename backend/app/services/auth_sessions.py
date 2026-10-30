@@ -58,10 +58,40 @@ def timestamp(value) -> float:
     return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc).timestamp()
 
 
+_limits_cache: tuple[float, tuple[int, int, int]] | None = None
+
+
+def invalidate_limits() -> None:
+    """Сброс кэша после сохранения настроек в админке."""
+    global _limits_cache
+    _limits_cache = None
+
+
 def _limits() -> tuple[int, int, int]:
-    return (max(3600, settings.session_refresh_token_days * 86400),
-            max(300, settings.session_idle_timeout_hours * 3600),
-            max(3600, settings.session_absolute_timeout_days * 86400))
+    """Сроки сессии: значения из интерфейса админа важнее .env.
+
+    Читаем их не чаще раза в 30 секунд: путь входа/обновления горячий,
+    а решение «сколько живёт сессия» не должно зависеть от лишнего запроса к БД.
+    """
+    global _limits_cache
+    now = time.monotonic()
+    if _limits_cache is not None and now - _limits_cache[0] < 30:
+        return _limits_cache[1]
+    refresh_days, idle_hours, absolute_days = (settings.session_refresh_token_days,
+        settings.session_idle_timeout_hours, settings.session_absolute_timeout_days)
+    try:
+        from app.services.app_settings import get_platform_settings
+
+        platform = get_platform_settings(None)
+        refresh_days = platform.session_refresh_days or refresh_days
+        idle_hours = platform.session_idle_hours or idle_hours
+        absolute_days = platform.session_absolute_days or absolute_days
+    except Exception:
+        pass  # Настройки недоступны — работаем по значению окружения.
+    value = (max(3600, int(refresh_days) * 86400), max(300, int(idle_hours) * 3600),
+             max(3600, int(absolute_days) * 86400))
+    _limits_cache = (now, value)
+    return value
 
 
 def _ttl(session: dict) -> int:

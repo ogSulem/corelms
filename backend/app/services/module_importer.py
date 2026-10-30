@@ -726,8 +726,10 @@ def import_module_from_dir(
                 if sub and new_lesson and not sub.is_folder and sub.primary_asset_id is None:
                     sub.primary_asset_id = asset.id
                 from app.services.media import stage_rendition
+                from app.services.thumbs import enqueue_thumb
                 db.flush()
                 stage_rendition(db, asset)
+                enqueue_thumb(asset.id)
                 report["lesson_assets" if sub else "module_assets"] += 1
         report["lessons_kept"] = len([s for s in old_subs if s.id not in used])
         db.flush()

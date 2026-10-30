@@ -22,10 +22,21 @@ export function fileExtension(name: string): string {
 }
 
 /**
- * Адрес превью файла. `thumb=1` отключает запись события обучения и разрешает кэш:
- * иконки в списке не должны попадать в журнал «просмотрено».
+ * Адрес картинки-превью (кадр видео или уменьшенное фото).
+ *
+ * Раньше списки показывали оригинал: видео скачивалось в браузер целиком ради
+ * одного кадра, а фото — в полном размере ради квадратика 44×44. Теперь сервер
+ * отдаёт отдельный JPEG на 512 px, он кэшируется браузером на неделю.
  */
-export function materialThumbUrl(assetId: string, version?: number | null, browserCopy = false): string {
+export function materialThumbUrl(assetId: string, version?: number | null): string {
+  const query = new URLSearchParams();
+  if (version) query.set("v", String(version));
+  const suffix = query.toString();
+  return `/api/backend/assets/${encodeURIComponent(assetId)}/thumb${suffix ? `?${suffix}` : ""}`;
+}
+
+/** Полноразмерный файл — только для просмотра, не для списков. */
+export function materialStreamUrl(assetId: string, version?: number | null, browserCopy = false): string {
   const query = new URLSearchParams({ variant: browserCopy ? "browser" : "original", thumb: "1" });
   if (version) query.set("v", String(version));
   return `/api/backend/assets/${encodeURIComponent(assetId)}/stream?${query.toString()}`;

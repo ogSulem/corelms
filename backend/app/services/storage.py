@@ -123,6 +123,7 @@ def upload_fileobj_with_retry(
     multipart_threshold_bytes: int = 8 * 1024 * 1024,
     multipart_chunksize_bytes: int = 8 * 1024 * 1024,
     max_concurrency: int = 4,
+    cache_control: str | None = "private, max-age=31536000, immutable",
 ) -> None:
     rt = _runtime_s3()
     bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
@@ -168,6 +169,10 @@ def upload_fileobj_with_retry(
             except Exception:
                 log.debug("upload_fileobj_with_retry: failed to seek fileobj", exc_info=True)
             extra_args = {"ContentType": str(content_type or "application/octet-stream")}
+            # Ключ объекта уникален и никогда не перезаписывается, поэтому
+            # производные файлы можно кэшировать надолго, но только приватно.
+            if cache_control:
+                extra_args["CacheControl"] = str(cache_control)
             if config is not None:
                 s3.upload_fileobj(fileobj, bucket, object_key, ExtraArgs=extra_args, Config=config)
             else:
