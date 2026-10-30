@@ -233,9 +233,12 @@ def environment_report(db) -> tuple[list[str], list[str]]:
 
     for label, sql in (
         ("пользователей", "select count(*) from users"),
-        ("сотрудников", "select count(*) from users where role in ('employee','partner')"),
-        ("администраторов", "select count(*) from users where role in ('admin','superadmin')"),
-        ("Пользователей с ролью вне списка", "select count(*) from users where role::text not in ('employee','partner','admin','superadmin')"),
+        # CAST вместо сравнения с литералами: если в типе userrole не окажется
+        # нужной метки, Postgres падал бы с DataError на всём отчёте.
+        ("сотрудников", "select count(*) from users where cast(role as text) in ('employee','partner')"),
+        ("администраторов", "select count(*) from users where cast(role as text) in ('admin','superadmin')"),
+        ("Пользователей с ролью вне списка",
+         "select count(*) from users where cast(role as text) not in ('employee','partner','admin','superadmin')"),
         ("модулей", "select count(*) from modules"),
         ("уроков", "select count(*) from submodules where is_archived = false"),
         ("файлов", "select count(*) from content_assets"),

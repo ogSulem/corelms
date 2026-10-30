@@ -153,7 +153,8 @@ class UserUpdateRequest(BaseModel):
     name: str | None = None
     email: str | None = None
     position: str | None = None
-    role: Literal["employee", "admin", "superadmin"] | None = None
+    # partner — рабочая роль: сотрудник партнёрской организации, без прав администратора.
+    role: Literal["employee", "partner", "admin", "superadmin"] | None = None
     must_change_password: bool | None = None
 
 

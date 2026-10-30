@@ -20,7 +20,7 @@ export function AppNav({ role, authenticated = true }: { role?: string; authenti
   const items = role === "admin" || role === "superadmin" ? [...baseItems, { href: "/admin/modules", label: "Админ‑центр" }] : baseItems;
 
   return (
-    <nav ref={nav} aria-label="Основная навигация" className="flex w-full min-w-0 max-w-full items-center gap-1 overflow-x-auto rounded-2xl border border-zinc-200 bg-white/85 backdrop-blur-xl p-1.5 shadow-sm shadow-zinc-950/5">
+    <nav ref={nav} aria-label="Основная навигация" className="mx-auto flex w-fit max-w-full min-w-0 items-center gap-1 overflow-x-auto rounded-2xl border border-zinc-200 bg-white/85 p-1.5 shadow-sm shadow-zinc-950/5 backdrop-blur-xl">
       {items.map((it) => {
         const active = it.href === "/admin/modules" ? pathname.startsWith("/admin/") : pathname === it.href || pathname.startsWith(it.href + "/");
         return (

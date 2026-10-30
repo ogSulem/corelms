@@ -188,3 +188,21 @@ test("включённый COOKIE_DOMAIN гасит старую host-only ку�
     delete process.env.COOKIE_DOMAIN;
   }
 });
+
+test("account tab counts match the rows they show (partner is an employee, not an admin)", async () => {
+  const { countByTab, isAdminRole, isEmployeeRole } = await loadSource("src/lib/admin-users-filter.ts");
+  // Так выглядели рабочие данные: администраторы отдельно, весь штат — партнёры.
+  const roles = ["superadmin", "admin", "admin", "admin", "admin", ...Array(88).fill("partner")];
+
+  assert.equal(roles.length, 93);
+  assert.equal(countByTab(roles, "all"), 93);
+  assert.equal(countByTab(roles, "employees"), 88);
+  assert.equal(countByTab(roles, "partner"), 88);
+  assert.equal(countByTab(roles, "admins"), 5);
+
+  // Главное: вкладка «Сотрудники» не может быть пустой при счётчике 88.
+  assert.ok(countByTab(roles, "employees") > 0);
+  assert.equal(isEmployeeRole("partner"), true);
+  assert.equal(isAdminRole("partner"), false);
+  assert.equal(isAdminRole("employee"), false);
+});

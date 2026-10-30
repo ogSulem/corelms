@@ -301,7 +301,10 @@ def create_tag(
     if not name:
         raise HTTPException(status_code=400, detail="invalid tag name")
 
-    existing = db.scalar(select(Tag).where(func.lower(Tag.name) == func.lower(name)))
+    # Сравнение без учёта регистра делаем в Python: SQLite (тесты и локальный
+    # запуск) не умеет lower() для кириллицы, и «Смены»/«смены» давали два тега.
+    target = name.casefold()
+    existing = next((t for t in db.scalars(select(Tag)) if str(t.name).casefold() == target), None)
     if existing is not None:
         return {"id": str(existing.id), "name": str(existing.name)}
 
@@ -6007,11 +6010,25 @@ def analytics_overview(
         if u.last_activity_at is not None and u.last_activity_at >= week_ago
     )
 
+    published_module_ids = {
+        row["id"] for row in module_rows.values() if row["is_active"] and not row["is_archived"]
+    }
+    completions_total = sum(row["completed"] for row in module_rows.values())
+    # Завершения — это пары «человек × модуль»: их больше, чем модулей. Чтобы
+    # цифра не читалась как «167 из 40», рядом считаем охват и число людей.
+    learners_completed = sum(1 for row in user_rows.values() if row["completed"] > 0)
+    modules_completed = sum(
+        1 for row in module_rows.values()
+        if row["id"] in published_module_ids and row["completed"] > 0
+    )
+    started_pairs = sum(row["started"] for row in module_rows.values())
+
     return {
         "generated_at": now.isoformat(),
         "totals": {
             "users": len(users),
             "employees": sum(1 for u in users if u.role not in {UserRole.admin, UserRole.superadmin}),
+            "partners": sum(1 for u in users if u.role == UserRole.partner),
             "admins": sum(1 for u in users if u.role in {UserRole.admin, UserRole.superadmin}),
             "active_7d": active_7d,
             "modules": len(modules),
@@ -6019,7 +6036,10 @@ def analytics_overview(
             "drafts": sum(1 for m in modules if not m.is_active and not m.is_archived),
             "archived": sum(1 for m in modules if m.is_archived),
             "lessons": sum(lesson_counts.values()),
-            "completions": sum(row["completed"] for row in module_rows.values()),
+            "completions": completions_total,
+            "learners_completed": learners_completed,
+            "modules_completed": modules_completed,
+            "completion_rate": _rate(completions_total, started_pairs),
             "attempts": sum(int(row["count"]) for row in attempts_by_user.values()),
             "pass_rate": _rate(
                 sum(row["passed"] for row in attempts_by_user.values()),

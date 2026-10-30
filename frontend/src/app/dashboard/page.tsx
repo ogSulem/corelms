@@ -114,9 +114,16 @@ export default function DashboardPage() {
   }, []);
 
   const didSomethingToday = useMemo(() => {
-    const day = new Date().toISOString().slice(0, 10);
-    const last = String(profile?.last_activity_at || "");
-    return last ? last.slice(0, 10) === day : false;
+    const raw = String(profile?.last_activity_at || "");
+    if (!raw) return false;
+    const last = new Date(raw);
+    if (Number.isNaN(last.getTime())) return false;
+    const now = new Date();
+    // Сравниваем по местному календарю: сервер отдаёт UTC, и в Москве с 00:00
+    // до 03:00 разница дат сбрасывала бы цель посреди дня.
+    return last.getFullYear() === now.getFullYear()
+      && last.getMonth() === now.getMonth()
+      && last.getDate() === now.getDate();
   }, [profile?.last_activity_at]);
 
   return (

@@ -8,10 +8,12 @@ import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
 
 type Totals = {
-  users: number; employees: number; admins: number; active_7d: number;
+  users: number; employees: number; partners?: number; admins: number; active_7d: number;
   modules: number; published: number; drafts: number; archived: number;
   lessons: number; completions: number; attempts: number; pass_rate: number;
   events_total: number; events_30d: number;
+  // Завершения считаются парами «человек × модуль», поэтому их больше, чем модулей.
+  learners_completed?: number; modules_completed?: number; completion_rate?: number;
 };
 
 type ModuleRow = {
@@ -29,7 +31,7 @@ type UserRow = {
 type Overview = { generated_at: string; totals: Totals; modules: ModuleRow[]; users: UserRow[] };
 
 const btn = "gap-2 rounded-xl text-sm font-medium normal-case tracking-normal";
-const roleLabel: Record<string, string> = { employee: "Сотрудник", admin: "Администратор", superadmin: "Суперадмин" };
+const roleLabel: Record<string, string> = { employee: "Сотрудник", partner: "Партнёр", admin: "Администратор", superadmin: "Суперадмин" };
 
 function when(value: string | null): string {
   if (!value) return "не заходил";
@@ -138,10 +140,22 @@ export function ResultsAdmin() {
         <>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Kpi value={t.users} label="Пользователей" hint={`заходили за неделю: ${t.active_7d}`} />
-            <Kpi value={t.completions} label="Завершено модулей" hint={`из ${t.published} опубликованных`} />
+            <Kpi
+              value={t.completions}
+              label="Завершений модулей"
+              hint={`у ${t.learners_completed ?? 0} сотрудников · охват ${t.modules_completed ?? 0} из ${t.published} модулей`}
+            />
             <Kpi value={t.attempts} label="Попыток тестов" hint={`успешных: ${t.pass_rate}%`} />
             <Kpi value={`${t.events_30d}`} label="Событий за 30 дней" hint={`всего в журнале: ${t.events_total}`} />
           </div>
+
+          <p className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-xs leading-6 text-zinc-600">
+            Одно завершение = один сотрудник закончил один модуль, поэтому число завершений может быть
+            больше числа модулей. Хотя бы один сотрудник закончил{" "}
+            <span className="font-semibold text-zinc-900">{t.modules_completed ?? 0}</span> из{" "}
+            <span className="font-semibold text-zinc-900">{t.published}</span> опубликованных модулей
+            {typeof t.completion_rate === "number" ? ` · доводят до конца ${t.completion_rate}% начатого` : ""}.
+          </p>
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex gap-1 rounded-xl border border-zinc-200 bg-white p-1">
