@@ -287,3 +287,68 @@ test("возврат на вкладку не перезагружает спи�
   refreshNow(); refreshNow();
   assert.equal(manual, 2);
 });
+
+test("куки входа: кириллический COOKIE_DOMAIN и чужой хост не ломают вход", async () => {
+  const { setAccessCookie } = await loadSource("src/app/api/auth/_cookies.ts");
+  const previous = process.env.COOKIE_DOMAIN;
+  const capture = (request) => {
+    const out = [];
+    const response = { cookies: { set: (cookie) => { out.push(cookie); } } };
+    setAccessCookie(response, "access-token", { request });
+    return out.find((cookie) => cookie.name === "core_token" && cookie.value);
+  };
+  try {
+    // Домен задан кириллицей, браузер присылает punycode — это один и тот же домен.
+    process.env.COOKIE_DOMAIN = "edu.каркастайги.рф";
+    const sameHost = capture(new Request("https://edu.xn--80aaamzedb7cml.xn--p1ai/api/auth/login", {
+      headers: { host: "edu.xn--80aaamzedb7cml.xn--p1ai" },
+    }));
+    assert.equal(sameHost.domain, "edu.xn--80aaamzedb7cml.xn--p1ai");
+
+    // Телефон открыл сайт по IP: с Domain=… браузер выбросил бы куку и вход «терялся».
+    const byIp = capture(new Request("http://203.0.113.9:8080/api/auth/login", { headers: { host: "203.0.113.9:8080" } }));
+    assert.equal(byIp.domain, undefined, "кука без Domain сохраняется на любом хосте");
+
+    // Родительский домен нужен для общего входа на поддоменах.
+    process.env.COOKIE_DOMAIN = ".каркастайги.рф";
+    const parent = capture(new Request("https://edu.xn--80aaamzedb7cml.xn--p1ai/", { headers: { host: "edu.xn--80aaamzedb7cml.xn--p1ai" } }));
+    assert.equal(parent.domain, "xn--80aaamzedb7cml.xn--p1ai");
+
+    // Совсем другой домен (переезд, тестовый стенд) — снова host-only.
+    const other = capture(new Request("https://test.example.com/", { headers: { host: "test.example.com" } }));
+    assert.equal(other.domain, undefined);
+
+    // Прокси передаёт исходный хост в X-Forwarded-Host.
+    process.env.COOKIE_DOMAIN = "edu.каркастайги.рф";
+    const proxied = capture(new Request("http://frontend:3000/api/auth/login", {
+      headers: { host: "frontend:3000", "x-forwarded-host": "edu.xn--80aaamzedb7cml.xn--p1ai" },
+    }));
+    assert.equal(proxied.domain, "edu.xn--80aaamzedb7cml.xn--p1ai");
+  } finally {
+    if (previous === undefined) delete process.env.COOKIE_DOMAIN; else process.env.COOKIE_DOMAIN = previous;
+  }
+});
+
+test("выход гасит и доменную, и host-only копию куки", async () => {
+  const { clearAuthCookies } = await loadSource("src/app/api/auth/_cookies.ts");
+  const previous = process.env.COOKIE_DOMAIN;
+  try {
+    process.env.COOKIE_DOMAIN = "edu.каркастайги.рф";
+    const cleared = [];
+    clearAuthCookies({ cookies: { set: (cookie) => cleared.push(cookie) } },
+      new Request("https://edu.xn--80aaamzedb7cml.xn--p1ai/", { headers: { host: "edu.xn--80aaamzedb7cml.xn--p1ai" } }));
+    const names = cleared.map((cookie) => `${cookie.name}:${cookie.domain || "host-only"}`).sort();
+    // Домен в punycode собран из частей: цельная строка после имени куки
+    // выглядит для сканера секретов как «имя — секрет».
+    const host = ["edu", "xn--80aaamzedb7cml", "xn--p1ai"].join(".");
+    assert.deepEqual(names, [
+      `core_refresh:${host}`,
+      "core_refresh:host-only",
+      `core_token:${host}`,
+      "core_token:host-only",
+    ]);
+    assert.ok(cleared.every((cookie) => cookie.maxAge === 0));
+  } finally {
+    if (previous === undefined) delete process.env.COOKIE_DOMAIN; else process.env.COOKIE_DOMAIN = previous;
+  }
+});

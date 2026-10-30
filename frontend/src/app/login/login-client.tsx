@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Eye, EyeOff } from "lucide-react";
 
@@ -10,7 +10,15 @@ import { useAuth } from "@/lib/hooks/use-auth";
 
 export function LoginClient() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, loading: authLoading, refresh } = useAuth();
+
+  // Куда вернуть после входа. Только внутренние пути: чужой адрес из строки
+  // запроса не должен превращаться в открытый редирект.
+  const redirectTo = useMemo(() => {
+    const raw = String(searchParams?.get("redirect") || "").trim();
+    return raw.startsWith("/") && !raw.startsWith("//") ? raw : "/dashboard";
+  }, [searchParams]);
 
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -25,8 +33,8 @@ export function LoginClient() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (user) router.replace("/dashboard");
-  }, [authLoading, user, router]);
+    if (user) router.replace(redirectTo);
+  }, [authLoading, user, router, redirectTo]);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -66,6 +74,10 @@ export function LoginClient() {
       if (probe && probe.ok) {
         const snapshot = await probe.json().catch(() => null) as { authenticated?: boolean } | null;
         if (snapshot && snapshot.authenticated === false) throw new Error("COOKIE_BLOCKED");
+      } else if (probe && probe.status >= 500) {
+        // Вход принят, но проверить сессию не удалось. Молча уводить на кабинет
+        // нельзя: оттуда пользователя выбросит на форму входа без объяснения.
+        throw new Error("SESSION_UNCONFIRMED");
       }
 
       window.dispatchEvent(new CustomEvent("corelms:refresh-me", { detail: { reason: "login" } }));
@@ -76,11 +88,13 @@ export function LoginClient() {
         // ignore
       }
 
-      router.push("/dashboard");
+      router.push(redirectTo);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.includes("COOKIE_BLOCKED")) {
         setError("ВХОД ВЫПОЛНЕН, НО БРАУЗЕР НЕ СОХРАНИЛ СЕССИЮ. ОТКРОЙТЕ САЙТ В ОБЫЧНОМ БРАУЗЕРЕ (CHROME/SAFARI), ВЫКЛЮЧИТЕ ПРИВАТНЫЙ РЕЖИМ И «ЭКОНОМИЮ ТРАФИКА».");
+      } else if (msg.includes("SESSION_UNCONFIRMED")) {
+        setError("ВХОД ПРИНЯТ, НО СЕРВЕР НЕ ПОДТВЕРДИЛ СЕССИЮ. ПОВТОРИТЕ ЧЕРЕЗ МИНУТУ.");
       } else if ((msg || "").toLowerCase().includes("invalid_credentials") || (msg || "").toLowerCase().includes("invalid")) {
         setError("НЕВЕРНЫЕ ДАННЫЕ ВХОДА");
       } else if ((msg || "").toLowerCase().includes("upstream_unavailable") || (msg || "").toLowerCase().includes("unavailable") || (msg || "").includes("502")) {
@@ -141,6 +155,11 @@ export function LoginClient() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Имя пользователя"
+                autoComplete="username"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                inputMode="email"
                 required
                 autoFocus
                 ref={loginRef}
@@ -157,6 +176,10 @@ export function LoginClient() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
+                  autoComplete="current-password"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   required
                   disabled={loading}
                 />

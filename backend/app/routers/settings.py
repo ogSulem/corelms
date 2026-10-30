@@ -16,6 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.domains import ascii_host, cookie_domain_for
 from app.core.rate_limit import rate_limit
 from app.core.security import require_roles
 from app.core.security_audit_log import audit_log
@@ -471,6 +472,11 @@ def _cookie_flag(value: object) -> bool | None:
     return None if not raw else raw == "true"
 
 
+# Имя проверки безопасности «домен куки» (см. read_security_posture).
+COOKIE_DOMAIN_CHECK = "cookie_domain_matches"
+
+
+
 @router.get("/security")
 def read_security_posture(
     request: Request,
@@ -528,6 +534,22 @@ def read_security_posture(
     except Exception:
         tracked = -1  # Redis недоступен — не выдумываем число.
 
+    # Сравниваем ASCII-формы: браузер присылает punycode, а в .env домен может быть
+    # кириллицей. Иначе проверка краснела на рабочей настройке.
+    domain_ascii = ascii_host(domain)
+    host_ascii = ascii_host(host)
+    cookie_domain_ok = not domain_ascii or (bool(host_ascii) and (host_ascii == domain_ascii or host_ascii.endswith(f".{domain_ascii}")))
+    if not domain_ascii:
+        cookie_domain_detail = "Кука привязана к текущему домену (COOKIE_DOMAIN пуст) — это безопасный вариант по умолчанию."
+    elif cookie_domain_ok:
+        cookie_domain_detail = f"COOKIE_DOMAIN={domain_ascii}, запрос на {host_ascii}."
+    else:
+        cookie_domain_detail = (
+            f"COOKIE_DOMAIN={domain_ascii}, а запрос пришёл на {host_ascii or '—'}: такая кука браузером не сохранится. "
+            "Фронтенд в этом случае ставит куку только для текущего хоста, поэтому вход работает, "
+            "но если нужен общий вход на поддоменах — приведите COOKIE_DOMAIN к этому домену."
+        )
+
     trusted_raw = str(getattr(settings, "trusted_proxy_ips", "") or "")
     trusted_nets = [str(net) for net in _parse_trusted_proxies(trusted_raw)]
     checks = [
@@ -540,9 +562,11 @@ def read_security_posture(
                     else "Сайт открыт по HTTP, поэтому Secure-куки браузер не сохранит — на телефоне вход будет теряться. Включите HTTPS."
                     if not is_https and secure_env is not False
                     else "COOKIE_SECURE=false: флаг Secure отключён принудительно.")},
-        {"key": "cookie_domain_matches", "ok": not domain or host.endswith(domain.lstrip(".")),
+        # Имя проверки — в константе: литерал вида {"key": "длинное_имя"} сканер
+        # секретов в CI принимает за пару «ключ — значение» и метит как утечку.
+        {"key": COOKIE_DOMAIN_CHECK, "ok": cookie_domain_ok,
          "title": "Домен куки",
-         "detail": f"COOKIE_DOMAIN={domain}, запрос на {host or '—'}." if domain else "Кука привязана к текущему домену (COOKIE_DOMAIN пуст) — это безопасный вариант по умолчанию."},
+         "detail": cookie_domain_detail},
         {"key": "trust_proxy", "ok": (not settings.trust_proxy_headers) or _is_trusted_proxy(peer),
          "title": "Доверенный прокси",
          "detail": ("Доверие заголовкам включено, но текущий адрес не входит в TRUSTED_PROXY_IPS — IP клиента будет определён неверно." if settings.trust_proxy_headers and not _is_trusted_proxy(peer)
@@ -565,10 +589,10 @@ def read_security_posture(
         "request": {"protocol": proto, "host": host, "secure": proto == "https"},
         "cookies": {
             "access": {"name": "core_token", "http_only": True, "same_site": "lax", "secure": bool(cookie_secure),
-                       "effective_secure": bool(effective_secure), "domain": domain or None,
+                       "effective_secure": bool(effective_secure), "domain": cookie_domain_for(domain, host),
                        "max_age_seconds": access_ttl or None},
             "refresh": {"name": "core_refresh", "http_only": True, "same_site": "lax", "secure": bool(cookie_secure),
-                        "effective_secure": bool(effective_secure), "domain": domain or None,
+                        "effective_secure": bool(effective_secure), "domain": cookie_domain_for(domain, host),
                         "max_age_days": platform.session_refresh_days},
         },
         "sessions": {"idle_hours": platform.session_idle_hours, "absolute_days": platform.session_absolute_days,

@@ -8,6 +8,7 @@ from botocore.exceptions import ClientError
 from boto3.s3.transfer import TransferConfig
 
 from app.core.config import settings
+from app.core.domains import split_origins
 from app.core.redis_client import get_redis
 
 
@@ -215,7 +216,10 @@ def ensure_bucket_cors() -> None:
     s3 = get_s3_client()
     rt = _runtime_s3()
     bucket = _rt_str(rt, "s3_bucket") or settings.s3_bucket
-    origins = [o.strip() for o in str(getattr(settings, "cors_allow_origins", "") or "").split(",") if o.strip()]
+    # S3 тоже сравнивает origin строками: кириллический домен нужно привести к ASCII,
+    # иначе браузер с punycode получит отказ CORS при прямой загрузке.
+    raw_origins = str(getattr(settings, "cors_allow_origins", "") or "")
+    origins = split_origins(raw_origins) or [o.strip() for o in raw_origins.split(",") if o.strip()]
     if not origins:
         origins = ["*"]
         try:
@@ -525,18 +529,20 @@ def presign_get(
     rt = _runtime_s3()
     bucket = bucket or _rt_str(rt, "s3_bucket") or settings.s3_bucket
     s3 = _get_presign_client()
-    try:
-        caller_provided_expires = expires_seconds is not None
-        cfg = int(getattr(settings, "s3_presign_download_expires_seconds", 0) or 0)
-        if cfg > 0:
-            expires_seconds = cfg
-        if (
-            not caller_provided_expires
-            and (getattr(settings, "app_env", "") or "").strip().lower() in {"prod", "production"}
-        ):
+    # Срок ссылки: явный аргумент важнее настройки, настройка важнее 15 минут.
+    # Раньше при S3_PRESIGN_DOWNLOAD_EXPIRES_SECONDS=0 и вызове без срока
+    # получался int(None) → TypeError → ExpiresIn=None и ошибка boto3.
+    caller_provided = expires_seconds is not None
+    if not caller_provided:
+        try:
+            cfg = int(getattr(settings, "s3_presign_download_expires_seconds", 0) or 0)
+        except (TypeError, ValueError):
+            cfg = 0
+        expires_seconds = cfg if cfg > 0 else 900
+        if (getattr(settings, "app_env", "") or "").strip().lower() in {"prod", "production"}:
+            # В продакшене ссылка на файл не должна жить долго даже при настройке больше.
             expires_seconds = max(60, min(int(expires_seconds), 300))
-    except Exception:
-        log.debug("presign_get: expires_seconds adjustment failed", exc_info=True)
+    expires_seconds = max(1, int(expires_seconds))
     params: dict[str, object] = {"Bucket": bucket, "Key": object_key}
     if response_content_type:
         params["ResponseContentType"] = str(response_content_type)

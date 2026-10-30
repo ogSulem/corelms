@@ -100,6 +100,7 @@ def environment_report(db) -> tuple[list[str], list[str]]:
     from sqlalchemy import text
 
     from app.core.config import settings
+    from app.core.domains import ascii_host, cookie_domain_for
 
     lines: list[str] = []
     problems: list[str] = []
@@ -116,7 +117,13 @@ def environment_report(db) -> tuple[list[str], list[str]]:
     add("REDIS_URL", _mask_url(settings.redis_url))
     add("JWT_SECRET_KEY", f"{len(settings.jwt_secret_key or '')} символов")
     add("COOKIE_SECURE", _env_flag("COOKIE_SECURE"))
-    add("COOKIE_DOMAIN", _env_flag("COOKIE_DOMAIN"))
+    cookie_domain_raw = str(_env_flag("COOKIE_DOMAIN") or "").strip()
+    add("COOKIE_DOMAIN", cookie_domain_raw)
+    if cookie_domain_raw and cookie_domain_raw not in {"не задана"}:
+        cookie_domain_ascii = ascii_host(cookie_domain_raw)
+        if cookie_domain_ascii and cookie_domain_ascii != cookie_domain_raw.lstrip("."):
+            # Кириллический домен — не ошибка: браузер получит именно ASCII-форму.
+            add("  (браузер получит)", cookie_domain_ascii)
     add("S3 bucket", settings.s3_bucket or "—")
     add("S3 endpoint", settings.s3_endpoint_url or "—")
     add("AUTO_MIGRATE_ON_START", settings.auto_migrate_on_start)
@@ -179,10 +186,14 @@ def environment_report(db) -> tuple[list[str], list[str]]:
         if scheme == "https" and cookie_secure in {"false", "0", "no"}:
             problems.append("Сайт по https, но COOKIE_SECURE=false: куки входа уходят без Secure")
         if cookie_domain:
+            # Сравниваем ASCII-формы: browser присылает punycode, а в .env домен
+            # может быть кириллицей. Раньше это давало ложную ошибку и роняло update.sh.
             base = host.split(":", 1)[0]
-            if cookie_domain.lstrip(".") not in base:
+            if cookie_domain_for(cookie_domain, base) is None:
                 problems.append(
-                    f"COOKIE_DOMAIN={cookie_domain} не совпадает с доменом {base}: браузер не примет куки входа"
+                    f"COOKIE_DOMAIN={ascii_host(cookie_domain)} не совпадает с доменом {ascii_host(base)}: "
+                    "такая кука браузером не сохранится. Вход при этом работает — кука ставится на текущий хост, "
+                    "но для общего входа на поддоменах укажите COOKIE_DOMAIN этого домена или оставьте его пустым."
                 )
 
     # --- Схема БД ----------------------------------------------------------

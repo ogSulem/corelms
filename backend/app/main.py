@@ -20,6 +20,7 @@ from sqlalchemy import create_engine
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.domains import ascii_origin, split_origins
 from app.core.client_ip import client_ip_from_request
 from app.core.redis_client import get_redis
 from app.core.queue import get_queue
@@ -76,8 +77,10 @@ def create_app() -> FastAPI:
     except Exception:
         logger.debug("failed to set httpx log level", exc_info=True)
 
-    allow_origins = [o.strip() for o in str(settings.cors_allow_origins or "").split(",") if o.strip()]
-    if "*" in allow_origins:
+    # Кириллический домен в CORS_ALLOW_ORIGINS приводим к ASCII: браузер всегда
+    # присылает punycode, и сравнение «как есть» отклоняло все POST с 403.
+    allow_origins = split_origins(settings.cors_allow_origins)
+    if "*" in str(settings.cors_allow_origins or "") or "*" in allow_origins:
         raise RuntimeError("CORS_ALLOW_ORIGINS must not include '*' when allow_credentials=true")
 
     def _client_ip_for_log(request: Request) -> str | None:
@@ -111,7 +114,7 @@ def create_app() -> FastAPI:
         crashed = False
         try:
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-                origin = (request.headers.get("origin") or "").strip()
+                origin = ascii_origin(request.headers.get("origin"))
                 if origin and origin not in allow_origins:
                     return JSONResponse(status_code=403, content={"ok": False, "error_code": "invalid_origin", "error_message": "Origin is not allowed", "request_id": rid})
             response = await call_next(request)
