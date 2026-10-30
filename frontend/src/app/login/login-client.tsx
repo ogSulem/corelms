@@ -59,6 +59,15 @@ export function LoginClient() {
         throw new Error(message || hint || "Не удалось войти");
       }
 
+      // Проверяем, что браузер действительно сохранил сессию. Мобильные
+      // встроенные браузеры и приватный режим умеют принимать Set-Cookie и
+      // тут же его выбрасывать: раньше это выглядело как «вошёл и сразу выкинуло».
+      const probe = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" }).catch(() => null);
+      if (probe && probe.ok) {
+        const snapshot = await probe.json().catch(() => null) as { authenticated?: boolean } | null;
+        if (snapshot && snapshot.authenticated === false) throw new Error("COOKIE_BLOCKED");
+      }
+
       window.dispatchEvent(new CustomEvent("corelms:refresh-me", { detail: { reason: "login" } }));
 
       try {
@@ -70,7 +79,9 @@ export function LoginClient() {
       router.push("/dashboard");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if ((msg || "").toLowerCase().includes("invalid_credentials") || (msg || "").toLowerCase().includes("invalid")) {
+      if (msg.includes("COOKIE_BLOCKED")) {
+        setError("ВХОД ВЫПОЛНЕН, НО БРАУЗЕР НЕ СОХРАНИЛ СЕССИЮ. ОТКРОЙТЕ САЙТ В ОБЫЧНОМ БРАУЗЕРЕ (CHROME/SAFARI), ВЫКЛЮЧИТЕ ПРИВАТНЫЙ РЕЖИМ И «ЭКОНОМИЮ ТРАФИКА».");
+      } else if ((msg || "").toLowerCase().includes("invalid_credentials") || (msg || "").toLowerCase().includes("invalid")) {
         setError("НЕВЕРНЫЕ ДАННЫЕ ВХОДА");
       } else if ((msg || "").toLowerCase().includes("upstream_unavailable") || (msg || "").toLowerCase().includes("unavailable") || (msg || "").includes("502")) {
         setError("СЕРВИС ВРЕМЕННО НЕДОСТУПЕН. ПОВТОРИТЕ ПОПЫТКУ.");

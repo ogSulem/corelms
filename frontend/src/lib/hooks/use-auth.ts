@@ -40,6 +40,24 @@ function emitAuth() {
   }
 }
 
+/**
+ * Телефон сворачивает вкладку, и после возврата старый снимок сессии может
+ * быть просрочен. Проверяем состояние при возврате на страницу, но не чаще
+ * раза в 30 секунд, чтобы не плодить запросы.
+ */
+let visibilityWatched = false;
+
+function watchVisibility() {
+  if (visibilityWatched) return;
+  if (typeof document === "undefined" || typeof document.addEventListener !== "function") return;
+  visibilityWatched = true;
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    if (Date.now() - lastMeAt < 30_000) return;
+    void sharedFetchMe(true);
+  });
+}
+
 async function sharedFetchMe(force: boolean = false) {
   const now = Date.now();
   if (meInFlight) return;
@@ -85,6 +103,10 @@ async function sharedFetchMe(force: boolean = false) {
 }
 
 export function useAuth() {
+  useEffect(() => {
+    watchVisibility();
+  }, []);
+
   const [user, setUser] = useState<User | null>(authSnapshot.user);
   const [loading, setLoading] = useState(authSnapshot.loading);
   const [error, setError] = useState<Error | null>(authSnapshot.error);

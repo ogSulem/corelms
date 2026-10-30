@@ -248,8 +248,9 @@ export async function uploadMaterial<T>(path: string, form: FormData, onProgress
         return await uploadChunked<T>(`${base}${chunkStartPath(path)}`, file, formFields(form), onProgress, signal);
       } catch (error) {
         const failure = error as UploadFailure;
-        // Старая сборка без частичной загрузки: 404/405 без JSON — пробуем обычный путь.
-        if ((failure.status === 404 || failure.status === 405) && !failure.bodyWasJson) continue;
+        // Прямой маршрут недоступен (старая сборка или прокси без /api/upload) —
+        // пробуем обычный путь через Next.js, даже если тело ответа было JSON.
+        if (failure.status === 404 || failure.status === 405) continue;
         throw error;
       }
     }
@@ -266,8 +267,8 @@ export async function uploadMaterial<T>(path: string, form: FormData, onProgress
     return await send(UPLOAD_PATH);
   } catch (error) {
     const failure = error as UploadFailure;
-    // Старая сборка без прямого маршрута: путь /api/upload/ отдаёт 404 без JSON.
-    if ((failure.status === 404 || failure.status === 405) && !failure.bodyWasJson) return send(FALLBACK_UPLOAD_PATH);
+    // Старая сборка без прямого маршрута: 404/405 от /api/upload/ — пробуем Next.js.
+    if (failure.status === 404 || failure.status === 405) return send(FALLBACK_UPLOAD_PATH);
     throw error;
   }
 }

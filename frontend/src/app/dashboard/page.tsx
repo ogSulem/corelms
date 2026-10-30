@@ -299,6 +299,24 @@ export default function DashboardPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Счета и бюджет рекламы: реквизиты почты прямо в блоке цели. */}
+              <div className="mt-6 border-t border-zinc-200 pt-5">
+                <p className="text-[10px] font-black uppercase tracking-[0.25em] text-zinc-400">Счета на оплату рекламы</p>
+                <div className="mt-3 space-y-2 text-[12px] leading-relaxed text-zinc-600">
+                  <p>
+                    Для выставления счетов на оплату рекламы используйте почту{" "}
+                    <a href="mailto:OfisKT@yandex.ru" className="font-semibold text-[#284e13] underline decoration-[#284e13]/30 underline-offset-2 hover:decoration-[#284e13]">OfisKT@yandex.ru</a>.
+                  </p>
+                  <p className="text-zinc-500">В письме необходимо указать:<br />— ИНН<br />— сумму для оплаты рекламы</p>
+                  <p>После получения данных отдел финансов подготовит и отправит счет на оплату.</p>
+                  <p>
+                    По вопросам расчёта рекламного бюджета на следующий месяц и анализа текущего месяца (если была оплата рекламы) используйте почту{" "}
+                    <a href="mailto:ukfranchise@yandex.ru" className="font-semibold text-[#284e13] underline decoration-[#284e13]/30 underline-offset-2 hover:decoration-[#284e13]">ukfranchise@yandex.ru</a>.
+                  </p>
+                  <p className="font-bold text-zinc-700">Просим направлять запросы до 25 числа каждого месяца.</p>
+                </div>
+              </div>
             </div>
           </div>
         </div>

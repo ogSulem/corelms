@@ -5,10 +5,38 @@ function _isProd(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
-function cookieSecure(): boolean {
+/**
+ * Защищено ли соединение на самом деле. За nginx/Caddy смотрим X-Forwarded-Proto,
+ * иначе — на протокол самого запроса.
+ */
+export function requestIsHttps(request?: Request | null): boolean {
+  if (!request) return false;
+  const forwarded = String(request.headers.get("x-forwarded-proto") || "").split(",")[0].trim().toLowerCase();
+  if (forwarded === "https") return true;
+  if (forwarded === "http") return false;
+  try {
+    return new URL(request.url).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Флаг Secure только для HTTPS.
+ *
+ * Раньше он включался по NODE_ENV=production, поэтому на `http://IP:8888`
+ * браузер молча выбрасывал куку: вход «проходил», а следующий же запрос
+ * получал 401 — пользователя возвращало на страницу входа. На десктопе это
+ * было незаметно, если он открывал https-домен, а мобильный заходил по IP.
+ * Cookie без Secure на HTTP работает, а на HTTPS Secure выставляется как надо.
+ */
+function cookieSecure(request?: Request | null): boolean {
   const raw = String(process.env.COOKIE_SECURE || "").trim();
-  if (raw) return raw.toLowerCase() === "true";
-  return _isProd();
+  const enforced = raw ? raw.toLowerCase() === "true" : _isProd();
+  if (!enforced) return false;
+  // Без контекста запроса (внутренние вызовы, тесты) доверяем настройке.
+  if (!request) return true;
+  return requestIsHttps(request);
 }
 
 /**
@@ -48,7 +76,7 @@ function effectiveAccessMaxAgeSeconds(upstreamExpiresIn?: number | null): number
   return u ? Math.min(configured, u) : configured;
 }
 
-export function setAccessCookie(out: NextResponse, accessToken: string, opts?: { upstreamExpiresIn?: number | null }): void {
+export function setAccessCookie(out: NextResponse, accessToken: string, opts?: { upstreamExpiresIn?: number | null; request?: Request | null }): void {
   const maxAge = effectiveAccessMaxAgeSeconds(opts?.upstreamExpiresIn ?? null);
   if (cookieDomain()) expireHostOnlyCookie(out as unknown as { cookies: { set: (c: Record<string, unknown>) => unknown } }, "core_token");
   out.cookies.set({
@@ -56,7 +84,7 @@ export function setAccessCookie(out: NextResponse, accessToken: string, opts?: {
     value: String(accessToken || "").trim(),
     httpOnly: true,
     sameSite: "lax",
-    secure: cookieSecure(),
+    secure: cookieSecure(opts?.request),
     domain: cookieDomain(),
     path: "/",
     maxAge,
@@ -65,7 +93,7 @@ export function setAccessCookie(out: NextResponse, accessToken: string, opts?: {
   });
 }
 
-export function setRefreshCookie(out: NextResponse, refreshToken: string, opts?: { refreshExpiresIn?: number | null }): void {
+export function setRefreshCookie(out: NextResponse, refreshToken: string, opts?: { refreshExpiresIn?: number | null; request?: Request | null }): void {
   const v = String(refreshToken || "").trim();
   if (!v) return;
   const ttl =
@@ -78,7 +106,7 @@ export function setRefreshCookie(out: NextResponse, refreshToken: string, opts?:
     value: v,
     httpOnly: true,
     sameSite: "lax",
-    secure: cookieSecure(),
+    secure: cookieSecure(opts?.request),
     domain: cookieDomain(),
     path: "/",
     maxAge: ttl,
@@ -87,13 +115,13 @@ export function setRefreshCookie(out: NextResponse, refreshToken: string, opts?:
   });
 }
 
-export function clearAuthCookies(out: NextResponse): void {
+export function clearAuthCookies(out: NextResponse, request?: Request | null): void {
   out.cookies.set({
     name: "core_token",
     value: "",
     httpOnly: true,
     sameSite: "lax",
-    secure: cookieSecure(),
+    secure: cookieSecure(request),
     domain: cookieDomain(),
     path: "/",
     maxAge: 0,
@@ -105,7 +133,7 @@ export function clearAuthCookies(out: NextResponse): void {
     value: "",
     httpOnly: true,
     sameSite: "lax",
-    secure: cookieSecure(),
+    secure: cookieSecure(request),
     domain: cookieDomain(),
     path: "/",
     maxAge: 0,
