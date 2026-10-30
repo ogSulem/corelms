@@ -8,7 +8,8 @@ import pytest
 from sqlalchemy import func, select
 
 from app.models.asset import ContentAsset
-from app.models.attempt import QuizAttemptAnswer
+from app.models.media import AssetRendition
+from app.models.attempt import QuizAttempt, QuizAttemptAnswer
 from app.models.module import Module, Submodule
 from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.models.submodule_asset import SubmoduleAssetMap
@@ -316,6 +317,132 @@ def test_new_lesson_from_a_file_is_ready_to_read(client, db, admin_headers, make
     lesson = db.get(Submodule, uuid.UUID(state['created_lesson_id']))
     assert lesson.title == 'Регламент продаж' and lesson.presentation_mode == 'material' and lesson.requires_quiz is False
     assert str(lesson.primary_asset_id) == state['assets'][0]['asset_id']
+
+
+def _upload_file(client, headers, module, name="Прайс.xlsx", content=b"PK\x03\x04synthetic"):
+    response = client.post(f'/admin/content/modules/{module.id}/assets', headers=headers,
+        data={'revision': str(module.content_revision)},
+        files={'file': (name, io.BytesIO(content), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')})
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_file_moves_into_a_catalog_and_a_folder(client, db, admin_headers, make_module, storage):
+    module, lesson, _ = make_module()
+    state = _upload_file(client, admin_headers, module)
+    asset_id = state['assets'][0]['asset_id']
+    created = client.post(f'/admin/content/modules/{module.id}/lessons', headers=admin_headers,
+        json={'revision': state['module']['content_revision'], 'title': 'Каталог производства', 'is_folder': True})
+    assert created.status_code == 201, created.text
+    state = created.json()
+    catalog_id = state['lessons'][-1]['id']
+    moved = client.post(f'/admin/content/modules/{module.id}/assets/move', headers=admin_headers, json={
+        'revision': state['module']['content_revision'], 'ids': [asset_id],
+        'submodule_id': catalog_id, 'folder': 'Производство / Сварка'})
+    assert moved.status_code == 200, moved.text
+    asset = next(a for a in moved.json()['assets'] if a['asset_id'] == asset_id)
+    assert asset['submodule_id'] == catalog_id
+    assert asset['original_filename'] == 'Производство/Сварка/Прайс.xlsx'
+    # Возврат в корень каталога: пустая папка.
+    state = client.post(f'/admin/content/modules/{module.id}/assets/move', headers=admin_headers, json={
+        'revision': moved.json()['module']['content_revision'], 'ids': [asset_id], 'folder': ''})
+    assert state.status_code == 200, state.text
+    assert next(a for a in state.json()['assets'] if a['asset_id'] == asset_id)['original_filename'] == 'Прайс.xlsx'
+
+
+def test_rename_keeps_the_folder(client, db, admin_headers, make_module, storage):
+    module, lesson, _ = make_module()
+    state = _upload_file(client, admin_headers, module)
+    asset_id = state['assets'][0]['asset_id']
+    placed = client.post(f'/admin/content/modules/{module.id}/assets/move', headers=admin_headers, json={
+        'revision': state['module']['content_revision'], 'ids': [asset_id], 'folder': 'Папка'})
+    assert placed.status_code == 200, placed.text
+    renamed = client.patch(f'/admin/content/modules/{module.id}/assets/{asset_id}', headers=admin_headers,
+        json={'revision': placed.json()['module']['content_revision'], 'filename': 'Новый прайс.xlsx'})
+    assert renamed.status_code == 200, renamed.text
+    assert next(a for a in renamed.json()['assets'] if a['asset_id'] == asset_id)['original_filename'] == 'Папка/Новый прайс.xlsx'
+
+
+def test_archived_file_is_deleted_forever_with_its_versions(client, db, admin_headers, make_module, storage):
+    module, lesson, _ = make_module()
+    state = _upload_file(client, admin_headers, module)
+    asset_id = state['assets'][0]['asset_id']
+    key = db.get(ContentAsset, uuid.UUID(asset_id)).object_key
+    active = client.post(f'/admin/content/modules/{module.id}/assets/delete', headers=admin_headers,
+        json={'revision': state['module']['content_revision'], 'ids': [asset_id]})
+    assert active.status_code == 409  # активный файл сначала убирают из обучения
+    archived = client.post(f'/admin/content/modules/{module.id}/assets/archive', headers=admin_headers,
+        json={'revision': state['module']['content_revision'], 'ids': [asset_id], 'is_archived': True})
+    assert archived.status_code == 200, archived.text
+    removed = client.post(f'/admin/content/modules/{module.id}/assets/delete', headers=admin_headers,
+        json={'revision': archived.json()['module']['content_revision'], 'ids': [asset_id]})
+    assert removed.status_code == 200, removed.text
+    assert all(a['asset_id'] != asset_id for a in removed.json()['assets'])
+    assert db.get(ContentAsset, uuid.UUID(asset_id)) is None
+    assert key in storage.deleted
+
+
+def test_workspace_marks_assets_that_have_a_ready_browser_copy(client, db, admin_headers, make_module, storage):
+    module, _, _ = make_module()
+    state = _upload_file(client, admin_headers, module)
+    asset_id = state['assets'][0]['asset_id']
+    assert state['assets'][0]['browser_copy'] is False
+    asset = db.get(ContentAsset, uuid.UUID(asset_id))
+    db.add(AssetRendition(asset_id=asset.id, source_version=asset.version, source_bucket=asset.bucket,
+        source_object_key=asset.object_key, state='ready', bucket=asset.bucket,
+        object_key='renditions/copy.pdf', mime_type='application/pdf'))
+    db.commit()
+    fresh = client.get(f'/admin/content/modules/{module.id}', headers=admin_headers).json()
+    assert fresh['assets'][0]['browser_copy'] is True
+
+
+def test_final_quiz_shows_its_composition_and_sample(client, db, admin_headers, make_module):
+    module, lesson, quiz = make_module(required=True)
+    empty = client.get(f'/admin/content/modules/{module.id}/final-quiz', headers=admin_headers)
+    assert empty.status_code == 200, empty.text
+    data = empty.json()
+    assert data['questions'] == []  # собственного банка у итогового теста нет
+    assert data['source_lessons'] == 1
+    row = next(item for item in data['lessons'] if item['id'] == str(lesson.id))
+    assert row['contributes'] and row['question_count'] >= 1
+    assert data['max_questions'] >= 1
+    assert data['sample'] and data['sample'][0]['lesson'] == lesson.title
+    assert data['sample'][0]['options']
+
+
+def test_archived_lesson_without_history_is_deleted_and_its_files_stay_archived(client, db, admin_headers, make_module, storage):
+    module, lesson, _ = make_module()
+    state = _upload_file(client, admin_headers, module)
+    asset_id = state['assets'][0]['asset_id']
+    client.post(f'/admin/content/modules/{module.id}/assets/move', headers=admin_headers, json={
+        'revision': state['module']['content_revision'], 'ids': [asset_id], 'submodule_id': str(lesson.id), 'folder': ''})
+    current = client.get(f'/admin/content/modules/{module.id}', headers=admin_headers).json()
+    archived = client.patch(f'/admin/content/modules/{module.id}/lessons/{lesson.id}', headers=admin_headers,
+        json={'revision': current['module']['content_revision'], 'is_archived': True})
+    assert archived.status_code == 200, archived.text
+    removed = client.post(f'/admin/content/modules/{module.id}/lessons/{lesson.id}/delete', headers=admin_headers,
+        json={'revision': archived.json()['module']['content_revision']})
+    assert removed.status_code == 200, removed.text
+    state = removed.json()
+    assert all(item['id'] != str(lesson.id) for item in state['lessons'])
+    assert db.scalar(select(func.count()).select_from(Submodule).where(Submodule.id == lesson.id)) == 0
+    # Файл не исчез вместе с уроком: он в архиве модуля.
+    kept = next(a for a in state['assets'] if a['asset_id'] == asset_id)
+    assert kept['is_archived'] is True
+
+
+def test_lesson_with_history_cannot_be_deleted_but_stays_in_archive(client, db, admin_headers, make_module, make_user):
+    module, lesson, quiz = make_module()
+    learner, headers = make_user()
+    db.add(QuizAttempt(user_id=learner.id, quiz_id=quiz.id, started_at=func.now()))
+    module.content_revision += 1
+    lesson.is_archived = True
+    db.commit()
+    response = client.post(f'/admin/content/modules/{module.id}/lessons/{lesson.id}/delete', headers=admin_headers,
+        json={'revision': module.content_revision})
+    assert response.status_code == 409
+    assert 'архивировать' in response.json()['error_message']
+    assert db.scalar(select(func.count()).select_from(Submodule).where(Submodule.id == lesson.id)) == 1
 
 
 def test_module_rename_uses_fresh_revision_after_an_upload(client, db, admin_headers, make_module, storage):

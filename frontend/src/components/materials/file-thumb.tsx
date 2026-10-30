@@ -32,11 +32,16 @@ export function MaterialThumb({ asset, size = "md", className }: { asset: Materi
   const kind = materialKind(asset.original_filename);
   const { box, icon } = TILE[size];
   const canPreview = !failed && !!asset.asset_id && (kind === "image" || kind === "video");
-  const src = materialThumbUrl(asset.asset_id, asset.version);
-  return <span ref={ref} className={cn("relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-zinc-200 bg-zinc-50 text-zinc-500", box, className)}>
+  // Файл не отдался браузеру — показываем иконку с подсказкой, а не пустой серый квадрат.
+  const broken = failed && !!asset.asset_id && (kind === "image" || kind === "video");
+  // Для видео и документов предпочитаем готовую копию: оригинал (например, H.265 .mp4)
+  // браузер не декодирует, и вместо кадра был бы чёрный прямоугольник.
+  const src = materialThumbUrl(asset.asset_id, asset.version, !!asset.browser_copy);
+  return <span ref={ref} title={broken ? "Превью не загрузилось — откройте файл, чтобы увидеть причину" : undefined}
+    className={cn("relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl border bg-zinc-50 text-zinc-500", broken ? "border-amber-200 bg-amber-50/60 text-amber-700" : "border-zinc-200", box, className)}>
     {canPreview && inView && kind === "image" && <img src={src} alt="" aria-hidden="true" loading="lazy" decoding="async" onError={() => setFailed(true)} className="h-full w-full object-cover" />}
     {canPreview && inView && kind === "video" && <>
-      <video src={`${src}#t=0.5`} preload="metadata" muted playsInline aria-hidden="true" onError={() => setFailed(true)} className="h-full w-full object-cover" />
+      <video src={`${src}#t=0.1`} preload="auto" muted playsInline aria-hidden="true" onError={() => setFailed(true)} className="h-full w-full object-cover" />
       <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-zinc-950/25"><span className="flex h-6 w-6 items-center justify-center rounded-full bg-white/90 text-zinc-900"><Play size={12} fill="currentColor" /></span></span>
     </>}
     {!(canPreview && inView) && <MaterialIcon name={asset.original_filename} size={icon} />}

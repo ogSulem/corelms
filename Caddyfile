@@ -19,6 +19,20 @@
   header @asset_stream >X-Frame-Options "SAMEORIGIN"
   header @not_asset_stream >X-Frame-Options "DENY"
 
+  # Загрузка файлов идёт прямо в backend: Next.js ограничивает время приёма
+  # запроса (~5 минут), из-за чего видео обрывалось ошибкой 502.
+  handle /api/upload/* {
+    uri strip_prefix /api/upload
+    reverse_proxy backend:8000 {
+      header_up X-Real-IP {remote_host}
+      transport http {
+        dial_timeout 10s
+        read_timeout 3600s
+        write_timeout 3600s
+      }
+    }
+  }
+
   # Next.js API routes must be handled by the frontend container.
   @next_api path /api/backend/* /api/auth/*
   handle @next_api {
@@ -26,8 +40,8 @@
       header_up X-Real-IP {remote_host}
       transport http {
         dial_timeout 10s
-        read_timeout 900s
-        write_timeout 900s
+        read_timeout 3600s
+        write_timeout 3600s
       }
     }
   }

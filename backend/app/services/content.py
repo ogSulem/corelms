@@ -139,6 +139,24 @@ def ensure_filename_available(db: Session, module: Module, filename: str, submod
             raise HTTPException(409, "Файл с таким именем уже есть здесь. Используйте «Заменить» или выберите другое имя.")
 
 
+def clean_folder(value: str | None) -> str:
+    """Нормализует путь папки: `Производство \\ Сварка` -> `Производство/Сварка`.
+
+    Папки не хранятся отдельными записями: путь живёт в `original_filename`,
+    поэтому каждая часть проверяется теми же правилами, что и имя файла.
+    """
+    raw = str(value or "").replace("\\", "/")
+    parts = [part.strip() for part in raw.split("/") if part.strip()]
+    for part in parts:
+        safe_filename(part)
+        if part in {".", ".."}:
+            raise HTTPException(422, "Недопустимое имя папки")
+    path = "/".join(parts)
+    if len(path) > 390:
+        raise HTTPException(422, "Слишком длинный путь папки")
+    return path
+
+
 def next_lesson_order(db: Session, module: Module) -> int:
     return int(db.scalar(select(func.max(Submodule.order)).where(Submodule.module_id == module.id)) or 0) + 1
 
@@ -161,15 +179,25 @@ def reorder_lessons(db: Session, module: Module, ordered: list[uuid.UUID]) -> No
     db.flush()
 
 
-def serialize_asset(asset: ContentAsset, *, submodule_id: uuid.UUID | None = None) -> dict:
+def serialize_asset(asset: ContentAsset, *, submodule_id: uuid.UUID | None = None, browser_copy: bool = False) -> dict:
     return {
         "asset_id": str(asset.id), "original_filename": asset.original_filename,
         "mime_type": asset.mime_type, "size_bytes": asset.size_bytes,
         "version": asset.version, "is_archived": asset.is_archived,
         "order": asset.order, "source_path": asset.source_path,
         "submodule_id": str(submodule_id) if submodule_id else None,
+        # Готовая копия для браузера: её и показываем в превью, если формат оригинала не читается.
+        "browser_copy": browser_copy,
         "created_at": asset.created_at.isoformat(),
     }
+
+
+def _has_browser_copy(copies: dict, asset: ContentAsset) -> bool:
+    """Копия для браузера актуальна только для текущей версии файла."""
+    row = copies.get(asset.id)
+    return bool(row and row.source_version == asset.version and row.source_bucket == asset.bucket
+                and row.source_object_key == asset.object_key
+                and str(row.mime_type or "") in {"video/mp4", "application/pdf"})
 
 
 def workspace(db: Session, module: Module) -> dict:
@@ -177,6 +205,9 @@ def workspace(db: Session, module: Module) -> dict:
     assets = module_assets(db, module.id)
     question_counts = dict(db.execute(select(Question.quiz_id, func.count()).where(Question.quiz_id.in_([s.quiz_id for s in subs])).group_by(Question.quiz_id)).all())
     links = dict(db.execute(select(SubmoduleAssetMap.asset_id, SubmoduleAssetMap.submodule_id).where(SubmoduleAssetMap.submodule_id.in_([s.id for s in subs]))).all())
+    # Одна выборка на весь модуль: иначе превью каждого файла стоило бы отдельного запроса.
+    copies = {row.asset_id: row for row in db.scalars(select(AssetRendition).where(
+        AssetRendition.asset_id.in_([a.id for a in assets]), AssetRendition.state == "ready"))} if assets else {}
     ai = get_ai_settings(db)
     return {
         "capabilities": {"ai_configured": ai.configured, "ai_enabled": ai.enabled,
@@ -201,7 +232,7 @@ def workspace(db: Session, module: Module) -> dict:
             "requires_quiz": s.requires_quiz, "quiz_id": str(s.quiz_id), "question_count": question_counts.get(s.quiz_id, 0),
             "outline_path": s.outline_path, "source_path": s.source_path,
         } for s in subs],
-        "assets": [serialize_asset(a, submodule_id=links.get(a.id)) for a in assets],
+        "assets": [serialize_asset(a, submodule_id=links.get(a.id), browser_copy=_has_browser_copy(copies, a)) for a in assets],
     }
 
 

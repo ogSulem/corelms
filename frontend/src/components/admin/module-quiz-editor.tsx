@@ -9,7 +9,9 @@ import { cn } from "@/lib/cn";
 import type { EditorLesson, Workspace } from "./editor-types";
 
 type Question = { id?: string | null; type: string; stem: string; options: string[]; correct: number[]; explanation: string; valid?: boolean };
-type Quiz = { revision: number; quiz_id?: string; enabled: boolean; pass_threshold: number; time_limit: number | null; attempts_limit: number; questions: Question[]; source_lessons?: number };
+type FinalQuizRow = { id: string; title: string; question_count: number; requires_quiz: boolean; contributes: boolean };
+type FinalQuizSample = { lesson_id: string; lesson: string; stem: string; options: string[]; correct: number[] };
+type Quiz = { revision: number; quiz_id?: string; enabled: boolean; pass_threshold: number; time_limit: number | null; attempts_limit: number; questions: Question[]; source_lessons?: number; lessons?: FinalQuizRow[]; sample?: FinalQuizSample[]; max_questions?: number };
 type BatchItem = { lesson_id: string; title: string; status: string; questions: number; current_questions: number; required: boolean; error: string | null };
 type Batch = { id: string | null; items: BatchItem[]; working: boolean; counts: Record<string, number>; remaining: number; message?: string };
 type DraftJob = { id: string | null; status: string; error?: string; stale?: boolean; result?: { ok: boolean; revision: number; source_revision?: string; error?: string; questions?: Question[]; notice?: string | null; source_label?: string; source_chars?: number } };
@@ -210,6 +212,32 @@ export function ModuleQuizEditor({ moduleId, revision, lessons, initialLessonId,
         </div>
         {isFinal && <p className="mt-4 rounded-xl bg-zinc-50 p-4 text-sm leading-7 text-zinc-600">Источник — обязательные тесты {quiz.source_lessons || 0} уроков. Отдельного дублирующего банка у итогового теста нет. Изменения правил не меняют условия уже начатой попытки.</p>}
       </section>
+      {isFinal && <section className="rounded-2xl border border-zinc-200 bg-white p-5 sm:p-6">
+        <h3 className="text-base font-semibold">Из чего собирается итоговый тест</h3>
+        <p className="mt-1 text-sm leading-7 text-zinc-500">На каждой попытке берётся до 3 случайных вопросов из теста каждого урока (не больше 10 уроков и 30 вопросов). Свой банк вопросов здесь не нужен — вопросы редактируются в тестах уроков.</p>
+        {!(quiz.lessons || []).some(row => row.contributes) && <p role="alert" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-7 text-amber-900">Ни один урок пока не даёт вопросов. Включите тест хотя бы в одном уроке — итоговый тест не может быть пустым.</p>}
+        {!!(quiz.lessons || []).length && <div className="mt-4 overflow-hidden rounded-xl border border-zinc-200">
+          <div className="flex items-center gap-3 border-b border-zinc-200 bg-zinc-50 px-4 py-2 text-xs text-zinc-500"><span className="min-w-0 flex-1">Урок</span><span>Вопросов в тесте</span><span className="w-24 text-right">В итоговом</span></div>
+          {(quiz.lessons || []).map(row => <div key={row.id} className="flex flex-wrap items-center gap-3 border-b border-zinc-100 px-4 py-2.5 text-sm last:border-b-0">
+            <span className="min-w-0 flex-1 break-words text-zinc-800">{row.title}</span>
+            <span className="text-xs text-zinc-500">{row.question_count}</span>
+            <span className={cn("w-24 text-right text-xs font-medium", row.contributes ? "text-emerald-700" : "text-zinc-400")}>{row.contributes ? "войдёт" : row.requires_quiz ? "нет вопросов" : "тест выключен"}</span>
+            <button type="button" className="text-xs font-medium text-amber-800 underline" onClick={() => { if ((!dirty && !sourceDirty) || window.confirm("Переключить тест без сохранения изменений?")) { setSelected(row.id); setShowAI(false); } }}>Тест урока</button>
+          </div>)}
+        </div>}
+        {!!quiz.max_questions && <p className="mt-3 text-xs leading-6 text-zinc-500">Итоговый тест соберёт до <strong>{quiz.max_questions}</strong> вопросов из {quiz.source_lessons} уроков. Если уроков больше 10, при каждой попытке выбираются разные 10.</p>}
+        {!!quiz.sample?.length && <details className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/60 p-4">
+          <summary className="cursor-pointer text-sm font-medium text-zinc-700">Как выглядит итоговый тест · {quiz.sample.length} вопросов в примере</summary>
+          <ol className="mt-3 space-y-3">
+            {quiz.sample.map((item, index) => <li key={`${item.lesson_id}-${index}`} className="rounded-lg bg-white p-3 text-sm">
+              <p className="text-[11px] text-zinc-400">{item.lesson}</p>
+              <p className="mt-1 whitespace-pre-wrap font-medium text-zinc-800">{item.stem}</p>
+              <ul className="mt-1 space-y-0.5 text-xs text-zinc-600">{item.options.map((option, optionIndex) => <li key={optionIndex} className={item.correct.includes(optionIndex) ? "font-medium text-emerald-800" : ""}>{"ABCDE"[optionIndex]}) {option}</li>)}</ul>
+            </li>)}
+          </ol>
+          <p className="mt-3 text-xs leading-6 text-zinc-500">Это пример: на реальной попытке вопросы выбираются случайно из тех же тестов.</p>
+        </details>}
+      </section>}
       {!isFinal && <>
         <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-base font-semibold">Вопросы · {quiz.questions.length}</h3><div className="flex flex-wrap gap-2"><Button variant="outline" className={btn} disabled={locked || !aiConfigured || running(job)} onClick={() => setShowAI(v => !v)}><Sparkles size={16} />AI-черновик<ChevronDown size={14} /></Button><Button variant="outline" className={btn} disabled={locked || quiz.questions.length >= 100} onClick={() => edit({ questions: [...quiz.questions, { type: "single", stem: "", options: ["", ""], correct: [], explanation: "" }] })}><Plus size={16} />Добавить вопрос</Button></div></div>
         {showAI && <section className="space-y-4 rounded-2xl border border-amber-200 bg-amber-50/50 p-5 sm:p-6"><h3 className="flex items-center gap-2 font-medium"><Sparkles size={18} />Черновик по материалам урока</h3><p className="text-xs leading-6 text-zinc-600">Текст отправится настроенному AI-провайдеру. Пустое поле — использовать основной документ, а если извлечь текст нельзя — конспект урока. При показе текста первым источником будет текст урока. Для видео нужен конспект: автоматической расшифровки речи нет. За один черновик используется до 12 000 символов. Для длинного урока выбирайте нужный раздел. Существующие вопросы не изменятся.</p><label className="block space-y-2 text-sm font-medium">Текст для генерации <span className="font-normal text-zinc-400">(необязательно)</span><textarea rows={6} maxLength={60000} className={field} value={source} onChange={e => setSource(e.target.value)} placeholder={`Содержательные материалы урока «${currentLesson?.title || ""}»…`} /></label><div className="flex flex-wrap items-center gap-3"><label className="flex items-center gap-2 text-sm">Вопросов<input type="number" min={1} max={10} className={`${field} !w-20`} value={count} onChange={e => setCount(Number(e.target.value))} /></label><Button className={btn} disabled={locked || count < 1 || count > 10} onClick={() => void generate()}><Sparkles size={16} />Создать черновик</Button></div></section>}

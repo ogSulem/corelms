@@ -150,7 +150,7 @@ class Settings(BaseSettings):
             return v
 
     openrouter_timeout_connect: float = Field(default=3.0, validation_alias="OPENROUTER_TIMEOUT_CONNECT")
-    openrouter_timeout_read: float = Field(default=15.0, validation_alias="OPENROUTER_TIMEOUT_READ")
+    openrouter_timeout_read: float = Field(default=90.0, validation_alias="OPENROUTER_TIMEOUT_READ")
     openrouter_timeout_write: float = Field(default=15.0, validation_alias="OPENROUTER_TIMEOUT_WRITE")
     openrouter_temperature: float = Field(default=0.2, validation_alias="OPENROUTER_TEMPERATURE")
 
