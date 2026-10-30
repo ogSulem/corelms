@@ -1,5 +1,13 @@
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _is_bool_annotation(annotation: object) -> bool:
+    """bool, bool | None, Optional[bool] — всё, что не примет пустую строку."""
+    if annotation is bool:
+        return True
+    args = getattr(annotation, "__args__", ()) or ()
+    return bool in args
 
 
 class Settings(BaseSettings):
@@ -48,6 +56,50 @@ class Settings(BaseSettings):
             # Force psycopg v3 driver to avoid implicit psycopg2 dependency.
             s = "postgresql+psycopg://" + s[len("postgresql://") :]
         return s
+
+    @model_validator(mode="before")
+    @classmethod
+    def _blank_env_means_default(cls, data: object) -> object:
+        """Пустая строка в .env для флага — это «не задано», а не ошибка разбора.
+
+        `COOKIE_SECURE=` или `TRUST_PROXY_HEADERS=` в .env роняли backend на
+        старте: pydantic не может превратить "" в bool. Контейнер падал, сайт
+        отвечал 502, а причина была не видна. Такой ключ просто игнорируется и
+        остаётся значение по умолчанию.
+        """
+        if not isinstance(data, dict):
+            return data
+        cleaned = dict(data)
+        for name, field in cls.model_fields.items():
+            annotation = field.annotation
+            if not _is_bool_annotation(annotation):
+                continue
+            alias = field.validation_alias
+            for key in {name, alias if isinstance(alias, str) else None}:
+                if key and isinstance(cleaned.get(key), str) and not str(cleaned[key]).strip():
+                    cleaned.pop(key)
+        return cleaned
+
+    @field_validator("cookie_secure", "cookie_domain", mode="before")
+    @classmethod
+    def _empty_means_unset(cls, v: object) -> object:
+        """Пустое значение в .env — это «не задано», а не ошибка.
+
+        `COOKIE_SECURE=` (рекомендуемое значение: Secure только на HTTPS) раньше
+        роняло backend на старте с ValidationError bool_parsing. После падения
+        контейнера весь сайт отвечал 502, а причина была не видна.
+        """
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                return None
+            low = stripped.lower()
+            if low in {"true", "1", "yes", "on"}:
+                return True
+            if low in {"false", "0", "no", "off"}:
+                return False
+            return stripped
+        return v
 
     jwt_secret_key: str = Field(validation_alias="JWT_SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", validation_alias="JWT_ALGORITHM")

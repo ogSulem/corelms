@@ -39,20 +39,23 @@ curl -sSI http://edu.xn--80aaamzedb7cml.xn--p1ai/health/ready | head -3
 | `docker compose ps`                 | `postgres`, `redis`, `backend` — `healthy`; остальные `running`    |
 | `CADDY_DOMAIN`                      | домен без схемы, например `edu.каркастайги.рф`                     |
 | `PUBLIC_APP_URL`                    | `https://<домен>`                                                 |
-| `CORS_ALLOW_ORIGINS`                | **тот же домен в punycode**: `https://edu.xn--80aaamzedb7cml.xn--p1ai` |
-| `COOKIE_SECURE`                     | `true` (сайт по https)                                            |
-| `COOKIE_DOMAIN`                     | пусто, либо ASCII-имя `edu.xn--80aaamzedb7cml.xn--p1ai`            |
+| `CORS_ALLOW_ORIGINS`                | домен сайта: кириллицей или в punycode — backend сравнивает ASCII-формы |
+| `COOKIE_SECURE`                     | пусто (авто: Secure только на HTTPS) или `true` (сайт по https)    |
+| `COOKIE_DOMAIN`                     | пусто (рекомендуется) либо домен в любой форме записи              |
 | `AUTO_MIGRATE_ON_START`             | `false` (миграции применяются отдельной командой, см. п. 4)        |
 | `curl -I https://…/health/ready`    | `HTTP/2 200`                                                      |
 | `curl -I http://…/health/ready`     | `308` на https (если работает Caddy) или `200` (если сайт на nginx)|
 
-Почему punycode: браузер всегда отправляет `Origin` в ASCII-форме
-`https://edu.xn--80aaamzedb7cml.xn--p1ai`. Если в `CORS_ALLOW_ORIGINS` записан
-кириллический домен, backend отвечает `403 invalid_origin` на каждый
-POST/PUT/PATCH/DELETE, а `/api/auth/login` — «Недопустимый источник запроса».
+Домены можно писать кириллицей: браузер всегда отправляет `Origin` и `Host` в
+ASCII-форме (`https://edu.xn--80aaamzedb7cml.xn--p1ai`), поэтому backend и
+frontend приводят значения из `.env` к ASCII перед сравнением. Раньше сравнение
+шло «как есть»: CORS отвечал `403 invalid_origin` на каждый POST/PUT/PATCH/DELETE
+(в том числе на вход), настройки показывали ложную ошибку домена, а `update.sh`
+падал на самопроверке.
 
-`COOKIE_DOMAIN` с кириллицей frontend молча игнорирует (кука ставится без домена).
-Это не ломает вход, но лучше держать там ASCII-форму или оставлять пусто.
+`COOKIE_DOMAIN` нужен только для общего входа на поддоменах. Если адрес сайта не
+совпадает с этим доменом (вход по IP, временный адрес), фронтенд ставит куку
+только для текущего хоста — вход работает, а не «теряется» молча.
 
 ## 3. Почему `docker compose logs backend` бывает пустым
 

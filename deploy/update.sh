@@ -106,7 +106,21 @@ say "Миграции базы"
 docker compose exec -T backend alembic upgrade head
 
 say "Самопроверка"
-docker compose exec -T backend python scripts/selfcheck.py
+# selfcheck: 0 — всё хорошо, 2 — предупреждения настройки, 1 — ошибки эндпоинтов.
+# Раньше любое предупреждение (например, кириллический COOKIE_DOMAIN) роняло
+# обновление уже после того, как контейнеры поднялись. Теперь обновление
+# завершается, а предупреждения просто печатаются.
+check_code=0
+docker compose exec -T backend python scripts/selfcheck.py || check_code=$?
+if [ "$check_code" -eq 1 ]; then
+  die "Самопроверка нашла ошибки эндпоинтов (или не смогла их проверить). Смотрите вывод выше и логи: docker compose logs --tail=80 backend"
+fi
+if [ "$check_code" -ne 0 ] && [ "$check_code" -ne 2 ]; then
+  echo "!! Самопроверка завершилась с кодом $check_code — контейнеры уже подняты, проверьте сайт вручную."
+fi
+if [ "$check_code" -eq 2 ]; then
+  echo "Предупреждения настройки выше. Они не отменяют обновление — исправьте .env и выполните bash deploy/update.sh ещё раз."
+fi
 
 say "Готово"
 cat <<NEXT

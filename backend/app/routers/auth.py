@@ -16,7 +16,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.client_ip import client_ip_from_request
-from app.core.rate_limit import rate_limit
+from app.core.rate_limit import hit, rate_limit
+from app.core.redis_client import get_redis
 from app.core.security_audit_log import audit_log
 from app.core.security import get_current_user
 from app.core.tokens import create_access_token, password_version
@@ -363,10 +364,17 @@ def token(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
-    _: object = rate_limit(key_prefix="auth_token", limit=20, window_seconds=60),
+    # Лимит по адресу считается от клиента, а не от аккаунта: за одним мобильным
+    # оператором (CGNAT) и в офисе за одним NAT сидят десятки людей, и 20 попыток
+    # в минуту на всех блокировали вход. Подбор пароля ограничиваем по аккаунту ниже.
+    _: object = rate_limit(key_prefix="auth_token", limit=60, window_seconds=60),
 ):
     login_raw = str(form_data.username or "").strip()
     login_norm = login_raw.lower()
+
+    if login_norm:
+        # 10 неудачных попыток в минуту на один логин — независимо от адреса.
+        hit(key=f"rl:auth_login:{login_norm}", limit=10, window_seconds=60)
 
     user = None
     if "@" in login_norm:
@@ -385,6 +393,13 @@ def token(
         audit_log(db=db, request=request, event_type="auth_login_failed", meta={"username": form_data.username})
         db.commit()
         raise HTTPException(status_code=401, detail="invalid credentials")
+
+    # Успешный вход обнуляет счётчик неудач этого логина: ограничение наказывает
+    # серию ошибок, а не человека, который просто вошёл ещё раз.
+    try:
+        get_redis().delete(f"rl:auth_login:{login_norm}")
+    except Exception:
+        pass
 
     # Capture exactly the password that was verified, before commit expires the
     # ORM object. A simultaneous admin reset must not authenticate the old password.

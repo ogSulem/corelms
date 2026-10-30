@@ -45,15 +45,52 @@ function cookieSecure(request?: Request | null): boolean {
  * из-за чего кука становилась host-only без всякого предупреждения.
  */
 export function normalizeCookieDomain(raw: string | null | undefined): string | undefined {
-  const value = String(raw || "").trim().replace(/^\./, "");
+  const value = String(raw || "").trim().replace(/^\./, "").replace(/\.$/, "");
   if (!value) return undefined;
-  if (/^[\x00-\x7F]+$/.test(value)) return value;
+  if (/^[\x00-\x7F]+$/.test(value)) return value.toLowerCase();
   const ascii = domainToASCII(value);
-  return ascii || undefined;
+  return ascii ? ascii.toLowerCase() : undefined;
 }
 
-function cookieDomain(): string | undefined {
-  return normalizeCookieDomain(process.env.COOKIE_DOMAIN);
+/** Хост, к которому обратился браузер: punycode, без порта. */
+export function requestHost(request?: Request | null): string {
+  if (!request) return "";
+  let raw = "";
+  try {
+    raw = request.headers.get("x-forwarded-host") || request.headers.get("host") || "";
+  } catch {
+    raw = "";
+  }
+  if (!raw) {
+    try {
+      raw = new URL(request.url).host;
+    } catch {
+      raw = "";
+    }
+  }
+  const value = String(raw || "").split(",")[0].trim().replace(/^\[|\]$/g, "");
+  const host = value.replace(/:\d+$/, "").toLowerCase();
+  if (!host) return "";
+  if (/^[\x00-\x7F]+$/.test(host)) return host;
+  return (domainToASCII(host) || host).toLowerCase();
+}
+
+/**
+ * Домен для Set-Cookie с учётом фактического хоста запроса.
+ *
+ * Браузер молча выбрасывает куку, чей `Domain` не совпадает с адресом страницы.
+ * Так выглядел «мобильный не заходит»: COOKIE_DOMAIN указывал на домен, телефон
+ * открывал сайт по IP — вход проходил, а сессии не было. Поэтому настроенный
+ * домен применяется только к своему хосту и его поддоменам, иначе кука ставится
+ * host-only, и вход работает с любого адреса.
+ */
+export function cookieDomainFor(request?: Request | null): string | undefined {
+  const configured = normalizeCookieDomain(process.env.COOKIE_DOMAIN);
+  if (!configured) return undefined;
+  const host = requestHost(request);
+  if (!host) return configured;
+  if (host === configured || host.endsWith(`.${configured}`)) return configured;
+  return undefined;
 }
 
 /**
@@ -78,14 +115,15 @@ function effectiveAccessMaxAgeSeconds(upstreamExpiresIn?: number | null): number
 
 export function setAccessCookie(out: NextResponse, accessToken: string, opts?: { upstreamExpiresIn?: number | null; request?: Request | null }): void {
   const maxAge = effectiveAccessMaxAgeSeconds(opts?.upstreamExpiresIn ?? null);
-  if (cookieDomain()) expireHostOnlyCookie(out as unknown as { cookies: { set: (c: Record<string, unknown>) => unknown } }, "core_token");
+  const domain = cookieDomainFor(opts?.request);
+  if (domain) expireHostOnlyCookie(out as unknown as { cookies: { set: (c: Record<string, unknown>) => unknown } }, "core_token");
   out.cookies.set({
     name: "core_token",
     value: String(accessToken || "").trim(),
     httpOnly: true,
     sameSite: "lax",
     secure: cookieSecure(opts?.request),
-    domain: cookieDomain(),
+    domain,
     path: "/",
     maxAge,
     expires: new Date(Date.now() + maxAge * 1000),
@@ -100,14 +138,15 @@ export function setRefreshCookie(out: NextResponse, refreshToken: string, opts?:
     typeof opts?.refreshExpiresIn === "number" && Number.isFinite(opts.refreshExpiresIn) && opts.refreshExpiresIn > 0
       ? opts.refreshExpiresIn
       : 30 * 24 * 60 * 60;
-  if (cookieDomain()) expireHostOnlyCookie(out as unknown as { cookies: { set: (c: Record<string, unknown>) => unknown } }, "core_refresh");
+  const domain = cookieDomainFor(opts?.request);
+  if (domain) expireHostOnlyCookie(out as unknown as { cookies: { set: (c: Record<string, unknown>) => unknown } }, "core_refresh");
   out.cookies.set({
     name: "core_refresh",
     value: v,
     httpOnly: true,
     sameSite: "lax",
     secure: cookieSecure(opts?.request),
-    domain: cookieDomain(),
+    domain,
     path: "/",
     maxAge: ttl,
     expires: new Date(Date.now() + ttl * 1000),
@@ -116,28 +155,24 @@ export function setRefreshCookie(out: NextResponse, refreshToken: string, opts?:
 }
 
 export function clearAuthCookies(out: NextResponse, request?: Request | null): void {
-  out.cookies.set({
-    name: "core_token",
-    value: "",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: cookieSecure(request),
-    domain: cookieDomain(),
-    path: "/",
-    maxAge: 0,
-    expires: new Date(0),
-    priority: "high",
-  });
-  out.cookies.set({
-    name: "core_refresh",
-    value: "",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: cookieSecure(request),
-    domain: cookieDomain(),
-    path: "/",
-    maxAge: 0,
-    expires: new Date(0),
-    priority: "high",
-  });
+  const domain = cookieDomainFor(request);
+  const targets: Array<string | undefined> = domain ? [undefined, domain] : [undefined];
+  // Гасим и host-only, и доменную копию: при смене COOKIE_DOMAIN у пользователя
+  // остаётся старая кука, и выход «не срабатывает» — сессия живёт дальше.
+  for (const target of targets) {
+    for (const name of ["core_token", "core_refresh"]) {
+      out.cookies.set({
+        name,
+        value: "",
+        httpOnly: true,
+        sameSite: "lax",
+        secure: cookieSecure(request),
+        domain: target,
+        path: "/",
+        maxAge: 0,
+        expires: new Date(0),
+        priority: "high",
+      });
+    }
+  }
 }
