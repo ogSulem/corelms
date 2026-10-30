@@ -30,8 +30,35 @@ from app.db.session import SessionLocal
 from app.models.user import User, UserRole
 from passlib.context import CryptContext
 
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+
+def _configure_logging() -> None:
+    """Журнал должен работать всегда, даже если до нас logging перенастроили.
+
+    Alembic (при AUTO_MIGRATE_ON_START=true) вызывает fileConfig, который
+    ставит корневому логгеру уровень WARN и свой обработчик. После этого
+    `basicConfig(level=INFO)` ничего не делает — и все строки о запросах
+    молча пропадают, а `docker compose logs` показывает пустоту.
+    """
+    # Не вызываем force=True: он сносит обработчики, которые поставили другие
+    # инструменты (например, перехват логов в тестах). Чиним существующую
+    # конфигурацию: поднимаем уровень и включаем логгер приложения.
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+    root = logging.getLogger()
+    if root.level > logging.INFO or root.level == logging.NOTSET:
+        root.setLevel(logging.INFO)
+    for handler in root.handlers:
+        if handler.level > logging.INFO or handler.level == logging.NOTSET:
+            handler.setLevel(logging.INFO)
+
+    logger = logging.getLogger("corelms")
+    logger.disabled = False
+    logger.setLevel(logging.INFO)
+
+
 def create_app() -> FastAPI:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    _configure_logging()
     is_prod = (settings.app_env or "").strip().lower() in {"prod", "production"}
     api_docs_enabled = bool(getattr(settings, "enable_api_docs", False)) or (not is_prod)
     app = FastAPI(

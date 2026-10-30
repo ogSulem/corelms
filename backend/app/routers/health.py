@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 import hmac
 from sqlalchemy import text
 
@@ -26,9 +26,20 @@ def health():
     return {"status": "ok"}
 
 
+@router.head("/health", include_in_schema=False)
+def health_head():
+    """Мониторинг и `curl -I` шлют HEAD: он должен отвечать, а не падать 405."""
+    return Response(status_code=200)
+
+
 @router.get("/health/live")
 def live():
     return {"status": "live"}
+
+
+@router.head("/health/live", include_in_schema=False)
+def live_head():
+    return Response(status_code=200)
 
 
 @router.get("/health/ready")
@@ -57,6 +68,12 @@ def ready():
             raise HTTPException(status_code=503, detail="s3 not ready") from e
 
     return {"status": "ready"}
+
+
+@router.head("/health/ready", include_in_schema=False)
+def ready_head():
+    ready()
+    return Response(status_code=200)
 
 
 @router.post("/health/cron/admin-uploads-cleanup")

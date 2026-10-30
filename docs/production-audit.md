@@ -54,7 +54,27 @@ POST/PUT/PATCH/DELETE, а `/api/auth/login` — «Недопустимый ис�
 `COOKIE_DOMAIN` с кириллицей frontend молча игнорирует (кука ставится без домена).
 Это не ломает вход, но лучше держать там ASCII-форму или оставлять пусто.
 
-## 3. Где искать источник «Ошибка сервера. Повторите попытку позже.»
+## 3. Почему `docker compose logs backend` бывает пустым
+
+`AUTO_MIGRATE_ON_START=true` запускает alembic в том же процессе, а
+`alembic/env.py` вызывает `fileConfig`, который ставит корневому логгеру
+уровень `WARN`. После этого `logging.basicConfig(level=INFO)` в приложении
+бесполезен, и строки о каждом запросе молча пропадают — искать причину 500
+по логу невозможно.
+
+Исправлено: `create_app()` чинит конфигурацию (поднимает уровень и включает
+логгер `corelms`), а `scripts/selfcheck.py` печатает строку «Уровень журнала»
+и предупреждает, если журнал выключен. Проверить, что журнал живой:
+
+```bash
+docker compose exec -T backend python -c "import logging; print(logging.getLogger('corelms').getEffectiveLevel())"
+docker compose logs backend --tail 5
+```
+
+Первая команда должна ответить `20` (INFO) — тогда `logs backend` показывает
+строку на каждый запрос с полем `"status"`.
+
+## 4. Где искать источник «Ошибка сервера. Повторите попытку позже.»
 
 Этот текст показывается, когда backend ответил 5xx с телом `internal server error`
 или пустым телом. Backend пишет строку журнала на каждый запрос, включая статус и
@@ -74,7 +94,7 @@ docker compose logs frontend --since 72h --no-log-prefix 2>/dev/null | grep -iE 
 docker compose logs backend --since 72h | grep -F '<request_id>' -A 40
 ```
 
-## 4. Проверка развёртывания и схемы
+## 5. Проверка развёртывания и схемы
 
 ```bash
 docker compose images
@@ -93,7 +113,7 @@ free -m
 docker compose exec -T backend python -m alembic upgrade head
 ```
 
-## 5. Полная самопроверка приложения изнутри контейнера
+## 6. Полная самопроверка приложения изнутри контейнера
 
 Скрипт `backend/scripts/selfcheck.py` (попадает в образ через `COPY . .`):
 
@@ -108,7 +128,7 @@ docker compose exec -T backend python scripts/selfcheck.py
 
 Код возврата: `0` — чисто, `1` — есть 5xx/исключения/таймауты, `2` — только замечания по настройке.
 
-## 6. Журнал ошибок в интерфейсе (без SSH)
+## 7. Журнал ошибок в интерфейсе (без SSH)
 
 Backend пишет каждый ответ 5xx в файл на томе `backend_data`
 (`/data/logs/errors.jsonl`, ротация по 2 МБ) вместе с `request_id`,
@@ -133,7 +153,7 @@ docker compose exec -T backend tail -n 40 /data/logs/errors.jsonl
 docker compose exec -T backend python -c "from app.services.error_log import read_recent; [print(i['ts'], i['status'], i['method'], i['path'], i['rid'], i.get('error','')) for i in read_recent(20)[0]]"
 ```
 
-## 7. Обновление без потери данных
+## 8. Обновление без потери данных
 
 ```bash
 cd /opt/corelms

@@ -149,3 +149,14 @@ test("downloads never direct a remote browser to loopback or a mixed-content obj
   }
   assert.equal(materialDownloadUrl("asset-id", "https://storage.example/file?signature=synthetic"), "https://storage.example/file?signature=synthetic");
 });
+
+test("кириллический COOKIE_DOMAIN приводится к punycode, а не теряется", async () => {
+  const { normalizeCookieDomain } = await loadSource("src/app/api/auth/_cookies.ts");
+  // Браузер хранит только ASCII-форму домена.
+  assert.equal(normalizeCookieDomain("edu.каркастайги.рф"), "edu.xn--80aaamzedb7cml.xn--p1ai");
+  assert.equal(normalizeCookieDomain(".edu.каркастайги.рф"), "edu.xn--80aaamzedb7cml.xn--p1ai");
+  assert.equal(normalizeCookieDomain("edu.xn--80aaamzedb7cml.xn--p1ai"), "edu.xn--80aaamzedb7cml.xn--p1ai");
+  assert.equal(normalizeCookieDomain(""), undefined);
+  assert.equal(normalizeCookieDomain("   "), undefined);
+  assert.equal(normalizeCookieDomain(null), undefined);
+});
