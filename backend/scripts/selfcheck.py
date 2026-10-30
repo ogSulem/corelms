@@ -128,8 +128,8 @@ def environment_report(db) -> tuple[list[str], list[str]]:
     add("Уровень журнала", logging.getLevelName(log_level))
     if log_level > logging.INFO:
         problems.append(
-            "Журнал запросов выключен (уровень выше INFO): docker compose logs backend будет пустым, "
-            "и причину ошибки не увидеть. Обычно это следствие AUTO_MIGRATE_ON_START=true + старой сборки."
+            "Журнал запросов выключен: LOG_LEVEL выше INFO, поэтому docker compose logs backend почти пуст "
+            "и причину ошибки не видно. Поставь LOG_LEVEL=INFO в .env и перезапусти backend."
         )
 
     # --- Домен, куки и CORS ------------------------------------------------
@@ -226,7 +226,10 @@ def environment_report(db) -> tuple[list[str], list[str]]:
                 db.rollback()
             except Exception:
                 pass
-            return f"ошибка: {type(exc).__name__}"
+            # Тип исключения сам по себе ничего не объясняет (DataError — это и
+            # неверное значение enum, и неверный тип). Показываем текст ошибки.
+            detail = " ".join(str(exc).split())[:180]
+            return f"ошибка: {type(exc).__name__}: {detail}"
 
     for label, sql in (
         ("пользователей", "select count(*) from users"),
