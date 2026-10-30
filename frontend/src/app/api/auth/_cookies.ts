@@ -1,4 +1,5 @@
 import type { NextResponse } from "next/server";
+import { domainToASCII } from "url";
 
 function _isProd(): boolean {
   return process.env.NODE_ENV === "production";
@@ -10,11 +11,21 @@ function cookieSecure(): boolean {
   return _isProd();
 }
 
+/**
+ * Кука должна получать ASCII-домен: браузер хранит только punycode.
+ * Кириллический COOKIE_DOMAIN (edu.каркастайги.рф) раньше молча отбрасывался,
+ * из-за чего кука становилась host-only без всякого предупреждения.
+ */
+export function normalizeCookieDomain(raw: string | null | undefined): string | undefined {
+  const value = String(raw || "").trim().replace(/^\./, "");
+  if (!value) return undefined;
+  if (/^[\x00-\x7F]+$/.test(value)) return value;
+  const ascii = domainToASCII(value);
+  return ascii || undefined;
+}
+
 function cookieDomain(): string | undefined {
-  const v = String(process.env.COOKIE_DOMAIN || "").trim();
-  if (!v) return undefined;
-  const isAscii = /^[\x00-\x7F]+$/.test(v);
-  return isAscii ? v : undefined;
+  return normalizeCookieDomain(process.env.COOKIE_DOMAIN);
 }
 
 function tokenConfiguredMaxAgeSeconds(): number {

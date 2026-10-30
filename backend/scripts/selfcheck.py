@@ -122,6 +122,16 @@ def environment_report(db) -> tuple[list[str], list[str]]:
     add("AUTO_MIGRATE_ON_START", settings.auto_migrate_on_start)
     add("AI включён", settings.openrouter_enabled)
 
+    import logging
+
+    log_level = logging.getLogger("corelms").getEffectiveLevel()
+    add("Уровень журнала", logging.getLevelName(log_level))
+    if log_level > logging.INFO:
+        problems.append(
+            "Журнал запросов выключен (уровень выше INFO): docker compose logs backend будет пустым, "
+            "и причину ошибки не увидеть. Обычно это следствие AUTO_MIGRATE_ON_START=true + старой сборки."
+        )
+
     # --- Домен, куки и CORS ------------------------------------------------
     lines.append("")
     lines.append("ДОМЕН, КУКИ И CORS")
@@ -311,7 +321,8 @@ def error_report(limit: int = 5) -> tuple[list[str], list[str]]:
         tb = str(item.get("traceback") or "").strip().splitlines()
         if tb:
             lines.append(f"      {tb[-1].strip()}")
-        problems.append(f"Серверная ошибка {item.get('rid')}: {item.get('method')} {item.get('path')} → {item.get('status')}")
+        if int(item.get("status") or 500) != 503:
+            problems.append(f"Серверная ошибка {item.get('rid')}: {item.get('method')} {item.get('path')} → {item.get('status')}")
     return lines, problems
 
 
@@ -340,12 +351,14 @@ def _sample_ids(db) -> dict[str, str]:
     return {k: (str(v) if v else "00000000-0000-0000-0000-000000000000") for k, v in ids.items()}
 
 
-def endpoint_report(client, admin_token: str, db) -> tuple[list[str], list[str], list[tuple[str, str]], list[str]]:
+def endpoint_report(client, admin_token: str, db) -> tuple[list[str], list[str], list[tuple[str, str]], list[str], list[str]]:
     app = client.app
     ids = _sample_ids(db)
     headers = {"Authorization": f"Bearer {admin_token}"}
 
     lines = ["", "ЭНДПОИНТЫ (GET, под администратором)"]
+    password_blocked: list[str] = []
+    degraded: list[str] = []
     failures: list[str] = []
     traces: list[tuple[str, str]] = []
     slow: list[str] = []
@@ -385,7 +398,15 @@ def endpoint_report(client, admin_token: str, db) -> tuple[list[str], list[str],
         try:
             if error is not None:
                 raise error
-            if response.status_code >= 500:
+            if response.status_code == 403 and "password_change_required" in response.text:
+                lines.append(f"  403  {url}  (нужна смена пароля у проверяющего администратора)")
+                password_blocked.append(url)
+                continue
+            if response.status_code == 503:
+                body = response.text[:300].replace("\n", " ")
+                lines.append(f"  503  {url}  ({elapsed} мс)  зависимость недоступна: {body}")
+                degraded.append(f"{url} → 503: {body}")
+            elif response.status_code >= 500:
                 body = response.text[:400].replace("\n", " ")
                 lines.append(f"  {response.status_code}  {url}  ({elapsed} мс)  {body}")
                 failures.append(f"{url} → {response.status_code}")
@@ -400,7 +421,7 @@ def endpoint_report(client, admin_token: str, db) -> tuple[list[str], list[str],
             failures.append(f"{url} → исключение")
             traces.append((url, tb))
 
-    return lines, failures, traces, slow
+    return lines, failures, traces, slow, password_blocked, degraded
 
 
 REQUEST_TIMEOUT_SECONDS = 60
@@ -441,9 +462,18 @@ def _admin_token(db) -> tuple[str, str, str]:
     from app.services.auth_sessions import issue_session
     from sqlalchemy import select
 
-    user = db.scalar(select(User).where(User.role.in_([UserRole.superadmin, UserRole.admin])).order_by(User.created_at))
-    if user is None:
+    # Администратор с обязательной сменой пароля получает 403 на всё —
+    # для проверки нужен тот, кто может работать.
+    admins = list(db.scalars(select(User).where(User.role.in_([UserRole.superadmin, UserRole.admin])).order_by(User.created_at)))
+    if not admins:
         raise SystemExit("В базе нет администратора: проверять эндпоинты не от кого")
+    working = [a for a in admins if not getattr(a, "must_change_password", False)]
+    if not working:
+        raise SystemExit(
+            "У всех администраторов включена смена пароля при входе (must_change_password). "
+            "Пока пароль не сменён, админ-страницы отвечают 403 — войдите в интерфейс и смените пароль."
+        )
+    user = working[0]
     token, _, sid = issue_session(user, Request({"type": "http", "headers": [], "client": ("selfcheck", 0)}))
     return create_access_token(user, sid), str(user.id), sid
 
@@ -465,7 +495,7 @@ def main(client=None) -> int:
 
             client = TestClient(create_app())
 
-        ep_lines, failures, traces, slow = endpoint_report(client, token, db)
+        ep_lines, failures, traces, slow, password_blocked, degraded = endpoint_report(client, token, db)
         _cleanup_session(admin_id, admin_sid)
 
         print("\n".join(env_lines))
@@ -483,6 +513,14 @@ def main(client=None) -> int:
         if slow:
             print("МЕДЛЕННЫЕ ЗАПРОСЫ (>5 c):")
             for item in slow:
+                print(f"  - {item}")
+        if degraded:
+            print("ЗАВИСИМОСТИ НЕДОСТУПНЫ (503, страница работает в ограниченном виде):")
+            for item in degraded:
+                print(f"  - {item}")
+        if password_blocked:
+            print("ТРЕБУЕТСЯ СМЕНА ПАРОЛЯ (403):")
+            for item in password_blocked:
                 print(f"  - {item}")
         if failures:
             print("ОШИБКИ ЭНДПОИНТОВ:")
