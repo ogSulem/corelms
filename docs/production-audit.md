@@ -153,7 +153,48 @@ docker compose exec -T backend tail -n 40 /data/logs/errors.jsonl
 docker compose exec -T backend python -c "from app.services.error_log import read_recent; [print(i['ts'], i['status'], i['method'], i['path'], i['rid'], i.get('error','')) for i in read_recent(20)[0]]"
 ```
 
-## 8. Обновление без потери данных
+## 8. Сборка, когда Docker Hub недоступен
+
+Типичная картина в России: `git pull` проходит, а `docker compose build` падает на
+
+```
+failed to fetch anonymous token ... TLS handshake timeout
+ERROR [backend internal] load metadata for docker.io/library/python:3.11-slim-bookworm
+```
+
+Важно: если после этого выполнить `docker compose up -d --no-deps backend frontend`,
+контейнеры перезапустятся **на старых образах** — новый код не применится, и выглядит
+это как «исправления не работают». Сначала убедись, что образ собрался:
+
+```bash
+docker images | grep -E 'corelms-(backend|frontend)'
+docker compose build --pull never backend frontend
+```
+
+`--pull never` запрещает обращаться в реестр за базовыми образами: они уже есть локально
+(из прошлых сборок), а изменённые слои — только исходники, поэтому сеть не нужна.
+Если Compose ругается на неизвестный флаг:
+
+```bash
+DOCKER_BUILDKIT=0 docker compose build backend frontend
+```
+
+Проверка, что новый код действительно в образе (должна быть строка про журнал ошибок):
+
+```bash
+docker compose run --rm --no-deps backend python -c "import app.services.error_log as m; print([n for n in dir(m) if n == 'record'])"
+```
+
+Если сборка невозможна вообще, а нужен только Python-фикс, можно временно подменить
+файлы внутри работающего контейнера (исчезнет при пересоздании контейнера):
+
+```bash
+docker cp backend/app/main.py corelms-backend-1:/app/app/main.py
+docker cp backend/app/services/error_log.py corelms-backend-1:/app/app/services/error_log.py
+docker compose restart backend
+```
+
+## 9. Обновление без потери данных
 
 ```bash
 cd /opt/corelms
@@ -161,7 +202,7 @@ docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES
 git fetch origin
 git checkout main
 git pull --ff-only
-docker compose build backend frontend
+docker compose build --pull never backend frontend
 docker compose up -d --no-deps backend frontend
 docker compose ps
 curl -sSI https://<домен>/health/ready | head -3

@@ -30,7 +30,7 @@ from app.services.quiz_versions import version_quiz_for_edit, question_id_map
 from app.services.learning import remember_quiz_version
 from app.core.config import settings
 from app.core.rate_limit import rate_limit
-from app.core.security import require_roles
+from app.core.security import require_roles, require_roles_stream
 from app.core.security_audit_log import audit_log
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal, get_db
@@ -580,6 +580,12 @@ def system_status(
             "public_app_url": str(getattr(settings, "public_app_url", "") or ""),
             "cors_allow_origins": str(getattr(settings, "cors_allow_origins", "") or ""),
         }
+        try:
+            from app.db.session import pool_snapshot
+
+            out["db_pool"] = pool_snapshot()
+        except Exception:
+            out["db_pool"] = {}
     except Exception:
         out["instance"] = {
             "app_env": str(getattr(settings, "app_env", "") or ""),
@@ -4041,7 +4047,7 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
 @router.get("/jobs/events")
 async def admin_job_events(
     request: Request,
-    _: User = Depends(require_roles(UserRole.admin)),
+    _: User = Depends(require_roles_stream(UserRole.admin)),
 ):
     async def gen():
         loop = asyncio.get_running_loop()
@@ -4966,6 +4972,20 @@ def list_admin_users(
     module_by_id = {m.id: m for m in modules}
     progress_matrix = LearningService(db).get_progress_matrix(rows, modules)
 
+    def _role_value(u: User) -> str:
+        role = getattr(u, "role", None)
+        return str(getattr(role, "value", role) or "")
+
+    def _tag_ids(raw: list[str]) -> list[str]:
+        out: list[str] = []
+        for tid in raw:
+            try:
+                uuid.UUID(str(tid))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            out.append(str(tid))
+        return out
+
     def _progress_summary_for_user(u: User) -> dict[str, object]:
         completed_count = 0
         in_progress_count = 0
@@ -5002,22 +5022,29 @@ def list_admin_users(
             "current": current,
         }
 
+    def _safe_summary(u: User) -> dict[str, object]:
+        try:
+            return _progress_summary_for_user(u)
+        except Exception:
+            logging.getLogger("corelms").exception("admin users: progress summary failed for %s", u.id)
+            return {"completed_count": 0, "in_progress_count": 0, "current": None}
+
     return {
         "items": [
             {
                 "id": str(u.id),
                 "name": u.name,
                 "email": u.email,
-                "role": u.role.value,
+                "role": _role_value(u),
                 "position": u.position,
                 "xp": int(u.xp or 0),
                 "level": int(u.level or 0),
                 "streak": int(u.streak or 0),
                 "last_activity_at": u.last_activity_at.isoformat() if getattr(u, "last_activity_at", None) else None,
                 "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
-                "progress_summary": _progress_summary_for_user(u),
-                "tag_ids": tag_ids_by_user.get(u.id, []),
-                "tags": [tag_name_by_id.get(uuid.UUID(tid), "") for tid in tag_ids_by_user.get(u.id, []) if tid],
+                "progress_summary": _safe_summary(u),
+                "tag_ids": _tag_ids(tag_ids_by_user.get(u.id, [])),
+                "tags": [tag_name_by_id.get(uuid.UUID(tid), "") for tid in _tag_ids(tag_ids_by_user.get(u.id, []))],
             }
             for u in rows
         ]
