@@ -6,7 +6,11 @@
  */
 
 export type AdminRole = "employee" | "partner" | "admin" | "superadmin";
-export type RoleTab = "all" | "employees" | "partner" | "admins";
+/**
+ * «Партнёры» — все обучающиеся: и partner, и legacy employee. Раньше это были
+ * две отдельные вкладки, но списки совпадали, поэтому вкладка одна.
+ */
+export type RoleTab = "all" | "partner" | "admins";
 
 /** Сотрудник — это и обычный employee, и partner: партнёр учится без прав админа. */
 export function isEmployeeRole(role: string): boolean {
@@ -21,10 +25,8 @@ export function matchesRoleTab(role: string, tab: RoleTab): boolean {
   switch (tab) {
     case "all":
       return true;
-    case "employees":
-      return isEmployeeRole(role);
     case "partner":
-      return role === "partner";
+      return isEmployeeRole(role);
     case "admins":
       return isAdminRole(role);
     default:

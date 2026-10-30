@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, FileArchive, Loader2, RefreshCw, UploadClo
 
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
+import { throttleRefresh } from "@/lib/refresh-throttle";
 
 type Stage = "queued" | "upload" | "enqueue" | "done" | "failed";
 
@@ -90,7 +91,7 @@ export function ImportAdmin() {
 
   useEffect(() => {
     void loadJobs();
-    const onFocus = () => void loadJobs();
+    const onFocus = throttleRefresh(() => void loadJobs());
     window.addEventListener("focus", onFocus);
     return () => {
       window.removeEventListener("focus", onFocus);

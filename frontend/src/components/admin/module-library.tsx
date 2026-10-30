@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { apiFetch } from "@/lib/api";
 import { cn } from "@/lib/cn";
+import { throttleRefresh } from "@/lib/refresh-throttle";
 
 type LibraryModule = { id: string; title: string; description?: string | null; category?: string | null; is_active: boolean; is_archived: boolean; content_revision: number; lesson_count: number; asset_count: number };
 const btn = "gap-2 rounded-xl text-sm font-medium normal-case tracking-normal";
@@ -38,8 +39,10 @@ export function ModuleLibrary() {
     const focus = () => { void load(); };
     const events = new EventSource("/api/backend/modules/events");
     events.addEventListener("modules", focus);
-    window.addEventListener("focus", focus);
-    return () => { request.current?.abort(); events.close(); window.removeEventListener("focus", focus); };
+    // Живые события уже обновляют список; возврат на вкладку — не чаще раза в минуту.
+    const onFocus = throttleRefresh(focus);
+    window.addEventListener("focus", onFocus);
+    return () => { request.current?.abort(); events.close(); window.removeEventListener("focus", onFocus); };
   }, [load]);
   const filtered = useMemo(() => items.filter(m => filter === "archive" ? m.is_archived : !m.is_archived && (filter === "all" || (filter === "published" ? m.is_active : !m.is_active)))
     .filter(m => `${m.title} ${m.category || ""}`.toLocaleLowerCase("ru").includes(query.trim().toLocaleLowerCase("ru")))

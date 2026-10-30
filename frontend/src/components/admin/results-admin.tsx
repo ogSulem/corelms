@@ -31,7 +31,8 @@ type UserRow = {
 type Overview = { generated_at: string; totals: Totals; modules: ModuleRow[]; users: UserRow[] };
 
 const btn = "gap-2 rounded-xl text-sm font-medium normal-case tracking-normal";
-const roleLabel: Record<string, string> = { employee: "Сотрудник", partner: "Партнёр", admin: "Администратор", superadmin: "Суперадмин" };
+// employee и partner — одна и та же роль ученика: в интерфейсе её не раздваиваем.
+const roleLabel: Record<string, string> = { employee: "Партнёр", partner: "Партнёр", admin: "Администратор", superadmin: "Суперадмин" };
 
 function when(value: string | null): string {
   if (!value) return "не заходил";

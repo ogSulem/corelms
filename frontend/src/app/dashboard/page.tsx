@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AppShell } from "@/components/app/shell";
 import { InsightCard } from "@/components/app/insight-card";
@@ -20,10 +20,6 @@ type AssignmentItem = {
   deadline: string | null;
 };
 
-type MyProfile = {
-  last_activity_at?: string | null;
-};
-
 type ProgressSummary = {
   modules_total: number;
   modules_completed: number;
@@ -34,7 +30,6 @@ type ProgressSummary = {
 
 export default function DashboardPage() {
   const { user } = useAuth();
-  const [profile, setProfile] = useState<MyProfile | null>(null);
   const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
   const [progress, setProgress] = useState<ProgressSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,12 +50,12 @@ export default function DashboardPage() {
     try {
       setError(null);
       setLoading(true);
-      const [p, as, pr] = await Promise.all([
-        apiFetch<MyProfile>("/me/profile"),
+      // /me/profile больше не нужен: блок «цель дня» убран, а сводка и задания
+      // приходят двумя запросами вместо трёх.
+      const [as, pr] = await Promise.all([
         apiFetch<{ items: AssignmentItem[] }>("/me/assignments"),
         apiFetch<ProgressSummary>("/me/progress-summary"),
       ]);
-      setProfile(p || null);
       setAssignments(as.items || []);
       setProgress(pr || null);
     } catch (e) {
@@ -112,19 +107,6 @@ export default function DashboardPage() {
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
-
-  const didSomethingToday = useMemo(() => {
-    const raw = String(profile?.last_activity_at || "");
-    if (!raw) return false;
-    const last = new Date(raw);
-    if (Number.isNaN(last.getTime())) return false;
-    const now = new Date();
-    // Сравниваем по местному календарю: сервер отдаёт UTC, и в Москве с 00:00
-    // до 03:00 разница дат сбрасывала бы цель посреди дня.
-    return last.getFullYear() === now.getFullYear()
-      && last.getMonth() === now.getMonth()
-      && last.getDate() === now.getDate();
-  }, [profile?.last_activity_at]);
 
   return (
     <AppShell>
@@ -263,59 +245,21 @@ export default function DashboardPage() {
             )}
           </div>
 
-          {/* Right: Career Boost / Daily Goal */}
+          {/* Right: реквизиты для счетов на рекламу и расчёта бюджета */}
           <div className="h-full">
-            <div className="relative h-full overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 p-6 sm:p-10 flex flex-col justify-between group shadow-2xl shadow-zinc-950/10">
-              <div className="absolute -bottom-8 -right-8 text-[120px] font-black italic text-zinc-950/[0.03] pointer-events-none group-hover:text-[#fe9900]/[0.07] transition-all duration-700 select-none">
-                ЦЕЛЬ
-              </div>
-              
-              <div>
-                <div className="text-[10px] font-black text-[#fe9900] uppercase tracking-[0.4em] mb-4">Ежедневный импульс</div>
-                <h3 className="break-words text-3xl sm:text-4xl font-black text-zinc-950 tracking-tighter uppercase leading-tight max-w-xs">
-                  Твоя цель на сегодня
-                </h3>
-              </div>
-
-              <div className="mt-6 flex flex-wrap items-center justify-between gap-4">
-                <div className="min-w-0 max-w-[200px] flex-1 basis-28">
-                  <p className="text-xs font-bold text-zinc-500 uppercase leading-relaxed tracking-wider">
-                    {didSomethingToday 
-                      ? "Цель достигнута. Твои навыки растут прямо сейчас." 
-                      : "Выполни любое действие, чтобы зафиксировать прогресс дня."}
-                  </p>
-                </div>
-                
-                <div className="relative">
-                  <div
-                    className={`h-28 w-28 rounded-full border-4 flex flex-col items-center justify-center transition-all duration-700 ${
-                      didSomethingToday
-                        ? "border-[#284e13] bg-[#284e13]/10 text-[#284e13] shadow-[0_0_50px_rgba(40,78,19,0.18)]"
-                        : "border-zinc-200 bg-zinc-50 text-zinc-300"
-                    }`}
-                  >
-                    <span className="text-4xl font-black">{didSomethingToday ? "✓" : "0"}</span>
-                    <span className="text-[10px] font-black uppercase tracking-widest mt-1">/ 1</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Счета и бюджет рекламы: реквизиты почты прямо в блоке цели. */}
-              <div className="mt-6 border-t border-zinc-200 pt-5">
-                <p className="text-[10px] font-black uppercase tracking-[0.25em] text-zinc-400">Счета на оплату рекламы</p>
-                <div className="mt-3 space-y-2 text-[12px] leading-relaxed text-zinc-600">
-                  <p>
-                    Для выставления счетов на оплату рекламы используйте почту{" "}
-                    <a href="mailto:OfisKT@yandex.ru" className="font-semibold text-[#284e13] underline decoration-[#284e13]/30 underline-offset-2 hover:decoration-[#284e13]">OfisKT@yandex.ru</a>.
-                  </p>
-                  <p className="text-zinc-500">В письме необходимо указать:<br />— ИНН<br />— сумму для оплаты рекламы</p>
-                  <p>После получения данных отдел финансов подготовит и отправит счет на оплату.</p>
-                  <p>
-                    По вопросам расчёта рекламного бюджета на следующий месяц и анализа текущего месяца (если была оплата рекламы) используйте почту{" "}
-                    <a href="mailto:ukfranchise@yandex.ru" className="font-semibold text-[#284e13] underline decoration-[#284e13]/30 underline-offset-2 hover:decoration-[#284e13]">ukfranchise@yandex.ru</a>.
-                  </p>
-                  <p className="font-bold text-zinc-700">Просим направлять запросы до 25 числа каждого месяца.</p>
-                </div>
+            <div className="relative flex h-full flex-col overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 p-6 shadow-2xl shadow-zinc-950/10 sm:p-10">
+              <div className="space-y-3 text-[13px] leading-relaxed text-zinc-700">
+                <p>
+                  Для выставления счетов на оплату рекламы используйте почту{" "}
+                  <a href="mailto:OfisKT@yandex.ru" className="font-semibold text-[#284e13] underline decoration-[#284e13]/30 underline-offset-2 hover:decoration-[#284e13]">OfisKT@yandex.ru</a>.
+                </p>
+                <p className="text-zinc-500">В письме необходимо указать:<br />— ИНН<br />— сумму для оплаты рекламы</p>
+                <p>После получения данных отдел финансов подготовит и отправит счет на оплату.</p>
+                <p>
+                  По вопросам расчёта рекламного бюджета на следующий месяц и анализа текущего месяца (если была оплата рекламы) используйте почту{" "}
+                  <a href="mailto:ukfranchise@yandex.ru" className="font-semibold text-[#284e13] underline decoration-[#284e13]/30 underline-offset-2 hover:decoration-[#284e13]">ukfranchise@yandex.ru</a>.
+                </p>
+                <p className="font-bold text-zinc-800">Просим направлять запросы до 25 числа каждого месяца.</p>
               </div>
             </div>
           </div>

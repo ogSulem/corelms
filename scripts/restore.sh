@@ -66,7 +66,7 @@ if [[ "$SAFETY" == "1" ]]; then
 fi
 
 echo "→ Останавливаю API и воркеры"
-$COMPOSE stop backend worker_import worker_regen worker_default worker_media >/dev/null
+$COMPOSE stop backend worker worker_media >/dev/null
 
 echo "→ Восстанавливаю базу $PG_DB"
 $COMPOSE exec -T postgres pg_restore -U "$PG_USER" -d "$PG_DB" --clean --if-exists --no-owner < "$SRC/db.dump"
@@ -84,7 +84,7 @@ if [[ "$WITH_REDIS" == "1" && -s "$SRC/dump.rdb" ]]; then
 fi
 
 echo "→ Поднимаю сервисы"
-$COMPOSE up -d backend worker_import worker_regen worker_default worker_media frontend >/dev/null
+$COMPOSE up -d backend worker worker_media frontend >/dev/null
 
 SCHEMA="$( $COMPOSE exec -T postgres sh -c "psql -U '$PG_USER' -d '$PG_DB' -tAc 'select version_num from alembic_version'" 2>/dev/null | tr -d '[:space:]' || true )"
 echo "→ Схема после восстановления: ${SCHEMA:-не определена}"

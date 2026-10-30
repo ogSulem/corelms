@@ -71,9 +71,21 @@ done
 say "Сборка образов из исходников (без Docker Hub)"
 bash deploy/rebuild-offline.sh "$WHAT"
 
+# Раньше воркеров было четыре (worker_import / worker_regen / worker_default).
+# После объединения их в один сервис `worker` старые контейнеры остались бы
+# работать со старым кодом и разбирать очередь: убираем их при обновлении.
+say "Убираем контейнеры воркеров старой схемы"
+for legacy in worker_import worker_regen worker_default; do
+  for name in $(docker ps -a --filter "name=${legacy}" --format '{{.Names}}'); do
+    case "$name" in
+      *"${legacy}"*) docker rm -f "$name" >/dev/null 2>&1 && echo "  удалён $name" ;;
+    esac
+  done
+done
+
 say "Поднимаем контейнеры приложений"
 # --no-build: compose не пытается собрать заново и не обращается к registry.
-docker compose up -d --no-build --no-deps backend worker_import worker_regen worker_media worker_default
+docker compose up -d --no-build --no-deps backend worker worker_media
 if [ "$WHAT" = "all" ] || [ "$WHAT" = "frontend" ]; then
   docker compose up -d --no-build --no-deps frontend
 fi
@@ -103,7 +115,7 @@ cat <<NEXT
 Откат образов (если что-то не так):
   docker tag corelms-backend:rollback-${STAMP} corelms-backend:latest
   docker tag corelms-frontend:rollback-${STAMP} corelms-frontend:latest
-  docker compose up -d --no-build --no-deps backend worker_import worker_regen worker_media worker_default frontend
+  docker compose up -d --no-build --no-deps backend worker worker_media frontend
 
 Данные при откате не меняются: база и файлы остаются на месте.
 NEXT

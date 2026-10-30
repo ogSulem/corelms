@@ -212,10 +212,10 @@ XML Office читается потоково с ограничениями гл�
 mkdir -p backups
 docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > backups/pre-0024.dump
 
-docker compose build backend frontend worker_import worker_regen worker_default worker_media
+docker compose build backend frontend worker worker_media
 # --entrypoint обязателен: штатный entrypoint контейнера запускает API.
 docker compose run --rm --no-deps --entrypoint alembic backend upgrade head
-docker compose up -d backend worker_import worker_regen worker_default worker_media frontend
+docker compose up -d backend worker worker_media frontend
 # Затем запустите используемый ingress: nginx ИЛИ Caddy согласно вашему режиму.
 ```
 

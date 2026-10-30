@@ -70,6 +70,15 @@ CoreLMS — внутренняя LMS для обучения и контроля
   - `/api/backend/*` — прокси в backend (с учётом cookies)
 - Backend не должен быть доступен напрямую из интернета: он доступен только внутри docker-сети.
 
+### Фоновые процессы
+
+| Контейнер | Что делает | Почему отдельно |
+|---|---|---|
+| `worker` | импорт и переобход ZIP-модулей, черновики тестов, уборка осиротевших объектов | два процесса RQ: долгий импорт не задерживает генерацию теста |
+| `worker_media` | совместимые MP4/PDF и превью для видео и Office | нужен LibreOffice и до 1.5 ГБ памяти; тяжёлое кодирование не должно занимать общий воркер |
+
+Раньше воркеров было четыре (`worker_import`, `worker_regen`, `worker_default`, `worker_media`) — три из них делали то же самое в разных очередях и вместе держали лишние ~250 МБ памяти. Очереди остались прежние (`corelms_import`, `corelms_regen`, `corelms_cleanup`, `corelms`), их список задаёт `RQ_WORKER_QUEUES`.
+
 ---
 
 ## Быстрый старт (локально)
@@ -209,16 +218,16 @@ git fetch origin && git checkout -f -B main origin/main
 
 # 3) Собрать образы, пока старые контейнеры продолжают обслуживать запросы.
 #    Нет доступа к Docker Hub? Соберите офлайн: bash deploy/update.sh
-docker compose build backend frontend worker_import worker_regen worker_default worker_media
+docker compose build backend frontend worker worker_media
 
-# 4) Миграции отдельным шагом (0024 только добавляет таблицу, старый код с ней работает)
+# 4) Миграции отдельным шагом (0026 только добавляет таблицу, старый код с ней работает)
 docker compose run --rm --no-deps --entrypoint alembic backend current
 docker compose run --rm --no-deps --entrypoint alembic backend upgrade head
 
 # 5) Заменить контейнеры по одному, не трогая postgres/redis
 docker compose up -d --no-deps backend
 docker compose up -d --no-deps frontend
-docker compose up -d --no-deps worker_import worker_regen worker_default worker_media
+docker compose up -d --no-deps worker worker_media
 
 # 6) Проверка
 curl -fsS https://ваш-домен/api/health/ready
@@ -243,15 +252,15 @@ docker compose run --rm --no-deps --entrypoint alembic backend current
 docker compose run --rm --no-deps --entrypoint alembic backend heads
 
 # 2) Собрать API, frontend и все воркеры из одной версии кода
-docker compose build backend frontend worker_import worker_regen worker_default worker_media
+docker compose build backend frontend worker worker_media
 #    или без сети: bash deploy/update.sh
 
 # 3) Остановить писателей и применить схему
-docker compose stop backend worker_import worker_regen worker_default worker_media
+docker compose stop backend worker worker_media
 docker compose run --rm --no-deps --entrypoint alembic backend upgrade head
 
 # 4) Запустить всё
-docker compose up -d backend worker_import worker_regen worker_default worker_media frontend
+docker compose up -d backend worker worker_media frontend
 ```
 
 Проверка после обновления:
@@ -341,7 +350,7 @@ bash deploy/update.sh
 4. «Подготовить тесты для всех уроков» создаёт черновики пачкой (до 50 уроков), только для уроков без вопросов или для всех.
 5. Без токена AI тесты создаются вручную; обучение, файлы и прогресс от AI не зависят.
 
-Для фоновой генерации должен работать воркер `worker_regen` с очередью `corelms_regen`.
+Для фоновой генерации должен работать контейнер `worker` (очередь `corelms_regen`).
 
 ---
 
@@ -384,8 +393,8 @@ docker compose down
 ```bash
 docker compose logs -f --tail=200 nginx
 docker compose logs -f --tail=200 backend
-docker compose logs -f --tail=200 worker_import
-docker compose logs -f --tail=200 worker_regen
+docker compose logs -f --tail=200 worker
+docker compose logs -f --tail=200 worker_media
 ```
 
 ---
@@ -505,7 +514,7 @@ git clean -fd            # уберёт [backend], CACHED…; .env и backups/ �
 ### Очереди не исполняются
 
 - открой админку, вкладка diagnostics/jobs: `WORKERS: 0` значит воркеры не поднялись
-- проверь контейнеры `worker_import`, `worker_regen`, `worker_default`, `worker_media`
+- проверь контейнеры `worker`, `worker_media`
 - проверь `REDIS_URL`
 
 ### CORS ошибки
