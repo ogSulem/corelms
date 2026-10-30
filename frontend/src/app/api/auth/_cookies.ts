@@ -28,6 +28,15 @@ function cookieDomain(): string | undefined {
   return normalizeCookieDomain(process.env.COOKIE_DOMAIN);
 }
 
+/**
+ * Когда включён COOKIE_DOMAIN, у пользователей ещё может лежать старая
+ * host-only кука с тем же именем: браузер пришлёт обе, и сервер может
+ * прочитать устаревшую. Гасим host-only копию при каждой записи.
+ */
+export function expireHostOnlyCookie(out: { cookies: { set: (c: Record<string, unknown>) => unknown } }, name: string): void {
+  out.cookies.set({ name, value: "", path: "/", maxAge: 0, expires: new Date(0) });
+}
+
 function tokenConfiguredMaxAgeSeconds(): number {
   const v = Number.parseInt(process.env.CORE_TOKEN_MAX_AGE_SECONDS || "3600", 10);
   return Number.isFinite(v) && v > 0 ? v : 3600;
@@ -41,6 +50,7 @@ function effectiveAccessMaxAgeSeconds(upstreamExpiresIn?: number | null): number
 
 export function setAccessCookie(out: NextResponse, accessToken: string, opts?: { upstreamExpiresIn?: number | null }): void {
   const maxAge = effectiveAccessMaxAgeSeconds(opts?.upstreamExpiresIn ?? null);
+  if (cookieDomain()) expireHostOnlyCookie(out as unknown as { cookies: { set: (c: Record<string, unknown>) => unknown } }, "core_token");
   out.cookies.set({
     name: "core_token",
     value: String(accessToken || "").trim(),
@@ -62,6 +72,7 @@ export function setRefreshCookie(out: NextResponse, refreshToken: string, opts?:
     typeof opts?.refreshExpiresIn === "number" && Number.isFinite(opts.refreshExpiresIn) && opts.refreshExpiresIn > 0
       ? opts.refreshExpiresIn
       : 30 * 24 * 60 * 60;
+  if (cookieDomain()) expireHostOnlyCookie(out as unknown as { cookies: { set: (c: Record<string, unknown>) => unknown } }, "core_refresh");
   out.cookies.set({
     name: "core_refresh",
     value: v,

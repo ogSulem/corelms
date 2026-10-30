@@ -160,3 +160,31 @@ test("кириллический COOKIE_DOMAIN приводится к punycode,
   assert.equal(normalizeCookieDomain("   "), undefined);
   assert.equal(normalizeCookieDomain(null), undefined);
 });
+
+// Браузер хранит домен в ASCII-форме — используем её же как ожидание.
+const COOKIE_HOST = new URL("https://edu.каркастайги.рф").hostname;
+
+test("включённый COOKIE_DOMAIN гасит старую host-only куку", async () => {
+  process.env.COOKIE_DOMAIN = "edu.каркастайги.рф";
+  process.env.COOKIE_SECURE = "true";
+  try {
+    const { setAccessCookie, setRefreshCookie } = await loadSource("src/app/api/auth/_cookies.ts");
+    const written = [];
+    const out = { cookies: { set: cookie => written.push(cookie) } };
+    setAccessCookie(out, "aaa1", { upstreamExpiresIn: 900 });
+    setRefreshCookie(out, "bbb2", { refreshExpiresIn: 3600 });
+
+    const cleared = written.filter(c => c.maxAge === 0 && c.value === "");
+    assert.deepEqual(cleared.map(c => c.name).sort(), ["core_refresh", "core_token"]);
+    for (const cookie of cleared) assert.equal(cookie.domain, undefined);
+
+    const a = written.find(c => c.name === "core_token" && c.value === "aaa1");
+    assert.equal(a.domain, COOKIE_HOST);
+    assert.equal(a.secure, true);
+
+    const r = written.find(c => c.name === "core_refresh" && c.value === "bbb2");
+    assert.equal(r.domain, COOKIE_HOST);
+  } finally {
+    delete process.env.COOKIE_DOMAIN;
+  }
+});
