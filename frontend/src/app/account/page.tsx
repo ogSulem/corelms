@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "@/components/app/shell";
 import { apiFetch } from "@/lib/api";
+import { formatSessionTime, groupSessions, type SessionItemLike } from "@/lib/sessions";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
@@ -60,16 +61,7 @@ type HistoryItem = {
   asset_name?: string | null;
 };
 
-type SessionItem = {
-  session_id: string;
-  created_at?: string | null;
-  last_used_at?: string | null;
-  expires_at?: string | null;
-  ip?: string | null;
-  ip_fp?: string | null;
-  user_agent?: string | null;
-  current?: boolean;
-};
+type SessionItem = SessionItemLike;
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -96,26 +88,6 @@ export default function AccountPage() {
     } catch {
       return null;
     }
-  };
-
-  const deviceLabelFromUa = (ua: string | null | undefined): string => {
-    const s = String(ua || "").trim();
-    if (!s) return "—";
-    const low = s.toLowerCase();
-    let os = "";
-    if (low.includes("windows")) os = "Windows";
-    else if (low.includes("mac os x") || low.includes("macintosh")) os = "macOS";
-    else if (low.includes("android")) os = "Android";
-    else if (low.includes("iphone") || low.includes("ipad") || low.includes("ios")) os = "iOS";
-    else if (low.includes("linux")) os = "Linux";
-    let br = "";
-    if (low.includes("edg/")) br = "Edge";
-    else if (low.includes("opr/") || low.includes("opera")) br = "Opera";
-    else if (low.includes("chrome/") && !low.includes("chromium") && !low.includes("edg/") && !low.includes("opr/")) br = "Chrome";
-    else if (low.includes("safari/") && !low.includes("chrome/")) br = "Safari";
-    else if (low.includes("firefox/")) br = "Firefox";
-    const out = [os, br].filter(Boolean).join(" ");
-    return out || "—";
   };
 
   const securitySummary = useMemo(() => {
@@ -163,57 +135,57 @@ export default function AccountPage() {
     })();
   }, []);
 
-  const revokeSession = async (sessionId: string) => {
-    const sid = String(sessionId || "").trim();
-    if (!sid) return;
-    try {
-      await apiFetch(`/auth/sessions/revoke`, {
-        method: "POST",
-        body: JSON.stringify({ session_id: sid }),
-      });
-    } catch {
-      // ignore
-    }
+  const sessionGroups = useMemo(() => groupSessions(sessions), [sessions]);
+
+  const refreshSessions = async () => {
     try {
       const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
       setSessions(Array.isArray(sess?.items) ? sess.items : []);
     } catch {
-      // ignore
+      // Список не критичен: остальные данные профиля уже на экране.
     }
+  };
+
+  /** Закрыть несколько сессий разом (например, все лишние входы с телефона). */
+  const revokeSessions = async (sessionIds: string[]) => {
+    const ids = sessionIds.map((id) => String(id || "").trim()).filter(Boolean);
+    if (!ids.length) return;
+    setSessionsLoading(true);
+    for (const sid of ids) {
+      try {
+        await apiFetch(`/auth/sessions/revoke`, { method: "POST", body: JSON.stringify({ session_id: sid }) });
+      } catch {
+        // Продолжаем: одна неудача не должна оставлять остальные сессии живыми.
+      }
+    }
+    await refreshSessions();
+    setSessionsLoading(false);
+  };
+
+  const revokeSession = async (sessionId: string) => {
+    await revokeSessions([sessionId]);
   };
 
   const revokeOtherSessions = async () => {
+    setSessionsLoading(true);
     try {
-      setSessionsLoading(true);
       await apiFetch(`/auth/sessions/revoke-others`, { method: "POST" });
     } catch {
       // ignore
-    } finally {
-      try {
-        const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
-        setSessions(Array.isArray(sess?.items) ? sess.items : []);
-      } catch {
-        // ignore
-      }
-      setSessionsLoading(false);
     }
+    await refreshSessions();
+    setSessionsLoading(false);
   };
 
   const revokeAllSessions = async () => {
+    setSessionsLoading(true);
     try {
-      setSessionsLoading(true);
       await apiFetch(`/auth/sessions/revoke-all`, { method: "POST" });
     } catch {
       // ignore
-    } finally {
-      try {
-        const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
-        setSessions(Array.isArray(sess?.items) ? sess.items : []);
-      } catch {
-        // ignore
-      }
-      setSessionsLoading(false);
     }
+    await refreshSessions();
+    setSessionsLoading(false);
   };
 
   const ipWidget = useMemo(() => {
@@ -455,52 +427,64 @@ export default function AccountPage() {
 
               {sessionsLoading ? (
                 <div className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Загрузка…</div>
-              ) : sessions.length === 0 ? (
+              ) : sessionGroups.length === 0 ? (
                 <div className="text-[10px] font-bold text-zinc-500">—</div>
               ) : (
                 <div className="space-y-3">
-                  {sessions.map((s: SessionItem) => {
-                    const dev = deviceLabelFromUa(s.user_agent);
-                    const ip = String(s.ip || "").trim();
-                    const ipFp = String(s.ip_fp || "").trim();
-                    const lastUsed = String(s.last_used_at || "").trim();
-                    return (
-                      <div key={s.session_id} className="rounded-2xl border border-zinc-200 bg-white/70 p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-[10px] font-black uppercase tracking-widest text-zinc-900 truncate">
-                              {dev}{s.current ? " · ТЕКУЩАЯ" : ""}
-                            </div>
-                            <div className="mt-1 text-[10px] font-bold text-zinc-500 tabular-nums">
-                              {ip ? `IP: ${ip}` : "IP: —"}{ipFp ? ` · ${ipFp}` : ""}
-                            </div>
-                            {lastUsed ? (
-                              <div className="mt-1 text-[10px] font-bold text-zinc-500 tabular-nums">
-                                {new Date(lastUsed).toLocaleString("ru-RU", {
-                                  day: "2-digit",
-                                  month: "2-digit",
-                                  year: "numeric",
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}
-                              </div>
-                            ) : null}
+                  {sessionGroups.map((group) => (
+                    <div key={group.key} className="rounded-2xl border border-zinc-200 bg-white/70 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="truncate text-[10px] font-black uppercase tracking-widest text-zinc-900">
+                            {group.device}{group.current ? " · ТЕКУЩАЯ" : ""}
                           </div>
-
-                          {!s.current ? (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="rounded-xl"
-                              onClick={() => void revokeSession(s.session_id)}
-                            >
-                              Завершить
-                            </Button>
-                          ) : null}
+                          <div className="mt-1 text-[10px] font-bold tabular-nums text-zinc-500">
+                            {group.ip ? `IP: ${group.ip}` : "IP: —"}
+                            {group.sessions.length > 1 ? ` · входов: ${group.sessions.length}` : ""}
+                          </div>
                         </div>
+                        {group.sessions.length > 1 ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="rounded-xl"
+                            disabled={sessionsLoading}
+                            onClick={() => void revokeSessions(group.sessions.filter((item) => !item.current).map((item) => item.session_id))}
+                          >
+                            Завершить все
+                          </Button>
+                        ) : null}
                       </div>
-                    );
-                  })}
+
+                      <ul className="mt-3 space-y-2">
+                        {group.sessions.map((item) => (
+                          <li key={item.session_id} className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-2 first:border-0 first:pt-0">
+                            <div className="min-w-0 text-[10px] font-bold leading-4 text-zinc-500 tabular-nums">
+                              <span className="text-zinc-700">Вход: {formatSessionTime(item.created_at) || "—"}</span>
+                              <span className="block">Активность: {formatSessionTime(item.last_used_at) || "—"}</span>
+                              {item.current ? <span className="block text-[#284e13]">Это устройство, с которого вы сейчас здесь</span> : null}
+                            </div>
+                            {!item.current ? (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="rounded-xl normal-case tracking-normal"
+                                disabled={sessionsLoading}
+                                onClick={() => void revokeSession(item.session_id)}
+                              >
+                                Завершить
+                              </Button>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                  {sessions.length > sessionGroups.length ? (
+                    <p className="text-[10px] font-bold leading-4 text-zinc-400">
+                      Сессии с одного устройства и одного IP собраны в одну карточку.
+                    </p>
+                  ) : null}
                 </div>
               )}
             </div>

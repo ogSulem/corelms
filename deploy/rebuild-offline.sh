@@ -26,7 +26,7 @@ STAMP="$(date +%F_%H-%M)"
 WHAT="${1:-all}"
 REBUILT=""
 
-WORKER_IMAGES="corelms-worker_import corelms-worker_regen corelms-worker_media corelms-worker_default"
+WORKER_IMAGES="corelms-worker corelms-worker_media"
 
 say() { printf '\n== %s\n' "$1"; }
 die() { printf '\n!! %s\n' "$1"; exit 1; }
@@ -78,8 +78,27 @@ build_backend() {
   echo "backend готов"
 }
 
+# Раньше воркеров было четыре (worker_import / worker_regen / worker_default /
+# worker_media), теперь два сервиса. Готовый образ старого воркера годится как
+# основа для нового: иначе после обновления compose полез бы в Docker Hub.
+adopt_legacy_image() {
+  local target="$1"; shift
+  docker image inspect "${target}:latest" >/dev/null 2>&1 && return 0
+  local legacy
+  for legacy in "$@"; do
+    if docker image inspect "${legacy}:latest" >/dev/null 2>&1; then
+      docker tag "${legacy}:latest" "${target}:latest"
+      echo "нет ${target}:latest — основой стал ${legacy}:latest"
+      return 0
+    fi
+  done
+  return 1
+}
+
 build_workers() {
   local image
+  adopt_legacy_image corelms-worker corelms-worker_import corelms-worker_default corelms-worker_regen || true
+  adopt_legacy_image corelms-worker_media corelms-worker_media || true
   for image in $WORKER_IMAGES; do
     if ! docker image inspect "${image}:latest" >/dev/null 2>&1; then
       echo "нет образа ${image}:latest — пропускаю"
@@ -178,15 +197,17 @@ show_rollback() {
     *" frontend "*) echo "  docker tag corelms-frontend:rollback-${STAMP} corelms-frontend:latest" ;;
   esac
   case " $REBUILT " in
-    *" workers "*) echo "  # воркеры: docker tag corelms-worker_import:rollback-${STAMP} corelms-worker_import:latest" ;;
+    *" workers "*)
+      echo "  docker tag corelms-worker:rollback-${STAMP} corelms-worker:latest"
+      echo "  docker tag corelms-worker_media:rollback-${STAMP} corelms-worker_media:latest" ;;
   esac
-  echo "  docker compose up -d --no-deps backend worker_import worker_regen worker_media worker_default frontend"
+  echo "  docker compose up -d --no-deps backend worker worker_media frontend"
 }
 
 say "Готово. Дальше по порядку:"
 cat <<NEXT
   cd $ROOT
-  docker compose up -d --no-deps backend worker_import worker_regen worker_media worker_default frontend
+  docker compose up -d --no-deps backend worker worker_media frontend
   docker compose ps
   docker compose exec -T backend alembic upgrade head
   docker compose exec -T backend python scripts/selfcheck.py

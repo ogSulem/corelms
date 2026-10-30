@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { apiFetch } from "@/lib/api";
 import { isAdminRole, isEmployeeRole, matchesRoleTab, type AdminRole, type RoleTab } from "@/lib/admin-users-filter";
+import { throttleRefresh } from "@/lib/refresh-throttle";
 import { useAuth } from "@/lib/hooks/use-auth";
 
 // partner встречается в рабочих данных: роль без административных прав.
@@ -53,11 +54,19 @@ type TagItem = { id: string; name: string };
 const btn = "gap-2 rounded-xl text-sm font-medium normal-case tracking-normal";
 const field = "w-full rounded-xl border border-zinc-200 px-3.5 py-2.5 text-sm text-zinc-900 outline-none focus:border-amber-500";
 const roleLabel: Record<Role, string> = {
-  employee: "Сотрудник",
+  // employee и partner — одна и та же роль без прав администратора, поэтому
+  // в интерфейсе она называется одинаково. Значение в базе не переписываем:
+  // старые записи остаются employee, но выглядят и ведут себя как партнёр.
+  employee: "Партнёр",
   partner: "Партнёр",
   admin: "Администратор",
   superadmin: "Суперадмин",
 };
+
+/** Роль для выбора в карточке: employee и partner — одно и то же. */
+function learnerRole(role: Role): Role {
+  return role === "employee" ? "partner" : role;
+}
 
 function when(value: string | null): string {
   if (!value) return "не заходил";
@@ -81,9 +90,6 @@ export function UsersAdmin() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  // «Сотрудники» — это employee и partner: партнёр тоже учится, просто без прав
-  // администратора. Раньше вкладка показывала только employee и при данных,
-  // где весь штат заведён партнёрами, оказывалась пустой при счётчике 88.
   const [roleFilter, setRoleFilter] = useState<RoleTab>("all");
   const [onlyActive, setOnlyActive] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -124,7 +130,9 @@ export function UsersAdmin() {
 
   useEffect(() => {
     void load();
-    const focus = () => void load();
+    // Возврат на вкладку не должен каждый раз перерисовывать таблицу:
+    // обновляем не чаще раза в минуту, кнопка «Обновить» работает всегда.
+    const focus = throttleRefresh(() => void load());
     window.addEventListener("focus", focus);
     return () => { request.current?.abort(); window.removeEventListener("focus", focus); };
   }, [load]);
@@ -142,27 +150,22 @@ export function UsersAdmin() {
 
   const counters = useMemo(() => ({
     all: items.length,
-    employees: items.filter((u) => isEmployeeRole(u.role)).length,
-    partners: items.filter((u) => u.role === "partner").length,
+    partners: items.filter((u) => isEmployeeRole(u.role)).length,
     admins: items.filter((u) => isAdminRole(u.role)).length,
   }), [items]);
 
-  const tabs = useMemo(() => {
-    const list: { id: RoleTab; label: string; count: number }[] = [
-      { id: "all", label: "Все", count: counters.all },
-      { id: "employees", label: "Сотрудники", count: counters.employees },
-    ];
-    // Вкладка «Партнёры» нужна только когда такие люди есть, иначе это лишний шум.
-    if (counters.partners) list.push({ id: "partner", label: "Партнёры", count: counters.partners });
-    list.push({ id: "admins", label: "Администраторы", count: counters.admins });
-    return list;
-  }, [counters]);
+  // «Сотрудники» и «Партнёры» были одним и тем же списком — оставляем одну вкладку.
+  const tabs = useMemo(() => ([
+    { id: "all" as RoleTab, label: "Все", count: counters.all },
+    { id: "partner" as RoleTab, label: "Партнёры", count: counters.partners },
+    { id: "admins" as RoleTab, label: "Администраторы", count: counters.admins },
+  ]), [counters]);
 
 
   async function openUser(target: AdminUser) {
     setSelected(target);
     setDetail(null);
-    setDraft({ name: target.name, email: target.email || "", position: target.position || "", role: target.role });
+    setDraft({ name: target.name, email: target.email || "", position: target.position || "", role: learnerRole(target.role) });
     setSelectedTags(target.tag_ids || []);
     setDetailLoading(true);
     try {
@@ -181,7 +184,9 @@ export function UsersAdmin() {
     setError(null);
     try {
       const body: Record<string, unknown> = { name: draft.name.trim(), email: draft.email.trim(), position: draft.position.trim() };
-      if (isSuperadmin && draft.role !== selected.role) body.role = draft.role;
+      // Роль отправляем только когда её действительно поменяли: иначе открытие
+      // и сохранение карточки молча переписывало бы employee на partner.
+      if (isSuperadmin && draft.role !== learnerRole(selected.role)) body.role = draft.role;
       await apiFetch(`/admin/users/${selected.id}`, { method: "PATCH", body: JSON.stringify(body) });
       await apiFetch(`/admin/users/${selected.id}/tags`, { method: "PUT", body: JSON.stringify({ tag_ids: selectedTags }) });
       toast("Сохранено", "Изменения уже действуют");
@@ -315,8 +320,7 @@ export function UsersAdmin() {
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Пользователи</h2>
           <p className="mt-1.5 text-sm text-zinc-500">
-            Всего {counters.all}: сотрудников {counters.employees}
-            {counters.partners ? ` (из них партнёров ${counters.partners})` : ""}, администраторов {counters.admins}.
+            Всего {counters.all}: партнёров {counters.partners}, администраторов {counters.admins}.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -443,7 +447,6 @@ export function UsersAdmin() {
               <label className="block space-y-1.5 text-sm font-medium">Роль
                 <select className={field} value={draft.role} disabled={!isSuperadmin || selected.id === me?.id}
                   onChange={(e) => setDraft({ ...draft, role: e.target.value as Role })}>
-                  <option value="employee">Сотрудник</option>
                   <option value="partner">Партнёр</option>
                   <option value="admin">Администратор</option>
                   <option value="superadmin">Суперадмин</option>

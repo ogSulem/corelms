@@ -742,7 +742,7 @@ export default function AdminSettingsPage() {
 
               {overview && overview.queue.workers === 0 && (
                 <p role="status" className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  Фоновые воркеры не запущены: черновики будут создаваться, но останутся в очереди. Запустите <code className="rounded bg-white/70 px-1 py-0.5 text-xs">worker_regen</code>.
+                  Фоновые воркеры не запущены: черновики будут создаваться, но останутся в очереди. Запустите контейнер <code className="rounded bg-white/70 px-1 py-0.5 text-xs">worker</code> (<code className="rounded bg-white/70 px-1 py-0.5 text-xs">docker compose up -d worker</code>).
                 </p>
               )}
               {overview && overview.queue.workers === null && (

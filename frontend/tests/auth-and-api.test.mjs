@@ -189,19 +189,20 @@ test("включённый COOKIE_DOMAIN гасит старую host-only ку�
   }
 });
 
-test("account tab counts match the rows they show (partner is an employee, not an admin)", async () => {
+test("вкладки «Пользователи»: одна вкладка партнёров покрывает весь штат, без дубля «Сотрудники»", async () => {
   const { countByTab, isAdminRole, isEmployeeRole } = await loadSource("src/lib/admin-users-filter.ts");
-  // Так выглядели рабочие данные: администраторы отдельно, весь штат — партнёры.
+  // Так выглядят рабочие данные: администраторы отдельно, весь штат — партнёры.
   const roles = ["superadmin", "admin", "admin", "admin", "admin", ...Array(88).fill("partner")];
 
   assert.equal(roles.length, 93);
   assert.equal(countByTab(roles, "all"), 93);
-  assert.equal(countByTab(roles, "employees"), 88);
   assert.equal(countByTab(roles, "partner"), 88);
   assert.equal(countByTab(roles, "admins"), 5);
+  // Вкладки «Сотрудники» больше нет: она показывала тот же список, что «Партнёры».
+  assert.equal(countByTab(roles, "employees"), 0);
 
-  // Главное: вкладка «Сотрудники» не может быть пустой при счётчике 88.
-  assert.ok(countByTab(roles, "employees") > 0);
+  // legacy-записи с ролью employee остаются видимыми в той же вкладке.
+  assert.equal(countByTab(["employee", "partner", "admin"], "partner"), 2);
   assert.equal(isEmployeeRole("partner"), true);
   assert.equal(isAdminRole("partner"), false);
   assert.equal(isAdminRole("employee"), false);
@@ -241,4 +242,48 @@ test("Secure-кука ставится только на HTTPS: HTTP-вход н
     if (previousSecure === undefined) delete process.env.COOKIE_SECURE; else process.env.COOKIE_SECURE = previousSecure;
     if (previousEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousEnv;
   }
+});
+
+test("сессии в кабинете: одинаковые входы с одного устройства собираются в одну карточку", async () => {
+  const { groupSessions, deviceLabelFromUa } = await loadSource("src/lib/sessions.ts");
+  const iphone = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1";
+  const desktop = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36";
+  const items = [
+    { session_id: "s3", user_agent: iphone, ip: "203.0.113.5", current: true, created_at: "2026-10-30T09:00:00Z", last_used_at: "2026-10-30T10:00:00Z" },
+    { session_id: "s1", user_agent: iphone, ip: "203.0.113.5", current: false, created_at: "2026-10-20T09:00:00Z", last_used_at: "2026-10-20T09:30:00Z" },
+    { session_id: "s2", user_agent: iphone, ip: "203.0.113.5", current: false, created_at: "2026-10-25T09:00:00Z", last_used_at: "2026-10-25T09:10:00Z" },
+    { session_id: "s4", user_agent: desktop, ip: "198.51.100.9", current: false, created_at: "2026-10-29T09:00:00Z", last_used_at: "2026-10-29T09:05:00Z" },
+  ];
+  const groups = groupSessions(items);
+  assert.equal(groups.length, 2, "три входа с телефона — одна карточка устройства");
+  assert.equal(groups[0].current, true, "карточка с текущей сессией всегда первая");
+  assert.equal(groups[0].device, "iOS · Safari");
+  assert.equal(groups[0].sessions.length, 3);
+  assert.deepEqual(groups[0].sessions.map(s => s.session_id), ["s3", "s2", "s1"], "свежие входы сверху");
+  assert.equal(groups[1].device, "Windows · Chrome");
+  assert.equal(deviceLabelFromUa(""), "Неизвестное устройство");
+  // Один и тот же браузер, но другой IP — это другая карточка: устройство могло сменить сеть.
+  assert.equal(groupSessions([{ ...items[0], session_id: "x", ip: "10.0.0.1" }, items[0]]).length, 2);
+});
+
+test("возврат на вкладку не перезагружает список чаще раза в минуту", async () => {
+  const { throttleRefresh } = await loadSource("src/lib/refresh-throttle.ts");
+  let clock = 1_000;
+  let runs = 0;
+  const throttled = throttleRefresh(() => { runs++; }, 60_000, () => clock);
+  throttled();
+  assert.equal(runs, 1, "первый возврат обновляет список");
+  clock += 5_000;
+  throttled();
+  throttled();
+  assert.equal(runs, 1, "переключение вкладок подряд не шлёт новые запросы");
+  clock += 55_000;
+  throttled();
+  assert.equal(runs, 2, "через минуту список снова актуален");
+  // Явная кнопка «Обновить» не должна зависеть от ограничителя.
+  const { alwaysAllowed } = await loadSource("src/lib/refresh-throttle.ts");
+  let manual = 0;
+  const refreshNow = alwaysAllowed(() => { manual++; });
+  refreshNow(); refreshNow();
+  assert.equal(manual, 2);
 });

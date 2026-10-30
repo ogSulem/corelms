@@ -231,7 +231,7 @@ cd /opt/corelms
 docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > /srv/backups/pre-deploy-$(date +%F_%H-%M).dump
 git pull --ff-only
 bash deploy/rebuild-offline.sh
-docker compose up -d --no-deps backend worker_import worker_regen worker_media worker_default frontend
+docker compose up -d --no-deps backend worker worker_media frontend
 docker compose ps
 docker compose exec -T backend alembic upgrade head
 docker compose exec -T backend python scripts/selfcheck.py

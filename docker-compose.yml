@@ -68,7 +68,11 @@ services:
     mem_limit: 1024m
     cpus: 1.0
 
-  worker_import:
+  # Один воркер на все «не медиа» очереди: импорт модулей, черновики тестов,
+  # уборка и служебные задачи. Два процесса — чтобы долгий импорт ZIP не
+  # задерживал черновик теста. Медиа вынесены отдельно: им нужен LibreOffice
+  # и много памяти, иначе одно видео вытеснит остальные задачи.
+  worker:
     build: ./backend
     depends_on:
       postgres:
@@ -86,45 +90,17 @@ services:
       - ./.env
     environment:
       - AUTO_MIGRATE_ON_START=false
-      - RQ_WORKER_QUEUES=${RQ_WORKER_IMPORT_QUEUES:-corelms_import}
-      - RQ_WORKER_PROCESSES=${RQ_WORKER_IMPORT_PROCESSES:-1}
+      - RQ_WORKER_QUEUES=${RQ_WORKER_QUEUES:-corelms_import,corelms_regen,corelms_cleanup,corelms}
+      - RQ_WORKER_PROCESSES=${RQ_WORKER_PROCESSES:-2}
     entrypoint: ["python", "-m", "app.worker"]
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    mem_limit: 384m
-    cpus: 0.75
-
-  worker_regen:
-    build: ./backend
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      backend:
-        condition: service_healthy
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    restart: unless-stopped
-    env_file:
-      - ./.env
-    environment:
-      - AUTO_MIGRATE_ON_START=false
-      - RQ_WORKER_QUEUES=${RQ_WORKER_REGEN_QUEUES:-corelms_regen}
-      - RQ_WORKER_PROCESSES=${RQ_WORKER_REGEN_PROCESSES:-1}
-    entrypoint: ["python", "-m", "app.worker"]
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    mem_limit: 384m
-    cpus: 0.75
+    mem_limit: ${WORKER_MEMORY_LIMIT:-768m}
+    cpus: ${WORKER_CPUS:-1.5}
+    pids_limit: 128
 
   worker_media:
     build:
@@ -158,35 +134,6 @@ services:
     mem_limit: ${MEDIA_WORKER_MEMORY_LIMIT:-1536m}
     cpus: ${MEDIA_WORKER_CPUS:-1.5}
     pids_limit: 128
-
-  worker_default:
-    build: ./backend
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      backend:
-        condition: service_healthy
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    restart: unless-stopped
-    env_file:
-      - ./.env
-    environment:
-      - AUTO_MIGRATE_ON_START=false
-      - RQ_WORKER_QUEUES=${RQ_WORKER_DEFAULT_QUEUES:-corelms_cleanup,corelms}
-      - RQ_WORKER_PROCESSES=${RQ_WORKER_DEFAULT_PROCESSES:-1}
-    entrypoint: ["python", "-m", "app.worker"]
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    mem_limit: 256m
-    cpus: 0.5
 
   redis:
     image: redis:7
