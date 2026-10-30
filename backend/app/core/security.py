@@ -29,11 +29,8 @@ def require_cron_secret(request: Request) -> None:
         raise HTTPException(status_code=403, detail="forbidden")
 
 
-def get_current_user(
-    request: Request,
-    db: Session = Depends(get_db),
-    token: str = Depends(oauth2_scheme),
-) -> User:
+def _resolve_user(request: Request, db: Session, token: str) -> User:
+    """Проверить токен и вернуть пользователя. Общая часть обычных и потоковых запросов."""
     if not token:
         token = request.cookies.get("core_token")
     if not token:
@@ -73,6 +70,52 @@ def get_current_user(
     if user.must_change_password and request.url.path not in {"/auth/me", "/auth/change-password", "/auth/sessions", "/auth/sessions/revoke-all"}:
         raise HTTPException(403, {"error_code": "password_change_required", "error_message": "Сначала смените временный пароль"})
     return user
+
+
+def get_current_user(
+    request: Request,
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme),
+) -> User:
+    return _resolve_user(request, db, token)
+
+
+def _token_from(request: Request, token: str) -> str:
+    return token or str(request.cookies.get("core_token") or "")
+
+
+def get_current_user_stream(
+    request: Request,
+    token: str = Depends(oauth2_scheme),
+) -> User:
+    """Для SSE-потоков: соединение с БД нужно только на время проверки.
+
+    Обычная зависимость держит сессию до конца ответа, а поток живёт минутами
+    и часами — несколько открытых вкладок исчерпывали пул, и любой другой
+    запрос падал с 500. Здесь сессия закрывается сразу после авторизации.
+    """
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        user = _resolve_user(request, db, _token_from(request, token))
+        db.expunge(user)
+        return user
+    finally:
+        db.close()
+
+
+def require_roles_stream(*roles: UserRole):
+    """То же, что require_roles, но для долгих SSE-потоков."""
+
+    def _dep(user: User = Depends(get_current_user_stream)) -> User:
+        if user.role == UserRole.superadmin:
+            return user
+        if user.role not in roles:
+            raise HTTPException(status_code=403, detail="forbidden")
+        return user
+
+    return _dep
 
 
 def require_roles(*roles: UserRole):

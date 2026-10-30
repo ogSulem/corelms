@@ -208,6 +208,45 @@ def create_app() -> FastAPI:
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
         rid = _request_id(request)
+
+        # Исчерпанный пул соединений и недоступная база — это 503, а не 500:
+        # пользователю нужно «повторите через минуту», а не «ошибка сервера».
+        from sqlalchemy.exc import DBAPIError, OperationalError, TimeoutError as SATimeoutError
+
+        if isinstance(exc, (SATimeoutError, OperationalError, DBAPIError)):
+            try:
+                from app.db.session import pool_snapshot
+
+                pool = pool_snapshot()
+            except Exception:
+                pool = {}
+            logger.error(
+                "database unavailable rid=%s path=%s pool=%s error=%s",
+                rid,
+                getattr(getattr(request, "url", None), "path", ""),
+                pool,
+                f"{type(exc).__name__}: {exc}"[:400],
+            )
+            try:
+                error_log.record(
+                    rid=rid,
+                    method=request.method,
+                    path=str(getattr(getattr(request, "url", None), "path", "")),
+                    status=503,
+                    user_id=getattr(getattr(request, "state", None), "user_id", None),
+                    exc=exc,
+                )
+            except Exception:
+                logger.debug("error log record failed", exc_info=True)
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ok": False,
+                    "error_code": "database_unavailable",
+                    "error_message": "База данных перегружена или недоступна. Повторите запрос через минуту; данные не потеряны.",
+                    "request_id": rid,
+                },
+            )
         # rid прямо в тексте строки: формат лога его не включает, а искать
         # причину приходится именно по коду из интерфейса.
         logger.exception("unhandled exception rid=%s path=%s", rid, getattr(getattr(request, "url", None), "path", ""))

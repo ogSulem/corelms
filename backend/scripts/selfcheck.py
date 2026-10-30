@@ -201,6 +201,17 @@ def environment_report(db) -> tuple[list[str], list[str]]:
     if current and expected and str(current) != str(expected):
         problems.append(f"Схема {current} не совпадает с кодом {expected}: нужен alembic upgrade head")
 
+    try:
+        from app.db.session import pool_snapshot
+
+        pool = pool_snapshot()
+        lines.append(f"  Пул соединений БД          занято {pool.get('checked_out', '?')} из {pool.get('size', '?')} "
+                     f"(+{pool.get('max_overflow', '?')} запасных, ожидание {pool.get('timeout_seconds', '?')} c)")
+        if int(pool.get("checked_out") or 0) >= int(pool.get("size") or 0) + int(pool.get("max_overflow") or 0):
+            problems.append("Все соединения с БД заняты: похоже, какой-то запрос держит сессию слишком долго")
+    except Exception:
+        pass
+
     lines.append("")
     lines.append("ДАННЫЕ")
     for label, sql in (

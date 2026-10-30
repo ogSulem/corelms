@@ -59,3 +59,28 @@ def test_users_list_exposes_email_for_the_admin_screen(client, db, admin_headers
     assert response.status_code == 200, response.text
     row = {item["id"]: item for item in response.json()["items"]}[str(user.id)]
     assert row["email"] == user.email
+
+
+def test_admin_users_list_survives_odd_rows(client, db, admin_headers, make_user):
+    """Список сотрудников не должен падать 500 из-за одной странной записи."""
+    from sqlalchemy import select
+
+    from app.models.tag import Tag, UserTagMap
+    from app.models.user import User
+
+    make_user()
+    tag = Tag(name="Отдел без сотрудников")
+    db.add(tag)
+    db.flush()
+    someone = db.scalar(select(User).limit(1))
+    assert someone is not None
+    db.add(UserTagMap(user_id=someone.id, tag_id=tag.id))
+    db.commit()
+
+    response = client.get("/admin/users", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert items
+    assert all("progress_summary" in item for item in items)
+    assert all(isinstance(item["role"], str) and item["role"] for item in items)
+    assert all(isinstance(item["tags"], list) for item in items)

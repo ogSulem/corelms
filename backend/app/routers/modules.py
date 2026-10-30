@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
-from app.core.security import get_current_user
+from app.core.security import get_current_user, get_current_user_stream
 from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.asset import ContentAsset
@@ -68,7 +68,7 @@ def list_modules(db: Session = Depends(get_db), user: User = Depends(get_current
 
 
 @router.get("/events")
-async def modules_events(request: Request, user: User = Depends(get_current_user)):
+async def modules_events(request: Request, user: User = Depends(get_current_user_stream)):
     async def gen():
         loop = asyncio.get_running_loop()
         q: asyncio.Queue[object] = asyncio.Queue()
