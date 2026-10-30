@@ -22,6 +22,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: "false"
 
+      - name: Deploy scripts are valid and images stay runnable
+        run: |
+          set -e
+          for f in deploy/*.sh; do bash -n "$f"; echo "syntax ok: $f"; done
+          grep -q 'chmod +x /app/scripts' deploy/rebuild-offline.sh
+          for f in backend/scripts/*.sh; do
+            if [ ! -x "$f" ]; then
+              echo "$f is not executable in git; run: git update-index --chmod=+x $f"
+              exit 1
+            fi
+          done
+          echo "ok: entrypoint is executable"
+
       - name: Block large tracked files (>20MB)
         run: |
           python - <<'PY'

@@ -192,6 +192,19 @@ bash deploy/rebuild-offline.sh
 * перед сборкой образы помечаются `corelms-backend:rollback-<дата>` /
   `corelms-frontend:rollback-<дата>` — откат одним `docker tag`.
 
+Грабли этого способа: `COPY` приносит файлы с правами из репозитория, а
+`backend/scripts/entrypoint.sh` лежит в git как `100644` (старый Dockerfile делал
+`chmod +x` сам). Без этого бита контейнер падает на старте:
+
+```
+exec: "/app/scripts/entrypoint.sh": permission denied
+```
+
+Скрипт делает `chmod +x /app/scripts/*.sh` в новом слое, собирает образ в тег
+`corelms-backend:next`, проверяет внутри `test -x /app/scripts/entrypoint.sh`
+и только потом подменяет `:latest` — неудачная сборка больше не может оставить
+нерабочий `latest`.
+
 Проверка, что новый код действительно в образе:
 
 ```bash
