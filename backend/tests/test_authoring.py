@@ -521,3 +521,83 @@ def test_draft_is_stale_only_when_this_lessons_materials_change(client, db, admi
         json={'revision': revision, 'content': 'Теперь изменился сам источник черновика'})
     assert edited_own.status_code == 200
     assert client.get(url, headers=admin_headers).json()['stale'] is True
+
+
+def _chunked(client, headers, module_id, payload, blob: bytes, chunk: int = 1024):
+    started = client.post(f'/admin/content/modules/{module_id}/uploads', headers=headers, json=payload)
+    assert started.status_code == 201, started.text
+    session = started.json()
+    upload_id = session['upload_id']
+    offset = 0
+    while offset < len(blob):
+        piece = blob[offset:offset + chunk]
+        pushed = client.put(f'/admin/content/modules/{module_id}/uploads/{upload_id}?offset={offset}',
+                            headers=headers, content=piece)
+        assert pushed.status_code == 200, pushed.text
+        offset = pushed.json()['offset']
+    return upload_id
+
+
+def test_big_file_arrives_in_chunks_and_can_be_resumed(client, db, admin_headers, make_module, storage):
+    module, lesson, _ = make_module()
+    blob = b''.join(bytes([i % 251]) for i in range(5000))
+    payload = {'revision': module.content_revision, 'filename': 'Видео урока.mp4', 'size_bytes': len(blob),
+               'submodule_id': str(lesson.id)}
+    upload_id = _chunked(client, admin_headers, module.id, payload, blob[:3000])
+    # Обрыв: повтор куска с тем же смещением ничего не портит, сервер отдаёт фактический прогресс.
+    repeat = client.put(f'/admin/content/modules/{module.id}/uploads/{upload_id}?offset=0',
+                        headers=admin_headers, content=blob[:100])
+    assert repeat.status_code == 200 and repeat.json()['offset'] == 3000
+    incomplete = client.post(f'/admin/content/modules/{module.id}/uploads/{upload_id}/complete', headers=admin_headers)
+    assert incomplete.status_code == 409
+    assert 'Продолжите загрузку' in incomplete.json()['error_message']
+    _chunked_continue(client, admin_headers, module.id, upload_id, blob, 3000)
+    done = client.post(f'/admin/content/modules/{module.id}/uploads/{upload_id}/complete', headers=admin_headers)
+    assert done.status_code == 200, done.text
+    state = done.json()
+    asset = next(a for a in state['assets'] if a['original_filename'] == 'Видео урока.mp4')
+    assert asset['size_bytes'] == len(blob)
+    assert asset['submodule_id'] == str(lesson.id)
+    stored = next(value for key, value in storage.objects.items() if key.endswith('.mp4'))
+    assert stored == blob
+
+
+def _chunked_continue(client, headers, module_id, upload_id, blob, offset, chunk=1024):
+    while offset < len(blob):
+        piece = blob[offset:offset + chunk]
+        pushed = client.put(f'/admin/content/modules/{module_id}/uploads/{upload_id}?offset={offset}',
+                            headers=headers, content=piece)
+        assert pushed.status_code == 200, pushed.text
+        offset = pushed.json()['offset']
+
+
+def test_chunked_upload_rejects_too_large_file_and_can_be_cancelled(client, db, admin_headers, make_module, storage, monkeypatch):
+    module, _, _ = make_module()
+    from app.services import app_settings
+    monkeypatch.setattr(app_settings, 'get_platform_settings',
+        lambda db=None: app_settings.PlatformSettings(upload_max_bytes=2048, allow_public_register=False,
+                                                      sources={}, stored=False, updated_at=None))
+    from app.routers import content as content_router
+    monkeypatch.setattr(content_router, 'get_platform_settings',
+        lambda db=None: app_settings.PlatformSettings(upload_max_bytes=2048, allow_public_register=False,
+                                                      sources={}, stored=False, updated_at=None))
+    too_big = client.post(f'/admin/content/modules/{module.id}/uploads', headers=admin_headers,
+        json={'revision': module.content_revision, 'filename': 'big.mp4', 'size_bytes': 4096})
+    assert too_big.status_code == 413
+    started = client.post(f'/admin/content/modules/{module.id}/uploads', headers=admin_headers,
+        json={'revision': module.content_revision, 'filename': 'small.mp4', 'size_bytes': 100})
+    upload_id = started.json()['upload_id']
+    cancelled = client.delete(f'/admin/content/modules/{module.id}/uploads/{upload_id}', headers=admin_headers)
+    assert cancelled.status_code == 200
+    assert client.put(f'/admin/content/modules/{module.id}/uploads/{upload_id}?offset=0',
+                      headers=admin_headers, content=b'x' * 10).status_code == 404
+
+
+def test_chunked_session_belongs_to_its_author(client, db, admin_headers, make_user, make_module):
+    module, _, _ = make_module()
+    started = client.post(f'/admin/content/modules/{module.id}/uploads', headers=admin_headers,
+        json={'revision': module.content_revision, 'filename': 'x.mp4', 'size_bytes': 10})
+    upload_id = started.json()['upload_id']
+    _, other = make_user()  # обычный сотрудник: к редактору его и близко не подпускают
+    assert client.put(f'/admin/content/modules/{module.id}/uploads/{upload_id}?offset=0',
+                      headers=other, content=b'y' * 10).status_code in {403, 404}

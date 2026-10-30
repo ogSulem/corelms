@@ -120,8 +120,129 @@ function uploadOnce<T>(base: string, path: string, form: FormData, onProgress: (
   });
 }
 
+/**
+ * Большой файл режем на куски: один длинный запрос обрывают прокси и мобильные сети.
+ * Каждый кусок короткий, а при обрыве повторяется только он — загрузка не начинается заново.
+ */
+const CHUNK_THRESHOLD_BYTES = 24 * 1024 * 1024;
+const DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024;
+const CHUNK_RETRIES = 4;
+
+type ChunkSession = { upload_id: string; chunk_size: number; offset: number; size_bytes: number };
+
+function uploadError(status: number, data: Record<string, unknown> | null): Error {
+  const fallback = status === 413 ? "Файл больше разрешённого размера. Лимит меняется в «Админ-центр → Настройки»."
+    : status === 507 ? "На сервере не хватает места для этого файла. Освободите место и повторите загрузку."
+    : status === 502 || status === 504 ? "Сервер прервал загрузку. Уже отправленные части сохранены — повторите, загрузка продолжится."
+    : `Не удалось загрузить файл (${status})`;
+  return Object.assign(new Error(String(data?.error_message || data?.detail || fallback)), { status, bodyWasJson: !!data });
+}
+
+async function readJson(response: Response): Promise<Record<string, unknown> | null> {
+  try { return await response.json(); } catch { return null; }
+}
+
+/** Частичная загрузка: начало сессии, куски по 8 МБ, сборка. */
+async function uploadChunked<T>(startUrl: string, file: File, fields: Record<string, unknown>,
+                                onProgress: (percent: number) => void, signal?: AbortSignal): Promise<T> {
+  const started = await fetch(startUrl, {
+    method: "POST", credentials: "include", cache: "no-store", signal,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...fields, filename: file.name, size_bytes: file.size }),
+  });
+  const startData = await readJson(started);
+  if (!started.ok) throw uploadError(started.status, startData);
+  const session = startData as unknown as ChunkSession;
+  const size = Number(session.chunk_size) || DEFAULT_CHUNK_BYTES;
+  let offset = Number(session.offset) || 0;
+  while (offset < file.size) {
+    const end = Math.min(offset + size, file.size);
+    const piece = file.slice(offset, end);
+    let attempt = 0;
+    for (;;) {
+      try {
+        const response = await fetch(`${startUrl}/${session.upload_id}?offset=${offset}`, {
+          method: "PUT", credentials: "include", cache: "no-store", signal,
+          headers: { "Content-Type": "application/octet-stream" },
+          body: piece,
+        });
+        const data = await readJson(response);
+        if (!response.ok) {
+          // 401 — сессия истекла: одну попытку продлеваем, как и при обычной загрузке.
+          if (response.status === 401 && attempt === 0 && await refreshSession()) { attempt += 1; continue; }
+          throw uploadError(response.status, data);
+        }
+        offset = Number(data?.offset ?? end);
+        onProgress(Math.min(99, Math.round(offset / file.size * 100)));
+        break;
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        const status = (error as { status?: number }).status;
+        if (status && status < 500 && status !== 408 && status !== 429) throw error;
+        attempt += 1;
+        if (attempt > CHUNK_RETRIES) throw error;
+        await new Promise(resolve => setTimeout(resolve, 800 * attempt));
+      }
+    }
+  }
+  // Сборка файла на сервере может быть долгой. Повтор безопасен: сервер возвращает
+  // уже сохранённый результат, а не создаёт второй файл.
+  for (let attempt = 0; ; attempt += 1) {
+    let finished: Response | null = null;
+    try {
+      finished = await fetch(`${startUrl}/${session.upload_id}/complete`, {
+        method: "POST", credentials: "include", cache: "no-store", signal,
+        headers: { "Content-Type": "application/json" }, body: "{}",
+      });
+    } catch (error) {
+      if (signal?.aborted || attempt >= CHUNK_RETRIES) throw error;
+      await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)));
+      continue;
+    }
+    const doneData = await readJson(finished);
+    if (finished.ok) { onProgress(100); return doneData as T; }
+    const retryable = [408, 429, 502, 503, 504].includes(finished.status) || finished.status >= 500;
+    if (!retryable || attempt >= CHUNK_RETRIES) throw uploadError(finished.status, doneData);
+    await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)));
+  }
+}
+
+function formFields(form: FormData): Record<string, unknown> {
+  const fields: Record<string, unknown> = {};
+  form.forEach((value, key) => {
+    if (key === "file" || typeof value !== "string") return;
+    if (value === "true" || value === "false") fields[key] = value === "true";
+    else if (/^\d+$/.test(value) && key === "revision") fields[key] = Number(value);
+    else fields[key] = value;
+  });
+  return fields;
+}
+
+/** Адрес начала частичной загрузки: `.../assets` → `.../uploads`, `/sales-files/upload` → `/sales-files/uploads`. */
+function chunkStartPath(path: string): string {
+  return `${path.replace(/\/(assets|upload)$/, "")}/uploads`;
+}
+
+function uploadFile(form: FormData): File | null {
+  const file = form.get("file");
+  return typeof File !== "undefined" && file instanceof File ? file : null;
+}
+
 /** Same-origin, streamed multipart upload with real progress and one auth renewal. */
 export async function uploadMaterial<T>(path: string, form: FormData, onProgress: (percent: number) => void, signal?: AbortSignal): Promise<T> {
+  const file = uploadFile(form);
+  if (file && file.size > CHUNK_THRESHOLD_BYTES) {
+    for (const base of [UPLOAD_PATH, FALLBACK_UPLOAD_PATH]) {
+      try {
+        return await uploadChunked<T>(`${base}${chunkStartPath(path)}`, file, formFields(form), onProgress, signal);
+      } catch (error) {
+        const failure = error as UploadFailure;
+        // Старая сборка без частичной загрузки: 404/405 без JSON — пробуем обычный путь.
+        if ((failure.status === 404 || failure.status === 405) && !failure.bodyWasJson) continue;
+        throw error;
+      }
+    }
+  }
   const send = async (base: string) => {
     try { return await uploadOnce<T>(base, path, form, onProgress, signal); }
     catch (error) {

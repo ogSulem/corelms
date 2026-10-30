@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Archive, ArrowLeft, ChevronRight, Download, Folder, FolderPlus, History, Loader2, MoreHorizontal, Pencil, RefreshCw, RotateCcw, Search, ShieldCheck, UploadCloud } from "lucide-react";
+import { Archive, ArrowLeft, ChevronRight, Download, Folder, FolderPlus, History, Loader2, MoreHorizontal, Pencil, RefreshCw, RotateCcw, Search, ShieldCheck, Trash2, UploadCloud } from "lucide-react";
 import { AssetPreviewModal } from "./asset-preview";
-import { MaterialIcon } from "./material-browser";
+import { MaterialIcon, MaterialThumb } from "./material-browser";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { apiFetch } from "@/lib/api";
@@ -13,7 +13,8 @@ import { AssetVersionList, type AssetVersion } from "./asset-version-list";
 import { useLeaveGuard } from "@/lib/hooks/use-leave-guard";
 
 type Entry = { id: string; name: string; kind: "folder" | "file"; path: string; is_archived: boolean; asset: Material | null };
-type Listing = { section: string; path: string; revision: number; entries: Entry[]; total: number; offset: number; next_offset: number | null; legacy_cursor: string | null; notice: string | null; path_archived: boolean };
+type Listing = { section: string; path: string; revision: number; entries: Entry[]; total: number; offset: number; next_offset: number | null; legacy_cursor: string | null; notice: string | null; path_archived: boolean;
+  upload_max_bytes?: number; folder_counts?: Record<string, number> };
 type Dialog = { kind: "folder" } | { kind: "rename" | "history"; entry: Entry };
 type UploadTask = { name: string; state: "waiting" | "uploading" | "done" | "error" | "stopped"; progress: number; error?: string };
 const btn = "gap-2 rounded-xl text-sm font-medium normal-case tracking-normal";
@@ -38,6 +39,8 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
   const [historyLoading, setHistoryLoading] = useState(false);
   const [tasks, setTasks] = useState<UploadTask[]>([]);
   const [dragging, setDragging] = useState(false);
+  const [dragEntry, setDragEntry] = useState<Entry | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const replaceRef = useRef<HTMLInputElement>(null);
   const replacement = useRef<Entry | null>(null);
@@ -65,15 +68,30 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
 
   function showPreview(asset: Material) { setPreview(asset); }
   async function download(asset: Material) { try { await downloadMaterial(asset.asset_id); } catch (e) { setError(e instanceof Error ? e.message : "Не удалось скачать файл"); } }
-  async function mutate(url: string, method: string, payload: object): Promise<boolean> {
+  async function mutate(url: string, method: string, payload: object, message?: string): Promise<boolean> {
     if (!dataRef.current || running.current) return false;
     running.current = true; setBusy(true); setError(null);
     try {
       const next = await apiFetch<Listing>(url, { method, body: JSON.stringify({ ...payload, revision: dataRef.current.revision }) });
-      if (alive.current) { accept(next); setOffset(0); setQuery(""); setPreview(null); setRefresh(n => n + 1); }
+      if (alive.current) {
+        accept(next); setOffset(0); setQuery(""); setPreview(null); setRefresh(n => n + 1);
+        if (message) window.dispatchEvent(new CustomEvent("corelms:toast", { detail: { title: message } }));
+      }
       return true;
     } catch (e) { if (alive.current) setError(e instanceof Error ? e.message : "Изменения не сохранены"); return false; }
     finally { running.current = false; if (alive.current) setBusy(false); }
+  }
+  /** Перенос файла или папки в другой каталог: перетаскиванием или через меню. */
+  async function moveEntry(entry: Entry, destination: string) {
+    if (!canWrite || entry.path === (destination ? `${destination}/${entry.name}` : entry.name)) { setDropTarget(null); setDragEntry(null); return; }
+    setDropTarget(null); setDragEntry(null);
+    await mutate(`/sales-files/entries/${entry.id}/move`, "POST", { path: destination },
+      `${entry.kind === "folder" ? "Папка" : "Файл"} перемещён`);
+  }
+  /** Окончательное удаление доступно только из архива — сначала материал можно вернуть. */
+  function deleteForever(entry: Entry) {
+    if (!window.confirm(`Удалить «${entry.name}» навсегда? Файлы, версии и копии для просмотра исчезнут из хранилища. Отменить это нельзя.`)) return;
+    void mutate(`/sales-files/entries/${entry.id}/delete`, "POST", {});
   }
   function archive(entry: Entry) {
     if (!window.confirm(entry.is_archived ? `Восстановить «${entry.name}»?` : entry.kind === "folder" ? `Убрать «${entry.name}» со всем содержимым в архив? Данные в хранилище не удаляются.` : `Убрать «${entry.name}» в архив? Все версии можно восстановить.`)) return;
@@ -91,7 +109,8 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
       for (let index = 0; index < queue.length; index++) {
         if (stopped.current || !alive.current) { for (let j = index; j < queue.length; j++) update(j, { state: "stopped" }); break; }
         const file = queue[index];
-        if (!file.size || file.size > 512 * 1024 * 1024) { update(index, { state: "error", error: "Нужен непустой файл до 512 МБ" }); continue; }
+        if (!file.size) { update(index, { state: "error", error: "Файл пустой — загружать нечего" }); continue; }
+        if (file.size > limitBytes) { update(index, { state: "error", error: `Файл больше лимита ${formatBytes(limitBytes)}. Лимит меняется в «Админ-центр → Настройки».` }); continue; }
         const form = new FormData(); form.append("file", file); form.append("section", section); form.append("path", path);
         form.append("revision", String(dataRef.current!.revision)); if (replace) form.append("replace_id", replace.id);
         update(index, { state: "uploading" });
@@ -125,23 +144,44 @@ export function SalesFileLibrary({ section, path, canManage, onNavigate }: { sec
     if (ok) setDialog(null);
   }
   const entries = data?.entries.filter(e => archived || !e.is_archived) || [];
+  const limitBytes = data?.upload_max_bytes || 5 * 1024 * 1024 * 1024;
   const canWrite = canManage && !busy && !loading && !!data && !data.path_archived;
 
   return <div className="space-y-5">
     <section className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-4 sm:p-6">
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><nav aria-label="Папки продаж" className="flex min-w-0 flex-wrap items-center gap-1.5 text-sm text-zinc-500"><button type="button" disabled={busy} onClick={() => onNavigate("")} className="rounded-lg px-2 py-1.5 font-medium text-zinc-800 hover:bg-zinc-50">{section === "photos" ? "Фото" : "Каталоги"}</button>{path.split("/").filter(Boolean).map((part, index, parts) => <span key={index} className="flex min-w-0 items-center gap-1.5"><ChevronRight size={13} className="shrink-0" /><button type="button" disabled={busy} className="max-w-[260px] truncate rounded-lg px-1.5 py-1.5 hover:bg-zinc-50" onClick={() => onNavigate(parts.slice(0, index + 1).join("/"))}>{part}</button></span>)}</nav><Button variant="ghost" size="sm" className={btn} disabled={busy || loading} onClick={() => { setCursor(null); setRefresh(n => n + 1); }}><RefreshCw size={15} />Обновить список</Button></div>
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><nav aria-label="Папки продаж" className="flex min-w-0 flex-wrap items-center gap-1.5 text-sm text-zinc-500"><button type="button" disabled={busy} onClick={() => onNavigate("")}
+        onDragOver={event => { if (!canWrite || !dragEntry) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(""); }}
+        onDragLeave={() => setDropTarget(current => current === "" ? null : current)}
+        onDrop={event => { event.preventDefault(); if (dragEntry) void moveEntry(dragEntry, ""); }}
+        className={cn("rounded-lg px-2 py-1.5 font-medium text-zinc-800 hover:bg-zinc-50", dropTarget === "" && "bg-amber-100 ring-2 ring-amber-300")}>{section === "photos" ? "Фото" : "Каталоги"}</button>{path.split("/").filter(Boolean).map((part, index, parts) => <span key={index} className="flex min-w-0 items-center gap-1.5"><ChevronRight size={13} className="shrink-0" /><button type="button" disabled={busy} className={cn("max-w-[62vw] truncate rounded-lg px-1.5 py-1.5 hover:bg-zinc-50 sm:max-w-[260px]", dropTarget === parts.slice(0, index + 1).join("/") && "bg-amber-100 ring-2 ring-amber-300")}
+          onClick={() => onNavigate(parts.slice(0, index + 1).join("/"))}
+          onDragOver={event => { if (!canWrite || !dragEntry) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(parts.slice(0, index + 1).join("/")); }}
+          onDragLeave={() => setDropTarget(current => current === parts.slice(0, index + 1).join("/") ? null : current)}
+          onDrop={event => { event.preventDefault(); if (dragEntry) void moveEntry(dragEntry, parts.slice(0, index + 1).join("/")); }}>{part}</button></span>)}</nav><Button variant="ghost" size="sm" className={btn} disabled={busy || loading} onClick={() => { setCursor(null); setRefresh(n => n + 1); }}><RefreshCw size={15} />Обновить список</Button></div>
       {error && !dialog && <p role="alert" className="mb-4 rounded-xl bg-rose-50 p-4 text-sm leading-6 text-rose-800">{error}</p>}
       {data?.notice && <p role="status" className="mb-4 rounded-xl bg-amber-50 p-4 text-xs leading-6 text-amber-900">{data.notice}</p>}
       {data?.path_archived && <p className="mb-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-900">Папка находится в архиве. Для загрузки и восстановления файлов сначала восстановите родительскую папку.</p>}
       <div className="mb-4 flex flex-wrap items-center gap-3"><label className="flex min-w-0 flex-[1_1_240px] items-center gap-2 rounded-xl border border-zinc-200 px-3 text-zinc-400"><Search size={16} /><input aria-label="Поиск файлов продаж" maxLength={200} className="h-11 w-full min-w-0 bg-transparent text-sm text-zinc-800 outline-none" value={query} onChange={e => setQuery(e.target.value)} placeholder="Поиск в этой папке…" disabled={busy} /></label>{canManage && <label className="flex items-center gap-2 text-xs text-zinc-500"><input type="checkbox" checked={archived} onChange={e => { setArchived(e.target.checked); setOffset(0); }} disabled={busy} className="h-4 w-4 accent-amber-600" />Показывать архив</label>}</div>
-      {canManage && <div className={cn("mb-5 rounded-xl border border-dashed p-4 text-sm", dragging ? "border-amber-500 bg-amber-50" : "border-zinc-300 bg-zinc-50/50")} onDragOver={e => { e.preventDefault(); if (canWrite) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); if (canWrite) void upload(e.dataTransfer.files); }}><div className="flex flex-wrap items-center justify-between gap-3"><p className="flex items-center gap-2 text-xs leading-6 text-zinc-500"><UploadCloud size={20} className="shrink-0" />Перетащите до 50 файлов · до 512 МБ каждый</p><div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" className={btn} disabled={!canWrite} onClick={() => { setName(""); setDialog({ kind: "folder" }); }}><FolderPlus size={15} />Новая папка</Button><Button size="sm" className={btn} disabled={!canWrite} onClick={() => inputRef.current?.click()}><UploadCloud size={15} />Добавить файлы</Button></div></div><input ref={inputRef} type="file" multiple className="sr-only" aria-label="Добавить файлы продаж" disabled={!canWrite} onChange={e => { if (e.target.files) void upload(e.target.files); e.target.value = ""; }} /><input ref={replaceRef} type="file" className="sr-only" aria-label="Заменить файл продаж" disabled={!canWrite} onChange={e => { const entry = replacement.current; if (entry && e.target.files) void upload(e.target.files, entry); e.target.value = ""; replacement.current = null; }} /></div>}
+      {canManage && <div className={cn("mb-5 rounded-xl border border-dashed p-4 text-sm", dragging ? "border-amber-500 bg-amber-50" : "border-zinc-300 bg-zinc-50/50")} onDragOver={e => { e.preventDefault(); if (canWrite) setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={e => { e.preventDefault(); setDragging(false); if (canWrite) void upload(e.dataTransfer.files); }}><div className="flex flex-wrap items-center justify-between gap-3"><p className="flex items-center gap-2 text-xs leading-6 text-zinc-500"><UploadCloud size={20} className="shrink-0" />Перетащите до 50 файлов · до {formatBytes(limitBytes)} каждый</p><div className="flex flex-wrap gap-2"><Button variant="outline" size="sm" className={btn} disabled={!canWrite} onClick={() => { setName(""); setDialog({ kind: "folder" }); }}><FolderPlus size={15} />Новая папка</Button><Button size="sm" className={btn} disabled={!canWrite} onClick={() => inputRef.current?.click()}><UploadCloud size={15} />Добавить файлы</Button></div></div><input ref={inputRef} type="file" multiple className="sr-only" aria-label="Добавить файлы продаж" disabled={!canWrite} onChange={e => { if (e.target.files) void upload(e.target.files); e.target.value = ""; }} /><input ref={replaceRef} type="file" className="sr-only" aria-label="Заменить файл продаж" disabled={!canWrite} onChange={e => { const entry = replacement.current; if (entry && e.target.files) void upload(e.target.files, entry); e.target.value = ""; replacement.current = null; }} /></div>}
       {tasks.length > 0 && <div aria-label="Загрузки продаж" className="mb-5 space-y-2 rounded-xl border border-zinc-200 p-4">{tasks.map((task, index) => <div key={index} className="text-xs leading-6"><div className="flex items-start justify-between gap-3"><span className="min-w-0 break-words">{task.name}</span><span className={cn("shrink-0", task.state === "error" ? "text-rose-700" : task.state === "done" ? "text-emerald-700" : "text-zinc-400")}>{task.state === "done" ? "Сохранён" : task.state === "uploading" ? `${task.progress}%` : task.state === "error" ? "Ошибка" : task.state === "stopped" ? "Не отправлен" : "В очереди"}</span></div>{task.state === "uploading" && <div className="mt-1 h-1 overflow-hidden rounded-full bg-zinc-100"><div className="h-full bg-amber-500" style={{ width: `${task.progress}%` }} /></div>}{task.error && <p className="text-rose-700">{task.error}</p>}</div>)}{busy && <button type="button" onClick={() => { stopped.current = true; }} className="mt-2 text-xs font-medium text-amber-800 underline">Остановить после текущего файла</button>}</div>}
       {path && <button type="button" disabled={busy} onClick={() => onNavigate(path.split("/").slice(0, -1).join("/"))} className="mb-3 flex items-center gap-2 rounded-lg py-2 text-xs font-medium text-zinc-500"><ArrowLeft size={14} />На уровень выше</button>}
       {loading && <p role="status" className="flex items-center justify-center gap-2 py-8 text-sm text-zinc-500"><Loader2 size={18} className="animate-spin" />Обновляем файлы…</p>}
       {!loading && !entries.length && <p className="py-12 text-center text-sm leading-7 text-zinc-500">{search ? "По этому запросу файлов нет." : "В папке пока нет материалов."}{canWrite && !search && <span className="block text-xs">Добавьте файлы или создайте папку — оригиналы будут сохранены в S3.</span>}</p>}
-      {!loading && entries.length > 0 && <div className="divide-y divide-zinc-100 rounded-xl border border-zinc-200">{entries.map(entry => <div key={entry.id} className={cn("flex min-w-0 flex-wrap items-center gap-2 px-3 py-3 sm:px-4", entry.is_archived && "bg-zinc-50")}>
-        <button type="button" disabled={busy} onClick={() => entry.kind === "folder" ? onNavigate(entry.path) : entry.asset && showPreview(entry.asset)} className="flex min-w-0 flex-[1_1_160px] items-center gap-3 text-left"><span className={cn("shrink-0 rounded-xl p-2.5", entry.kind === "folder" ? "bg-amber-50 text-amber-700" : "bg-zinc-50 text-zinc-400")}>{entry.kind === "folder" ? <Folder size={20} /> : <MaterialIcon name={entry.name} />}</span><span className="min-w-0"><span className="block break-words text-sm font-medium text-zinc-800">{entry.name}</span><span className="mt-1 block text-[11px] text-zinc-400">{entry.kind === "folder" ? "Папка" : `${formatBytes(entry.asset?.size_bytes)} · v${entry.asset?.version || 1}`}{entry.is_archived ? " · В архиве" : ""}</span></span></button>
-        <div className="ml-auto flex shrink-0 items-center gap-1">{entry.asset && <button type="button" title="Скачать оригинал" aria-label={`Скачать ${entry.name}`} onClick={() => void download(entry.asset!)} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-50 hover:text-zinc-800"><Download size={17} /></button>}{canManage && (entry.is_archived ? <Button variant="ghost" size="sm" className={btn} disabled={busy || data?.path_archived} onClick={() => archive(entry)}><RotateCcw size={15} />Восстановить</Button> : <details className="relative"><summary aria-label={`Действия с ${entry.name}`} className="flex cursor-pointer list-none rounded-lg p-2 text-zinc-400 hover:bg-zinc-100 [&::-webkit-details-marker]:hidden"><MoreHorizontal size={19} /></summary><div className="absolute right-0 z-20 mt-1 w-52 rounded-xl border border-zinc-200 bg-white p-1.5 shadow-lg" onClick={e => e.currentTarget.closest("details")?.removeAttribute("open")}>{entry.kind === "file" && <><button type="button" disabled={!canWrite} className="flex w-full items-center gap-2 rounded-lg p-2.5 text-left text-xs hover:bg-zinc-50" onClick={() => { replacement.current = entry; replaceRef.current?.click(); }}><UploadCloud size={14} />Заменить файл</button><button type="button" disabled={!canWrite} className="flex w-full items-center gap-2 rounded-lg p-2.5 text-left text-xs hover:bg-zinc-50" onClick={() => { setName(entry.name); setDialog({ kind: "rename", entry }); }}><Pencil size={14} />Переименовать</button><button type="button" disabled={busy} className="flex w-full items-center gap-2 rounded-lg p-2.5 text-left text-xs hover:bg-zinc-50" onClick={() => void openHistory(entry)}><History size={14} />История версий</button></>}<button type="button" disabled={busy} className="flex w-full items-center gap-2 rounded-lg p-2.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => archive(entry)}><Archive size={14} />Переместить в архив</button></div></details>)}</div>
+      {!loading && entries.length > 0 && <div className="divide-y divide-zinc-100 rounded-xl border border-zinc-200">{entries.map(entry => <div key={entry.id}
+        draggable={canWrite && !entry.is_archived}
+        onDragStart={event => { setDragEntry(entry); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", entry.name); }}
+        onDragEnd={() => { setDragEntry(null); setDropTarget(null); }}
+        onDragOver={entry.kind === "folder" && canWrite ? event => { if (!dragEntry || dragEntry.id === entry.id) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropTarget(entry.id); } : undefined}
+        onDragLeave={entry.kind === "folder" ? () => setDropTarget(current => current === entry.id ? null : current) : undefined}
+        onDrop={entry.kind === "folder" && canWrite ? event => { event.preventDefault(); if (dragEntry && dragEntry.id !== entry.id) void moveEntry(dragEntry, entry.path); } : undefined}
+        className={cn("flex min-w-0 flex-wrap items-center gap-2 px-3 py-3 sm:px-4", entry.is_archived && "bg-zinc-50", dragEntry?.id === entry.id && "opacity-60", dropTarget === entry.id && "bg-amber-100 ring-2 ring-inset ring-amber-400")}>
+        <button type="button" disabled={busy} onClick={() => entry.kind === "folder" ? onNavigate(entry.path) : entry.asset && showPreview(entry.asset)} className="flex min-w-0 flex-[1_1_180px] items-center gap-3 text-left">
+          {entry.kind === "folder"
+            ? <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-amber-100 bg-amber-50 text-amber-700"><Folder size={20} /></span>
+            : entry.asset ? <MaterialThumb asset={entry.asset} size="md" /> : <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-zinc-50 text-zinc-400"><MaterialIcon name={entry.name} /></span>}
+          <span className="min-w-0"><span className="block break-words text-sm font-medium leading-5 text-zinc-800">{entry.name}</span><span className="mt-1 block text-[11px] text-zinc-400">{entry.kind === "folder" ? `Папка${data?.folder_counts?.[entry.path] ? ` · ${data.folder_counts[entry.path]}` : ""}` : `${formatBytes(entry.asset?.size_bytes)} · v${entry.asset?.version || 1}`}{entry.is_archived ? " · В архиве" : ""}</span></span>
+        </button>
+        <div className="ml-auto flex shrink-0 items-center gap-1">{entry.asset && <button type="button" title="Скачать оригинал" aria-label={`Скачать ${entry.name}`} onClick={() => void download(entry.asset!)} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-50 hover:text-zinc-800"><Download size={17} /></button>}{canManage && (entry.is_archived ? <div className="flex items-center gap-1"><Button variant="ghost" size="sm" className={btn} disabled={busy || data?.path_archived} onClick={() => archive(entry)}><RotateCcw size={15} />Восстановить</Button><button type="button" title="Удалить навсегда" aria-label={`Удалить навсегда ${entry.name}`} disabled={busy} onClick={() => deleteForever(entry)} className="rounded-lg p-2 text-rose-600 hover:bg-rose-50 disabled:opacity-40"><Trash2 size={17} /></button></div> : <details className="relative"><summary aria-label={`Действия с ${entry.name}`} className="flex cursor-pointer list-none rounded-lg p-2 text-zinc-400 hover:bg-zinc-100 [&::-webkit-details-marker]:hidden"><MoreHorizontal size={19} /></summary><div className="absolute right-0 z-20 mt-1 w-56 rounded-xl border border-zinc-200 bg-white p-1.5 shadow-lg" onClick={e => e.currentTarget.closest("details")?.removeAttribute("open")}>{entry.kind === "file" && <><button type="button" disabled={!canWrite} className="flex w-full items-center gap-2 rounded-lg p-2.5 text-left text-xs hover:bg-zinc-50" onClick={() => { replacement.current = entry; replaceRef.current?.click(); }}><UploadCloud size={14} />Заменить файл</button><button type="button" disabled={busy} className="flex w-full items-center gap-2 rounded-lg p-2.5 text-left text-xs hover:bg-zinc-50" onClick={() => void openHistory(entry)}><History size={14} />История версий</button></>}<button type="button" disabled={!canWrite} className="flex w-full items-center gap-2 rounded-lg p-2.5 text-left text-xs hover:bg-zinc-50" onClick={() => { setName(entry.name); setDialog({ kind: "rename", entry }); }}><Pencil size={14} />{entry.kind === "folder" ? "Переименовать папку" : "Переименовать"}</button>{entry.kind === "folder" && <p className="px-2.5 py-1.5 text-[11px] leading-5 text-zinc-400">Перенести папку: перетащите её на другую папку или на путь выше.</p>}<button type="button" disabled={busy} className="flex w-full items-center gap-2 rounded-lg p-2.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => archive(entry)}><Archive size={14} />Переместить в архив</button></div></details>)}</div>
       </div>)}</div>}
       {data && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-400"><span>Записей в папке: {data.total}</span><div className="flex items-center gap-3">{offset > 0 && <button type="button" disabled={busy || loading} onClick={() => setOffset(n => Math.max(0, n - 100))} className="text-zinc-600 underline">Предыдущие</button>}{data.next_offset != null && <button type="button" disabled={busy || loading} onClick={() => setOffset(data.next_offset!)} className="text-zinc-600 underline">Следующие</button>}{data.legacy_cursor && <button type="button" disabled={busy || loading} onClick={() => { setCursor(data.legacy_cursor); setOffset(0); }} className="text-amber-800 underline">Загрузить ещё из хранилища</button>}</div></div>}
     </section>

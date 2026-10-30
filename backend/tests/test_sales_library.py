@@ -174,3 +174,97 @@ def test_storage_transport_failure_is_actionable_and_cannot_hide_legacy_files(cl
     monkeypatch.setattr(storage, 'head_object', offline)
     response = upload(client, super_headers, state)
     assert response.status_code == 503 and not storage.uploaded
+
+
+def test_folder_rename_moves_children_and_entry_move_changes_only_the_path(client, db, super_headers, storage):
+    root = listing(client, super_headers)
+    made = client.post('/sales-files/mkdir', headers=super_headers, json={
+        'section': 'photos', 'path': '', 'name': 'Каталог', 'revision': root['revision']})
+    assert made.status_code == 201, made.text
+    state = made.json()
+    folder = next(e for e in state['entries'] if e['kind'] == 'folder')
+    assert state['folder_counts'][folder['path']] == 0
+    inside = client.post('/sales-files/mkdir', headers=super_headers, json={
+        'section': 'photos', 'path': folder['path'], 'name': 'Внутри', 'revision': state['revision']})
+    assert inside.status_code == 201, inside.text
+    state = inside.json()
+    uploaded = upload(client, super_headers, {**state, 'path': folder['path']}, 'Прайс.txt', b'data')
+    assert uploaded.status_code == 201, uploaded.text
+    state = uploaded.json()
+    assert {e['name'] for e in state['entries']} == {'Внутри', 'Прайс.txt'}
+    assert any(e['name'] == 'Каталог' and listing(client, super_headers)['folder_counts'][e['path']] == 2 for e in listing(client, super_headers)['entries'])
+
+    renamed = client.patch(f"/sales-files/entries/{folder['id']}", headers=super_headers,
+                           json={'revision': state['revision'], 'name': 'Новый каталог'})
+    assert renamed.status_code == 200, renamed.text
+    state = renamed.json()
+    names = {e['path'] for e in state['entries']}
+    assert 'Новый каталог' in names
+    children = listing(client, super_headers, path='Новый каталог')
+    assert {e['name'] for e in children['entries']} == {'Внутри', 'Прайс.txt'}
+
+    # Перенос файла в папку не меняет оригинал в хранилище.
+    file_entry = next(e for e in children['entries'] if e['kind'] == 'file')
+    key_before = db.get(ContentAsset, uuid.UUID(file_entry['asset']['asset_id'])).object_key
+    moved = client.post(f"/sales-files/entries/{file_entry['id']}/move", headers=super_headers,
+                        json={'revision': children['revision'], 'path': 'Новый каталог/Внутри'})
+    assert moved.status_code == 200, moved.text
+    assert db.get(ContentAsset, uuid.UUID(file_entry['asset']['asset_id'])).object_key == key_before
+    assert db.scalar(select(SalesEntry).where(SalesEntry.id == uuid.UUID(file_entry['id']))).path == 'Новый каталог/Внутри'
+
+
+def test_folder_cannot_be_moved_into_itself_and_needs_archive_before_delete(client, db, super_headers, storage):
+    root = listing(client, super_headers)
+    made = client.post('/sales-files/mkdir', headers=super_headers, json={
+        'section': 'photos', 'path': '', 'name': 'Внешняя', 'revision': root['revision']})
+    state = made.json()
+    outer = next(e for e in state['entries'] if e['kind'] == 'folder')
+    child = client.post('/sales-files/mkdir', headers=super_headers, json={
+        'section': 'photos', 'path': outer['path'], 'name': 'Дочерняя', 'revision': state['revision']})
+    state = child.json()
+    inner = next(e for e in state['entries'] if e['kind'] == 'folder' and e['path'].startswith(outer['path']))
+    loop = client.post(f"/sales-files/entries/{outer['id']}/move", headers=super_headers,
+                       json={'revision': state['revision'], 'path': inner['path']})
+    assert loop.status_code == 422
+
+    uploaded = upload(client, super_headers, state, 'Договор.txt', b'contract')
+    state = uploaded.json()
+    file_entry = next(e for e in state['entries'] if e['kind'] == 'file')
+    early = client.post(f"/sales-files/entries/{file_entry['id']}/delete", headers=super_headers,
+                        json={'revision': state['revision']})
+    assert early.status_code == 409
+
+    key = db.get(ContentAsset, uuid.UUID(file_entry['asset']['asset_id'])).object_key
+    archive = client.patch(f"/sales-files/entries/{file_entry['id']}", headers=super_headers,
+                           json={'revision': state['revision'], 'is_archived': True})
+    state = archive.json()
+    removed = client.post(f"/sales-files/entries/{file_entry['id']}/delete", headers=super_headers,
+                          json={'revision': state['revision']})
+    assert removed.status_code == 200, removed.text
+    assert db.scalar(select(SalesEntry).where(SalesEntry.id == uuid.UUID(file_entry['id']))) is None
+    assert key in storage.deleted
+
+
+def test_limit_is_shown_in_the_listing(client, super_headers):
+    state = listing(client, super_headers)
+    assert state['upload_max_bytes'] >= 1024 * 1024
+
+
+def test_sales_file_arrives_in_chunks(client, db, super_headers, storage):
+    state = listing(client, super_headers)
+    blob = bytes(range(256)) * 30
+    started = client.post('/sales-files/uploads', headers=super_headers, json={
+        'section': 'photos', 'path': '', 'revision': state['revision'],
+        'filename': 'Съёмка.jpg', 'size_bytes': len(blob)})
+    assert started.status_code == 201, started.text
+    upload_id, offset = started.json()['upload_id'], 0
+    while offset < len(blob):
+        pushed = client.put(f'/sales-files/uploads/{upload_id}?offset={offset}', headers=super_headers,
+                            content=blob[offset:offset + 1000])
+        assert pushed.status_code == 200, pushed.text
+        offset = pushed.json()['offset']
+    done = client.post(f'/sales-files/uploads/{upload_id}/complete', headers=super_headers)
+    assert done.status_code == 200, done.text
+    entry = next(e for e in done.json()['entries'] if e['name'] == 'Съёмка.jpg')
+    assert entry['asset']['size_bytes'] == len(blob)
+    assert any(value == blob for value in storage.objects.values())

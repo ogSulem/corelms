@@ -123,7 +123,14 @@ class Settings(BaseSettings):
         validation_alias="REGEN_MAX_LESSON_ATTEMPTS",
     )
 
-    content_upload_max_bytes: int = Field(default=512 * 1024 * 1024, ge=1, validation_alias="CONTENT_UPLOAD_MAX_BYTES")
+    # По умолчанию 5 ГБ: видео уроков редко бывает меньше, а ограничение можно
+    # изменить в «Админ-центр → Настройки» вплоть до 20 ГБ.
+    content_upload_max_bytes: int = Field(default=5 * 1024 * 1024 * 1024, ge=1, validation_alias="CONTENT_UPLOAD_MAX_BYTES")
+
+    # Большие файлы принимаются частями: один длинный запрос обрывают прокси.
+    upload_staging_dir: str = Field(default="/data/upload-staging", validation_alias="UPLOAD_STAGING_DIR")
+    upload_chunk_bytes: int = Field(default=8 * 1024 * 1024, ge=256 * 1024, le=64 * 1024 * 1024, validation_alias="UPLOAD_CHUNK_BYTES")
+    upload_session_ttl_hours: int = Field(default=24, ge=1, le=168, validation_alias="UPLOAD_SESSION_TTL_HOURS")
 
     import_zip_max_uncompressed_bytes: int = Field(default=10_000_000_000, validation_alias="IMPORT_ZIP_MAX_UNCOMPRESSED_BYTES")
     import_zip_max_files: int = Field(default=20000, validation_alias="IMPORT_ZIP_MAX_FILES")

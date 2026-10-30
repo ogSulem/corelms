@@ -77,6 +77,15 @@ class VersionRestore(RevisionRequest):
     version: int = Field(ge=1)
 
 
+class UploadStart(RevisionRequest):
+    """Начало частичной загрузки: имя, размер и место файла известны заранее."""
+    filename: str = Field(min_length=1, max_length=400)
+    size_bytes: int = Field(ge=1, le=20 * 1024 * 1024 * 1024)
+    submodule_id: uuid.UUID | None = None
+    replace_asset_id: uuid.UUID | None = None
+    create_lesson: bool = False
+
+
 class ArchiveAssets(RevisionRequest):
     ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
     is_archived: bool = True

@@ -232,7 +232,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
       </Modal>
 
       <a href="#main-content" className="sr-only z-50 rounded-lg bg-white p-3 text-sm focus:not-sr-only focus:fixed focus:left-4 focus:top-3">Перейти к содержимому</a>
-      <header className="sticky top-0 z-20 border-b border-zinc-200/80 bg-white/80 backdrop-blur-xl shadow-sm shadow-zinc-950/5">
+      <header className="sticky top-0 z-20 border-b border-zinc-200/80 bg-white/80 pt-[env(safe-area-inset-top)] backdrop-blur-xl shadow-sm shadow-zinc-950/5">
         <div className="mx-auto grid w-full max-w-[1440px] grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 sm:px-6 xl:grid-cols-[auto_minmax(0,1fr)_auto]">
           <div className="flex min-w-0 items-center justify-start gap-2">
             <a
@@ -362,7 +362,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
 
 
 
-      <footer className="border-t border-zinc-200/80 bg-white/70 backdrop-blur-xl">
+      <footer className="border-t border-zinc-200/80 bg-white/70 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl flex-col gap-2 px-6 py-8 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-[9px] font-black uppercase tracking-[0.35em] text-zinc-600">
             © {new Date().getFullYear()} Каркас Тайги • LMS

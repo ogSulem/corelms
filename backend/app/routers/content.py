@@ -8,7 +8,7 @@ import pathlib
 import random
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -37,12 +37,14 @@ from app.models.tag import ModuleTagMap, Tag
 from app.services.media import stage_rendition
 from app.models.user import User, UserRole
 from app.schemas.content import (ArchiveAssets, AssetEdit, DeleteAssets, DeleteLesson, LessonDraft, LessonEdit, ModuleDraft, ModuleEdit,
-    MoveAssets, ReorderRequest, VersionRestore)
+    MoveAssets, ReorderRequest, UploadStart, VersionRestore)
 from app.services.content import (clean_folder, ensure_filename_available, lock_module, next_lesson_order, normalize_name,
     preserve_progress, reorder_lessons, require_lesson, require_owned_asset, safe_filename, snapshot_asset,
     storage_key, workspace, snapshot_lesson, read_lesson_text)
 from app.services.learning import remember_quiz_version
 from app.services.modules import modules_bump_rev
+from app.services.chunked_uploads import (append_chunk, checksum_and_size, chunk_size, create_session, discard, discard_blob,
+    open_blob, read_result, read_session, require_free_space, save_result)
 from app.services.storage import effective_bucket, get_s3_client, upload_fileobj_with_retry
 
 log = logging.getLogger(__name__)
@@ -275,22 +277,18 @@ def _inspect_upload(file: UploadFile, *, max_bytes: int) -> tuple[str, int, str]
     return name, size, checksum
 
 
-@router.post("/{module_id}/assets", status_code=201)
-def upload_asset(
-    module_id: uuid.UUID, request: Request, file: UploadFile = File(...), revision: int = Form(..., ge=1),
-    submodule_id: uuid.UUID | None = Form(default=None), replace_asset_id: uuid.UUID | None = Form(default=None),
-    create_lesson: bool = Form(default=False),
-    db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin)),
-    _: object = rate_limit(key_prefix="content_upload", limit=120, window_seconds=60),
-):
-    filename, size, checksum = _inspect_upload(file, max_bytes=get_platform_settings(db).upload_max_bytes)
+def _upload_target(db: Session, module_id: uuid.UUID, revision: int | None, filename: str, *,
+                   submodule_id: uuid.UUID | None, replace_asset_id: uuid.UUID | None,
+                   create_lesson: bool) -> tuple[Module, uuid.UUID | None, str, str, str]:
+    """Проверки до передачи файла в хранилище: модуль, место и свободное имя.
+
+    `revision=None` означает «принять текущую редакцию»: большую загрузку могли
+    начать до чужого изменения модуля, и терять из-за этого весь файл нельзя.
+    """
     if create_lesson and (submodule_id or replace_asset_id):
         raise HTTPException(422, "Создание урока нельзя объединять с заменой или перемещением файла")
-    # Validate before transferring bytes, then recheck revision under lock after upload.
-    module = db.get(Module, module_id)
-    if module is None:
-        raise HTTPException(404, "Модуль не найден")
-    if module.content_revision != revision or module.is_archived:
+    module = lock_module(db, module_id, revision)
+    if module.is_archived:
         raise HTTPException(409, "Модуль изменён или находится в архиве. Обновите данные.")
     if submodule_id:
         sub = require_lesson(db, module, submodule_id)
@@ -305,71 +303,183 @@ def upload_asset(
     key = storage_key(module, filename)
     mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     db.rollback()
-    s3 = get_s3_client()
-    bucket = effective_bucket()
-    commit_attempted = False
+    return module, submodule_id, key, mime, effective_bucket()
+
+
+def _register_content_asset(db: Session, request: Request, user: User, module_id: uuid.UUID, revision: int | None, *,
+                            filename: str, size: int, checksum: str, bucket: str, key: str, mime: str,
+                            submodule_id: uuid.UUID | None, replace_asset_id: uuid.UUID | None,
+                            create_lesson: bool, progress: dict) -> dict:
+    """Общая часть для обычной и частичной загрузки: файл уже лежит в S3."""
+    module = _editable(db, module_id, revision)
     created_lesson = None
+    if create_lesson:
+        preserve_progress(db, module)
+        title = pathlib.PurePosixPath(filename).stem.strip()[:280] or "Новый урок"
+        names = {name.casefold() for name in db.scalars(select(Submodule.title).where(Submodule.module_id == module.id, Submodule.is_archived.is_(False)))}
+        original_title, suffix = title, 2
+        while title.casefold() in names:
+            title = f"{original_title} ({suffix})"; suffix += 1
+        quiz = Quiz(type=QuizType.submodule, pass_threshold=70, attempts_limit=0)
+        db.add(quiz); db.flush()
+        created_lesson = Submodule(module_id=module.id, title=title, content="", order=next_lesson_order(db, module),
+            quiz_id=quiz.id, requires_quiz=False, is_folder=False, presentation_mode="material", content_mode="manual")
+        db.add(created_lesson); db.flush()
+        submodule_id = created_lesson.id
+        remember_quiz_version(db, created_lesson)
+    if submodule_id and require_lesson(db, module, submodule_id).is_archived:
+        raise HTTPException(409, "Урок перемещён в архив")
+    if replace_asset_id:
+        asset = require_owned_asset(db, module, replace_asset_id)
+        if asset.is_archived:
+            raise HTTPException(409, "Сначала восстановите файл из архива")
+        if pathlib.PurePath(filename).suffix.lower() != pathlib.PurePath(asset.original_filename).suffix.lower():
+            raise HTTPException(422, "При замене сохраните формат файла. Другой формат добавьте отдельным материалом.")
+        snapshot_asset(db, asset)
+        asset.object_key, asset.mime_type, asset.size_bytes, asset.bucket = key, mime, size, bucket
+        asset.checksum_sha256, asset.created_by = checksum, user.id
+    else:
+        ensure_filename_available(db, module, filename, submodule_id)
+        asset = ContentAsset(module_id=module.id, bucket=bucket, object_key=key,
+            original_filename=filename, mime_type=mime, size_bytes=size, checksum_sha256=checksum, created_by=user.id,
+            order=int(db.scalar(select(func.max(ContentAsset.order)).where(ContentAsset.module_id == module.id)) or 0) + 1)
+        db.add(asset)
+        db.flush()
+        if submodule_id:
+            position = int(db.scalar(select(func.max(SubmoduleAssetMap.order)).where(SubmoduleAssetMap.submodule_id == submodule_id)) or 0) + 1
+            db.add(SubmoduleAssetMap(submodule_id=submodule_id, asset_id=asset.id, order=position))
+    if created_lesson:
+        created_lesson.primary_asset_id = asset.id
+    db.flush()
+    stage_rendition(db, asset)
+    # File changes alone do not change required learning steps.
+    module.content_revision += 1
+    audit_log(db=db, request=request, actor_user_id=user.id, event_type="content_asset_replaced" if replace_asset_id else "content_asset_uploaded",
+              meta={"module_id": str(module.id), "asset_id": str(asset.id), "version": asset.version, "size_bytes": size})
+    progress["committed"] = True
+    db.commit()
+    modules_bump_rev(reason="content_asset_changed")
+    state = workspace(db, module)
+    if created_lesson:
+        state["created_lesson_id"] = str(created_lesson.id)
+    return state
+
+
+def _reject_orphan(s3, bucket: str, key: str) -> None:
+    try:
+        s3.delete_object(Bucket=bucket, Key=key)
+    except Exception:
+        pass  # Unique orphan may be cleaned later; never delete a previous version.
+
+
+@router.post("/{module_id}/assets", status_code=201)
+def upload_asset(
+    module_id: uuid.UUID, request: Request, file: UploadFile = File(...), revision: int = Form(..., ge=1),
+    submodule_id: uuid.UUID | None = Form(default=None), replace_asset_id: uuid.UUID | None = Form(default=None),
+    create_lesson: bool = Form(default=False),
+    db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="content_upload", limit=120, window_seconds=60),
+):
+    filename, size, checksum = _inspect_upload(file, max_bytes=get_platform_settings(db).upload_max_bytes)
+    _, submodule_id, key, mime, bucket = _upload_target(db, module_id, revision, filename, submodule_id=submodule_id,
+        replace_asset_id=replace_asset_id, create_lesson=create_lesson)
+    s3 = get_s3_client()
+    progress: dict = {"committed": False}
     try:
         upload_fileobj_with_retry(s3=s3, object_key=key, fileobj=file.file, content_type=mime, size_bytes=size)
-        module = _editable(db, module_id, revision)
-        if create_lesson:
-            preserve_progress(db, module)
-            title = pathlib.PurePosixPath(filename).stem.strip()[:280] or "Новый урок"
-            names = {name.casefold() for name in db.scalars(select(Submodule.title).where(Submodule.module_id == module.id, Submodule.is_archived.is_(False)))}
-            original_title, suffix = title, 2
-            while title.casefold() in names:
-                title = f"{original_title} ({suffix})"; suffix += 1
-            quiz = Quiz(type=QuizType.submodule, pass_threshold=70, attempts_limit=0)
-            db.add(quiz); db.flush()
-            created_lesson = Submodule(module_id=module.id, title=title, content="", order=next_lesson_order(db, module),
-                quiz_id=quiz.id, requires_quiz=False, is_folder=False, presentation_mode="material", content_mode="manual")
-            db.add(created_lesson); db.flush()
-            submodule_id = created_lesson.id
-            remember_quiz_version(db, created_lesson)
-        if submodule_id and require_lesson(db, module, submodule_id).is_archived:
-            raise HTTPException(409, "Урок перемещён в архив")
-        if replace_asset_id:
-            asset = require_owned_asset(db, module, replace_asset_id)
-            if asset.is_archived:
-                raise HTTPException(409, "Сначала восстановите файл из архива")
-            if pathlib.PurePath(filename).suffix.lower() != pathlib.PurePath(asset.original_filename).suffix.lower():
-                raise HTTPException(422, "При замене сохраните формат файла. Другой формат добавьте отдельным материалом.")
-            snapshot_asset(db, asset)
-            asset.object_key, asset.mime_type, asset.size_bytes, asset.bucket = key, mime, size, bucket
-            asset.checksum_sha256, asset.created_by = checksum, user.id
-        else:
-            ensure_filename_available(db, module, filename, submodule_id)
-            asset = ContentAsset(module_id=module.id, bucket=bucket, object_key=key,
-                original_filename=filename, mime_type=mime, size_bytes=size, checksum_sha256=checksum, created_by=user.id,
-                order=int(db.scalar(select(func.max(ContentAsset.order)).where(ContentAsset.module_id == module.id)) or 0) + 1)
-            db.add(asset)
-            db.flush()
-            if submodule_id:
-                position = int(db.scalar(select(func.max(SubmoduleAssetMap.order)).where(SubmoduleAssetMap.submodule_id == submodule_id)) or 0) + 1
-                db.add(SubmoduleAssetMap(submodule_id=submodule_id, asset_id=asset.id, order=position))
-        if created_lesson:
-            created_lesson.primary_asset_id = asset.id
-        db.flush()
-        stage_rendition(db, asset)
-        # File changes alone do not change required learning steps.
-        module.content_revision += 1
-        audit_log(db=db, request=request, actor_user_id=user.id, event_type="content_asset_replaced" if replace_asset_id else "content_asset_uploaded",
-                  meta={"module_id": str(module.id), "asset_id": str(asset.id), "version": asset.version, "size_bytes": size})
-        commit_attempted = True
-        db.commit()
-        modules_bump_rev(reason="content_asset_changed")
-        state = workspace(db, module)
-        if created_lesson:
-            state["created_lesson_id"] = str(created_lesson.id)
-        return state
+        return _register_content_asset(db, request, user, module_id, revision, filename=filename, size=size,
+            checksum=checksum, bucket=bucket, key=key, mime=mime, submodule_id=submodule_id,
+            replace_asset_id=replace_asset_id, create_lesson=create_lesson, progress=progress)
     except Exception:
         db.rollback()
-        if not commit_attempted:
-            try:
-                s3.delete_object(Bucket=bucket, Key=key)
-            except Exception:
-                pass  # Unique orphan may be cleaned later; never delete a previous version.
+        if not progress["committed"]:
+            _reject_orphan(s3, bucket, key)
         raise
+
+
+@router.post("/{module_id}/uploads", status_code=201)
+def start_chunked_upload(module_id: uuid.UUID, body: UploadStart, request: Request, db: Session = Depends(get_db),
+                         user: User = Depends(require_roles(UserRole.admin))):
+    """Начать приём большого файла частями: один длинный запрос обрывают прокси."""
+    limit = get_platform_settings(db).upload_max_bytes
+    if body.size_bytes > limit:
+        raise HTTPException(413, f"Файл больше лимита {limit // (1024 * 1024)} МБ. Лимит меняется в настройках платформы.")
+    filename = safe_filename(body.filename)
+    _upload_target(db, module_id, body.revision, filename, submodule_id=body.submodule_id,
+                   replace_asset_id=body.replace_asset_id, create_lesson=body.create_lesson)
+    require_free_space(body.size_bytes)
+    session = create_session(user_id=str(user.id), kind="content", filename=filename, size_bytes=body.size_bytes,
+        meta={"module_id": str(module_id), "revision": body.revision,
+              "submodule_id": str(body.submodule_id) if body.submodule_id else None,
+              "replace_asset_id": str(body.replace_asset_id) if body.replace_asset_id else None,
+              "create_lesson": bool(body.create_lesson)})
+    return {"upload_id": session.id, "chunk_size": chunk_size(), "offset": 0,
+            "filename": filename, "size_bytes": session.size_bytes}
+
+
+@router.put("/{module_id}/uploads/{upload_id}")
+async def push_upload_chunk(module_id: uuid.UUID, upload_id: str, request: Request, offset: int = Query(default=0, ge=0),
+                            user: User = Depends(require_roles(UserRole.admin))):
+    """Принять очередной кусок файла. Повтор куска безопасен: смещение сверяется."""
+    session = read_session(upload_id)
+    if session.kind != "content" or session.user_id != str(user.id) or session.meta.get("module_id") != str(module_id):
+        raise HTTPException(404, "Загрузка не найдена. Начните её заново.")
+    remaining = max(0, session.size_bytes - offset)
+    total = await append_chunk(upload_id, offset=offset, stream=request.stream(),
+                               limit=min(chunk_size() * 2, remaining) or chunk_size())
+    if total > session.size_bytes:
+        discard(upload_id)
+        raise HTTPException(413, "Файл больше заявленного размера. Начните загрузку заново.")
+    return {"upload_id": upload_id, "offset": total, "size_bytes": session.size_bytes}
+
+
+@router.post("/{module_id}/uploads/{upload_id}/complete")
+def complete_chunked_upload(module_id: uuid.UUID, upload_id: str, request: Request, db: Session = Depends(get_db),
+                            user: User = Depends(require_roles(UserRole.admin))):
+    """Собрать файл, проверить размер и контрольную сумму и сохранить как обычную загрузку."""
+    session = read_session(upload_id)
+    if session.kind != "content" or session.user_id != str(user.id) or session.meta.get("module_id") != str(module_id):
+        raise HTTPException(404, "Загрузка не найдена. Начните её заново.")
+    previous = read_result(upload_id)
+    if previous is not None:
+        # Повтор после таймаута: файл уже сохранён, второй раз его не создаём.
+        return previous
+    checksum, size = checksum_and_size(upload_id)
+    if size != session.size_bytes:
+        raise HTTPException(409, f"Файл получен не полностью: {size} из {session.size_bytes} байт. "
+                                 "Продолжите загрузку — уже отправленные куски сохранены.")
+    meta = session.meta
+    submodule_id = uuid.UUID(meta["submodule_id"]) if meta.get("submodule_id") else None
+    replace_asset_id = uuid.UUID(meta["replace_asset_id"]) if meta.get("replace_asset_id") else None
+    _, submodule_id, key, mime, bucket = _upload_target(db, module_id, None, session.filename,
+        submodule_id=submodule_id, replace_asset_id=replace_asset_id, create_lesson=bool(meta.get("create_lesson")))
+    s3 = get_s3_client()
+    progress: dict = {"committed": False}
+    blob = open_blob(upload_id)
+    try:
+        upload_fileobj_with_retry(s3=s3, object_key=key, fileobj=blob, content_type=mime, size_bytes=size)
+        state = _register_content_asset(db, request, user, module_id, None, filename=session.filename, size=size,
+            checksum=checksum, bucket=bucket, key=key, mime=mime, submodule_id=submodule_id,
+            replace_asset_id=replace_asset_id, create_lesson=bool(meta.get("create_lesson")), progress=progress)
+    except Exception:
+        db.rollback()
+        if not progress["committed"]:
+            _reject_orphan(s3, bucket, key)
+        raise
+    finally:
+        blob.close()
+    save_result(upload_id, state)
+    discard_blob(upload_id)
+    return state
+
+
+@router.delete("/{module_id}/uploads/{upload_id}")
+def cancel_chunked_upload(module_id: uuid.UUID, upload_id: str, user: User = Depends(require_roles(UserRole.admin))):
+    session = read_session(upload_id)
+    if session.kind != "content" or session.user_id != str(user.id) or session.meta.get("module_id") != str(module_id):
+        raise HTTPException(404, "Загрузка не найдена")
+    discard(upload_id)
+    return {"ok": True}
 
 
 @router.patch("/{module_id}/assets/{asset_id}")
