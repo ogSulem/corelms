@@ -5,11 +5,11 @@ import { useSearchParams } from "next/navigation";
 import { ModuleQuizEditor } from "./module-quiz-editor";
 import type { EditorAsset, EditorLesson, Workspace } from "./editor-types";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, BookOpen, Check, CheckCircle2, ChevronRight, Download, Eye, FilePlus2, Folder, GraduationCap, History, Info, Loader2, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, UploadCloud, X } from "lucide-react";
+import { Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, BookOpen, Check, CheckCircle2, ChevronRight, Download, Eye, FilePlus2, Folder, FolderInput, GraduationCap, History, Info, Loader2, MoreHorizontal, Pencil, Plus, RefreshCw, RotateCcw, Save, Search, Settings2, ShieldCheck, Trash2, UploadCloud, X } from "lucide-react";
 import { LessonPresentation } from "@/components/learning/lesson-presentation";
 import { AppShell } from "@/components/app/shell";
 import { AssetPreviewModal } from "@/components/materials/asset-preview";
-import { FileExplorer, FileRow } from "@/components/materials/file-explorer";
+import { FileExplorer, FileRow, readDraggedIds } from "@/components/materials/file-explorer";
 import { AssetVersionList, type AssetVersion } from "@/components/materials/asset-version-list";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
@@ -70,6 +70,8 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
   const [newTag, setNewTag] = useState("");
   const [creatingTag, setCreatingTag] = useState(false);
   const [draftTarget, setDraftTarget] = useState("");
+  const [draftFolder, setDraftFolder] = useState("");
+  const [dropLesson, setDropLesson] = useState<string | null>(null);
   const [newLessonMode, setNewLessonMode] = useState<"choose" | "text">("choose");
   const [showMarkdown, setShowMarkdown] = useState(false);
   const [moduleDraft, setModuleDraft] = useState({ title: "", description: "", category: "", visibility: "public", tag_ids: [] as string[] });
@@ -100,7 +102,7 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
   const settingsDirty = !!moduleMeta && (moduleDraft.title !== moduleMeta.title || moduleDraft.description !== (moduleMeta.description || "") || moduleDraft.category !== (moduleMeta.category || "") || moduleDraft.visibility !== moduleMeta.visibility || JSON.stringify([...moduleDraft.tag_ids].sort()) !== JSON.stringify([...(moduleMeta.tag_ids || [])].sort()));
   const editingDirty = dialog?.kind === "lesson" && (draftTitle !== (dialog.lesson?.title || "") || draftContent !== (dialog.lesson?.content || "") || draftOutline !== (dialog.lesson?.outline_path || "") || draftPresentation !== (dialog.lesson?.presentation_mode || "auto") || draftPrimary !== (dialog.lesson?.primary_asset_id || "") || draftMode !== (dialog.lesson?.content_mode || "manual"));
   const moduleTitleDirty = dialog?.kind === "moduleTitle" && draftTitle.trim() !== (moduleMeta?.title || "");
-  const dirty = quizDirty || settingsDirty || editingDirty || moduleTitleDirty || (dialog?.kind === "rename" && draftTitle !== dialog.asset.original_filename.split("/").at(-1)) || (dialog?.kind === "move" && draftTarget !== (dialog.asset.submodule_id || ""));
+  const dirty = quizDirty || settingsDirty || editingDirty || moduleTitleDirty || (dialog?.kind === "rename" && draftTitle !== dialog.asset.original_filename.split("/").at(-1)) || (dialog?.kind === "move" && (draftTarget !== (dialog.asset.submodule_id || "") || draftFolder !== folderOf(dialog.asset.original_filename)));
   settingsDirtyRef.current = settingsDirty;
   const locked = !!busy || !!moduleMeta?.is_archived;
   const jobRunning = !!jobId && !["finished", "failed", "canceled", "stopped", "missing"].includes(job?.status || "queued");
@@ -287,7 +289,7 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
       if (!draftTitle.trim()) { setError("Введите название модуля"); return; }
       saved = draftTitle.trim() === dataRef.current?.module.title ? true : await mutate("", "PATCH", { title: draftTitle.trim() }, "Название модуля обновлено");
     } else if (dialog.kind === "rename") saved = await mutate(`/assets/${dialog.asset.asset_id}`, "PATCH", { filename: draftTitle.trim() }, "Файл переименован");
-    else if (dialog.kind === "move") saved = await mutate(`/assets/${dialog.asset.asset_id}`, "PATCH", { submodule_id: draftTarget || null }, "Файл перемещён");
+    else if (dialog.kind === "move") saved = await mutate(`/assets/${dialog.asset.asset_id}`, "PATCH", { submodule_id: draftTarget || null, folder: draftFolder }, "Файл перемещён");
     else if (dialog.kind === "confirm") saved = await dialog.action();
     if (saved) { setDialog(null); setChecked(new Set()); }
   }
@@ -297,6 +299,33 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
       if (ok && selected === lesson.id) setSelected(null);
       return ok;
     } });
+  }
+  function folderOf(name: string): string {
+    const parts = name.replaceAll("\\", "/").split("/").filter(Boolean);
+    return parts.slice(0, -1).join("/");
+  }
+  /** Перетаскивание в проводнике: папка внутри текущего раздела или другой урок/каталог. */
+  async function moveAssets(ids: string[], target: { submodule_id?: string | null; folder?: string }) {
+    if (!ids.length || locked) return;
+    const payload: Record<string, unknown> = { ids };
+    if ("submodule_id" in target) payload.submodule_id = target.submodule_id ?? null;
+    if ("folder" in target) payload.folder = target.folder ?? "";
+    await mutate("/assets/move", "POST", payload, ids.length === 1 ? "Файл перемещён" : `Перемещено файлов: ${ids.length}`);
+  }
+  function draggedIds(asset: EditorAsset): string[] {
+    return checked.has(asset.asset_id) && checked.size > 1 ? [...checked] : [asset.asset_id];
+  }
+  function deleteForever(ids: string[]) {
+    if (!ids.length) return;
+    setDialog({ kind: "confirm", title: ids.length === 1 ? "Удалить файл навсегда?" : `Удалить навсегда ${ids.length} файлов?`,
+      description: `Файл, все его версии и копии для просмотра будут удалены из хранилища. Отменить это нельзя. Результаты обучения, тесты и журнал сохранятся.`,
+      action: () => mutate("/assets/delete", "POST", { ids }, "Удалено навсегда") });
+  }
+  /** Архивный урок можно удалить навсегда, если по нему нет истории обучения. */
+  function deleteLessonForever(lesson: EditorLesson) {
+    setDialog({ kind: "confirm", title: `Удалить урок «${lesson.title}» навсегда?`,
+      description: "Урок и его тест исчезнут без возможности восстановления. Файлы урока останутся в архиве модуля. Если урок уже открывали ученики или по нему были попытки теста, удаление запрещено — такая история обучения не удаляется.",
+      action: () => mutate(`/lessons/${lesson.id}/delete`, "POST", {}, "Урок удалён навсегда") });
   }
   function archiveFiles(ids: string[]) {
     setDialog({ kind: "confirm", title: ids.length === 1 ? "Убрать файл из обучения?" : `Убрать ${ids.length} файлов?`, description: "Файлы попадут в архив этого модуля. Их можно вернуть вместе с версиями; результаты учеников не изменятся.", action: () => mutate("/assets/archive", "POST", { ids, is_archived: true }, "Файлы перемещены в архив") });
@@ -318,6 +347,12 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
   async function upload(filesToUpload: File[], replace?: EditorAsset, asLesson = false) {
     if (!filesToUpload.length || uploadRunning.current || locked || !dataRef.current) return;
     if (filesToUpload.length > 100) { setError("За один раз можно добавить до 100 файлов."); return; }
+    const limit = dataRef.current.capabilities?.upload_max_bytes;
+    const tooBig = limit ? filesToUpload.find(file => file.size > limit) : undefined;
+    if (tooBig && limit) {
+      setError(`«${tooBig.name}» — ${formatBytes(tooBig.size)}, а лимит загрузки ${formatBytes(limit)}. Увеличьте лимит в «Админ-центр → Настройки» или загрузите файл меньшего размера.`);
+      return;
+    }
     uploadRunning.current = true; stopQueue.current = false; setBusy("upload"); setError(null);
     setTasks(filesToUpload.map(f => ({ name: f.name, percent: 0, state: "waiting" })));
     let index = 0;
@@ -408,8 +443,16 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
         <aside className="overflow-hidden rounded-2xl border border-zinc-200 bg-white lg:sticky lg:top-24">
           <div className="flex items-center justify-between border-b border-zinc-100 p-4"><h2 className="text-sm font-semibold">Структура модуля</h2><span className="text-xs text-zinc-400">{activeLessons.length}</span></div>
           <nav aria-label="Раздел для редактирования" className="max-h-[60vh] space-y-1 overflow-y-auto p-2">
-            <button type="button" disabled={!!busy} onClick={() => { setSelected(null); setTab("materials"); }} className={cn("flex w-full items-start gap-2.5 rounded-xl px-3 py-3 text-left text-sm", !selected && tab === "materials" ? "bg-amber-50 font-medium text-zinc-950" : "text-zinc-600 hover:bg-zinc-50")}><span className="mt-0.5 shrink-0 text-amber-600"><Folder size={17} /></span><span className="min-w-0 break-words leading-5">Общие файлы<span className="mt-1 block text-[11px] font-normal leading-4 text-zinc-400">Не урок · вложения в обзоре модуля</span></span><span className="ml-auto shrink-0 text-xs text-zinc-400">{data.assets.filter(a => !a.is_archived && !a.submodule_id).length}</span></button>
-            {activeLessons.map((lesson, index) => <div key={lesson.id} className={cn("group flex items-center rounded-xl", lesson.id === selected && tab === "materials" ? "bg-amber-50" : "hover:bg-zinc-50")}>
+            <button type="button" disabled={!!busy} onClick={() => { setSelected(null); setTab("materials"); }}
+              onDragOver={event => { if (tab !== "materials" || locked) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropLesson("general"); }}
+              onDragLeave={() => setDropLesson(current => current === "general" ? null : current)}
+              onDrop={event => { event.preventDefault(); setDropLesson(null); const ids = readDraggedIds(event); if (ids.length) void moveAssets(ids, { submodule_id: null, folder: "" }); }}
+              className={cn("flex w-full items-start gap-2.5 rounded-xl px-3 py-3 text-left text-sm", dropLesson === "general" ? "bg-amber-100 ring-2 ring-inset ring-amber-400" : !selected && tab === "materials" ? "bg-amber-50 font-medium text-zinc-950" : "text-zinc-600 hover:bg-zinc-50")}><span className="mt-0.5 shrink-0 text-amber-600"><Folder size={17} /></span><span className="min-w-0 break-words leading-5">Общие файлы<span className="mt-1 block text-[11px] font-normal leading-4 text-zinc-400">Не урок · вложения в обзоре модуля</span></span><span className="ml-auto shrink-0 text-xs text-zinc-400">{data.assets.filter(a => !a.is_archived && !a.submodule_id).length}</span></button>
+            {activeLessons.map((lesson, index) => <div key={lesson.id}
+              onDragOver={event => { if (tab !== "materials" || locked) return; event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDropLesson(lesson.id); }}
+              onDragLeave={() => setDropLesson(current => current === lesson.id ? null : current)}
+              onDrop={event => { event.preventDefault(); setDropLesson(null); const ids = readDraggedIds(event); if (ids.length) void moveAssets(ids, { submodule_id: lesson.id, folder: "" }); }}
+              className={cn("group flex items-center rounded-xl", dropLesson === lesson.id ? "bg-amber-100 ring-2 ring-inset ring-amber-400" : lesson.id === selected && tab === "materials" ? "bg-amber-50" : "hover:bg-zinc-50")}>
               <button type="button" aria-label={`Материал: ${lesson.title}`} disabled={!!busy} onClick={() => { setSelected(lesson.id); setTab("materials"); }} className="flex min-w-0 flex-1 items-start gap-2.5 px-3 py-3 text-left text-sm"><span className="mt-0.5 shrink-0 text-zinc-400">{lesson.is_folder ? <Folder size={17} /> : <BookOpen size={17} />}</span><span className="min-w-0 break-words leading-5 text-zinc-700">{lesson.title}<span className="mt-1 block text-[11px] text-zinc-400">{lesson.is_folder ? "Каталог" : lesson.requires_quiz ? "Урок с тестом" : "Урок"}</span></span></button>
               <div className="mr-1 flex shrink-0 flex-col"><button type="button" aria-label={`Поднять «${lesson.title}»`} title="Выше" disabled={locked || index === 0} onClick={() => void reorder(lesson, -1)} className="rounded p-1.5 text-zinc-400 hover:bg-white hover:text-zinc-900 disabled:opacity-20"><ArrowUp size={13} /></button><button type="button" aria-label={`Опустить «${lesson.title}»`} title="Ниже" disabled={locked || index === activeLessons.length - 1} onClick={() => void reorder(lesson, 1)} className="rounded p-1.5 text-zinc-400 hover:bg-white hover:text-zinc-900 disabled:opacity-20"><ArrowDown size={13} /></button></div>
             </div>)}
@@ -427,14 +470,17 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
               <input ref={replaceInput} type="file" aria-label="Новая версия файла" className="sr-only" disabled={locked} onChange={event => { const file = event.target.files?.[0]; const asset = replacement.current; event.target.value = ""; if (file && asset) void upload([file], asset); }} />
             </div>}
             {tasks.length > 0 && <div aria-live="polite" className="mt-4 rounded-xl border border-zinc-200 p-3"><div className="mb-2 flex items-center justify-between text-xs"><span className="font-medium text-zinc-700">Загружено {tasks.filter(t => t.state === "done").length} из {tasks.length}</span>{busy === "upload" ? <button type="button" onClick={() => { stopQueue.current = true; }} className="text-amber-800 underline">Остановить после текущего</button> : <button type="button" aria-label="Скрыть очередь загрузки" onClick={() => setTasks([])} className="p-1"><X size={14} /></button>}</div><div className="max-h-44 space-y-2 overflow-auto">{tasks.map((task, i) => <div key={i} className="text-xs"><div className="flex items-center gap-2"><span className="min-w-0 flex-1 truncate text-zinc-600">{task.name}</span>{task.state === "done" ? <Check size={14} className="text-emerald-700" /> : <span className={task.state === "error" ? "text-rose-700" : "text-zinc-400"}>{task.state === "uploading" ? task.percent === 100 ? "Сохраняем…" : `${task.percent}%` : task.state === "waiting" ? "В очереди" : task.state === "error" ? "Ошибка" : "Не загружен"}</span>}</div>{task.state === "uploading" && <div className="mt-1 h-1 rounded bg-zinc-100"><div className="h-1 rounded bg-amber-500" style={{ width: `${task.percent}%` }} /></div>}{task.error && <p className="mt-1 text-rose-700">{task.error}</p>}</div>)}</div></div>}
-            {tab === "archive" && archivedLessons.length > 0 && <div className="mt-5 space-y-2"><h3 className="mb-3 text-xs font-medium text-zinc-500">Уроки и каталоги</h3>{archivedLessons.map(lesson => <div key={lesson.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200 p-3"><Archive size={18} className="text-zinc-400" /><span className="min-w-0 flex-1 break-words text-sm text-zinc-700">{lesson.title}</span><Button variant="ghost" size="sm" disabled={locked} className={btn} onClick={() => void mutate(`/lessons/${lesson.id}`, "PATCH", { is_archived: false }, "Материал восстановлен")}><RotateCcw size={14} />Восстановить</Button></div>)}</div>}
+            {tab === "archive" && archivedLessons.length > 0 && <div className="mt-5 space-y-2"><h3 className="mb-3 text-xs font-medium text-zinc-500">Уроки и каталоги</h3>{archivedLessons.map(lesson => <div key={lesson.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-zinc-200 p-3"><Archive size={18} className="text-zinc-400" /><span className="min-w-0 flex-1 break-words text-sm text-zinc-700">{lesson.title}</span><Button variant="ghost" size="sm" disabled={locked} className={btn} onClick={() => void mutate(`/lessons/${lesson.id}`, "PATCH", { is_archived: false }, "Материал восстановлен")}><RotateCcw size={14} />Восстановить</Button><button type="button" disabled={locked} title="Удалить навсегда" aria-label={`Удалить навсегда урок ${lesson.title}`} onClick={() => deleteLessonForever(lesson)} className="rounded-lg p-2 text-rose-600 hover:bg-rose-50 disabled:opacity-40"><Trash2 size={16} /></button></div>)}</div>}
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3"><label className="flex min-w-48 flex-1 items-center gap-2 rounded-xl border border-zinc-200 px-3 text-zinc-400"><Search size={16} /><input aria-label="Поиск файлов" placeholder="Поиск по названию файла…" value={query} onChange={e => setQuery(e.target.value)} className="h-10 w-full min-w-0 bg-transparent text-sm text-zinc-800 outline-none" /></label><span className="text-xs text-zinc-400">{formatFileCount(files.length)}</span></div>
-            {checked.size > 0 && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs"><span>Выбрано: {checked.size}</span><div className="flex gap-3"><button type="button" disabled={locked} onClick={() => tab === "archive" ? void mutate("/assets/archive", "POST", { ids: [...checked], is_archived: false }, "Файлы восстановлены").then(ok => { if (ok) setChecked(new Set()); }) : archiveFiles([...checked])} className="font-medium text-amber-900 underline">{tab === "archive" ? "Восстановить выбранные" : "В архив"}</button><button type="button" onClick={() => setChecked(new Set())} className="text-zinc-500">Снять выбор</button></div></div>}
+            {checked.size > 0 && <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs"><span>Выбрано: {checked.size}</span><div className="flex gap-3"><button type="button" disabled={locked} onClick={() => tab === "archive" ? void mutate("/assets/archive", "POST", { ids: [...checked], is_archived: false }, "Файлы восстановлены").then(ok => { if (ok) setChecked(new Set()); }) : archiveFiles([...checked])} className="font-medium text-amber-900 underline">{tab === "archive" ? "Восстановить выбранные" : "В архив"}</button>{tab === "archive" && <button type="button" disabled={locked} onClick={() => deleteForever([...checked])} className="font-medium text-rose-700 underline">Удалить навсегда</button>}<button type="button" onClick={() => setChecked(new Set())} className="text-zinc-500">Снять выбор</button></div></div>}
             <FileExplorer
               key={`${tab}:${selected || "general"}`}
               className="mt-3"
               materials={files}
               query={query}
+              draggable={tab === "materials"}
+              dragIds={draggedIds}
+              onDropAssets={(ids, folder) => void moveAssets(ids, { folder: folder.join("/") })}
               renderFileBar={shown => files.length > 0 && <div className="flex items-center gap-3 rounded-t-xl border-b border-zinc-200 bg-zinc-50 px-4 py-2 text-xs text-zinc-500"><input type="checkbox" aria-label="Выбрать все показанные файлы" checked={shown.length > 0 && shown.every(a => checked.has(a.asset_id))} onChange={e => setChecked(e.target.checked ? new Set(shown.map(a => a.asset_id)) : new Set())} className="h-4 w-4 accent-amber-600" /><span>Название</span><span className="ml-auto">Действия</span></div>}
               empty={<div className="p-9 text-center"><Folder size={28} className="mx-auto mb-3 text-zinc-300" /><p className="text-sm font-medium text-zinc-600">{query ? "Файлы не найдены" : tab === "archive" ? "Архив файлов пуст" : "Здесь пока нет файлов"}</p><p className="mt-1 text-xs leading-relaxed text-zinc-400">{query ? "Попробуйте другое название." : tab === "archive" ? "Удалённые из обучения материалы будут здесь." : "Добавьте файлы — они появятся в этом каталоге."}</p></div>}
               renderFile={(asset, meta) => <FileRow
@@ -445,7 +491,10 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
                 selected={previewId === asset.asset_id}
                 showFullPath={meta.searching}
                 actions={<>
-                  {tab === "archive" ? <button type="button" disabled={locked} title="Восстановить файл" aria-label={`Восстановить ${asset.original_filename}`} onClick={() => void mutate(`/assets/${asset.asset_id}`, "PATCH", { is_archived: false }, "Файл восстановлен")} className="rounded-lg p-2 text-emerald-700 hover:bg-emerald-50 disabled:opacity-40"><RotateCcw size={17} /></button> : <>
+                  {tab === "archive" ? <>
+                    <button type="button" disabled={locked} title="Восстановить файл" aria-label={`Восстановить ${asset.original_filename}`} onClick={() => void mutate(`/assets/${asset.asset_id}`, "PATCH", { is_archived: false }, "Файл восстановлен")} className="rounded-lg p-2 text-emerald-700 hover:bg-emerald-50 disabled:opacity-40"><RotateCcw size={17} /></button>
+                    <button type="button" disabled={locked} title="Удалить навсегда" aria-label={`Удалить навсегда ${asset.original_filename}`} onClick={() => deleteForever([asset.asset_id])} className="rounded-lg p-2 text-rose-600 hover:bg-rose-50 disabled:opacity-40"><Trash2 size={17} /></button>
+                  </> : <>
                   <button type="button" aria-label={`Скачать ${asset.original_filename}`} title="Скачать" onClick={() => void download(asset)} className="hidden rounded-lg p-2 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-800 sm:block"><Download size={16} /></button>
                   <details className="relative shrink-0" onClick={e => { if ((e.target as HTMLElement).closest("button")) e.currentTarget.removeAttribute("open"); }}>
                     <summary aria-label={`Действия с ${asset.original_filename}`} title="Действия с файлом" className="list-none cursor-pointer rounded-lg p-2 text-zinc-500 hover:bg-zinc-100"><MoreHorizontal size={19} /></summary>
@@ -455,11 +504,12 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
                         { label: "Скачать оригинал", Icon: Download, action: () => void download(asset), disabled: false },
                         { label: "Заменить файл", Icon: UploadCloud, action: () => { replacement.current = asset; replaceInput.current?.click(); }, disabled: locked },
                         { label: "Переименовать", Icon: Pencil, action: () => { setDraftTitle(asset.original_filename.split(/[\\/]/).pop() || asset.original_filename); setDialog({ kind: "rename", asset }); }, disabled: locked },
-                        { label: "Переместить", Icon: Folder, action: () => { setDraftTarget(asset.submodule_id || ""); setDialog({ kind: "move", asset }); }, disabled: locked },
+                        { label: "Переместить в папку", Icon: Folder, action: () => { setDraftTarget(asset.submodule_id || ""); setDraftFolder(folderOf(asset.original_filename)); setDialog({ kind: "move", asset }); }, disabled: locked },
                         { label: "История версий", Icon: History, action: () => void showVersions(asset), disabled: false },
                         { label: "Выше в списке", Icon: ArrowUp, action: () => void reorderFile(asset, -1), disabled: locked || meta.index === 0 || !!query },
                         { label: "Ниже в списке", Icon: ArrowDown, action: () => void reorderFile(asset, 1), disabled: locked || meta.index === meta.count - 1 || !!query },
                         { label: "Переместить в архив", Icon: Archive, action: () => archiveFiles([asset.asset_id]), disabled: locked },
+                        { label: "Удалить навсегда", Icon: Trash2, action: () => deleteForever([asset.asset_id]), disabled: locked },
                       ].map(({ label, Icon, action, disabled }) => <button type="button" key={label} disabled={disabled} onClick={action} className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left text-xs text-zinc-700 hover:bg-zinc-50 disabled:opacity-30"><Icon size={15} className="text-zinc-400" />{label}</button>)}
                     </div>
                   </details>
@@ -497,7 +547,13 @@ export function ModuleEditor({ moduleId }: { moduleId: string }) {
       </div>}
       {dialog?.kind === "lesson" && !newLessonChooser && <div className="space-y-5">{!dialog.lesson && !dialog.folder && <button type="button" onClick={() => setNewLessonMode("choose")} className="flex items-center gap-1.5 text-xs font-medium text-amber-800 hover:underline"><ArrowLeft size={13} />Другой способ создания урока</button>}{!dialog.folder && <><label className="block space-y-2 text-sm font-medium">Раздел <span className="font-normal text-zinc-400">(необязательно)</span><input className={input} value={draftOutline} maxLength={1000} placeholder="Например, Основы / Подготовка" onChange={e => setDraftOutline(e.target.value)} /></label><div><div className="mb-2 flex justify-between gap-3"><label htmlFor="lesson-content" className="text-sm font-medium">Текст урока <span className="font-normal text-zinc-400">· Markdown</span></label><button type="button" onClick={() => setShowMarkdown(v => !v)} className="text-xs text-amber-800 underline">{showMarkdown ? "Редактировать текст" : "Предпросмотр урока"}</button></div>{showMarkdown ? <div className="space-y-3"><p className="text-xs leading-6 text-zinc-500">Так выглядит черновик урока. Изменения станут видны ученикам только после сохранения.</p><LessonPresentation key={`${dialog.lesson?.id || "new"}:${draftPresentation}:${draftPrimary}`} lesson={{ id: dialog.lesson?.id || "new", content: draftContent, content_mode: draftMode, presentation_mode: draftPresentation, primary_asset_id: draftPrimary || null }} assets={data?.assets.filter(a => !a.is_archived && a.submodule_id === dialog.lesson?.id) || []} /></div> : <textarea id="lesson-content" rows={10} maxLength={500000} className={`${input} font-mono text-xs leading-6`} value={draftContent} onChange={e => { setDraftContent(e.target.value); setDraftMode("manual"); }} placeholder="Добавьте объяснения, инструкции, списки и ссылки…" />}</div><div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900"><div className="flex items-center gap-2 font-medium"><ShieldCheck size={17} />{draftMode === "manual" ? "Текст защищён от замены при импорте" : "Текст обновляется из ZIP"}</div><p className="mt-2 text-xs leading-6">Ручное изменение автоматически включает защиту. Предыдущие версии сохраняются в истории текста.</p>{dialog.lesson?.source_path && <label className="mt-3 flex items-start gap-2 text-xs leading-6"><input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-amber-600" checked={draftMode === "import"} onChange={e => setDraftMode(e.target.checked ? "import" : "manual")} /><span>Разрешить следующему ZIP-импорту заменить этот текст</span></label>}</div><div className="space-y-4 rounded-xl border border-zinc-200 p-4"><label className="block space-y-2 text-sm font-medium">Что открывать первым<select aria-label="Что открывать первым" className={input} value={draftPresentation} onChange={e => setDraftPresentation(e.target.value as typeof draftPresentation)}><option value="auto">Авто: файл, если он есть; иначе текст</option><option value="material">Основной файл</option><option value="text">Текст урока</option></select></label>{dialog.lesson && data?.assets.some(a => !a.is_archived && a.submodule_id === dialog.lesson?.id) && <label className="block space-y-2 text-sm font-medium">Основной файл<select aria-label="Основной файл" className={input} value={draftPrimary} onChange={e => setDraftPrimary(e.target.value)}><option value="">Первый файл по порядку</option>{data.assets.filter(a => !a.is_archived && a.submodule_id === dialog.lesson?.id).map(a => <option key={a.asset_id} value={a.asset_id}>{a.original_filename}</option>)}</select></label>}<p className="text-xs leading-6 text-zinc-500">Документ и конспект переключаются вкладками, а не показываются длинной лентой. Тест настраивается отдельно во вкладке «Тесты» этого же редактора.</p></div></>}{dialog.folder && <p className="text-sm leading-7 text-zinc-500">Каталог объединяет файлы и вложенные папки. Он не требует теста и не меняет количество обязательных уроков.</p>}</div>}
       {dialog?.kind === "rename" && <p className="text-xs leading-relaxed text-zinc-500">Меняется отображаемое имя, а не содержимое и не ссылка на файл. Сохраните исходное расширение.</p>}
-      {dialog?.kind === "move" && <div className="space-y-4"><p className="break-words text-sm text-zinc-500">{dialog.asset.original_filename}</p><label className="block space-y-2 text-sm font-medium">Куда переместить<select className={input} value={draftTarget} onChange={e => setDraftTarget(e.target.value)}><option value="">Общие файлы модуля</option>{activeLessons.map(l => <option key={l.id} value={l.id}>{l.title}</option>)}</select></label><p className="text-xs text-zinc-500">Содержимое, ссылка на файл и его версии сохранятся.</p></div>}
+      {dialog?.kind === "move" && <div className="space-y-4">
+        <p className="break-words text-sm text-zinc-500">{dialog.asset.original_filename}</p>
+        <label className="block space-y-2 text-sm font-medium">Куда переместить<select className={input} value={draftTarget} onChange={e => setDraftTarget(e.target.value)}><option value="">Общие файлы модуля</option>{activeLessons.map(l => <option key={l.id} value={l.id}>{l.is_folder ? "Каталог · " : "Урок · "}{l.title}</option>)}</select></label>
+        <label className="block space-y-2 text-sm font-medium">Папка внутри <span className="font-normal text-zinc-400">(необязательно)</span><input className={input} list="module-folders" value={draftFolder} maxLength={390} placeholder="Например, Производство/Сварка" onChange={e => setDraftFolder(e.target.value)} /><span className="block text-xs font-normal leading-6 text-zinc-500">Новая папка создастся автоматически. Пустое поле — верхний уровень раздела.</span></label>
+        <datalist id="module-folders">{[...new Set((data?.assets || []).filter(a => !a.is_archived && a.submodule_id === (draftTarget || null)).map(a => folderOf(a.original_filename)).filter(Boolean))].map(folder => <option key={folder} value={folder} />)}</datalist>
+        <p className="text-xs text-zinc-500">Содержимое, ссылка на файл, версии и результаты обучения сохранятся. Адрес файла в LMS не меняется.</p>
+      </div>}
       {dialog?.kind === "textVersions" && <div className="space-y-4"><div><p className="break-words text-sm font-medium">{dialog.lesson.title}</p><p className="mt-2 text-xs text-zinc-500">Текущая версия: {dialog.lesson.content_version}. Восстановленный текст будет защищён от замены ZIP-импортом.</p></div>{versionsLoading ? <p role="status" className="py-4 text-sm text-zinc-500">Загружаем историю…</p> : textVersions.length ? <div className="max-h-56 space-y-2 overflow-y-auto">{textVersions.map(version => <button key={version.version} type="button" aria-pressed={textPreview?.version === version.version} onClick={() => void previewTextVersion(dialog.lesson, version.version)} className={cn("flex w-full flex-wrap items-center justify-between gap-2 rounded-xl border p-3 text-left", textPreview?.version === version.version ? "border-amber-400 bg-amber-50" : "border-zinc-200 hover:bg-zinc-50")}><span className="text-sm font-medium">Версия {version.version}</span><span className="text-xs text-zinc-500">Снимок перед изменением · {new Date(version.created_at).toLocaleString("ru-RU")}</span></button>)}</div> : <p className="py-4 text-sm text-zinc-500">Текст ещё не менялся. Предыдущие версии появятся здесь после сохранения изменений.</p>}{textLoading && <p role="status" className="text-sm text-zinc-500">Загружаем текст…</p>}{textPreview && <><div className="max-h-80 overflow-y-auto whitespace-pre-wrap break-words rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-7">{textPreview.content || "Пустой текст"}</div><Button variant="outline" className={btn} disabled={locked || dialog.lesson.is_archived} onClick={() => { if (window.confirm(`Восстановить текст версии ${textPreview.version}? Текущий текст останется в истории.`)) void mutate(`/lessons/${dialog.lesson.id}/restore-version`, "POST", { version: textPreview.version }, "Текст восстановлен", dialog.revision).then(ok => { if (ok) setDialog(null); }); }}><RotateCcw size={15} />Восстановить версию {textPreview.version}</Button></>}</div>}
       {dialog?.kind === "versions" && <div className="space-y-3">
         <p className="break-words text-sm font-medium">{dialog.asset.original_filename}</p>

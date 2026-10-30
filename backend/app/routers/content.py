@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import mimetypes
 import pathlib
+import random
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -18,6 +20,11 @@ from app.core.security import require_roles
 from app.core.security_audit_log import audit_log
 from app.db.session import get_db
 from app.models.asset import AssetRevision, ContentAsset
+from app.models.attempt import QuizAttempt
+from app.models.audit import LearningEvent
+from app.models.completion import LessonQuizVersion
+from app.models.media import AssetRendition
+from app.models.sales import SalesEntry
 from app.models.module import Module, Submodule
 from app.models.lesson_revision import LessonRevision
 from app.models.quiz import Question, QuestionType, Quiz, QuizType
@@ -29,13 +36,16 @@ from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.tag import ModuleTagMap, Tag
 from app.services.media import stage_rendition
 from app.models.user import User, UserRole
-from app.schemas.content import ArchiveAssets, AssetEdit, LessonDraft, LessonEdit, ModuleDraft, ModuleEdit, ReorderRequest, VersionRestore
-from app.services.content import (ensure_filename_available, lock_module, next_lesson_order, normalize_name,
+from app.schemas.content import (ArchiveAssets, AssetEdit, DeleteAssets, DeleteLesson, LessonDraft, LessonEdit, ModuleDraft, ModuleEdit,
+    MoveAssets, ReorderRequest, VersionRestore)
+from app.services.content import (clean_folder, ensure_filename_available, lock_module, next_lesson_order, normalize_name,
     preserve_progress, reorder_lessons, require_lesson, require_owned_asset, safe_filename, snapshot_asset,
     storage_key, workspace, snapshot_lesson, read_lesson_text)
 from app.services.learning import remember_quiz_version
 from app.services.modules import modules_bump_rev
 from app.services.storage import effective_bucket, get_s3_client, upload_fileobj_with_retry
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin/content/modules", tags=["content editor"], dependencies=[Depends(require_roles(UserRole.admin))])
 
@@ -371,12 +381,22 @@ def edit_asset(module_id: uuid.UUID, asset_id: uuid.UUID, body: AssetEdit, reque
     target = body.submodule_id if "submodule_id" in body.model_fields_set else current_lesson
     if target and require_lesson(db, module, target).is_archived:
         raise HTTPException(409, "Сначала восстановите урок из архива")
-    filename = safe_filename(body.filename) if body.filename is not None else asset.original_filename
-    if body.filename is not None and "/" in asset.original_filename:
-        filename = f"{asset.original_filename.rsplit('/', 1)[0]}/{filename}"
+    basename = safe_filename(body.filename) if body.filename is not None else pathlib.PurePath(asset.original_filename).name
+    if body.folder is not None:
+        folder = clean_folder(body.folder)
+    elif body.filename is not None:
+        # Переименование внутри той же папки: путь сохраняется.
+        parent = pathlib.PurePosixPath(asset.original_filename.replace("\\", "/")).parent
+        folder = "" if str(parent) in {"", "."} else str(parent)
+    else:
+        folder = None
+    if folder is None:
+        filename = asset.original_filename
+    else:
+        filename = f"{folder}/{basename}" if folder else basename
     if len(filename) > 400:
         raise HTTPException(422, "Слишком длинное имя файла с учётом папки")
-    if body.filename is not None and pathlib.PurePath(filename).suffix.lower() != pathlib.PurePath(asset.original_filename).suffix.lower():
+    if body.filename is not None and pathlib.PurePath(basename).suffix.lower() != pathlib.PurePath(asset.original_filename).suffix.lower():
         raise HTTPException(422, "Расширение файла менять нельзя. Загрузите новый файл через «Заменить».")
     if not (body.is_archived is True):
         ensure_filename_available(db, module, filename, target, exclude=asset.id)
@@ -389,6 +409,122 @@ def edit_asset(module_id: uuid.UUID, asset_id: uuid.UUID, body: AssetEdit, reque
             order = int(db.scalar(select(func.max(SubmoduleAssetMap.order)).where(SubmoduleAssetMap.submodule_id == target)) or 0) + 1
             db.add(SubmoduleAssetMap(submodule_id=target, asset_id=asset.id, order=order))
     return _finish(db, request, user, module, "content_asset_updated", asset_id=str(asset.id), fields=sorted(body.model_fields_set - {"revision"}))
+
+
+@router.post("/{module_id}/lessons/{lesson_id}/delete")
+def delete_lesson(module_id: uuid.UUID, lesson_id: uuid.UUID, body: DeleteLesson, request: Request,
+                  db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin))):
+    """Удаление архивного урока навсегда — только если по нему нет истории обучения.
+
+    Если ученики открывали урок или проходили его тест, удаление запрещено: результаты
+    обучения не восстанавливаются, поэтому такой урок можно только держать в архиве.
+    """
+    module = _editable(db, module_id, body.revision)
+    lesson = require_lesson(db, module, lesson_id)
+    if not lesson.is_archived:
+        raise HTTPException(409, "Сначала переместите урок в архив — так его можно вернуть.")
+    quiz_ids = {lesson.quiz_id} | set(db.scalars(select(LessonQuizVersion.quiz_id).where(LessonQuizVersion.submodule_id == lesson.id)))
+    quiz_ids = {qid for qid in quiz_ids if qid}
+    if quiz_ids and db.scalar(select(QuizAttempt.id).where(QuizAttempt.quiz_id.in_(quiz_ids)).limit(1)):
+        raise HTTPException(409, "Урок уже проходили: попытки теста сохраняются, поэтому урок можно только архивировать.")
+    if db.scalar(select(LearningEvent.id).where(LearningEvent.ref_id == lesson.id).limit(1)):
+        raise HTTPException(409, "Ученики уже открывали урок: история обучения сохраняется, поэтому урок можно только архивировать.")
+    preserve_progress(db, module)
+    linked = list(db.scalars(select(ContentAsset).join(SubmoduleAssetMap, SubmoduleAssetMap.asset_id == ContentAsset.id)
+        .where(SubmoduleAssetMap.submodule_id == lesson.id)))
+    for asset in linked:
+        asset.is_archived = True  # файлы остаются в архиве модуля, а не исчезают вместе с уроком
+    db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.submodule_id == lesson.id))
+    db.execute(delete(LessonQuizVersion).where(LessonQuizVersion.submodule_id == lesson.id))
+    db.delete(lesson)
+    db.flush()
+    for quiz_id in quiz_ids:
+        quiz = db.get(Quiz, quiz_id)
+        if quiz is None:
+            continue
+        db.execute(delete(Question).where(Question.quiz_id == quiz_id))
+        db.delete(quiz)
+    return _finish(db, request, user, module, "content_lesson_deleted", lesson_id=str(lesson_id),
+                   assets_archived=[str(asset.id) for asset in linked])
+
+
+@router.post("/{module_id}/assets/move")
+def move_assets(module_id: uuid.UUID, body: MoveAssets, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin))):
+    """Перемещение файлов мышью: в другой урок/каталог и в папку внутри него.
+
+    Позиция файла — это пара «урок + путь папки»; содержимое и версии не меняются.
+    """
+    module = _editable(db, module_id, body.revision)
+    preserve_progress(db, module)
+    folder_given = "folder" in body.model_fields_set
+    target_given = "submodule_id" in body.model_fields_set
+    folder = clean_folder(body.folder) if folder_given else None
+    moved: list[str] = []
+    for aid in dict.fromkeys(body.ids):
+        asset = require_owned_asset(db, module, aid)
+        if asset.is_archived:
+            raise HTTPException(409, "Сначала восстановите файл из архива")
+        current = db.scalar(select(SubmoduleAssetMap.submodule_id).where(SubmoduleAssetMap.asset_id == asset.id))
+        target = body.submodule_id if target_given else current
+        if target and require_lesson(db, module, target).is_archived:
+            raise HTTPException(409, "Сначала восстановите урок из архива")
+        basename = pathlib.PurePath(asset.original_filename.replace("\\", "/")).name
+        if folder is None:
+            parent = pathlib.PurePosixPath(asset.original_filename.replace("\\", "/")).parent
+            destination = "" if str(parent) in {"", "."} else str(parent)
+        else:
+            destination = folder
+        filename = f"{destination}/{basename}" if destination else basename
+        if len(filename) > 400:
+            raise HTTPException(422, "Слишком длинный путь файла")
+        ensure_filename_available(db, module, filename, target, exclude=asset.id)
+        asset.original_filename = filename
+        if target_given and target != current:
+            db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.asset_id == asset.id))
+            if target:
+                position = int(db.scalar(select(func.max(SubmoduleAssetMap.order)).where(SubmoduleAssetMap.submodule_id == target)) or 0) + 1
+                db.add(SubmoduleAssetMap(submodule_id=target, asset_id=asset.id, order=position))
+        db.flush()
+        moved.append(str(asset.id))
+    return _finish(db, request, user, module, "content_assets_moved", asset_ids=moved,
+                   submodule_id=str(body.submodule_id) if body.submodule_id else None, folder=folder)
+
+
+@router.post("/{module_id}/assets/delete")
+def delete_assets(module_id: uuid.UUID, body: DeleteAssets, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin))):
+    """Удаление файла из архива навсегда: строки, версии и объекты в хранилище.
+
+    Разрешено только для архивных файлов: обучение и результаты к этому моменту уже не зависят от них.
+    """
+    module = _editable(db, module_id, body.revision)
+    preserve_progress(db, module)
+    ids = list(dict.fromkeys(body.ids))
+    assets = [require_owned_asset(db, module, aid) for aid in ids]
+    active = [asset.original_filename for asset in assets if not asset.is_archived]
+    if active:
+        raise HTTPException(409, f"Сначала переместите в архив: {', '.join(active[:3])}")
+    sales_linked = list(db.scalars(select(SalesEntry.asset_id).where(SalesEntry.asset_id.in_(ids))))
+    if sales_linked:
+        raise HTTPException(409, "Файл используется в библиотеке продаж. Сначала уберите его оттуда.")
+    keys: list[tuple[str, str]] = []
+    for asset in assets:
+        keys.append((asset.bucket, asset.object_key))
+        for revision in db.scalars(select(AssetRevision).where(AssetRevision.asset_id == asset.id)):
+            keys.append((revision.bucket, revision.object_key))
+        for rendition in db.scalars(select(AssetRendition).where(AssetRendition.asset_id == asset.id)):
+            if rendition.object_key:
+                keys.append((rendition.bucket, rendition.object_key))
+        db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.asset_id == asset.id))
+        db.delete(asset)
+    state = _finish(db, request, user, module, "content_assets_deleted", asset_ids=[str(aid) for aid in ids])
+    # Хранилище чистим после коммита: сбой S3 не должен отменять уже удалённые строки.
+    s3 = get_s3_client()
+    for bucket, key in keys:
+        try:
+            s3.delete_object(Bucket=bucket, Key=key)
+        except Exception:
+            log.warning("asset delete: object cleanup failed", extra={"object_key": key})
+    return state
 
 
 @router.post("/{module_id}/assets/archive")
@@ -582,17 +718,58 @@ def save_lesson_quiz(module_id: uuid.UUID, lesson_id: uuid.UUID, body: QuizSave,
     return {"workspace": state, "quiz": quiz_payload(db, module, lesson)}
 
 
+def _final_quiz_composition(db: Session, module: Module) -> tuple[list[dict], list[dict]]:
+    """Из чего соберётся итоговый тест: уроки, их вопросы и представительная выборка.
+
+    Итоговый тест не хранит собственных вопросов: на каждой попытке он берёт до 3 вопросов
+    из каждого обязательного теста урока (максимум 10 уроков и 30 вопросов).
+    """
+    lessons = list(db.scalars(select(Submodule).where(Submodule.module_id == module.id,
+        Submodule.is_archived.is_(False), Submodule.is_folder.is_(False)).order_by(Submodule.order, Submodule.id)))
+    rng = random.Random(f"final_preview:{module.id}:{module.content_revision}")
+    rows: list[dict] = []
+    pools: list[tuple[Submodule, list]] = []
+    for lesson in lessons:
+        questions = list(db.scalars(select(Question).where(Question.quiz_id == lesson.quiz_id))) if lesson.quiz_id else []
+        valid = [q for q in questions if question_payload(q)["valid"]]
+        contributes = bool(lesson.requires_quiz and valid)
+        rows.append({"id": str(lesson.id), "title": lesson.title, "question_count": len(valid),
+                     "requires_quiz": bool(lesson.requires_quiz), "contributes": contributes})
+        if contributes:
+            pool = list(valid)
+            rng.shuffle(pool)
+            pools.append((lesson, pool))
+    if len(pools) > 10:
+        rng.shuffle(pools)
+        pools = pools[:10]
+    picked: list[tuple[Submodule, object]] = []
+    for _ in range(3):
+        for lesson, pool in pools:
+            if pool and len(picked) < 30:
+                picked.append((lesson, pool.pop(0)))
+    sample = []
+    for lesson, question in picked:
+        data = question_payload(question)
+        sample.append({"lesson_id": str(lesson.id), "lesson": lesson.title, "stem": data["stem"],
+                       "options": data["options"], "correct": data["correct"]})
+    return rows, sample
+
+
 @router.get("/{module_id}/final-quiz")
 def final_quiz_settings(module_id: uuid.UUID, db: Session = Depends(get_db)):
     module = db.get(Module, module_id)
     if not module:
         raise HTTPException(404, "Модуль не найден")
     quiz = db.get(Quiz, module.final_quiz_id) if module.final_quiz_id else None
+    lessons, sample = _final_quiz_composition(db, module)
+    contributing = [row for row in lessons if row["contributes"]]
     return {"revision": module.content_revision, "enabled": module.final_quiz_enabled and quiz is not None,
             "pass_threshold": quiz.pass_threshold if quiz else 70, "time_limit": quiz.time_limit if quiz else None,
             "attempts_limit": quiz.attempts_limit if quiz else 3,
-            "source_lessons": db.scalar(select(func.count()).select_from(Submodule).where(Submodule.module_id == module.id,
-                Submodule.is_archived.is_(False), Submodule.is_folder.is_(False), Submodule.requires_quiz.is_(True))) or 0}
+            "source_lessons": len(contributing),
+            "lessons": lessons, "sample": sample,
+            "max_questions": min(30, sum(min(3, row["question_count"]) for row in contributing)),
+            "questions": []}
 
 
 @router.put("/{module_id}/final-quiz")

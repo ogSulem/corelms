@@ -53,8 +53,24 @@ class ReorderRequest(RevisionRequest):
 
 class AssetEdit(RevisionRequest):
     filename: str | None = Field(default=None, max_length=400)
+    # Путь папки внутри урока/каталога. Пустая строка — корень раздела.
+    folder: str | None = Field(default=None, max_length=390)
     is_archived: bool | None = None
     submodule_id: uuid.UUID | None = None
+
+
+class MoveAssets(RevisionRequest):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    submodule_id: uuid.UUID | None = None
+    folder: str | None = Field(default=None, max_length=390)
+
+
+class DeleteAssets(RevisionRequest):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+
+
+class DeleteLesson(RevisionRequest):
+    pass
 
 
 class VersionRestore(RevisionRequest):

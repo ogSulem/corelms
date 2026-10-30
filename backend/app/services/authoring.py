@@ -148,6 +148,32 @@ def _source_text(db, lesson: Submodule) -> tuple[str, str]:
     return (text[:60000], "Конспект / текст урока") if is_useful_quiz_text(text) else ("", "Нет доступного текста")
 
 
+def quiz_failure_hint(debug: dict | None) -> str:
+    """Причина вместо «AI не вернул вопросы»: таймаут, ключ, кредиты, лимит или формат."""
+    info = debug or {}
+    raw_error = str(info.get("provider_error") or info.get("error") or "").lower()
+    status = info.get("http_status")
+    if status == 401 or "missing_token" in raw_error or "http_401" in raw_error:
+        return ("AI-провайдер отклонил ключ (401). Проверьте токен в «Админ-центр → Настройки» "
+                "и сохраните его заново.")
+    if status == 402 or "http_402" in raw_error:
+        return "На счёте AI-провайдера закончились средства (402). Пополните баланс и повторите генерацию."
+    if status == 429 or "http_429" in raw_error:
+        return "AI-провайдер ограничил частоту запросов (429). Подождите минуту и повторите."
+    if "readtimeout" in raw_error or "timeout" in raw_error or "budget_exhausted" in raw_error:
+        return ("AI не ответил за отведённое время. Уменьшите число вопросов, вставьте более короткий "
+                "фрагмент текста или повторите генерацию.")
+    if "connect" in raw_error:
+        return "Нет соединения с AI-провайдером. Проверьте интернет на сервере и адрес API в настройках."
+    if "degenerate" in raw_error:
+        return "AI вернул вопросы, где правильный ответ всегда один и тот же. Повторите генерацию."
+    if "invalid_json" in raw_error or "schema" in raw_error or "no_valid" in raw_error:
+        return ("AI вернул вопросы в неожиданном формате: варианты ответов не удалось разобрать. "
+                "Повторите генерацию или добавьте вопросы вручную.")
+    return ("AI не вернул проверяемые вопросы. Ничего не опубликовано: повторите генерацию "
+            "или добавьте вопросы вручную.")
+
+
 def generate_quiz_draft_job(module_id: str, lesson_id: str, revision: int, count: int, source_text: str | None = None, source_fingerprint: str | None = None) -> dict:
     job = get_current_job()
     if job:
@@ -173,8 +199,9 @@ def generate_quiz_draft_job(module_id: str, lesson_id: str, revision: int, count
             job.save_meta()
         source_length = len(text)
         text = text[:12000]  # Match the OpenRouter prompt budget; report the actual input.
+        debug: dict = {}
         generated = generate_quiz_questions_ai(title=title, text=text[:60000], n_questions=count,
-            min_questions=1, retries=1, time_budget_seconds=180)
+            min_questions=1, retries=2, time_budget_seconds=240, debug_out=debug)
         questions = []
         for question in generated or []:
             obj = SimpleNamespace(**question) if isinstance(question, dict) else question
@@ -182,7 +209,7 @@ def generate_quiz_draft_job(module_id: str, lesson_id: str, revision: int, count
             if data["valid"]:
                 questions.append(data)
         if not questions:
-            return {"ok": False, "error": "AI не вернул проверяемые вопросы. Ничего не опубликовано. Повторите позже или добавьте вопросы вручную."}
+            return {"ok": False, "error": quiz_failure_hint(debug), "error_code": "ai_failed"}
         return {"ok": True, "module_id": module_id, "lesson_id": lesson_id, "revision": revision,
                 "questions": questions[:count], "source_revision": source_fingerprint, "needs_review": True, "source_label": source_label, "source_chars": len(text),
                 "source_total_chars": source_length,

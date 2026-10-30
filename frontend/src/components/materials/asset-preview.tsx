@@ -68,7 +68,10 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [ready, setReady] = useState(false);
-  const [rendition, setRendition] = useState<ViewerState | null>(null);
+  // Если копия для браузера уже готова, показываем её сразу — без ожидания опроса статуса.
+  const [rendition, setRendition] = useState<ViewerState | null>(() => asset.browser_copy && (materialKind(asset.original_filename) === "video" || materialKind(asset.original_filename) === "document")
+    ? { state: "ready", source_version: asset.version || 1, mime_type: materialKind(asset.original_filename) === "document" ? "application/pdf" : "video/mp4", error: null, can_retry: false }
+    : null);
   const [viewerError, setViewerError] = useState<string | null>(null);
   const [textFallback, setTextFallback] = useState(false);
   const [preparingAgain, setPreparingAgain] = useState(false);
@@ -134,8 +137,10 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
     const load = async () => {
       try {
         if (native) {
-          // Auth renewal and an S3 existence check before mounting native viewers.
-          await apiFetch(`/assets/${asset.asset_id}/presign-download?action=view`, { signal: controller.signal });
+          // Продлеваем сессию перед запросом файла, но не блокируем показ:
+          // иначе одна временная ошибка хранилища оставляла пустое место вместо картинки.
+          await apiFetch(`/assets/${asset.asset_id}/presign-download?action=view`, { signal: controller.signal })
+            .catch(() => null);
           if (!controller.signal.aborted) setReady(true);
         } else {
           const result = await apiFetch<PreviewData>(`/assets/${asset.asset_id}/preview?sheet=${sheet}`, { signal: controller.signal });
@@ -159,7 +164,29 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
     finally { setDownloading(false); }
   }
 
-  const mediaError = () => setError("Браузер не смог воспроизвести этот формат. Скачайте оригинал или попробуйте открыть файл в другом браузере.");
+  /**
+   * Браузер не показал файл — выясняем настоящую причину (нет доступа, файл не догрузился,
+   * формат не поддержан) и пишем её вместо общего «что-то пошло не так».
+   */
+  async function explainMediaFailure() {
+    let status = 0;
+    try {
+      const response = await fetch(source, { method: "GET", headers: { Range: "bytes=0-0" }, credentials: "include", cache: "no-store" });
+      status = response.status;
+      if (response.ok) {
+        setError("Файл скачался, но браузер не смог его показать. Скачайте оригинал — он открывается в обычной программе.");
+        return;
+      }
+    } catch { /* сеть недоступна — сообщим об этом ниже */ }
+    const hint = status === 401 || status === 403 ? "Сессия истекла. Обновите страницу и войдите снова."
+      : status === 404 ? "Файл не найден в хранилище — вероятно, загрузка оборвалась. Загрузите его ещё раз."
+      : status === 415 ? "Этот формат нельзя показать в браузере — скачайте оригинал."
+      : status === 416 ? "Файл повреждён: хранилище не отдало его содержимое. Загрузите файл заново."
+      : status >= 500 ? `Сервис хранения ответил ошибкой ${status}. Повторите через минуту.`
+      : status ? `Не удалось открыть файл (код ${status}).`
+      : "Нет связи с сервисом хранения. Проверьте сеть и повторите.";
+    setError(`${hint} Оригинал всегда можно скачать кнопкой ниже.`);
+  }
   const width = data?.rows?.reduce((max, row) => Math.max(max, row.length), 0) || 0;
 
   return (
@@ -214,13 +241,13 @@ function PreviewContent({ asset, onClose, className, embedded = false }: { asset
       ) : native && ready ? (
         <div className="bg-zinc-50">
           {kind === "pdf" && !pdfSupported && <p className="px-6 py-12 text-center text-sm leading-7 text-zinc-600">Встроенный просмотр PDF в этом браузере недоступен. Скачайте оригинал или откройте файл в отдельной вкладке.</p>}
-          {kind === "pdf" && pdfSupported && <iframe key={retry} title={`PDF: ${asset.original_filename}`} src={source} className={cn("w-full border-0", embedded ? "h-[66vh]" : "h-[72vh] min-h-[400px]")} />}
-          {kind === "image" && <img src={source} alt={asset.original_filename} onError={mediaError} className="mx-auto max-h-[75vh] max-w-full object-contain" />}
-          {kind === "video" && <video ref={videoRef} src={source} onLoadedMetadata={() => {
+          {kind === "pdf" && pdfSupported && <iframe key={retry} title={`PDF: ${asset.original_filename}`} src={source} className={cn("w-full border-0", embedded ? "h-[64vh] min-h-[320px]" : "h-[72vh] min-h-[400px]")} />}
+          {kind === "image" && <img src={source} alt={asset.original_filename} onError={() => void explainMediaFailure()} className="mx-auto max-h-[72vh] max-w-full bg-white object-contain" />}
+          {kind === "video" && <video ref={videoRef} src={source} onError={() => void explainMediaFailure()} onLoadedMetadata={() => {
             const video = videoRef.current, saved = playback.current;
             if (video && saved) { video.currentTime = Math.min(saved.time, video.duration || saved.time); if (!saved.paused) void video.play().catch(() => {}); playback.current = null; }
-          }} controls playsInline preload="metadata" onError={mediaError} className="max-h-[75vh] w-full bg-zinc-950"><track kind="captions" /></video>}
-          {kind === "audio" && <div className="p-6 sm:p-10"><audio src={source} controls preload="metadata" onError={mediaError} className="w-full"><track kind="captions" /></audio></div>}
+          }} controls playsInline preload="auto" className="max-h-[72vh] w-full bg-zinc-950"><track kind="captions" /></video>}
+          {kind === "audio" && <div className="p-6 sm:p-10"><audio src={source} controls preload="metadata" onError={() => void explainMediaFailure()} className="w-full"><track kind="captions" /></audio></div>}
         </div>
       ) : data?.kind === "table" ? (
         <>

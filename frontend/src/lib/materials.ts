@@ -11,6 +11,8 @@ export type Material = {
   size_bytes?: number | null;
   version?: number;
   order?: number;
+  /** Готова совместимая копия (MP4/PDF) — её показываем вместо оригинала. */
+  browser_copy?: boolean;
 };
 
 type MaterialKind = "table" | "document" | "text" | "pdf" | "image" | "video" | "audio" | "download";
@@ -23,8 +25,8 @@ export function fileExtension(name: string): string {
  * Адрес превью файла. `thumb=1` отключает запись события обучения и разрешает кэш:
  * иконки в списке не должны попадать в журнал «просмотрено».
  */
-export function materialThumbUrl(assetId: string, version?: number | null): string {
-  const query = new URLSearchParams({ variant: "original", thumb: "1" });
+export function materialThumbUrl(assetId: string, version?: number | null, browserCopy = false): string {
+  const query = new URLSearchParams({ variant: browserCopy ? "browser" : "original", thumb: "1" });
   if (version) query.set("v", String(version));
   return `/api/backend/assets/${encodeURIComponent(assetId)}/stream?${query.toString()}`;
 }
@@ -78,32 +80,62 @@ export async function downloadMaterial(assetId: string): Promise<void> {
   link.remove();
 }
 
-/** Same-origin, streamed multipart upload with real progress and one auth renewal. */
-export async function uploadMaterial<T>(path: string, form: FormData, onProgress: (percent: number) => void, signal?: AbortSignal): Promise<T> {
-  const send = () => new Promise<T>((resolve, reject) => {
+/**
+ * Прямая загрузка в backend: nginx/Caddy проксируют /api/upload/ в backend без Next.js.
+ * Next.js обрывает запрос, который принимает тело дольше ~5 минут, и большой файл
+ * (видео) возвращал 502. Обратный путь /api/backend остаётся запасным для старых сборок.
+ */
+const UPLOAD_PATH = "/api/upload";
+const FALLBACK_UPLOAD_PATH = "/api/backend";
+
+type UploadFailure = Error & { status?: number; bodyWasJson?: boolean };
+
+function uploadOnce<T>(base: string, path: string, form: FormData, onProgress: (percent: number) => void, signal?: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `/api/backend${path}`);
+    xhr.open("POST", `${base}${path}`);
     xhr.withCredentials = true;
-    xhr.timeout = 15 * 60 * 1000;
+    xhr.timeout = 60 * 60 * 1000;
     xhr.upload.onprogress = (event) => { if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 100)); };
     const abort = () => xhr.abort();
     signal?.addEventListener("abort", abort, { once: true });
     xhr.onloadend = () => signal?.removeEventListener("abort", abort);
-    xhr.onerror = () => reject(new Error("Соединение прервано. Обновите список файлов перед повторной загрузкой."));
-    xhr.ontimeout = () => reject(new Error("Сервер не ответил вовремя. Проверьте список материалов перед повторной загрузкой."));
+    xhr.onerror = () => reject(new Error("Соединение прервано во время загрузки. Файл не отправлен целиком — обновите список и повторите."));
+    xhr.ontimeout = () => reject(new Error("Загрузка не завершилась за час. Проверьте соединение и повторите."));
     xhr.onabort = () => reject(new DOMException("Загрузка отменена", "AbortError"));
     xhr.onload = () => {
-      let data: Record<string, unknown>;
-      try { data = JSON.parse(xhr.responseText); } catch { data = {}; }
-      if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
-      else reject(Object.assign(new Error(String(data.error_message || data.detail || `Не удалось загрузить файл (${xhr.status})`)), { status: xhr.status }));
+      let data: Record<string, unknown> | null = null;
+      try { data = JSON.parse(xhr.responseText); } catch { data = null; }
+      if (xhr.status >= 200 && xhr.status < 300) { resolve((data || {}) as T); return; }
+      const fallback = xhr.status === 413
+        ? "Файл больше разрешённого размера. Увеличьте лимит в настройках или загрузите файл меньшего размера."
+        : xhr.status === 502 || xhr.status === 504
+          ? "Сервер прервал загрузку. Обычно это обрыв связи на большом файле — повторите загрузку, файл не повреждён."
+          : `Не удалось загрузить файл (${xhr.status})`;
+      const message = String(data?.error_message || data?.detail || fallback);
+      reject(Object.assign(new Error(message), { status: xhr.status, bodyWasJson: !!data }));
     };
     if (signal?.aborted) { reject(new DOMException("Загрузка отменена", "AbortError")); return; }
     xhr.send(form);
   });
-  try { return await send(); }
-  catch (error) {
-    if ((error as { status?: number }).status === 401 && !signal?.aborted && await refreshSession()) return send();
+}
+
+/** Same-origin, streamed multipart upload with real progress and one auth renewal. */
+export async function uploadMaterial<T>(path: string, form: FormData, onProgress: (percent: number) => void, signal?: AbortSignal): Promise<T> {
+  const send = async (base: string) => {
+    try { return await uploadOnce<T>(base, path, form, onProgress, signal); }
+    catch (error) {
+      const failure = error as UploadFailure;
+      if (failure.status === 401 && !signal?.aborted && await refreshSession()) return uploadOnce<T>(base, path, form, onProgress, signal);
+      throw error;
+    }
+  };
+  try {
+    return await send(UPLOAD_PATH);
+  } catch (error) {
+    const failure = error as UploadFailure;
+    // Старая сборка без прямого маршрута: путь /api/upload/ отдаёт 404 без JSON.
+    if ((failure.status === 404 || failure.status === 405) && !failure.bodyWasJson) return send(FALLBACK_UPLOAD_PATH);
     throw error;
   }
 }
