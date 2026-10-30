@@ -1,5 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request, Response
 import hmac
+import os
+from datetime import datetime, timezone
 from sqlalchemy import text
 
 from app.core.queue import get_queue
@@ -29,6 +31,28 @@ def health():
 @router.head("/health", include_in_schema=False)
 def health_head():
     """Мониторинг и `curl -I` шлют HEAD: он должен отвечать, а не падать 405."""
+    return Response(status_code=200)
+
+
+_STARTED_AT = datetime.now(timezone.utc).isoformat()
+
+
+@router.get("/health/version")
+def version():
+    """Какая версия кода реально запущена.
+
+    Нужно, чтобы «изменения не применились» проверялось фактом, а не догадкой:
+    deploy/update.sh проставляет APP_VERSION (короткий git-хеш) при пересборке.
+    """
+    return {
+        "version": str(os.environ.get("APP_VERSION") or "dev").strip() or "dev",
+        "started_at": _STARTED_AT,
+        "pid": os.getpid(),
+    }
+
+
+@router.head("/health/version", include_in_schema=False)
+def version_head():
     return Response(status_code=200)
 
 

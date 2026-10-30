@@ -29,6 +29,12 @@ let lastMeAt = 0;
 let hasLoadedOnce = false;
 
 let retryTimer: any = null;
+/**
+ * Сколько раз подряд /api/auth/me не ответил. Раньше при недоступном сервере
+ * опрос шёл каждые 3 секунды бесконечно — на слабой мобильной сети это лишний
+ * трафик и батарея. Теперь пауза растёт: 3 → 6 → 12 → 24 → 60 секунд.
+ */
+let failureStreak = 0;
 
 function emitAuth() {
   for (const cb of Array.from(authSubscribers)) {
@@ -73,6 +79,7 @@ async function sharedFetchMe(force: boolean = false) {
     const res = await fetch('/api/auth/me', { cache: 'no-store' });
     if (res.ok) {
       const data = await res.json();
+      failureStreak = 0;
       if (data.authenticated) {
         authSnapshot = { user: data.user as User, loading: false, error: null };
       } else {
@@ -94,10 +101,12 @@ async function sharedFetchMe(force: boolean = false) {
       } catch {
         // ignore
       }
+      const delay = Math.min(3000 * 2 ** Math.min(failureStreak, 5), 60_000);
+      failureStreak += 1;
       retryTimer = setTimeout(() => {
         retryTimer = null;
         void sharedFetchMe(true);
-      }, 3000);
+      }, delay);
     }
   }
 }

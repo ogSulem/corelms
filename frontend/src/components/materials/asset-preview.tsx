@@ -41,7 +41,7 @@ export function AssetPreviewModal({ asset, onClose }: { asset: Material | null; 
   }
   return <Modal
     open={!!asset}
-    title={asset ? asset.original_filename.split(/[\\/]/).filter(Boolean).at(-1) || asset.original_filename : ""}
+    title={asset ? asset.original_filename.split(/[\\/]/).filter(Boolean).slice(-1)[0] || asset.original_filename : ""}
     onClose={onClose}
     className="max-w-[min(96vw,1180px)]"
     footer={<div className="flex flex-wrap items-center justify-between gap-2">

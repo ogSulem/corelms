@@ -101,7 +101,7 @@ export function FileRow({ asset, onOpen, openLabel, actions, selected, showFullP
   children?: ReactNode;
   meta?: ReactNode;
 }) {
-  const name = showFullPath ? asset.original_filename : asset.original_filename.split(/[\\/]/).filter(Boolean).at(-1) || asset.original_filename;
+  const name = showFullPath ? asset.original_filename : asset.original_filename.split(/[\\/]/).filter(Boolean).slice(-1)[0] || asset.original_filename;
   const details = <>{fileExtension(asset.original_filename).toUpperCase() || "Файл"} · {formatBytes(asset.size_bytes)}{asset.version && asset.version > 1 ? ` · v${asset.version}` : ""}</>;
   const body = <>
     <MaterialThumb asset={asset} size="lg" />

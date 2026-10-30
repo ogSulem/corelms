@@ -1,6 +1,8 @@
 import * as nextHeaders from "next/headers";
 import { NextResponse } from "next/server";
 
+import { asciiOrigin } from "../../auth/_request";
+
 
 const API_BASE_URL =
   process.env.CORE_INTERNAL_API_BASE_URL ||
@@ -9,25 +11,22 @@ const API_BASE_URL =
   "http://backend:8000";
 
 function parseAllowedOrigins(): string[] {
+  // Браузер присылает Origin в punycode, а в .env домен записан кириллицей:
+  // сравниваем только ASCII-формы, иначе предпроверка CORS отвечает «нельзя»
+  // на собственный же сайт.
   const out = new Set<string>();
   const raw = String(process.env.CORS_ALLOW_ORIGINS || "");
   for (const part of raw.split(",")) {
-    const v = String(part || "").trim();
+    const v = asciiOrigin(part);
     if (v) out.add(v);
   }
-  const publicUrl = String(process.env.PUBLIC_APP_URL || "").trim();
-  if (publicUrl) {
-    try {
-      out.add(new URL(publicUrl).origin);
-    } catch {
-      // ignore
-    }
-  }
+  const fromPublic = asciiOrigin(process.env.PUBLIC_APP_URL);
+  if (fromPublic) out.add(fromPublic);
   return Array.from(out);
 }
 
 function isAllowedOrigin(origin: string, allowed: string[]): boolean {
-  const o = String(origin || "").trim();
+  const o = asciiOrigin(origin);
   if (!o) return false;
   return allowed.includes(o);
 }

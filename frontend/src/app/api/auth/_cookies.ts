@@ -30,7 +30,7 @@ export function requestIsHttps(request?: Request | null): boolean {
  * было незаметно, если он открывал https-домен, а мобильный заходил по IP.
  * Cookie без Secure на HTTP работает, а на HTTPS Secure выставляется как надо.
  */
-function cookieSecure(request?: Request | null): boolean {
+export function cookieSecure(request?: Request | null): boolean {
   const raw = String(process.env.COOKIE_SECURE || "").trim();
   const enforced = raw ? raw.toLowerCase() === "true" : _isProd();
   if (!enforced) return false;

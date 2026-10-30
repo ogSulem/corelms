@@ -26,6 +26,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 STAMP="$(date +%F_%H-%M)"
+
+# Версия кода, которая поднимается. Её отдают /health/version и диагностика на
+# форме входа: после деплоя сразу видно, применились ли изменения.
+if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+  APP_VERSION="$(git rev-parse --short HEAD 2>/dev/null || echo dev)-$(date +%F_%H-%M)"
+else
+  APP_VERSION="dev-$(date +%F_%H-%M)"
+fi
+export APP_VERSION
 WHAT="all"
 TRY_BUILD=0
 
@@ -33,7 +42,7 @@ for arg in "$@"; do
   case "$arg" in
     --build) TRY_BUILD=1 ;;
     backend|frontend|workers|all) WHAT="$arg" ;;
-    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "Неизвестный аргумент: $arg (backend | frontend | workers | all | --build)"; exit 2 ;;
   esac
 done
@@ -42,6 +51,7 @@ say() { printf '\n== %s\n' "$1"; }
 die() { printf '\n!! %s\n' "$1"; exit 1; }
 
 command -v docker >/dev/null 2>&1 || die "Docker не найден"
+say "Версия, которая поднимается: $APP_VERSION (её отдаёт /health/version)"
 docker compose version >/dev/null 2>&1 || die "Нужен Docker Compose v2 (команда 'docker compose')"
 
 # Тома с данными не трогаем никогда: они перечислены только для проверки.
