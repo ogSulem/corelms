@@ -197,6 +197,12 @@ def reset_password_confirm(
         audit_log(db=db, request=request, event_type="auth_password_reset_failed", meta={"reason": "user_missing"})
         db.commit()
         raise HTTPException(status_code=400, detail="invalid token")
+    if bool(getattr(user, "is_archived", False)):
+        # Ссылка на сброс для архивной записи бесполезна: вход всё равно закрыт.
+        audit_log(db=db, request=request, event_type="auth_password_reset_failed",
+                  actor_user_id=user.id, target_user_id=user.id, meta={"reason": "archived"})
+        db.commit()
+        raise HTTPException(status_code=400, detail="invalid token")
 
     user.password_hash = _hash_password(body.new_password)
     user.must_change_password = False
@@ -224,12 +230,19 @@ def reset_password_confirm(
     return {"ok": True}
 
 
+# Обучающийся в публичном ответе всегда называется одинаково: "employee".
+# Раньше здесь возвращался "user", а карточка пользователя на фронте ожидала
+# "employee" — два имени для одной роли, из-за чего тип не сходился с данными.
+LEARNER_PUBLIC_ROLE = "employee"
+
+
 def _public_role(role: UserRole) -> str:
     if role == UserRole.superadmin:
         return "superadmin"
     if role == UserRole.admin:
         return "admin"
-    return "user"
+    # partner и legacy-значения из ручного SQL — это всё «учится без прав админа».
+    return LEARNER_PUBLIC_ROLE
 
 
 def _client_ip_from_request(request: Request) -> str | None:
@@ -399,6 +412,20 @@ def token(
         db.commit()
         raise HTTPException(status_code=401, detail="invalid credentials")
 
+    # Архивную учётную запись не пускаем: пароль проверен, поэтому можно честно
+    # сказать причину, не раскрывая существование аккаунта посторонним.
+    if bool(getattr(user, "is_archived", False)):
+        audit_log(db=db, request=request, event_type="auth_login_failed", actor_user_id=user.id,
+                  target_user_id=user.id, meta={"username": form_data.username, "reason": "archived"})
+        db.commit()
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "account_archived",
+                "error_message": "Учётная запись в архиве. Обратитесь к администратору платформы.",
+            },
+        )
+
     # Успешный вход обнуляет счётчик неудач этого логина: ограничение наказывает
     # серию ошибок, а не человека, который просто вошёл ещё раз.
     try:
@@ -483,7 +510,7 @@ def refresh_token(
         user = db.get(User, uuid.UUID(session["user_id"]))
     except (ValueError, KeyError):
         user = None
-    if user is None:
+    if user is None or bool(getattr(user, "is_archived", False)):
         raise HTTPException(401, "invalid token")
     rotated = auth_sessions.rotate_session(token, user, request)
     if rotated is None:

@@ -183,7 +183,9 @@ class LearningService:
         module = self.db.get(Module, module_id)
         if module is None:
             return []
-        users = list(self.db.scalars(select(User).order_by(User.name)))
+        # Архивные учётные записи в аналитику модуля не попадают: они больше не
+        # действующие, а их история остаётся в базе для разбора.
+        users = list(self.db.scalars(select(User).where(User.is_archived.is_(False)).order_by(User.name)))
         results = self._calculate(users, [module], compact=True)
         return [{
             **results[(u.id, module.id)], "user_id": str(u.id), "name": u.name,

@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from passlib.context import CryptContext
-from sqlalchemy import case, delete, func, select, text
+from sqlalchemy import case, delete, func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.core.queue import get_job_status, normalize_job_status, release_job_lock
@@ -44,11 +44,13 @@ from app.models.module import Module, Submodule
 from app.models.quiz import Question, Quiz
 from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User, UserRole
+from app.models.completion import ModuleCompletion
 from app.models.password_reset import PasswordResetToken
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.quiz import QuestionType, QuizType
 from app.models.skill import UserSkill
 from app.models.tag import Tag, UserTagMap, ModuleTagMap
+from app.services import auth_sessions
 from app.schemas.analytics import ModuleAnalyticsResponse
 from app.schemas.admin import (
     AssignmentCreateRequest,
@@ -4928,6 +4930,14 @@ def create_assignment(
     assigned_to = _uuid(body.assigned_to, field="assigned_to")
     target_id = _uuid(body.target_id, field="target_id")
 
+    # Назначать задание несуществующему или архивному человеку нельзя: иначе
+    # получается «висящее» назначение, которое никто никогда не увидит.
+    assignee = db.scalar(select(User).where(User.id == assigned_to))
+    if assignee is None:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if bool(getattr(assignee, "is_archived", False)):
+        raise HTTPException(status_code=409, detail="Пользователь в архиве — сначала восстановите его")
+
     try:
         t = AssignmentType(body.type)
     except ValueError as e:
@@ -5025,10 +5035,16 @@ def get_module_answers(
 
 @router.get("/users")
 def list_admin_users(
+    include_archived: bool = False,
     db: Session = Depends(get_db),
     _: User = Depends(require_roles(UserRole.admin)),
 ):
-    rows = db.scalars(select(User).order_by(User.name)).all()
+    stmt = select(User).order_by(User.name)
+    if not include_archived:
+        # По умолчанию архивных не показываем: иначе список «уволенных» растёт
+        # и мешает искать действующих партнёров.
+        stmt = stmt.where(User.is_archived.is_(False))
+    rows = db.scalars(stmt).all()
 
     user_tag_rows = db.execute(select(UserTagMap.user_id, UserTagMap.tag_id)).all()
     tag_name_by_id: dict[uuid.UUID, str] = {t.id: str(t.name) for t in db.scalars(select(Tag)).all()}
@@ -5110,6 +5126,7 @@ def list_admin_users(
                 "xp": int(u.xp or 0),
                 "level": int(u.level or 0),
                 "streak": int(u.streak or 0),
+                "is_archived": bool(getattr(u, "is_archived", False)),
                 "last_activity_at": u.last_activity_at.isoformat() if getattr(u, "last_activity_at", None) else None,
                 "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
                 "progress_summary": _safe_summary(u),
@@ -5801,14 +5818,42 @@ def admin_user_history(
     return {"items": items[:take]}
 
 
+def _user_history_counts(db: Session, uid: uuid.UUID) -> dict[str, int]:
+    """Сколько данных стоит за учётной записью. Нужно, чтобы «удалить» не стирало историю."""
+    return {
+        "attempts": int(db.scalar(select(func.count()).select_from(QuizAttempt).where(QuizAttempt.user_id == uid)) or 0),
+        "events": int(db.scalar(select(func.count()).select_from(LearningEvent).where(LearningEvent.user_id == uid)) or 0),
+        "completions": int(db.scalar(select(func.count()).select_from(ModuleCompletion).where(ModuleCompletion.user_id == uid)) or 0),
+        "assignments": int(db.scalar(select(func.count()).select_from(Assignment).where(Assignment.assigned_to == uid)) or 0),
+    }
+
+
+def _archive_user(db: Session, request: Request, *, target: User, actor: User) -> None:
+    target.is_archived = True
+    db.add(target)
+    db.flush()
+    # Доступ отзываем сразу: иначе уже открытая вкладка продолжала бы работать.
+    auth_sessions.revoke_sessions(str(target.id))
+
+
 @router.delete("/users/{user_id}")
 def delete_user(
     request: Request,
     user_id: str,
+    permanent: bool = False,
     db: Session = Depends(get_db),
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_delete_user", limit=10, window_seconds=60),
 ):
+    """Убрать человека из системы, не потеряв историю обучения.
+
+    Обычный `DELETE` — это **архив**: вход закрывается, учётная запись исчезает
+    из списков, но попытки тестов, прогресс и журнал остаются. Так же, как с
+    модулями и уроками: сначала архив, окончательное удаление — крайний случай.
+
+    `?permanent=true` разрешено только для учётной записи без истории (создана
+    по ошибке и ни разу не использовалась): иначе 409 и предложение архива.
+    """
     uid = _uuid(user_id, field="user_id")
     if uid == current.id:
         raise HTTPException(status_code=400, detail="cannot delete self")
@@ -5822,36 +5867,48 @@ def delete_user(
         if getattr(u, "role", None) in {UserRole.admin, UserRole.superadmin}:
             raise HTTPException(status_code=403, detail="cannot delete admin user")
 
+    if not permanent:
+        if bool(getattr(u, "is_archived", False)):
+            return {"ok": True, "archived": True, "already_archived": True}
+        _archive_user(db, request, target=u, actor=current)
+        audit_log(db=db, request=request, event_type="admin_archive_user",
+                  actor_user_id=current.id, target_user_id=u.id,
+                  meta={"method": "delete"})
+        db.commit()
+        return {"ok": True, "archived": True, "history": _user_history_counts(db, uid)}
+
+    history = _user_history_counts(db, uid)
+    if any(history.values()):
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "У этого человека есть история обучения, поэтому удалить его навсегда нельзя — "
+                "только в архив: попытки тестов и прогресс останутся, а вход будет закрыт."
+            ),
+        )
+
     try:
-        attempt_ids = db.scalars(select(QuizAttempt.id).where(QuizAttempt.user_id == uid)).all()
-        if attempt_ids:
-            db.execute(delete(QuizAttemptAnswer).where(QuizAttemptAnswer.attempt_id.in_(attempt_ids)))
-            db.execute(delete(QuizAttempt).where(QuizAttempt.id.in_(attempt_ids)))
-
-        db.execute(delete(LearningEvent).where(LearningEvent.user_id == uid))
+        # Полное удаление допустимо только «пустой» учётной записи. Все ссылки на
+        # users.id убираем до DELETE, иначе Postgres откажет по внешнему ключу
+        # (именно так и падало удаление пользователя, которому выдали тег).
+        db.execute(delete(UserTagMap).where(UserTagMap.user_id == uid))
         db.execute(delete(UserSkill).where(UserSkill.user_id == uid))
-
-        # Password reset tokens may reference user_id and created_by_admin_id.
-        db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == uid))
-        db.execute(delete(PasswordResetToken).where(PasswordResetToken.created_by_admin_id == uid))
-
+        db.execute(delete(LearningEvent).where(LearningEvent.user_id == uid))
         db.execute(delete(Assignment).where(Assignment.assigned_to == uid))
         db.execute(delete(Assignment).where(Assignment.assigned_by == uid))
-
-        # Keep audit trail shape, but remove hard references to deleted user.
+        db.execute(delete(PasswordResetToken).where(PasswordResetToken.user_id == uid))
+        db.execute(delete(PasswordResetToken).where(PasswordResetToken.created_by_admin_id == uid))
         db.execute(
-            text("UPDATE security_audit_events SET actor_user_id = NULL WHERE actor_user_id = :uid"),
-            {"uid": uid},
+            update(SecurityAuditEvent).where(SecurityAuditEvent.actor_user_id == uid).values(actor_user_id=None)
         )
         db.execute(
-            text("UPDATE security_audit_events SET target_user_id = NULL WHERE target_user_id = :uid"),
-            {"uid": uid},
+            update(SecurityAuditEvent).where(SecurityAuditEvent.target_user_id == uid).values(target_user_id=None)
         )
-
         db.execute(delete(User).where(User.id == uid))
+        db.flush()
 
-        # Important: the SecurityAuditEvent model has FK to users.id.
-        # After deleting the user, we must not create a new audit row referencing the deleted UID.
+        # Ссылку на удалённого пользователя в аудите не оставляем.
         audit_log(
             db=db,
             request=request,
@@ -5865,14 +5922,36 @@ def delete_user(
         db.rollback()
         rid = getattr(getattr(request, "state", None), "request_id", None)
         rid_s = str(rid or "").strip()
-        msg = str(e) if e is not None else ""
-        msg = " ".join(msg.split())
-        if len(msg) > 300:
-            msg = msg[:300] + "…"
+        msg = " ".join(str(e or "").split())[:300]
         suffix = f" rid={rid_s}" if rid_s else ""
-        detail = f"failed to delete user ({type(e).__name__}): {msg}{suffix}".strip()
-        raise HTTPException(status_code=500, detail=detail) from e
+        raise HTTPException(status_code=500, detail=f"failed to delete user ({type(e).__name__}){suffix}") from e
 
+    return {"ok": True, "archived": False, "deleted": True}
+
+
+@router.post("/users/{user_id}/restore")
+def restore_user(
+    request: Request,
+    user_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_restore_user", limit=20, window_seconds=60),
+):
+    """Вернуть человека из архива: история и прогресс уже на месте."""
+    uid = _uuid(user_id, field="user_id")
+    u = db.scalar(select(User).where(User.id == uid))
+    if u is None:
+        raise HTTPException(status_code=404, detail="user not found")
+
+    is_superadmin = getattr(current, "role", None) == UserRole.superadmin
+    if not is_superadmin and getattr(u, "role", None) in {UserRole.admin, UserRole.superadmin}:
+        raise HTTPException(status_code=403, detail="cannot modify admin user")
+
+    u.is_archived = False
+    db.add(u)
+    audit_log(db=db, request=request, event_type="admin_restore_user",
+              actor_user_id=current.id, target_user_id=u.id)
+    db.commit()
     return {"ok": True}
 
 
@@ -5972,7 +6051,9 @@ def analytics_overview(
     Считается по тем же правилам, что и прогресс ученика (LearningService),
     поэтому цифры в админке и в кабинете не могут разойтись.
     """
-    users = list(db.scalars(select(User).order_by(User.name)))
+    # Архивные учётные записи в сводку не входят: их история сохранена, но
+    # «заходили за неделю» и «средний прогресс» должны считаться по действующим.
+    users = list(db.scalars(select(User).where(User.is_archived.is_(False)).order_by(User.name)))
     modules = list(db.scalars(select(Module).order_by(Module.title)))
     matrix = LearningService(db).get_progress_matrix(users, modules)
 
