@@ -3,7 +3,8 @@ import logging
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Integer, String
+import sqlalchemy as sa
+from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -63,6 +64,13 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     password_hash: Mapped[str] = mapped_column(String(255))
+
+    # Архив вместо удаления: уволенный партнёр исчезает из списков и не может
+    # войти, но его результаты тестов и история обучения остаются на месте.
+    # server_default именно false() (не строка "false"): строка превращается в
+    # DEFAULT 'false', и SQLite хранит текст, из-за чего фильтр is_archived = false
+    # перестаёт находить строки, добавленные сырым SQL.
+    is_archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa.false(), index=True)
 
     must_change_password: Mapped[bool] = mapped_column(default=False)
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

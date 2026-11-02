@@ -58,6 +58,17 @@ def _resolve_user(request: Request, db: Session, token: str) -> User:
     if user is None:
         raise HTTPException(status_code=401, detail="invalid token")
 
+    # Архивная учётная запись не должна пользоваться даже ранее выданным токеном:
+    # архив — это «доступ отозван», а не «скрыт из списка».
+    if bool(getattr(user, "is_archived", False)):
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "error_code": "account_archived",
+                "error_message": "Учётная запись в архиве. Обратитесь к администратору платформы.",
+            },
+        )
+
     # Old access tokens refresh once into the SID-bound format at rollout.
     sid = payload.get("sid")
     if not sid or payload.get("pv") != password_version(user):

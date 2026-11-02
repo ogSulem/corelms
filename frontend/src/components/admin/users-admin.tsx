@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Check, Copy, KeyRound, Loader2, Plus, RefreshCw, Search, ShieldCheck,
+  Archive, ArchiveRestore, Check, Copy, KeyRound, Loader2, Plus, RefreshCw, Search, ShieldCheck,
   Tags, Trash2, UserRound, Users, X,
 } from "lucide-react";
 
@@ -36,6 +36,7 @@ type AdminUser = {
   progress_summary: ProgressSummary;
   tag_ids: string[];
   tags: string[];
+  is_archived?: boolean;
 };
 
 type ModuleProgress = { module_id: string; title: string; total: number; passed: number; percent: number; completed?: boolean };
@@ -92,6 +93,7 @@ export function UsersAdmin() {
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleTab>("all");
   const [onlyActive, setOnlyActive] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const [selected, setSelected] = useState<AdminUser | null>(null);
@@ -114,7 +116,7 @@ export function UsersAdmin() {
     request.current = controller;
     try {
       const [users, tagList] = await Promise.all([
-        apiFetch<{ items: AdminUser[] }>("/admin/users", { signal: controller.signal }),
+        apiFetch<{ items: AdminUser[] }>(showArchived ? "/admin/users?include_archived=true" : "/admin/users", { signal: controller.signal }),
         apiFetch<{ items: TagItem[] }>("/admin/tags", { signal: controller.signal }).catch(() => ({ items: [] })),
       ]);
       if (controller.signal.aborted) return;
@@ -126,7 +128,7 @@ export function UsersAdmin() {
     } finally {
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, []);
+  }, [showArchived]);
 
   useEffect(() => {
     void load();
@@ -148,11 +150,17 @@ export function UsersAdmin() {
     });
   }, [items, onlyActive, query, roleFilter]);
 
-  const counters = useMemo(() => ({
-    all: items.length,
-    partners: items.filter((u) => isEmployeeRole(u.role)).length,
-    admins: items.filter((u) => isAdminRole(u.role)).length,
-  }), [items]);
+  // Архивные учётные записи в счётчиках не участвуют: это не действующие люди,
+  // а сохранённая история. Их число показываем отдельно.
+  const archivedCount = useMemo(() => items.filter((u) => u.is_archived).length, [items]);
+  const counters = useMemo(() => {
+    const active = items.filter((u) => !u.is_archived);
+    return {
+      all: active.length,
+      partners: active.filter((u) => isEmployeeRole(u.role)).length,
+      admins: active.filter((u) => isAdminRole(u.role)).length,
+    };
+  }, [items]);
 
   // «Сотрудники» и «Партнёры» были одним и тем же списком — оставляем одну вкладку.
   const tabs = useMemo(() => ([
@@ -218,14 +226,49 @@ export function UsersAdmin() {
     }
   }
 
-  async function deleteUser() {
+  async function archiveUser() {
     if (!selected || busy) return;
-    if (!window.confirm(`Удалить «${selected.name}»? Вместе с ним удалятся его попытки тестов и история обучения. Это необратимо.`)) return;
+    if (!window.confirm(`Убрать «${selected.name}» в архив? Человек не сможет войти и исчезнет из списков, а его прогресс и попытки тестов останутся. Вернуть можно в любой момент.`)) return;
     setBusy(true);
     setError(null);
     try {
       await apiFetch(`/admin/users/${selected.id}`, { method: "DELETE" });
-      toast("Пользователь удалён");
+      toast("Пользователь в архиве", "История обучения сохранена");
+      setSelected(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось убрать пользователя в архив");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function restoreUser() {
+    if (!selected || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/admin/users/${selected.id}/restore`, { method: "POST" });
+      toast("Пользователь восстановлен", "Он снова может войти");
+      setSelected(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось восстановить пользователя");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Полное удаление — только для пустой учётной записи (создана по ошибке и ни
+  // разу не использовалась). Если история есть, сервер ответит 409 и предложит архив.
+  async function purgeUser() {
+    if (!selected || busy) return;
+    if (!window.confirm(`Удалить «${selected.name}» навсегда? Это возможно только если у человека нет ни одной попытки теста, прогресса и назначений.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(`/admin/users/${selected.id}?permanent=true`, { method: "DELETE" });
+      toast("Пользователь удалён навсегда");
       setSelected(null);
       await load();
     } catch (e) {
@@ -320,7 +363,8 @@ export function UsersAdmin() {
         <div>
           <h2 className="text-xl font-semibold tracking-tight">Пользователи</h2>
           <p className="mt-1.5 text-sm text-zinc-500">
-            Всего {counters.all}: партнёров {counters.partners}, администраторов {counters.admins}.
+            Всего {counters.all}: партнёров {counters.partners}, администраторов {counters.admins}
+            {archivedCount ? `, в архиве ${archivedCount}` : ""}.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -358,6 +402,10 @@ export function UsersAdmin() {
               <input type="checkbox" checked={onlyActive} onChange={(e) => setOnlyActive(e.target.checked)} />
               Только заходившие
             </label>
+            <label className="flex items-center gap-2 px-1 text-xs text-zinc-600">
+              <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+              Показать архив
+            </label>
           </div>
         </div>
 
@@ -382,7 +430,9 @@ export function UsersAdmin() {
                 {filtered.map((u) => (
                   <tr key={u.id} className="hover:bg-zinc-50/60">
                     <td className="px-4 py-3">
-                      <p className="font-medium text-zinc-900">{u.name}{u.id === me?.id && <span className="ml-2 text-xs text-zinc-400">это вы</span>}</p>
+                      <p className="font-medium text-zinc-900">{u.name}{u.id === me?.id && <span className="ml-2 text-xs text-zinc-400">это вы</span>}
+                        {u.is_archived && <span className="ml-2 rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-medium text-zinc-600">в архиве</span>}
+                      </p>
                       <p className="text-xs text-zinc-500">{u.email || "почта не указана"}{u.position ? ` · ${u.position}` : ""}</p>
                       {!!u.tags.length && (
                         <p className="mt-1 flex flex-wrap gap-1">{u.tags.map((tag) => (
@@ -421,12 +471,28 @@ export function UsersAdmin() {
 
       <Modal open={!!selected} title={selected ? `${selected.name}` : ""} onClose={() => { if (!busy) setSelected(null); }} disableClose={busy} className="max-w-3xl"
         footer={<div className="flex flex-wrap justify-between gap-2">
-          <Button variant="ghost" className={`${btn} text-rose-600`}
-            disabled={busy || selected?.id === me?.id || (!isSuperadmin && !isEmployeeRole(selected?.role || ""))}
-            title={!isSuperadmin && !isEmployeeRole(selected?.role || "") ? "Удалять администраторов может только суперадмин" : undefined}
-            onClick={() => void deleteUser()}>
-            <Trash2 size={15} />Удалить
-          </Button>
+          {selected?.is_archived ? (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" className={btn} disabled={busy} onClick={() => void restoreUser()}>
+                <ArchiveRestore size={15} />Вернуть из архива
+              </Button>
+              {isSuperadmin && (
+                <Button variant="ghost" className={`${btn} text-rose-600`}
+                  disabled={busy || selected?.id === me?.id}
+                  title="Только для учётной записи без истории обучения"
+                  onClick={() => void purgeUser()}>
+                  <Trash2 size={15} />Удалить навсегда
+                </Button>
+              )}
+            </div>
+          ) : (
+            <Button variant="ghost" className={`${btn} text-rose-600`}
+              disabled={busy || selected?.id === me?.id || (!isSuperadmin && !isEmployeeRole(selected?.role || ""))}
+              title={!isSuperadmin && !isEmployeeRole(selected?.role || "") ? "Убирать администраторов в архив может только суперадмин" : "Вход закроется, история обучения останется"}
+              onClick={() => void archiveUser()}>
+              <Archive size={15} />В архив
+            </Button>
+          )}
           <div className="flex gap-2">
             <Button variant="outline" className={btn} disabled={busy} onClick={() => void resetPassword()}><KeyRound size={15} />Сбросить пароль</Button>
             <Button className={btn} disabled={busy || !canEditSelected} title={canEditSelected ? undefined : "Изменять администраторов может только суперадмин"}
@@ -435,6 +501,11 @@ export function UsersAdmin() {
         </div>}>
         {selected && (
           <div className="space-y-5">
+            {selected.is_archived && (
+              <p className="rounded-xl border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-600">
+                Учётная запись в архиве: вход закрыт, из списков скрыта. Прогресс и попытки тестов сохранены — их видно ниже.
+              </p>
+            )}
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block space-y-1.5 text-sm font-medium">Имя
                 <input className={field} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />

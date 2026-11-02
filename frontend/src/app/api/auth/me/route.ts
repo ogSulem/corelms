@@ -80,7 +80,11 @@ export async function GET(request: Request) {
     if (response.status === 401 || response.status === 403) return unauthenticated();
     if (!response.ok) return unavailable();
     const user = response.user;
-    const role = user.role === "manager" ? "admin" : user.role === "employee" ? "user" : user.role;
+    // partner — та же роль, что employee (обучающийся без прав админа), поэтому
+    // наружу отдаём одно значение: иначе тип User.role расходится с данными.
+    const role = user.role === "manager" ? "admin"
+      : user.role === "partner" || user.role === "employee" ? "employee"
+      : user.role;
     return finish(NextResponse.json({ authenticated: true, user: { ...user, role, must_change_password: !!user.must_change_password } }));
   } catch { return unavailable(); }
 }

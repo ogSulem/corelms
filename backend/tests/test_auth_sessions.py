@@ -140,7 +140,8 @@ def test_public_register_cannot_promote_role(client, monkeypatch):
     monkeypatch.setattr(settings, "allow_public_register", True)
     response = client.post("/auth/register", json={"name": "No promotion", "password": PASSWORD, "role": "superadmin"})
     assert response.status_code == 200
-    assert client.get("/auth/me", headers=access(response.json())).json()["role"] == "user"
+    # Обучающийся называется employee — так же, как в типе User.role на фронте.
+    assert client.get("/auth/me", headers=access(response.json())).json()["role"] == "employee"
 
 
 def test_admin_password_reset_revokes_access_in_the_same_second(client, db, account, admin_headers):
