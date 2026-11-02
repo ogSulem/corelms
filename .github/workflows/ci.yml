@@ -35,6 +35,18 @@ jobs:
           done
           echo "ok: entrypoint is executable"
 
+      - name: docker-compose.yml parses (no duplicate keys)
+        run: |
+          set -e
+          python3 -m pip install --quiet pyyaml || echo "pyyaml недоступен: проверю только docker compose config"
+          # Тот же парсер, что и у деплоя: дубликат ключа в службе валит compose up
+          # после десятиминутной сборки образов.
+          python3 deploy/check-compose.py docker-compose.yml
+          printf 'POSTGRES_DB=ci\nPOSTGRES_USER=ci\n' > .env
+          docker compose -f docker-compose.yml config --quiet
+          rm -f .env
+          echo "ok: compose file is valid"
+
       - name: Block large tracked files (>20MB)
         run: |
           python - <<'PY'

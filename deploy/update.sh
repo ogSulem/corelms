@@ -51,8 +51,19 @@ say() { printf '\n== %s\n' "$1"; }
 die() { printf '\n!! %s\n' "$1"; exit 1; }
 
 command -v docker >/dev/null 2>&1 || die "Docker не найден"
-say "Версия, которая поднимается: $APP_VERSION (её отдаёт /health/version)"
 docker compose version >/dev/null 2>&1 || die "Нужен Docker Compose v2 (команда 'docker compose')"
+say "Версия, которая поднимается: $APP_VERSION (её отдаёт /health/version)"
+
+# Docker Compose разбирает YAML строже Python: дубликат ключа в службе
+# (`environment:` дважды) валит `compose up` после десятиминутной сборки.
+# Проверяем файл первым делом — настоящим парсером compose, затем скриптом
+# (он дополнительно ищет повторяющиеся переменные и битые depends_on).
+docker compose -f docker-compose.yml config -q \
+  || die "docker-compose.yml невалиден — исправьте, иначе compose не поднимется"
+if command -v python3 >/dev/null 2>&1; then
+  python3 deploy/check-compose.py docker-compose.yml \
+    || die "docker-compose.yml невалиден — исправьте, иначе compose не поднимется"
+fi
 
 # Тома с данными не трогаем никогда: они перечислены только для проверки.
 DATA_VOLUMES="pg_data redis_data backend_data s3_data caddy_data caddy_config"

@@ -28,6 +28,20 @@ REBUILT=""
 
 WORKER_IMAGES="corelms-worker corelms-worker_media"
 
+# Сборка занимает минуты, а `compose up` после неё падает на дубликате ключа
+# в YAML. Проверяем структуру compose до сборки, а не после.
+if ! docker compose -f docker-compose.yml config -q; then
+  echo "!! docker-compose.yml невалиден — сборку не начинаю"
+  exit 1
+fi
+if command -v python3 >/dev/null 2>&1; then
+  python3 deploy/check-compose.py docker-compose.yml >/dev/null || {
+    echo "!! docker-compose.yml невалиден:"
+    python3 deploy/check-compose.py docker-compose.yml || true
+    exit 1
+  }
+fi
+
 say() { printf '\n== %s\n' "$1"; }
 die() { printf '\n!! %s\n' "$1"; exit 1; }
 
