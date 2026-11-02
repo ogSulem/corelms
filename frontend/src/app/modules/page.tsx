@@ -204,11 +204,11 @@ export default function ModulesPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-6xl px-6 py-10">
+      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900]">Обучение</div>
-            <h1 className="mt-2 text-4xl font-black tracking-tighter text-zinc-950 uppercase">Модули</h1>
+            <h1 className="mt-2 text-3xl font-black uppercase tracking-tighter text-zinc-950 sm:text-4xl">Модули</h1>
           </div>
         </div>
 
@@ -218,7 +218,7 @@ export default function ModulesPage() {
           </div>
         )}
 
-        <div className="mt-8 grid gap-4 rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-6 shadow-2xl shadow-zinc-950/10 md:grid-cols-12">
+        <div className="mt-8 grid gap-4 rounded-[28px] border border-zinc-200 bg-white/70 p-4 shadow-2xl shadow-zinc-950/10 backdrop-blur-md sm:p-6 md:grid-cols-12">
           <div className="md:col-span-8">
             <div className="text-[9px] font-black uppercase tracking-widest text-zinc-600 ml-1">Поиск</div>
             <input
@@ -275,7 +275,7 @@ export default function ModulesPage() {
               className="group relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 p-1 transition-all duration-300 hover:bg-white"
             >
                 <div className="absolute left-0 top-0 h-full w-[4px] bg-[#fe9900] opacity-0 group-hover:opacity-100 transition-opacity" />
-                <CardHeader className="p-8 pb-4">
+                <CardHeader className="p-5 pb-3 sm:p-8 sm:pb-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <CardTitle className="min-w-0 flex-1 basis-52 break-words text-2xl font-black text-zinc-950 transition-colors leading-tight tracking-tighter">
                       {m.title.toUpperCase()}
@@ -292,7 +292,7 @@ export default function ModulesPage() {
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="px-8 pb-8 pt-0 text-sm">
+                <CardContent className="px-5 pb-5 pt-0 text-sm sm:px-8 sm:pb-8">
                   {m.description ? (
                     <div className="text-zinc-600 font-medium leading-relaxed line-clamp-2 min-h-[3rem]">
                       {m.description}

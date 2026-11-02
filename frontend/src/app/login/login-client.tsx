@@ -122,14 +122,14 @@ export function LoginClient() {
   }
 
   return (
-    <main className="min-h-screen flex items-center justify-center px-6 py-12">
+    <main className="flex min-h-dvh items-center justify-center px-4 py-8 sm:px-6 sm:py-12">
       <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div className="absolute top-[-15%] left-[-10%] w-[60%] h-[60%] rounded-full bg-[#fe9900]/10 blur-[120px]" />
         <div className="absolute -bottom-[20%] -right-[10%] w-[60%] h-[60%] rounded-full bg-[#284e13]/10 blur-[120px]" />
       </div>
 
       <div className="relative w-full max-w-lg">
-        <div className="mb-12 text-center">
+        <div className="mb-8 text-center sm:mb-12">
           <Link href="/" className="group inline-flex items-center gap-2 mb-8">
             <svg
               width="26"
@@ -157,7 +157,7 @@ export function LoginClient() {
           </Link>
         </div>
 
-        <div className="relative overflow-hidden rounded-[36px] border border-zinc-200 bg-white/80 backdrop-blur-xl p-10 lg:p-16 shadow-2xl shadow-zinc-950/10">
+        <div className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/80 backdrop-blur-xl p-5 sm:rounded-[36px] sm:p-10 lg:p-16 shadow-2xl shadow-zinc-950/10">
           <div className="absolute left-0 top-0 h-full w-[4px] bg-[#fe9900] opacity-30" />
           
           {sessionExpired && !error && (

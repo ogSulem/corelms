@@ -55,6 +55,10 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   // API авторизуется токеном в заголовке: сессионные куки наверх не нужны,
   // меньше данных уходит в чужой процесс и его логи.
   headers.delete("cookie");
+  // Клиент не должен подсовывать свой токен в прокси: единственный источник
+  // авторизации — httpOnly-кука, иначе чужой/просроченный токен из JS уехал бы
+  // в backend и вопрос «почему 401» снова стал бы неразрешимым.
+  headers.delete("authorization");
 
   // Preserve real client IP through the Next.js proxy.
   // Backend will only trust these headers if TRUST_PROXY_HEADERS=true and request comes from TRUSTED_PROXY_IPS.

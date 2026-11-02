@@ -21,17 +21,30 @@ export default function HomePage() {
     setChecking(false);
   }, [authLoading, user, router]);
 
-  if (checking) return <main className="min-h-screen bg-white" />;
+  // Пока проверяем сессию, показываем фирменную заготовку: пустой белый экран
+  // на слабой мобильной сети выглядит как «сайт не открылся».
+  if (checking) return (
+    <main className="flex min-h-dvh items-center justify-center bg-white px-4">
+      <div role="status" aria-live="polite" className="text-center">
+        <div className="text-3xl font-black uppercase tracking-tight text-[#284e13]">КАРКАС</div>
+        <div className="text-3xl font-black uppercase tracking-tight text-[#fe9900]">ТАЙГИ</div>
+        <div className="mx-auto mt-8 h-1.5 w-40 overflow-hidden rounded-full bg-zinc-200">
+          <div className="h-full w-1/2 animate-pulse rounded-full bg-[#fe9900]" />
+        </div>
+        <p className="mt-4 text-xs font-semibold uppercase tracking-widest text-zinc-500">Загружаем платформу…</p>
+      </div>
+    </main>
+  );
 
   return (
-    <main className="min-h-screen overflow-hidden bg-white text-zinc-950">
+    <main className="min-h-dvh overflow-hidden bg-white text-zinc-950">
       <div className="fixed inset-0 pointer-events-none">
         <div className="absolute top-[-18%] left-[-12%] w-[62%] h-[62%] rounded-full bg-[#fe9900]/25 blur-[180px]" />
         <div className="absolute top-[18%] right-[-18%] w-[56%] h-[56%] rounded-full bg-[#284e13]/18 blur-[180px]" />
         <div className="absolute bottom-[-20%] left-[10%] w-[64%] h-[64%] rounded-full bg-[#fe9900]/15 blur-[190px]" />
       </div>
 
-      <nav className="relative z-50 flex items-center justify-between px-6 py-6 max-w-6xl mx-auto">
+      <nav className="relative z-50 mx-auto flex max-w-6xl items-center justify-between px-4 py-5 sm:px-6 sm:py-6">
         <Link href="/" className="group flex items-center gap-2">
           <svg
             width="24"
@@ -63,7 +76,7 @@ export default function HomePage() {
         </Link>
       </nav>
 
-      <section className="relative z-10 max-w-6xl mx-auto px-6 pb-10 pt-2">
+      <section className="relative z-10 mx-auto max-w-6xl px-4 pb-10 pt-2 sm:px-6">
         <div className="relative overflow-hidden rounded-[40px] border border-zinc-200/70 bg-white/70 backdrop-blur-2xl shadow-[0_30px_120px_rgba(24,24,27,0.10)]">
           <div className="absolute inset-0">
             <div className="absolute -top-28 -left-28 h-72 w-72 rounded-full bg-[#fe9900]/22 blur-[110px]" />
