@@ -8,7 +8,7 @@ type Report = {
   ok: boolean;
   request: { url: string; host: string; https: boolean; userAgent: string | null };
   cookieSettings: { domain: string | null; hostOnly: boolean; secure: boolean; configuredDomain: string | null };
-  cookies: { names: string[]; hasSession: boolean };
+  cookies: { names: string[]; hasSession: boolean; duplicates: { core_token: number; core_refresh: number }; refreshCopies: number };
   backend: { ok: boolean; status: number; detail?: string };
   versions: { frontend: string; frontendBuiltAt: string | null; backend: string };
   checks: Check[];
@@ -114,6 +114,7 @@ export function ConnectionCheck({ autoOpen = false }: { autoOpen?: boolean }) {
                 <div>кука: {report.cookieSettings.domain ? `domain=${report.cookieSettings.domain}` : "host-only"}</div>
                 <div>secure: {String(report.cookieSettings.secure)}</div>
                 <div>куки в запросе: {report.cookies.names.length ? report.cookies.names.join(", ") : "—"}</div>
+                <div>копий core_token: {report.cookies.duplicates.core_token} · копий core_refresh: {report.cookies.duplicates.core_refresh}</div>
                 <div>API: {report.backend.ok ? `ok ${report.backend.status}` : `ошибка ${report.backend.status || "нет ответа"}`}</div>
                 <div>версия интерфейса: {report.versions.frontend}{report.versions.frontendBuiltAt ? ` (собран ${report.versions.frontendBuiltAt})` : ""}</div>
                 <div>версия API: {report.versions.backend}</div>

@@ -144,6 +144,9 @@ def main(argv: list[str] | None = None) -> None:
             port=port,
             log_level=str(os.getenv("LOG_LEVEL") or "info"),
             workers=workers,
+            # Заголовок `Server: uvicorn` сообщает наружу имя и версию стека —
+            # лишняя подсказка для подбора известных уязвимостей.
+            server_header=False,
         )
         return
 

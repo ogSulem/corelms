@@ -1,8 +1,8 @@
-import * as nextHeaders from "next/headers";
 import { NextResponse } from "next/server";
 import { allowedAuthRequest } from "../_request";
 import { sharedRefresh } from "../_refresh_shared";
 import { clearAuthCookies, setAccessCookie, setRefreshCookie } from "../_cookies";
+import { refreshTokens } from "../_jar";
 
 const API_BASE_URL =
   process.env.CORE_INTERNAL_API_BASE_URL ||
@@ -11,25 +11,28 @@ const API_BASE_URL =
 
 export async function POST(req: Request) {
   if (!allowedAuthRequest(req)) return NextResponse.json({ ok: false, error_code: "invalid_origin" }, { status: 403 });
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const cookieStore = await (nextHeaders as any).cookies();
-  const refresh = cookieStore.get("core_refresh")?.value;
-
-  if (!refresh) {
+  // Все копии refresh-куки: старая host-only и новая доменная. Если сервер
+  // отверг одну, пробуем следующую — иначе вход обрывался сразу после входа.
+  const candidates = refreshTokens(req);
+  if (!candidates.length) {
     return NextResponse.json({ ok: false, error_code: "not_authenticated" }, { status: 401 });
   }
 
-  const result = await sharedRefresh({
-    apiBaseUrl: API_BASE_URL,
-    refreshToken: String(refresh || ""),
-    proxyHeaders: {
-      xRealIp: req.headers.get("x-real-ip"),
-      xForwardedFor: req.headers.get("x-forwarded-for"),
-      forwarded: req.headers.get("forwarded"),
-      userAgent: req.headers.get("user-agent"),
-      origin: req.headers.get("origin"),
-    },
-  });
+  let result: Awaited<ReturnType<typeof sharedRefresh>> = { ok: false, status: 401 };
+  for (const refresh of candidates) {
+    result = await sharedRefresh({
+      apiBaseUrl: API_BASE_URL,
+      refreshToken: String(refresh || ""),
+      proxyHeaders: {
+        xRealIp: req.headers.get("x-real-ip"),
+        xForwardedFor: req.headers.get("x-forwarded-for"),
+        forwarded: req.headers.get("forwarded"),
+        userAgent: req.headers.get("user-agent"),
+        origin: req.headers.get("origin"),
+      },
+    });
+    if (result.ok || (result.status !== 401 && result.status !== 403)) break;
+  }
 
   if (!result.ok) {
     if (result.status !== 401 && result.status !== 403) {

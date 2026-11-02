@@ -28,6 +28,9 @@ export function LoginClient() {
   const [showPassword, setShowPassword] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
 
+  // Возврат с истёкшей сессией: объясняем причину, а не молча показываем форму.
+  const sessionExpired = useMemo(() => String(searchParams?.get("reason") || "") === "session", [searchParams]);
+
   const loginRef = useRef<HTMLInputElement | null>(null);
   const canSubmit = useMemo(() => {
     return Boolean(String(name || "").trim() && String(password || "").trim() && !loading);
@@ -157,6 +160,12 @@ export function LoginClient() {
         <div className="relative overflow-hidden rounded-[36px] border border-zinc-200 bg-white/80 backdrop-blur-xl p-10 lg:p-16 shadow-2xl shadow-zinc-950/10">
           <div className="absolute left-0 top-0 h-full w-[4px] bg-[#fe9900] opacity-30" />
           
+          {sessionExpired && !error && (
+            <div role="status" className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold leading-relaxed text-amber-900">
+              Сессия закончилась или её завершили на другом устройстве. Войдите ещё раз — данные и прогресс сохранены.
+            </div>
+          )}
+
           <form onSubmit={onSubmit} className="grid gap-8">
             <div className="space-y-2">
               <label className="text-[10px] font-black text-zinc-600 uppercase tracking-widest ml-1">Логин</label>

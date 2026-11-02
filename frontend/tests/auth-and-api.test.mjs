@@ -5,13 +5,51 @@ import test from "node:test";
 import ts from "typescript";
 
 // Exercise the actual source without adding a separate test transpiler/runtime.
+// Относительные импорты (`./_jar`) встраиваются в один модуль: data:-URL не
+// умеет разрешать относительные пути.
+async function bundle(path, seen = new Set(), stripExports = true) {
+  if (seen.has(path)) return "";
+  seen.add(path);
+  let source = await readFile(new URL(`../${path}`, import.meta.url), "utf8");
+  const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ".";
+  const parts = [];
+  source = source.replace(/import\s*\{([^}]+)\}\s*from\s*["'](\.{1,2}\/[^"']+)["'];?/g, (_, names, spec) => {
+    const target = new URL(`${dir}/${spec}`, "https://x/").pathname.replace(/^\//, "").replace(/\.ts$/, "");
+    parts.push(bundle(`${target}.ts`, seen, true));
+    void names;
+    return "";
+  });
+  if (stripExports) source = source.replace(/^export\s+(?=(?:async\s+)?function|const|class|let)/gm, "");
+  const resolved = await Promise.all(parts);
+  return `${resolved.join("\n")}\n${source}`;
+}
+
 async function loadSource(path) {
-  const source = await readFile(new URL(`../${path}`, import.meta.url), "utf8");
+  const source = await bundle(path, new Set(), false);
   const { outputText } = ts.transpileModule(`${source}\n// isolated ${randomUUID()}`, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   });
   return import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 }
+/** Разбор Set-Cookie из ответа: куки теперь пишутся отдельными заголовками. */
+function setCookies(out) {
+  return out.headers.getSetCookie().map(raw => {
+    const [pair, ...attrs] = raw.split(";").map(part => part.trim());
+    const eq = pair.indexOf("=");
+    const cookie = { name: pair.slice(0, eq), value: pair.slice(eq + 1), raw };
+    for (const attr of attrs) {
+      const index = attr.indexOf("=");
+      const key = (index === -1 ? attr : attr.slice(0, index)).toLowerCase();
+      const value = index === -1 ? true : attr.slice(index + 1);
+      if (key === "domain") cookie.domain = value;
+      else if (key === "max-age") cookie.maxAge = Number(value);
+      else if (key === "path") cookie.path = value;
+      else cookie[key] = value;
+    }
+    return cookie;
+  });
+}
+
 const json = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json" } });
 
 test("parallel refreshes must never exchange users' credentials", async t => {
@@ -169,10 +207,10 @@ test("включённый COOKIE_DOMAIN гасит старую host-only ку�
   process.env.COOKIE_SECURE = "true";
   try {
     const { setAccessCookie, setRefreshCookie } = await loadSource("src/app/api/auth/_cookies.ts");
-    const written = [];
-    const out = { cookies: { set: cookie => written.push(cookie) } };
-    setAccessCookie(out, "aaa1", { upstreamExpiresIn: 900 });
-    setRefreshCookie(out, "bbb2", { refreshExpiresIn: 3600 });
+    const headers = new Headers();
+    setAccessCookie({ headers }, "aaa1", { upstreamExpiresIn: 900 });
+    setRefreshCookie({ headers }, "bbb2", { refreshExpiresIn: 3600 });
+    const written = setCookies({ headers });
 
     const cleared = written.filter(c => c.maxAge === 0 && c.value === "");
     assert.deepEqual(cleared.map(c => c.name).sort(), ["core_refresh", "core_token"]);
@@ -186,6 +224,7 @@ test("включённый COOKIE_DOMAIN гасит старую host-only ку�
     assert.equal(r.domain, COOKIE_HOST);
   } finally {
     delete process.env.COOKIE_DOMAIN;
+    delete process.env.COOKIE_SECURE;
   }
 });
 
@@ -211,9 +250,9 @@ test("вкладки «Пользователи»: одна вкладка па�
 test("Secure-кука ставится только на HTTPS: HTTP-вход на телефоне больше не теряет сессию", async () => {
   const { setAccessCookie, requestIsHttps } = await loadSource("src/app/api/auth/_cookies.ts");
   const write = (request) => {
-    const written = [];
-    setAccessCookie({ cookies: { set: c => written.push(c) } }, "token-value", { upstreamExpiresIn: 900, request });
-    return written.at(-1);
+    const headers = new Headers();
+    setAccessCookie({ headers }, "token-value", { upstreamExpiresIn: 900, request });
+    return setCookies({ headers }).find(c => c.name === "core_token" && c.value === "token-value");
   };
   const http = new Request("http://192.168.1.10:8888/api/auth/login", { method: "POST" });
   const httpsForwarded = new Request("http://frontend:3000/api/auth/login", { method: "POST", headers: { "x-forwarded-proto": "https" } });
@@ -226,18 +265,18 @@ test("Secure-кука ставится только на HTTPS: HTTP-вход н
     assert.equal(requestIsHttps(httpsForwarded), true);
 
     process.env.COOKIE_SECURE = "true";
-    assert.equal(write(http).secure, false, "на HTTP cookie с Secure браузер молча выбрасывает");
+    assert.equal(write(http).secure, undefined, "на HTTP cookie с Secure браузер молча выбрасывает");
     assert.equal(write(httpsForwarded).secure, true);
-    assert.equal(write(httpForwarded).secure, false, "за прокси верим X-Forwarded-Proto");
+    assert.equal(write(httpForwarded).secure, undefined, "за прокси верим X-Forwarded-Proto");
 
     process.env.COOKIE_SECURE = "false";
-    assert.equal(write(httpsForwarded).secure, false, "явное false отключает Secure всегда");
+    assert.equal(write(httpsForwarded).secure, undefined, "явное false отключает Secure всегда");
 
     // Продакшн по умолчанию: HTTPS — Secure, HTTP — обычная кука.
     delete process.env.COOKIE_SECURE;
     process.env.NODE_ENV = "production";
     assert.equal(write(httpsForwarded).secure, true);
-    assert.equal(write(http).secure, false);
+    assert.equal(write(http).secure, undefined);
   } finally {
     if (previousSecure === undefined) delete process.env.COOKIE_SECURE; else process.env.COOKIE_SECURE = previousSecure;
     if (previousEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousEnv;
@@ -292,10 +331,9 @@ test("куки входа: кириллический COOKIE_DOMAIN и чужо�
   const { setAccessCookie } = await loadSource("src/app/api/auth/_cookies.ts");
   const previous = process.env.COOKIE_DOMAIN;
   const capture = (request) => {
-    const out = [];
-    const response = { cookies: { set: (cookie) => { out.push(cookie); } } };
-    setAccessCookie(response, "access-token", { request });
-    return out.find((cookie) => cookie.name === "core_token" && cookie.value);
+    const headers = new Headers();
+    setAccessCookie({ headers }, "access-token", { request });
+    return setCookies({ headers }).find(cookie => cookie.name === "core_token" && cookie.value);
   };
   try {
     // Домен задан кириллицей, браузер присылает punycode — это один и тот же домен.
@@ -334,9 +372,10 @@ test("выход гасит и доменную, и host-only копию кук�
   const previous = process.env.COOKIE_DOMAIN;
   try {
     process.env.COOKIE_DOMAIN = "edu.каркастайги.рф";
-    const cleared = [];
-    clearAuthCookies({ cookies: { set: (cookie) => cleared.push(cookie) } },
+    const headers = new Headers();
+    clearAuthCookies({ headers },
       new Request("https://edu.xn--80aaamzedb7cml.xn--p1ai/", { headers: { host: "edu.xn--80aaamzedb7cml.xn--p1ai" } }));
+    const cleared = setCookies({ headers });
     const names = cleared.map((cookie) => `${cookie.name}:${cookie.domain || "host-only"}`).sort();
     // Домен в punycode собран из частей: цельная строка после имени куки
     // выглядит для сканера секретов как «имя — секрет».
@@ -438,4 +477,75 @@ test("login ignores invisible characters pasted on a phone keyboard", async t =>
   assert.equal(passwordTooLong("x".repeat(73)), true);
   assert.equal(passwordTooLong("x".repeat(72)), false);
   assert.equal(passwordTooLong("я".repeat(37)), true); // 74 байта
+});
+
+test("all copies of a cookie are read, the freshest access token wins", async t => {
+  const { cookieValues, accessTokens, refreshTokens, cookieCopyCount } = await loadSource("src/app/api/auth/_jar.ts");
+  const mk = token => `x.${Buffer.from(JSON.stringify({ exp: token })).toString("base64url")}.y`;
+  const stale = mk(1000);
+  const fresh = mk(9_000_000);
+  // Браузер отдаёт сначала старую host-only копию, затем новую доменную.
+  const request = new Request("https://edu.example/api/auth/me", {
+    headers: { cookie: `core_token=${stale}; core_refresh=rt_old; core_token=${fresh}; core_refresh=rt_new` },
+  });
+  assert.deepEqual(cookieValues(request, "core_token"), [stale, fresh]);
+  assert.equal(cookieCopyCount(request, "core_token"), 2);
+  assert.equal(accessTokens(request)[0], fresh);
+  assert.equal(refreshTokens(request)[0], "rt_new");
+});
+
+test("a single cookie copy is returned as is", async t => {
+  const { accessTokens, refreshTokens, cookieValues } = await loadSource("src/app/api/auth/_jar.ts");
+  const request = new Request("https://edu.example/", { headers: { cookie: "core_token=only; other=1" } });
+  assert.deepEqual(accessTokens(request), ["only"]);
+  assert.deepEqual(refreshTokens(request), []);
+  assert.deepEqual(cookieValues(request, "other"), ["1"]);
+});
+
+test("logout headers contain both the host-only and the domain copy", async t => {
+  const { clearAuthCookies } = await loadSource("src/app/api/auth/_cookies.ts");
+  const headers = new Headers();
+  process.env.COOKIE_DOMAIN = "edu.каркастайги.рф";
+  clearAuthCookies({ headers }, new Request("https://edu.xn--80aaamzedb7cml.xn--p1ai/api/auth/logout", {
+    headers: { host: "edu.xn--80aaamzedb7cml.xn--p1ai", "x-forwarded-proto": "https" },
+  }));
+  const cookies = headers.getSetCookie();
+  const token = cookies.filter(c => c.startsWith("core_token="));
+  const refresh = cookies.filter(c => c.startsWith("core_refresh="));
+  assert.equal(token.length, 2, cookies.join(" | "));
+  assert.equal(refresh.length, 2, cookies.join(" | "));
+  assert.ok(token.some(c => /Domain=edu\.xn--80aaamzedb7cml\.xn--p1ai/.test(c) && /Max-Age=0/.test(c)));
+  assert.ok(token.some(c => !/Domain=/.test(c) && /Max-Age=0/.test(c)));
+  delete process.env.COOKIE_DOMAIN;
+});
+
+test("login cookies are emitted as separate headers with the right attributes", async t => {
+  const { setAccessCookie, setRefreshCookie } = await loadSource("src/app/api/auth/_cookies.ts");
+  process.env.COOKIE_DOMAIN = "edu.xn--80aaamzedb7cml.xn--p1ai";
+  process.env.COOKIE_SECURE = "true";  // prod-режим: Secure только на HTTPS
+  const headers = new Headers();
+  const request = new Request("https://edu.xn--80aaamzedb7cml.xn--p1ai/api/auth/login", {
+    headers: { host: "edu.xn--80aaamzedb7cml.xn--p1ai", "x-forwarded-proto": "https" },
+  });
+  setAccessCookie({ headers }, "ACCESS", { upstreamExpiresIn: 900, request });
+  setRefreshCookie({ headers }, "REFRESH", { refreshExpiresIn: 3600, request });
+  const cookies = headers.getSetCookie();
+  const access = cookies.find(c => c.startsWith("core_token=ACCESS"));
+  const refresh = cookies.find(c => c.startsWith("core_refresh=REFRESH"));
+  assert.ok(access && refresh);
+  for (const cookie of [access, refresh]) {
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /Secure/);
+    assert.match(cookie, /SameSite=Lax/);
+    assert.match(cookie, /Domain=edu\.xn--80aaamzedb7cml\.xn--p1ai/);
+    assert.match(cookie, /Path=\//);
+  }
+  assert.match(access, /Max-Age=900/);
+
+  // Тот же вход по HTTP: Secure быть не должно, иначе телефон теряет куку.
+  const httpHeaders = new Headers();
+  setAccessCookie({ headers: httpHeaders }, "ACCESS", { request: new Request("http://192.168.1.10:8888/api/auth/login") });
+  assert.doesNotMatch(httpHeaders.getSetCookie().join(" | "), /Secure/);
+  delete process.env.COOKIE_DOMAIN;
+  delete process.env.COOKIE_SECURE;
 });
