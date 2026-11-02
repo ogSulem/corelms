@@ -298,3 +298,27 @@ docker compose logs --tail=200 frontend | grep "login rejected"
 Старые куки от прежнего адреса сайта мешают входу (браузер присылает две копии
 `core_token`): в кабинете нажмите «Выйти» (выход гасит обе копии) либо очистите
 данные сайта в браузере телефона.
+
+## 11. Проверка docker-compose.yml до деплоя
+
+Docker Compose падает на дубликате ключа в службе, а PyYAML такое молча
+проглатывает:
+
+```
+failed to parse /opt/corelms/docker-compose.yml: yaml: construct errors:
+  line 1: line 220: mapping key "environment" already defined at line 208
+```
+
+Ошибка вылезала **после** сборки образов, когда `compose up` уже ничего не мог
+сделать. Теперь структура файла проверяется до сборки:
+
+```bash
+cd /opt/corelms
+python3 deploy/check-compose.py docker-compose.yml
+```
+
+Скрипт находит дубликаты ключей, повторяющиеся переменные в одном списке
+`environment`, `depends_on` на несуществующую службу и, если в системе есть
+Docker, дополнительно запускает `docker compose config -q`. Тот же скрипт
+запускают `deploy/update.sh` и `deploy/rebuild-offline.sh` в самом начале, а
+`pytest` (`backend/tests/test_compose_file.py`) и CI — на каждый коммит.

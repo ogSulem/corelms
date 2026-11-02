@@ -205,8 +205,6 @@ services:
         NEXT_PUBLIC_QUICKSTART_ASSET_ID: ${NEXT_PUBLIC_QUICKSTART_ASSET_ID:-}
         NEXT_PUBLIC_QUICKSTART_VIDEO_URL: ${NEXT_PUBLIC_QUICKSTART_VIDEO_URL:-}
         NEXT_PUBLIC_TELEGRAM_SUPPLIERS_BASE_URL: ${NEXT_PUBLIC_TELEGRAM_SUPPLIERS_BASE_URL:-}
-    environment:
-      - APP_VERSION=${APP_VERSION:-}
     depends_on:
       backend:
         condition: service_healthy
@@ -228,6 +226,8 @@ services:
       # https-вход в куку без Secure, а true ломал вход по http (кука терялась).
       - COOKIE_SECURE=${COOKIE_SECURE:-}
       - COOKIE_DOMAIN=${COOKIE_DOMAIN:-}
+      # Версия кода: её показывает диагностика на форме входа.
+      - APP_VERSION=${APP_VERSION:-}
     healthcheck:
       test:
         [
