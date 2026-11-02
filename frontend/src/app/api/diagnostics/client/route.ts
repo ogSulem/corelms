@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { cookieDomainFor, cookieSecure, normalizeCookieDomain, requestHost, requestIsHttps } from "../../auth/_cookies";
+import { accessTokens, cookieValues, refreshTokens } from "../../auth/_jar";
 
 const API_BASE_URL = process.env.CORE_INTERNAL_API_BASE_URL || process.env.NEXT_PUBLIC_API_BASE_URL || "http://backend:8000";
 
@@ -15,6 +16,13 @@ export async function GET(request: Request) {
     .split(";")
     .map((part) => part.split("=")[0]?.trim())
     .filter(Boolean);
+  // Дубли кук — самая частая причина «вхожу и сразу вылетает»: в браузере
+  // осталась старая host-only копия рядом с новой доменной.
+  const duplicates = {
+    core_token: cookieValues(request, "core_token").length,
+    core_refresh: cookieValues(request, "core_refresh").length,
+  };
+  const usableAccess = accessTokens(request).length;
 
   const host = requestHost(request);
   const domain = cookieDomainFor(request);
@@ -56,6 +64,7 @@ export async function GET(request: Request) {
   }
 
   const hasSession = names.includes("core_token") || names.includes("core_refresh");
+  const hasDuplicates = duplicates.core_token > 1 || duplicates.core_refresh > 1;
   const checks = [
     {
       key: "https",
@@ -92,6 +101,14 @@ export async function GET(request: Request) {
         : `Backend не ответил (${backend.status || "нет ответа"}). Вход невозможен, пока сервис недоступен.`,
     },
     {
+      key: "duplicates",
+      ok: !hasDuplicates,
+      title: "Копии кук в браузере",
+      detail: hasDuplicates
+        ? `В браузере остались старые куки: core_token ×${duplicates.core_token}, core_refresh ×${duplicates.core_refresh}. Нажмите «Выйти», затем войдите заново — новая версия удаляет обе копии.`
+        : "Дублей нет: у каждой куки одна копия.",
+    },
+    {
       key: "session",
       ok: hasSession,
       title: "Куки сессии в запросе",
@@ -121,7 +138,7 @@ export async function GET(request: Request) {
       secure,
       sameSite: "lax",
     },
-    cookies: { names, hasSession },
+    cookies: { names, hasSession, duplicates, refreshCopies: refreshTokens(request).length },
     backend,
     versions: {
       frontend: String(process.env.APP_VERSION || "dev"),

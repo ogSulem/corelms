@@ -46,9 +46,19 @@ export async function refreshSession(): Promise<boolean> {
   return refreshInFlight;
 }
 
+/**
+ * Сессия кончилась — на форму входа, а не на главную.
+ *
+ * Раньше здесь стоял переход на "/": пользователь видел промо-страницу и
+ * решал, что его «выкинуло» без причины (а причина — истёкшая сессия).
+ * Теперь форма входа открывается с пояснением и возвратом туда, где он был.
+ */
 function _redirectToLogin(): void {
   if (typeof window === "undefined") return;
-  window.location.href = "/";
+  const path = `${window.location.pathname || "/"}${window.location.search || ""}`;
+  if (path.startsWith("/login")) return;
+  const target = path && path !== "/" ? `?redirect=${encodeURIComponent(path)}&reason=session` : "?reason=session";
+  window.location.href = `/login${target}`;
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {

@@ -1,5 +1,9 @@
-import type { NextResponse } from "next/server";
 import { domainToASCII } from "url";
+
+import { appendSetCookie, expiredCookie, serializeCookie } from "./_jar";
+
+/** Любой ответ, куда можно дописать заголовок Set-Cookie (NextResponse или Response). */
+type CookieTarget = { headers: Headers };
 
 function _isProd(): boolean {
   return process.env.NODE_ENV === "production";
@@ -96,10 +100,12 @@ export function cookieDomainFor(request?: Request | null): string | undefined {
 /**
  * Когда включён COOKIE_DOMAIN, у пользователей ещё может лежать старая
  * host-only кука с тем же именем: браузер пришлёт обе, и сервер может
- * прочитать устаревшую. Гасим host-only копию при каждой записи.
+ * прочитать устаревшую. Гасим host-only копию при каждой записи — отдельным
+ * заголовком, потому что `response.cookies.set()` хранит куки в Map по имени
+ * и вторую запись с тем же именем затирает (удаление пропадало молча).
  */
-export function expireHostOnlyCookie(out: { cookies: { set: (c: Record<string, unknown>) => unknown } }, name: string): void {
-  out.cookies.set({ name, value: "", path: "/", maxAge: 0, expires: new Date(0) });
+export function expireHostOnlyCookie(out: CookieTarget, name: string): void {
+  appendSetCookie(out, expiredCookie(name, { httpOnly: true, sameSite: "lax" }));
 }
 
 function tokenConfiguredMaxAgeSeconds(): number {
@@ -113,25 +119,26 @@ function effectiveAccessMaxAgeSeconds(upstreamExpiresIn?: number | null): number
   return u ? Math.min(configured, u) : configured;
 }
 
-export function setAccessCookie(out: NextResponse, accessToken: string, opts?: { upstreamExpiresIn?: number | null; request?: Request | null }): void {
+export function setAccessCookie(out: CookieTarget, accessToken: string, opts?: { upstreamExpiresIn?: number | null; request?: Request | null }): void {
+  const value = String(accessToken || "").trim();
+  if (!value) return;
   const maxAge = effectiveAccessMaxAgeSeconds(opts?.upstreamExpiresIn ?? null);
   const domain = cookieDomainFor(opts?.request);
-  if (domain) expireHostOnlyCookie(out as unknown as { cookies: { set: (c: Record<string, unknown>) => unknown } }, "core_token");
-  out.cookies.set({
-    name: "core_token",
-    value: String(accessToken || "").trim(),
+  // Сначала гасим возможную host-only копию, затем ставим доменную.
+  if (domain) expireHostOnlyCookie(out, "core_token");
+  appendSetCookie(out, serializeCookie("core_token", value, {
+    path: "/",
+    domain,
+    maxAge,
+    expires: new Date(Date.now() + maxAge * 1000),
     httpOnly: true,
     sameSite: "lax",
     secure: cookieSecure(opts?.request),
-    domain,
-    path: "/",
-    maxAge,
-    expires: new Date(Date.now() + maxAge * 1000),
     priority: "high",
-  });
+  }));
 }
 
-export function setRefreshCookie(out: NextResponse, refreshToken: string, opts?: { refreshExpiresIn?: number | null; request?: Request | null }): void {
+export function setRefreshCookie(out: CookieTarget, refreshToken: string, opts?: { refreshExpiresIn?: number | null; request?: Request | null }): void {
   const v = String(refreshToken || "").trim();
   if (!v) return;
   const ttl =
@@ -139,40 +146,29 @@ export function setRefreshCookie(out: NextResponse, refreshToken: string, opts?:
       ? opts.refreshExpiresIn
       : 30 * 24 * 60 * 60;
   const domain = cookieDomainFor(opts?.request);
-  if (domain) expireHostOnlyCookie(out as unknown as { cookies: { set: (c: Record<string, unknown>) => unknown } }, "core_refresh");
-  out.cookies.set({
-    name: "core_refresh",
-    value: v,
+  if (domain) expireHostOnlyCookie(out, "core_refresh");
+  appendSetCookie(out, serializeCookie("core_refresh", v, {
+    path: "/",
+    domain,
+    maxAge: ttl,
+    expires: new Date(Date.now() + ttl * 1000),
     httpOnly: true,
     sameSite: "lax",
     secure: cookieSecure(opts?.request),
-    domain,
-    path: "/",
-    maxAge: ttl,
-    expires: new Date(Date.now() + ttl * 1000),
     priority: "high",
-  });
+  }));
 }
 
-export function clearAuthCookies(out: NextResponse, request?: Request | null): void {
+export function clearAuthCookies(out: CookieTarget, request?: Request | null): void {
   const domain = cookieDomainFor(request);
-  const targets: Array<string | undefined> = domain ? [undefined, domain] : [undefined];
+  const secure = cookieSecure(request);
   // Гасим и host-only, и доменную копию: при смене COOKIE_DOMAIN у пользователя
   // остаётся старая кука, и выход «не срабатывает» — сессия живёт дальше.
-  for (const target of targets) {
-    for (const name of ["core_token", "core_refresh"]) {
-      out.cookies.set({
-        name,
-        value: "",
-        httpOnly: true,
-        sameSite: "lax",
-        secure: cookieSecure(request),
-        domain: target,
-        path: "/",
-        maxAge: 0,
-        expires: new Date(0),
-        priority: "high",
-      });
+  // Каждое удаление — отдельным заголовком, иначе остаётся только последнее.
+  for (const name of ["core_token", "core_refresh"]) {
+    appendSetCookie(out, expiredCookie(name, { secure, httpOnly: true, sameSite: "lax" }));
+    if (domain) {
+      appendSetCookie(out, expiredCookie(name, { domain, secure, httpOnly: true, sameSite: "lax" }));
     }
   }
 }

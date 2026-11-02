@@ -1,7 +1,9 @@
-import * as nextHeaders from "next/headers";
 import { NextResponse } from "next/server";
 
 import { asciiOrigin } from "../../auth/_request";
+import { accessTokens, refreshTokens } from "../../auth/_jar";
+import { setAccessCookie, setRefreshCookie } from "../../auth/_cookies";
+import { sharedRefresh } from "../../auth/_refresh_shared";
 
 
 const API_BASE_URL =
@@ -31,31 +33,16 @@ function isAllowedOrigin(origin: string, allowed: string[]): boolean {
   return allowed.includes(o);
 }
 
-function getCookieValue(cookieHeader: string, name: string): string {
-  const raw = String(cookieHeader || "");
-  if (!raw) return "";
-  const parts = raw.split(";");
-  for (const p of parts) {
-    const s = p.trim();
-    if (!s) continue;
-    const eq = s.indexOf("=");
-    if (eq <= 0) continue;
-    const k = s.slice(0, eq).trim();
-    if (k !== name) continue;
-    return s.slice(eq + 1).trim();
-  }
-  return "";
-}
-
 async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }) {
   const { path = [] } = await ctx.params;
   const incomingUrl = new URL(req.url);
   const url = `${API_BASE_URL}/${path.join("/")}${incomingUrl.search || ""}`;
 
-  const cookieHeader = String(req.headers.get("cookie") || "");
-  const tokenFromHeader = getCookieValue(cookieHeader, "core_token");
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const token = tokenFromHeader || (await (nextHeaders as any).cookies()).get("core_token")?.value;
+  // Все копии куки: если в браузере осталась старая host-only пара, первую
+  // присланную использовать нельзя — это просроченный токен, и пользователь
+  // «заходит и сразу вылетает». Порядок — от самого свежего.
+  const tokens = accessTokens(req);
+  let token = tokens[0] || "";
 
   const accept = String(req.headers.get("accept") || "");
   const isSse = accept.includes("text/event-stream") || path[path.length - 1] === "events";
@@ -65,6 +52,9 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   headers.delete("connection");
   headers.delete("content-length");
   headers.delete("transfer-encoding");
+  // API авторизуется токеном в заголовке: сессионные куки наверх не нужны,
+  // меньше данных уходит в чужой процесс и его логи.
+  headers.delete("cookie");
 
   // Preserve real client IP through the Next.js proxy.
   // Backend will only trust these headers if TRUST_PROXY_HEADERS=true and request comes from TRUSTED_PROXY_IPS.
@@ -98,11 +88,56 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   const ac = new AbortController();
   const t = isSse ? null : setTimeout(() => ac.abort(), Math.max(1000, timeoutMs));
 
-  let res: Response;
-  try {
+  /** Пробуем токен; 401 — не приговор, сначала пробуем остальные копии куки. */
+  const attempt = async (bearer: string): Promise<Response> => {
+    headers.set("Authorization", `Bearer ${bearer}`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (init as any).signal = ac.signal;
-    res = await fetch(url, init);
+    return fetch(url, init);
+  };
+
+  let res: Response;
+  type Rotation = { access: string; refresh?: string; expiresIn?: number | null; refreshExpiresIn?: number | null };
+  const rotation: { value: Rotation | null } = { value: null };
+
+  /** Обновление сессии на сервере: одна попытка на каждую refresh-копию. */
+  const rotate = async (): Promise<boolean> => {
+    for (const refresh of refreshTokens(req)) {
+      const result = await sharedRefresh({ apiBaseUrl: API_BASE_URL, refreshToken: refresh, proxyHeaders: {
+        xRealIp: req.headers.get("x-real-ip"), xForwardedFor: req.headers.get("x-forwarded-for"),
+        forwarded: req.headers.get("forwarded"), userAgent: req.headers.get("user-agent"), origin: req.headers.get("origin"),
+      } });
+      if (!result.ok) continue;
+      rotation.value = { access: result.access, refresh: result.nextRefresh, expiresIn: result.expiresIn, refreshExpiresIn: result.refreshExpiresIn };
+      token = result.access;
+      return true;
+    }
+    return false;
+  };
+
+  try {
+    // Тело запроса — поток: повторять запрос с ним нельзя (оно уже прочитано).
+    // Поэтому для POST/PUT/PATCH/DELETE обновляем сессию ДО отправки, а не после.
+    const replayable = req.method === "GET" || req.method === "HEAD";
+
+    if (!token) {
+      // Куки доступа нет совсем (браузер её не сохранил): без обновления запрос
+      // ушёл бы без авторизации, и пользователя выкинуло бы из кабинета.
+      if (!(await rotate())) res = new Response(null, { status: 401 });
+      else res = await attempt(token);
+    } else {
+      res = await attempt(token);
+      if (res.status === 401 && replayable) {
+        // Просроченный токен из первой копии куки: пробуем остальные.
+        for (const candidate of tokens.slice(1)) {
+          if (res.status !== 401) break;
+          const retry = await attempt(candidate);
+          if (retry.status !== 401) res = retry;
+        }
+        // Сессия ещё жива, если есть refresh-кука: обновляем и повторяем.
+        if (res.status === 401 && (await rotate())) res = await attempt(token);
+      }
+    }
   } catch (err) {
     // Backend недоступен (рестарт, OOM, сеть). Отдаём понятный JSON-контракт,
     // чтобы интерфейс показал причину, а не общее «неизвестно что».
@@ -126,6 +161,23 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
   const responseHeaders = new Headers(res.headers);
   responseHeaders.delete("set-cookie");
 
+  // Персональные данные не должны оседать в кэше браузера или посредника:
+  // на общем устройстве «назад» открывало чужой прогресс. Потоковые ответы
+  // (видео/PDF, Range) кэшировать разрешаем, но только как приватные.
+  if (token) {
+    const contentType = String(responseHeaders.get("content-type") || "");
+    const isStream = contentType.startsWith("video/") || contentType.startsWith("audio/")
+      || contentType.startsWith("image/") || contentType.startsWith("application/pdf")
+      || responseHeaders.has("content-range");
+    if (isStream) {
+      responseHeaders.set("Cache-Control", "private, max-age=0, must-revalidate");
+    } else if (!responseHeaders.get("cache-control")) {
+      responseHeaders.set("Cache-Control", "private, no-store");
+      responseHeaders.set("Pragma", "no-cache");
+    }
+    responseHeaders.append("Vary", "Cookie, Authorization");
+  }
+
   if (isSse) {
     if (!res.ok) {
       const rid = responseHeaders.get("x-request-id") || "";
@@ -147,10 +199,15 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     responseHeaders.set("Connection", "keep-alive");
     responseHeaders.set("X-Accel-Buffering", "no");
     responseHeaders.delete("content-length");
-    return new Response(res.body, {
+    const stream = new Response(res.body, {
       status: res.status,
       headers: responseHeaders,
     });
+    if (rotation.value) {
+      setAccessCookie(stream, rotation.value.access, { upstreamExpiresIn: rotation.value.expiresIn ?? null, request: req });
+      if (rotation.value.refresh) setRefreshCookie(stream, rotation.value.refresh, { refreshExpiresIn: rotation.value.refreshExpiresIn ?? null, request: req });
+    }
+    return stream;
   }
 
   const out = new NextResponse(res.body, {
@@ -158,6 +215,12 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     headers: responseHeaders,
   });
 
+  // Обновлённые на сервере токены возвращаем браузеру, чтобы следующая
+  // страница уже не нуждалась в повторном обновлении.
+  if (rotation.value) {
+    setAccessCookie(out, rotation.value.access, { upstreamExpiresIn: rotation.value.expiresIn ?? null, request: req });
+    if (rotation.value.refresh) setRefreshCookie(out, rotation.value.refresh, { refreshExpiresIn: rotation.value.refreshExpiresIn ?? null, request: req });
+  }
 
   return out;
 }
