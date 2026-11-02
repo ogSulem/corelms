@@ -50,14 +50,17 @@ export async function POST(req: Request) {
     if (!upstream.ok) {
       const { code, message } = await upstreamReason(upstream);
       console.warn(`[corelms] login upstream ${upstream.status} code=${code || "—"} message=${message || "—"} origin=${asciiOrigin(origin) || "—"}`);
+      // Причину от сервера показываем как есть: иначе «учётная запись в архиве»
+      // превращалась в совет проверить CORS, и человек шёл искать не ту проблему.
       const response = error(
         upstream.status,
-        upstream.status === 401 ? "invalid_credentials" : code === "invalid_origin" ? "invalid_origin" : upstream.status === 429 ? "rate_limited" : "upstream_error",
+        upstream.status === 401 ? "invalid_credentials"
+          : code || (upstream.status === 429 ? "rate_limited" : "upstream_error"),
         upstream.status === 401 ? "Неверный логин или пароль"
           : code === "invalid_origin" ? "Сервер отклонил источник запроса: адрес сайта в его настройках не совпадает с текущим адресом."
           : upstream.status === 429 ? "Слишком много попыток. Подождите минуту и повторите вход."
-          : upstream.status === 403 ? "Сервер отклонил вход (403). Проверьте CORS_ALLOW_ORIGINS и PUBLIC_APP_URL в .env."
           : upstream.status === 422 ? "Проверьте формат логина и пароля."
+          : message ? message
           : `Сервис входа ответил ошибкой ${upstream.status}. Повторите попытку.`,
       );
       const retry = upstream.headers.get("retry-after");

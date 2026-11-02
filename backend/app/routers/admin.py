@@ -5833,7 +5833,12 @@ def _archive_user(db: Session, request: Request, *, target: User, actor: User) -
     db.add(target)
     db.flush()
     # Доступ отзываем сразу: иначе уже открытая вкладка продолжала бы работать.
-    auth_sessions.revoke_sessions(str(target.id))
+    # Redis может быть недоступен — тогда архив всё равно должен сохраниться, а
+    # старые токены всё равно отклонит проверка is_archived в get_current_user.
+    try:
+        auth_sessions.revoke_sessions(str(target.id))
+    except HTTPException:
+        log.warning("archive: session revoke deferred for %s", target.id)
 
 
 @router.delete("/users/{user_id}")
