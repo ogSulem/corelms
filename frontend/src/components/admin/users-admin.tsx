@@ -367,6 +367,7 @@ export function UsersAdmin() {
           </div>
         ) : filtered.length ? (
           <div className="overflow-x-auto">
+            <p className="px-4 pt-3 text-[11px] leading-4 text-zinc-400 md:hidden">Таблица шире экрана — прокрутите её вбок, чтобы увидеть все столбцы.</p>
             <table className="w-full min-w-[720px] text-sm">
               <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
                 <tr>

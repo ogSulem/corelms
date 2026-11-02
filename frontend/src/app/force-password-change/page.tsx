@@ -71,7 +71,7 @@ export default function ForcePasswordChangePage() {
 
   return (
     <AppShell>
-      <main className="mx-auto grid min-h-[calc(100vh-72px)] max-w-6xl place-items-center px-6 py-12">
+      <main className="mx-auto grid min-h-[calc(100dvh-72px)] max-w-6xl place-items-center px-4 py-8 sm:px-6 sm:py-12">
         <Card className="w-full max-w-md">
           <CardHeader>
             <CardTitle>Смена пароля</CardTitle>

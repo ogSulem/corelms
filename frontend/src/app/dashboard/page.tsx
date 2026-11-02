@@ -110,7 +110,7 @@ export default function DashboardPage() {
 
   return (
     <AppShell>
-      <div className="flex w-full min-w-0 flex-col mx-auto max-w-7xl px-6 py-6 lg:py-10">
+      <div className="mx-auto flex w-full min-w-0 max-w-7xl flex-col px-4 py-6 sm:px-6 lg:py-10">
         {error ? (
           <div className="mb-6 rounded-2xl border border-rose-500/20 bg-rose-500/5 p-4 text-sm text-rose-400 font-bold uppercase tracking-widest text-center">
             {error}

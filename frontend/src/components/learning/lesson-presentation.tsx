@@ -36,7 +36,7 @@ export function LessonPresentation({ lesson, assets }: { lesson: PresentationLes
   const tabsRef = useActiveTabVisibility(view, "[aria-selected='true']");
 
   return <section aria-label="Содержимое урока" className="min-w-0 space-y-4">
-    {tabs.length > 1 && <div ref={tabsRef} role="tablist" aria-label="Представление урока" className="flex gap-1 overflow-x-auto rounded-xl border border-zinc-200 bg-white p-1.5" onKeyDown={event => {
+    {tabs.length > 1 && <div ref={tabsRef} role="tablist" aria-label="Представление урока" className="flex flex-wrap gap-1 rounded-xl border border-zinc-200 bg-white p-1.5 sm:flex-nowrap sm:overflow-x-auto" onKeyDown={event => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
       const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
       const current = buttons.indexOf(document.activeElement as HTMLButtonElement);

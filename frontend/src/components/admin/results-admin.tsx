@@ -193,6 +193,7 @@ export function ResultsAdmin() {
 
           {view === "modules" ? (
             <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white shadow-sm">
+              <p className="px-4 pt-3 text-[11px] leading-4 text-zinc-400 md:hidden">Таблица шире экрана — прокрутите её вбок, чтобы увидеть все столбцы.</p>
               <table className="w-full min-w-[860px] text-sm">
                 <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
                   <tr>
@@ -244,6 +245,7 @@ export function ResultsAdmin() {
             </div>
           ) : (
             <div className="overflow-x-auto rounded-2xl border border-zinc-200 bg-white shadow-sm">
+              <p className="px-4 pt-3 text-[11px] leading-4 text-zinc-400 md:hidden">Таблица шире экрана — прокрутите её вбок, чтобы увидеть все столбцы.</p>
               <table className="w-full min-w-[860px] text-sm">
                 <thead className="bg-zinc-50 text-left text-xs uppercase tracking-wide text-zinc-500">
                   <tr>

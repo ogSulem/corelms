@@ -257,7 +257,7 @@ export default function AccountPage() {
 
   return (
     <AppShell>
-      <div className="mx-auto max-w-6xl px-6 py-12 lg:py-20">
+      <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-12 lg:py-20">
         <div className="mb-10">
           <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#fe9900] mb-2">Профиль</div>
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-8">
@@ -342,7 +342,7 @@ export default function AccountPage() {
         </div>
         <div className="grid gap-10 lg:grid-cols-12">
           <div className="lg:col-span-8 space-y-10">
-            <div className="relative overflow-hidden rounded-[32px] border border-zinc-200 bg-white/70 backdrop-blur-md p-10 shadow-2xl shadow-zinc-950/10 transition-all duration-300 hover:bg-white">
+            <div className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 p-5 shadow-2xl shadow-zinc-950/10 backdrop-blur-md transition-all duration-300 hover:bg-white sm:rounded-[32px] sm:p-10">
               <div className="absolute top-0 left-0 h-full w-[4px] bg-[#fe9900] opacity-25" />
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-12">
                 <h2 className="text-3xl font-black text-zinc-950 uppercase tracking-tighter leading-none">История</h2>
@@ -409,7 +409,7 @@ export default function AccountPage() {
           </div>
 
           <div className="lg:col-span-4 space-y-10">
-            <div className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 backdrop-blur-md p-8 shadow-2xl shadow-zinc-950/10">
+            <div className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 p-5 shadow-2xl shadow-zinc-950/10 backdrop-blur-md sm:p-8">
               <div className="flex items-center justify-between mb-8">
                 <div className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-500">Сессии</div>
                 <div className="flex items-center gap-2">

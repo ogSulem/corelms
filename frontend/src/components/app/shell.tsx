@@ -7,7 +7,7 @@ import { Globe, Send, Youtube } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { AppNav } from "@/components/app/nav";
+import { AppNav, AppNavBottom } from "@/components/app/nav";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { timeoutSignal } from "@/lib/fetch-timeout";
 
@@ -204,7 +204,7 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   }
 
   return (
-    <div className="flex min-h-screen min-w-0 flex-col">
+    <div className="flex min-h-dvh min-w-0 flex-col pb-[calc(56px+env(safe-area-inset-bottom))] md:pb-0">
       {globalUploadBusy ? (
         <div className="fixed inset-0 z-40">
           <div className="absolute inset-0 bg-zinc-950/15 backdrop-blur-[1px]" />
@@ -355,10 +355,11 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
           </div>
         </div>
 
-        <div className="mx-auto w-full max-w-[1440px] min-w-0 px-4 pb-3 sm:px-6 xl:hidden">
+        <div className="mx-auto hidden w-full max-w-[1440px] min-w-0 px-4 pb-3 sm:px-6 md:block xl:hidden">
           {!loading && authenticated ? <AppNav role={user?.role} authenticated={authenticated} /> : null}
         </div>
       </header>
+      {!loading && authenticated ? <AppNavBottom role={user?.role} authenticated={authenticated} /> : null}
       <main id="main-content" className="min-w-0 flex-1 min-h-0 animate-in fade-in duration-700">{children}</main>
 
 
