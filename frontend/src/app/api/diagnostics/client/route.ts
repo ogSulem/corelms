@@ -49,7 +49,7 @@ export async function GET(request: Request) {
     backendVersion = null;
   }
 
-  let backend: { ok: boolean; status: number; detail?: string } = { ok: false, status: 0 };
+  let backend: { ok: boolean; status: number } = { ok: false, status: 0 };
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4000);
@@ -59,8 +59,10 @@ export async function GET(request: Request) {
     } finally {
       clearTimeout(timer);
     }
-  } catch (error) {
-    backend = { ok: false, status: 0, detail: error instanceof Error ? error.message : String(error) };
+  } catch {
+    // Текст ошибки fetch содержит внутренний адрес API (`connect ECONNREFUSED
+    // 10.0.0.5:8000`). Наружу он не нужен: эндпоинт доступен без входа.
+    backend = { ok: false, status: 0 };
   }
 
   const hasSession = names.includes("core_token") || names.includes("core_refresh");
