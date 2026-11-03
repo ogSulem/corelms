@@ -73,7 +73,7 @@ def test_delete_archives_tagged_user_and_keeps_history(db, client, make_user):
     live_headers = {"Authorization": f"Bearer {token}"}
 
     # У пользователя есть история: попытка теста (удалять такое нельзя).
-    attempt = _attempt_for(db, uuid.UUID(user_id))
+    _attempt_for(db, uuid.UUID(user_id))
 
     response = client.delete(f"/admin/users/{user_id}", headers=superadmin_headers)
     assert response.status_code == 200, response.text

@@ -164,8 +164,13 @@ def create_app() -> FastAPI:
             except Exception:
                 logger.debug("request log emit failed", exc_info=True)
         response.headers["X-Request-ID"] = rid
+        # Личные ответы не должны попадать ни в браузерный кэш, ни в кэш прокси.
+        # Эндпоинты файлов ставят свой Cache-Control (превью, диапазоны видео) —
+        # setdefault их не перетирает.
         if request.url.path.startswith("/auth/"):
             response.headers["Cache-Control"] = "private, no-store"
+        else:
+            response.headers.setdefault("Cache-Control", "private, no-store")
 
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")

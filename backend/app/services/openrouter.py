@@ -273,7 +273,7 @@ def generate_quiz_questions_openrouter(
         )
     )
 
-    use_temp = float(temperature) if temperature is not None else float(settings.openrouter_temperature)
+    use_temp = float(temperature) if temperature is not None else float(cfg.temperature)
 
     payload = {
         "model": use_model,
@@ -353,14 +353,8 @@ def generate_quiz_questions_openrouter(
         headers["X-Title"] = app_title
 
     try:
-        read_s = float(timeout_read_seconds) if timeout_read_seconds is not None else float(settings.openrouter_timeout_read)
+        read_s = float(timeout_read_seconds) if timeout_read_seconds is not None else float(cfg.request_timeout)
         base_connect_s = float(settings.openrouter_timeout_connect)
-        timeout_obj = httpx.Timeout(
-            connect=base_connect_s,
-            read=read_s,
-            write=float(settings.openrouter_timeout_write),
-            pool=3.0,
-        )
 
         data = None
         last_exc: Exception | None = None

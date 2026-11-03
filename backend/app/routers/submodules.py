@@ -62,7 +62,7 @@ def open_submodule(
     sub = db.scalar(select(Submodule).where(Submodule.id == sid))
     if sub is None:
         raise HTTPException(status_code=404, detail="submodule not found")
-    module = require_submodule_access(db, user, sub, lock=True)
+    require_submodule_access(db, user, sub, lock=True)
 
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
     # Одно открытие урока = одна запись в журнале. Интерфейс обращается к уроку
@@ -88,7 +88,7 @@ def get_submodule(submodule_id: str, db: Session = Depends(get_db), user: User =
     sub = db.scalar(select(Submodule).where(Submodule.id == sid))
     if sub is None:
         raise HTTPException(status_code=404, detail="submodule not found")
-    module = require_submodule_access(db, user, sub, lock=False)
+    require_submodule_access(db, user, sub, lock=False)
 
     from app.services.content import read_lesson_text
     content = read_lesson_text(sub.content, sub.content_object_key)

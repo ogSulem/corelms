@@ -135,7 +135,7 @@ def test_zip_cannot_silently_claim_a_manually_uploaded_file(client, db, admin_he
     lesson.title = "Урок"
     db.commit()
     initial = workspace(client, admin_headers, module.id)
-    uploaded = upload(client, admin_headers, initial, name="Урок.txt", data=b"manual notes", submodule_id=str(lesson.id))
+    upload(client, admin_headers, initial, name="Урок.txt", data=b"manual notes", submodule_id=str(lesson.id))
     original_key = db.scalar(select(ContentAsset).where(ContentAsset.module_id == module.id)).object_key
     root = tmp_path / "module"
     root.mkdir()

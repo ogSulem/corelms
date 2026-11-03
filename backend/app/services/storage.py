@@ -412,6 +412,9 @@ def s3_list_objects(
     if not pfx:
         return []
     take = max(1, min(int(limit or 50), 200))
+    # Читаем с запасом (нужна сортировка по дате), но не весь префикс:
+    # без этого «показать 50 последних» тянуло до 1000 ключей на каждый запрос.
+    scan_cap = int(min(1000, max(take * 4, 200)))
     suf = (suffix or "").strip().lower() or None
 
     rt = _runtime_s3()
@@ -459,10 +462,10 @@ def s3_list_objects(
                 continue
             # Не ограничиваем сбор на этапе цикла, если нам нужна сортировка по дате позже
             # Но ограничиваем общим разумным пределом (например, 1000 объектов для админки)
-            if len(out) >= 1000:
+            if len(out) >= scan_cap:
                 break
-        
-        if len(out) >= 1000:
+
+        if len(out) >= scan_cap:
             break
         if not resp.get("IsTruncated"):
             break
@@ -475,7 +478,7 @@ def s3_list_objects(
         out.sort(key=lambda x: str(x.get("last_modified") or ""), reverse=True)
     except Exception:
         log.debug("s3_list_objects: sort failed", exc_info=True)
-    return out
+    return out[:take]
 
 
 def presign_put(*, object_key: str, content_type: str | None, expires_seconds: int | None = None) -> str:

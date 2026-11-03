@@ -11,6 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.services.app_settings import get_ai_settings, get_platform_settings
+from app.services.import_limits import archive_max_bytes
 from app.models.media import AssetRendition, AssetThumb
 from app.models.tag import ModuleTagMap
 from app.models.asset import AssetRevision, ContentAsset
@@ -235,7 +236,9 @@ def workspace(db: Session, module: Module) -> dict:
     ai = get_ai_settings(db)
     return {
         "capabilities": {"ai_configured": ai.configured, "ai_enabled": ai.enabled,
-                         "upload_max_bytes": get_platform_settings(db).upload_max_bytes},
+                         "upload_max_bytes": get_platform_settings(db).upload_max_bytes,
+                         # У ZIP-архива свой предел: его распаковывает воркер.
+                         "archive_max_bytes": archive_max_bytes()},
         "module": {
             "id": str(module.id), "title": module.title, "description": module.description,
             "category": module.category, "difficulty": module.difficulty,

@@ -127,7 +127,6 @@ def main():
         build_assets(module_id, lesson_ids, 300)
         db.expire_all()
         module = db.get(Module, module_id)
-        admin = db.query(User).first()
 
         def save_lesson_screen():
             from app.services.content import workspace

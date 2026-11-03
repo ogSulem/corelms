@@ -141,7 +141,7 @@ def test_unchanged_reimport_does_no_media_work(db, imported, storage, monkeypatc
 def test_reimport_cleans_derivatives_of_forgotten_versions(db, imported, storage):
     """Три замены видео: производные самой старой версии уходят из базы и из S3."""
     module = imported
-    lesson = _lessons(db, module)[1]
+    _lessons(db, module)
 
     def add_video(version_payload: bytes):
         run_import(db, storage, module, {

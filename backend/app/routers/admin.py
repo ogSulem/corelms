@@ -642,6 +642,7 @@ def system_status(
                 "max_uncompressed_bytes": int(getattr(settings, "import_zip_max_uncompressed_bytes", 0) or 0),
                 "max_entry_bytes": int(getattr(settings, "import_zip_max_entry_bytes", 0) or 0),
                 "max_compression_ratio": int(getattr(settings, "import_zip_max_compression_ratio", 0) or 0),
+                "max_archive_bytes": int(getattr(settings, "import_zip_max_archive_bytes", 0) or 0),
             },
             "s3": {
                 # Effective values (settings saved in the UI win over .env).
@@ -667,9 +668,10 @@ def system_status(
                     "model": ai.model,
                     "sources": ai.sources,
                     "timeout_connect": float(getattr(settings, "openrouter_timeout_connect", 0.0) or 0.0),
-                    "timeout_read": float(getattr(settings, "openrouter_timeout_read", 0.0) or 0.0),
+                    # Эффективные значения (важнее .env — то, что сохранено в админке).
+                    "timeout_read": float(ai.request_timeout),
                     "timeout_write": float(getattr(settings, "openrouter_timeout_write", 0.0) or 0.0),
-                    "temperature": float(getattr(settings, "openrouter_temperature", 0.0) or 0.0),
+                    "temperature": float(ai.temperature),
                 },
             },
         }
@@ -956,8 +958,13 @@ def maintenance_modules_storage_scan(
 
     mods = db.scalars(select(Module).order_by(Module.title).limit(take)).all()
 
+    # Листинг S3 — сетевой вызов на каждый модуль. Ограничиваем общее время,
+    # чтобы диагностика не висела минутами: лучше честный partial, чем таймаут.
+    deadline = time.monotonic() + 8.0
     out_items: list[dict[str, object]] = []
     for m in mods:
+        if time.monotonic() > deadline:
+            break
         mid = str(m.id)
         pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{mid}/"
         if pfx and (not pfx.endswith("/")):
@@ -1061,6 +1068,9 @@ def maintenance_modules_storage_scan(
         "items": out_items,
         "limit": int(take),
         "sample_keys": int(sk),
+        "scanned": len(out_items),
+        "candidates": len(mods),
+        "partial": len(out_items) < len(mods),
     }
 
 
@@ -2252,6 +2262,12 @@ def presign_import_zip(
     fn = _normalize_import_text(str(body.filename or "")).strip()
     if not fn.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="only .zip is supported")
+    from app.services.import_limits import archive_max_bytes, too_large_message
+
+    # Браузер сообщает размер до загрузки: отказываем сразу, а не после того,
+    # как гигабайты уедут в S3 и воркер их скачает.
+    if body.size_bytes and int(body.size_bytes) > archive_max_bytes():
+        raise HTTPException(status_code=413, detail=too_large_message(int(body.size_bytes)))
 
     # Metadata (filename, size, mtime) is not a content hash. Always allocate a
     # fresh source key; actual ZIP-byte deduplication happens inside the worker.
@@ -2331,6 +2347,10 @@ def multipart_import_create(
     fn = _normalize_import_text(str(body.filename or "")).strip()
     if not fn.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="only .zip is supported")
+    from app.services.import_limits import archive_max_bytes, too_large_message
+
+    if body.size_bytes and int(body.size_bytes) > archive_max_bytes():
+        raise HTTPException(status_code=413, detail=too_large_message(int(body.size_bytes)))
 
     # A fresh create request is a fresh upload, even for identical names/mtime.
     # Explicit resume uses the returned object_key/upload_id with list-parts
@@ -6037,6 +6057,7 @@ def delete_user(
         rid_s = str(rid or "").strip()
         msg = " ".join(str(e or "").split())[:300]
         suffix = f" rid={rid_s}" if rid_s else ""
+        log.warning("admin delete user failed: %s%s", msg, suffix)
         raise HTTPException(status_code=500, detail=f"failed to delete user ({type(e).__name__}){suffix}") from e
 
     return {"ok": True, "archived": False, "deleted": True}

@@ -54,6 +54,10 @@ class AISettings:
     stored: bool
     updated_at: str | None
     token_error: bool
+    # Behaviour knobs: .env gives the starting value, the admin screen overrides
+    # it for every draft because the effective value is resolved on each call.
+    temperature: float = 0.4
+    request_timeout: float = 120.0
 
     @property
     def token_present(self) -> bool:
@@ -195,6 +199,25 @@ def _pick(name: str, db_value: object, runtime_value: object, env_value: object,
     return None
 
 
+def _number(name: str, db_value: object, runtime_value: object, env_value: object,
+            sources: dict[str, str], low: float, high: float, default: float) -> float:
+    """Numeric override: database first, runtime, then .env; invalid → default.
+
+    A value outside the allowed range never reaches the network call, so a typo
+    (e.g. temperature 40) cannot make every draft fail.
+    """
+    picked = _pick(name, db_value, runtime_value, env_value, sources)
+    try:
+        number = float(picked)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        sources[name] = "default"
+        return default
+    if number != number or number < low or number > high:
+        sources[name] = "default"
+        return default
+    return number
+
+
 def get_ai_settings(db: Session | None = None) -> AISettings:
     raw = _read(db, AI_KEY)
     value = raw.value
@@ -245,6 +268,10 @@ def get_ai_settings(db: Session | None = None) -> AISettings:
                         _text(getattr(settings, "openrouter_http_referer", "")), sources) or "")
     app_title = str(_pick("app_title", _text(value.get("app_title")), _text(runtime.get("openrouter_app_title")),
                           _text(getattr(settings, "openrouter_app_title", "")), sources) or "")
+    temperature = _number("temperature", value.get("temperature"), None,
+                          getattr(settings, "openrouter_temperature", 0.4), sources, 0.0, 2.0, 0.4)
+    request_timeout = _number("request_timeout", value.get("request_timeout"), None,
+                              getattr(settings, "openrouter_timeout_read", 120.0), sources, 5.0, 900.0, 120.0)
 
     return AISettings(
         enabled=bool(enabled),
@@ -258,6 +285,8 @@ def get_ai_settings(db: Session | None = None) -> AISettings:
         updated_at=raw.updated_at,
         # A saved-but-unreadable token is only a problem when no fallback token exists.
         token_error=bool(token_error and not token),
+        temperature=temperature,
+        request_timeout=request_timeout,
     )
 
 
@@ -290,6 +319,8 @@ def save_ai_settings(
     model: str = "",
     http_referer: str = "",
     app_title: str = "",
+    temperature: float | None = None,
+    request_timeout: float | None = None,
 ) -> AISettings:
     current = _read(db, AI_KEY)
     value = dict(current.value)
@@ -317,6 +348,24 @@ def save_ai_settings(
         value["api_key"] = encrypt_secret(raw)
     if not value.get("base_url"):
         value.pop("base_url", None)
+
+    # Empty field → fall back to .env ("env задаёт начальные значения").
+    if temperature is not None:
+        try:
+            temp = float(temperature)
+        except (TypeError, ValueError) as exc:
+            raise SettingsValidationError("Температура должна быть числом") from exc
+        if not (0.0 <= temp <= 2.0):
+            raise SettingsValidationError("Температура должна быть от 0 до 2")
+        value["temperature"] = round(temp, 2)
+    if request_timeout is not None:
+        try:
+            timeout = float(request_timeout)
+        except (TypeError, ValueError) as exc:
+            raise SettingsValidationError("Таймаут должен быть числом") from exc
+        if not (5.0 <= timeout <= 900.0):
+            raise SettingsValidationError("Таймаут должен быть от 5 до 900 секунд")
+        value["request_timeout"] = int(timeout)
     _write(db, AI_KEY, value, actor_id=actor_id)
     # A token saved in the UI must win over a stale legacy Redis value.
     try:
@@ -453,6 +502,8 @@ def ai_settings_payload(config: AISettings) -> dict:
         "base_url": config.base_url,
         "http_referer": config.http_referer,
         "app_title": config.app_title,
+        "temperature": config.temperature,
+        "request_timeout": config.request_timeout,
         "sources": config.sources,
         "stored": config.stored,
         "updated_at": config.updated_at,
@@ -461,6 +512,8 @@ def ai_settings_payload(config: AISettings) -> dict:
             "api_key_present": bool(_text(getattr(settings, "openrouter_api_key", ""))),
             "model": _text(getattr(settings, "openrouter_model", "")),
             "base_url": _text(getattr(settings, "openrouter_base_url", "")),
+            "temperature": float(getattr(settings, "openrouter_temperature", 0.4) or 0.4),
+            "request_timeout": float(getattr(settings, "openrouter_timeout_read", 120.0) or 120.0),
         },
         "secret_storage": "encrypted",
     }
