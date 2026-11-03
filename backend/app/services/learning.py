@@ -100,15 +100,27 @@ class LearningService:
         reads: set[tuple[uuid.UUID, uuid.UUID]] = set()
         opened: set[tuple[uuid.UUID, uuid.UUID]] = set()
         viewed_revisions: dict[tuple[uuid.UUID, uuid.UUID], int] = {}
+        # «Открытие модуля» хранится как событие без ref_id, и раньше этот запрос
+        # тянул ВСЕ такие события всех пользователей: на большой базе каждое
+        # сохранение урока читало десятки тысяч строк и разбирало их JSON, а
+        # нужен был один модуль. Ограничиваем выборку по UUID модулей прямо в SQL —
+        # он уникален, поэтому подстрока не может совпасть с чужим модулем.
+        module_open_scope = module_open_meta_clause()
+        # Для одного-двух модулей (обычное сохранение урока) фильтр резко сокращает
+        # выборку; для отчёта по всему каталогу не раздуваем SQL сотней LIKE.
+        if 0 < len(mids) <= 20:
+            module_open_scope = and_(module_open_scope, or_(*[LearningEvent.meta.like(f"%{mid}%") for mid in mids]))
         events = self.db.execute(select(LearningEvent.user_id, LearningEvent.ref_id, LearningEvent.meta).where(
             LearningEvent.user_id.in_(uids), LearningEvent.type == LearningEventType.submodule_opened,
             or_(
                 and_(LearningEvent.ref_id.in_(lesson_ids), read_meta_clause()),
-                and_(LearningEvent.ref_id.is_(None), module_open_meta_clause()),
+                and_(LearningEvent.ref_id.is_(None), module_open_scope),
             )
         ))
         for uid, ref, meta in events:
-            if ref is not None and is_read_meta(meta):
+            if ref is not None:
+                # Условие «прочитано» уже проверено в SQL (та же семантика метки),
+                # повторный разбор JSON на каждую строку был лишней работой.
                 reads.add((uid, ref))
             elif ref is None:
                 try:

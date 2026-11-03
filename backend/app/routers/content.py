@@ -31,6 +31,7 @@ from app.models.quiz import Question, QuestionType, Quiz, QuizType
 from app.schemas.authoring import FinalQuizSave, GenerateDraft, GenerateModuleDrafts, QuizSave
 from app.services.app_settings import get_ai_settings, get_platform_settings
 from app.services.quiz_drafts import prepare_module_drafts, module_draft_status
+from app.services.quiz_versions import cleanup_superseded_quiz_versions
 from app.services.authoring import format_prompt, generate_quiz_draft_job, question_payload, quiz_payload, source_revision, request_signature
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.tag import ModuleTagMap, Tag
@@ -214,7 +215,17 @@ def edit_lesson(module_id: uuid.UUID, lesson_id: uuid.UUID, body: LessonEdit, re
         lesson.requires_quiz = body.requires_quiz
     if body.is_archived is not None:
         lesson.is_archived = body.is_archived
-    return _finish(db, request, user, module, "content_lesson_updated", submodule_id=str(lesson.id), fields=sorted(body.model_fields_set - {"revision"}))
+    # Название, режим показа и путь в оглавлении — оформление. Метку «есть
+    # обновления» поднимает только то, что ученику действительно нужно изучить
+    # заново: текст, основной файл, архив и требование теста.
+    learning_change = bool(
+        content_changed
+        or "primary_asset_id" in body.model_fields_set
+        or body.requires_quiz is not None
+        or body.is_archived is not None
+    )
+    return _finish(db, request, user, module, "content_lesson_updated", learning_change=learning_change,
+                   submodule_id=str(lesson.id), fields=sorted(body.model_fields_set - {"revision"}))
 
 
 @router.get("/{module_id}/lessons/{lesson_id}/content")
@@ -272,7 +283,8 @@ def restore_lesson_version(module_id: uuid.UUID, lesson_id: uuid.UUID, body: Ver
 def change_lesson_order(module_id: uuid.UUID, body: ReorderRequest, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin))):
     module = _editable(db, module_id, body.revision)
     reorder_lessons(db, module, body.ids)
-    return _finish(db, request, user, module, "content_lessons_reordered")
+    # Перестановка уроков не добавляет материала — это навигация.
+    return _finish(db, request, user, module, "content_lessons_reordered", learning_change=False)
 
 
 def _inspect_upload(file: UploadFile, *, max_bytes: int) -> tuple[str, int, str]:
@@ -374,6 +386,12 @@ def _register_content_asset(db: Session, request: Request, user: User, module_id
     db.commit()
     # Превью греем сразу после фиксации: списки не должны ждать первого открытия.
     enqueue_thumb(asset.id)
+    # Замена файла не должна навсегда оставлять в S3 копию и превью старой версии.
+    try:
+        from app.services.media import cleanup_superseded_derivatives
+        cleanup_superseded_derivatives([asset.id])
+    except Exception:
+        log.warning("content: derivative cleanup failed", exc_info=True)
     modules_bump_rev(reason="content_asset_changed")
     state = workspace(db, module)
     if created_lesson:
@@ -534,7 +552,9 @@ def edit_asset(module_id: uuid.UUID, asset_id: uuid.UUID, body: AssetEdit, reque
         if target:
             order = int(db.scalar(select(func.max(SubmoduleAssetMap.order)).where(SubmoduleAssetMap.submodule_id == target)) or 0) + 1
             db.add(SubmoduleAssetMap(submodule_id=target, asset_id=asset.id, order=order))
-    return _finish(db, request, user, module, "content_asset_updated", asset_id=str(asset.id), fields=sorted(body.model_fields_set - {"revision"}))
+    # Переименование и порядок файла — организация, не новый материал.
+    return _finish(db, request, user, module, "content_asset_updated", learning_change=False,
+                   asset_id=str(asset.id), fields=sorted(body.model_fields_set - {"revision"}))
 
 
 @router.post("/{module_id}/lessons/{lesson_id}/delete")
@@ -612,7 +632,8 @@ def move_assets(module_id: uuid.UUID, body: MoveAssets, request: Request, db: Se
                 db.add(SubmoduleAssetMap(submodule_id=target, asset_id=asset.id, order=position))
         db.flush()
         moved.append(str(asset.id))
-    return _finish(db, request, user, module, "content_assets_moved", asset_ids=moved,
+    # Перенос файла меняет место, но не добавляет нового материала.
+    return _finish(db, request, user, module, "content_assets_moved", learning_change=False, asset_ids=moved,
                    submodule_id=str(body.submodule_id) if body.submodule_id else None, folder=folder)
 
 
@@ -689,7 +710,7 @@ def change_asset_order(module_id: uuid.UUID, body: ReorderRequest, request: Requ
         link.order = order[link.asset_id]
     for aid, position in order.items():
         require_owned_asset(db, module, aid).order = position
-    return _finish(db, request, user, module, "content_assets_reordered")
+    return _finish(db, request, user, module, "content_assets_reordered", learning_change=False)
 
 
 @router.get("/{module_id}/assets/{asset_id}/versions")
@@ -844,6 +865,13 @@ def save_lesson_quiz(module_id: uuid.UUID, lesson_id: uuid.UUID, body: QuizSave,
     db.flush()
     remember_quiz_version(db, lesson)
     state = _finish(db, request, user, module, "content_quiz_saved", submodule_id=str(lesson.id), quiz_id=str(target.id), questions=len(body.questions))
+    # После коммита: версии теста без единой попытки — мусор от прошлых правок.
+    try:
+        if cleanup_superseded_quiz_versions(db, lesson.id):
+            db.commit()
+    except Exception:
+        db.rollback()
+        log.warning("content: cleanup of superseded quiz versions failed", exc_info=True)
     return {"workspace": state, "quiz": quiz_payload(db, module, lesson)}
 
 

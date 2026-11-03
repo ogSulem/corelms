@@ -167,10 +167,12 @@ def presign_download(
     if act == "download":
         disposition = f"attachment; filename*=UTF-8''{quoted}"
 
+    # Ключ объекта в хранилище — внутренняя деталь: он не нужен ни журналу, ни
+    # интерфейсу (а через /me/recent-activity уходил ученику). Пишем только то,
+    # что видно в кабинете.
     meta = {
         "action": act,
         "filename": str(asset.original_filename or ""),
-        "object_key": str(asset.object_key or ""),
         "mime_type": str(asset.mime_type or ""),
         "module_id": module_id,
         "submodule_id": submodule_id,
@@ -347,7 +349,6 @@ def stream_asset(
             meta = {
                 "action": "download" if downloading else "stream",
                 "filename": str(asset.original_filename or ""),
-                "object_key": str(asset.object_key or ""),
                 "mime_type": str(asset.mime_type or ""),
                 "module_id": module_id,
                 "submodule_id": submodule_id,
