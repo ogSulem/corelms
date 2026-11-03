@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 import json
 import logging
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -97,19 +97,10 @@ def my_progress_summary(request: Request, db: Session = Depends(get_db), user: U
             earned_module_fraction += 1.0 if p.get("completed") else (
                 min(1.0, int(p.get("passed_count") or 0) / int(p.get("total_lessons") or 1))
             )
-            try:
-                if bool(p.get("completed")):
-                    modules_completed += 1
-            except Exception:
-                pass
-            try:
-                steps_total += int(p.get("total_lessons") or 0)
-            except Exception:
-                pass
-            try:
-                steps_completed += int(p.get("passed_count") or 0)
-            except Exception:
-                pass
+            if p.get("completed"):
+                modules_completed += 1
+            steps_total += int(p.get("total_lessons") or 0)
+            steps_completed += int(p.get("passed_count") or 0)
 
         current_percent = max(0, min(100, round(steps_completed / steps_total * 100))) if steps_total else 0
         # Earned module completion must not shrink when a finished course gains
@@ -124,17 +115,18 @@ def my_progress_summary(request: Request, db: Session = Depends(get_db), user: U
             "percent": int(percent),
             "current_percent": current_percent,
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        rid = getattr(getattr(request, "state", None), "request_id", None)
-        rid_s = str(rid or "").strip() or None
-        logger.exception("/me/progress-summary failed", extra={"rid": rid_s})
-        return {
-            "modules_total": 0,
-            "modules_completed": 0,
-            "steps_total": 0,
-            "steps_completed": 0,
-            "percent": 0,
-        }
+        # Раньше здесь возвращались нули с кодом 200: сбой расчёта выглядел как
+        # «весь прогресс обнулился». Честнее сказать «не удалось посчитать» —
+        # дашборд покажет ошибку и повторит запрос.
+        rid = str(getattr(getattr(request, "state", None), "request_id", None) or "").strip() or None
+        logger.exception("/me/progress-summary failed", extra={"rid": rid})
+        raise HTTPException(
+            status_code=503,
+            detail="Не удалось рассчитать прогресс. Обновите страницу и повторите.",
+        ) from e
 
 
 @router.get("/activity-feed", response_model=MyActivityFeedResponse)

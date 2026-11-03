@@ -258,3 +258,15 @@ def test_dispatch_recovers_orphan_rq_hash_or_started_job_that_never_claimed_sql(
         enqueue=lambda *args, **kwargs: sent.append(kwargs['job_id'])))
     assert media.dispatch_pending_media() == 1
     db.refresh(row); assert row.job_id == sent[0] and row.job_id != 'lost-job'
+
+
+def test_viewer_polling_creates_one_rendition_and_never_locks_on_read(client, db, video, storage, make_user):
+    """Интерфейс опрашивает /viewer, пока идёт перекодирование: одна строка, без дублей."""
+    module, _, asset, row = video
+    _, headers = make_user()
+    states = [client.get(f'/assets/{asset.id}/viewer', headers=headers).json() for _ in range(4)]
+    assert all(item['source_version'] == 1 for item in states)
+    assert db.scalar(select(func.count()).select_from(AssetRendition).where(
+        AssetRendition.asset_id == asset.id)) == 1
+    db.expire_all()
+    assert db.get(AssetRendition, row.id).state == 'pending'
