@@ -99,3 +99,10 @@ test("температура и таймаут AI правятся из адми
   assert.match(page, /temperature: tempValue/, "PUT /admin/settings/ai должен отправлять температуру");
   assert.match(page, /request_timeout: timeoutValue/, "PUT /admin/settings/ai должен отправлять таймаут");
 });
+
+test("длинная почта в списке людей переносится, а не растягивает карточку", async () => {
+  const page = await readFile(new URL("../src/components/admin/users-admin.tsx", import.meta.url), "utf8");
+  const line = page.split("\n").find((row) => row.includes("{u.email") && row.includes("<p"));
+  assert.ok(line, "строка с почтой должна остаться в списке");
+  assert.match(line, /break-words/, "почта без пробелов должна переноситься на 320 px");
+});
