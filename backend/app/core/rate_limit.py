@@ -43,11 +43,17 @@ def hit(*, key: str, limit: int, window_seconds: int) -> None:
     Ключ задаёт вызывающая сторона: он может быть адресом клиента (защита от
     потока с одного хоста) или конкретной учётной записью (защита от подбора).
     """
-    r = get_redis()
     try:
-        current = r.incr(key)
-        if current == 1:
-            r.expire(key, int(window_seconds))
+        r = get_redis()
+        # INCR и установка TTL — одной транзакцией. Раньше TTL ставился отдельным
+        # вызовом только на первом попадании: падение между INCR и EXPIRE (или
+        # ключ, оставшийся от старой версии) делал счётчик вечным, и клиент
+        # получал 429 до ручной чистки Redis. `NX` не продлевает окно у
+        # нормального ключа, но лечит ключ без TTL.
+        with r.pipeline() as pipe:
+            pipe.incr(key)
+            pipe.expire(key, int(window_seconds), nx=True)
+            current = pipe.execute()[0]
     except Exception:
         return
     if int(current) > int(limit):

@@ -311,10 +311,12 @@ def settings_overview(
     workers = None
     regen_queue = None
     try:
-        import redis as redis_lib
         from rq import Queue
         from rq.worker import Worker
-        conn = redis_lib.Redis.from_url(str(getattr(settings, "redis_url", "") or ""))
+
+        from app.core.redis_client import get_redis_rq
+
+        conn = get_redis_rq()
         workers = int(len(Worker.all(connection=conn)))
         regen_queue = int(Queue(str(getattr(settings, "rq_queue_regen", "") or ""), connection=conn).count)
     except Exception:

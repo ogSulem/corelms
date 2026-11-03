@@ -37,6 +37,7 @@ from app.models.audit import LearningEvent, LearningEventType  # noqa: E402
 from app.models.completion import ModuleCompletion  # noqa: E402
 from app.models.module import Module, Submodule  # noqa: E402
 from app.models.quiz import Question, Quiz, QuizType  # noqa: E402
+from sqlalchemy import select  # noqa: E402
 from app.models.user import User, UserRole  # noqa: E402
 from app.services.learning import LearningService  # noqa: E402
 
@@ -137,5 +138,55 @@ def main():
         print("достижений в базе:", db.query(ModuleCompletion).count())
 
 
+def build_many(modules=100, lessons=10, users=500, events_per_user=25):
+    """Много модулей и людей: так выглядит «Результаты» на живой базе."""
+    from app.models.quiz import Question, Quiz, QuizType
+    with SessionLocal() as db:
+        lesson_ids = []
+        for m in range(modules):
+            module = Module(title=f"Модуль {m:03d}", is_active=True, visibility="public")
+            db.add(module)
+            db.flush()
+            for index in range(lessons):
+                quiz = Quiz(type=QuizType.submodule)
+                db.add(quiz)
+                db.flush()
+                db.add(Question(quiz_id=quiz.id, type="single", position=1, prompt="Q", correct_answer="A"))
+                sub = Submodule(module_id=module.id, title=f"Урок {index}", order=index + 1,
+                                quiz_id=quiz.id, requires_quiz=False, content="текст")
+                db.add(sub)
+                lesson_ids.append(sub.id)
+        db.flush()
+        rows = []
+        for u in range(users):
+            user = User(name=f"Человек {u}", email=f"p{u}@example.test", password_hash="x", role=UserRole.employee)
+            db.add(user)
+            db.flush()
+            for sub_id in lesson_ids[:events_per_user]:
+                rows.append(LearningEvent(user_id=user.id, type=LearningEventType.submodule_opened,
+                                          ref_id=sub_id, meta="read"))
+        db.bulk_save_objects(rows)
+        db.commit()
+
+
+def measure_big():
+    from app.models.module import Module
+    from app.services.learning import LearningService
+    from app.services.modules import ModuleService
+    build_many()
+    with SessionLocal() as db:
+        modules = list(db.scalars(select(Module)))
+        learner = db.query(User).first()
+        print(f"данные: {len(modules)} модулей, {db.query(Submodule).count()} уроков, {db.query(User).count()} человек, "
+              f"{db.query(LearningEvent).count()} событий")
+        measure("обзор модулей для ученика (100 модулей)", lambda: (ModuleService(db).get_modules_overview(learner), db.rollback()), rounds=3)
+        users = db.query(User).limit(200).all()
+        measure("матрица «Результаты» (200 человек × 100 модулей)",
+                lambda: (LearningService(db).get_progress_matrix(users, modules), db.rollback()), rounds=3)
+        measure("аналитика одного модуля (500 человек)",
+                lambda: (LearningService(db).get_modules_analytics_batch(modules[0].id), db.rollback()), rounds=3)
+
+
 if __name__ == "__main__":
     main()
+    measure_big()

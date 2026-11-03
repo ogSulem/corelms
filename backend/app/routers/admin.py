@@ -694,7 +694,9 @@ def system_status(
         from rq.worker import Worker
         from rq.registry import DeferredJobRegistry, FailedJobRegistry, ScheduledJobRegistry, StartedJobRegistry
 
-        conn = _redis.Redis.from_url(settings.redis_url)
+        from app.core.redis_client import get_redis_rq
+
+        conn = get_redis_rq()
         q = Queue(name=str(settings.rq_queue_default), connection=conn)
         workers = Worker.all(connection=conn)
         started = StartedJobRegistry(queue=q, connection=conn)

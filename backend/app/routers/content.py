@@ -811,6 +811,9 @@ def reimport_module(
                 "actor_user_id": str(user.id), "reimport_existing": True, "expected_revision": revision,
                 "created_at": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False))
             redis.ltrim("admin:import_jobs", 0, 199)
+            # Тот же срок, что и у остальных ключей журнала: список не должен
+            # жить в Redis вечно, даже будучи ограниченным по длине.
+            redis.expire("admin:import_jobs", 60 * 60 * 24 * 30)
         except Exception:
             pass
         audit_log(db=db, request=request, actor_user_id=user.id, event_type="content_reimport_enqueued",
