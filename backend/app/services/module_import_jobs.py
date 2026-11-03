@@ -811,7 +811,6 @@ def _run_import_module_zip_job(
             # Берём и файлы, привязанные к урокам модуля: у перенесённых из
             # другого раздела module_id может быть пустым.
             from app.models.asset import ContentAsset
-            from app.models.module import Submodule
             from app.models.submodule_asset import SubmoduleAssetMap
             linked_ids = select(SubmoduleAssetMap.asset_id).join(
                 Submodule, Submodule.id == SubmoduleAssetMap.submodule_id).where(Submodule.module_id == mid)
