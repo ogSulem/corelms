@@ -389,3 +389,19 @@ def test_deleting_unfinished_lesson_does_not_grant_module_completion(client, db,
     assert db.scalar(select(func.count()).select_from(ModuleCompletion).where(
         ModuleCompletion.user_id == learner_row.id,
         ModuleCompletion.module_id == uuid.UUID(module_id))) == 0
+
+
+def test_progress_summary_failure_is_reported_not_shown_as_zero(client, db, make_user, monkeypatch):
+    """Сбой расчёта не должен выглядеть как «весь прогресс обнулился»."""
+    from app.services.learning import LearningService
+
+    _, learner = make_user(UserRole.employee)
+    assert client.get("/me/progress-summary", headers=learner).status_code == 200
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("расчёт упал")
+
+    monkeypatch.setattr(LearningService, "get_modules_progress_compact", boom)
+    failed = client.get("/me/progress-summary", headers=learner)
+    assert failed.status_code == 503, failed.text
+    assert "Не удалось рассчитать прогресс" in failed.text

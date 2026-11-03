@@ -89,3 +89,19 @@ def test_plain_learning_meta_is_returned_as_before(client, db, make_module, make
     history = client.get("/me/history", headers=headers)
     assert history.status_code == 200
     assert any(item.get("meta") == "read" for item in history.json()["items"])
+
+
+def test_learner_asset_lists_do_not_expose_storage_keys(client, db, make_module, make_user, storage):
+    """Список материалов ученика не должен содержать внутренний путь файла в S3."""
+    module, lesson, _ = make_module()
+    _learner, headers = make_user()
+    asset = attach(db, module, lesson, storage)
+
+    for path in (f"/modules/submodules/{lesson.id}/assets", f"/modules/{module.id}/assets"):
+        response = client.get(path, headers=headers)
+        assert response.status_code == 200, (path, response.text)
+        assert asset.object_key not in response.text, path
+        assert "object_key" not in response.text, path
+
+    attached = client.get(f"/modules/submodules/{lesson.id}/assets", headers=headers)
+    assert asset.original_filename in attached.text, "список материалов обязан показывать имя файла"

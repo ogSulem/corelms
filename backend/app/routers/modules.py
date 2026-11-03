@@ -273,7 +273,6 @@ def submodule_assets(submodule_id: uuid.UUID, db: Session = Depends(get_db), use
         "assets": [
             {
                 "asset_id": str(asset.id),
-                "object_key": asset.object_key,
                 "original_filename": asset.original_filename,
                 "mime_type": asset.mime_type,
                 "size_bytes": asset.size_bytes,
@@ -302,7 +301,6 @@ def module_assets(module_id: uuid.UUID, db: Session = Depends(get_db), user: Use
         "assets": [
             {
                 "asset_id": str(a.id),
-                "object_key": a.object_key,
                 "original_filename": a.original_filename,
                 "mime_type": a.mime_type,
                 "size_bytes": a.size_bytes,

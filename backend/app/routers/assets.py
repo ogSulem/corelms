@@ -613,14 +613,23 @@ def asset_thumb(
 @router.get("/{asset_id}/viewer")
 def asset_viewer(asset_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user),
                  _: object = rate_limit(key_prefix="asset_viewer", limit=120, window_seconds=60)):
-    asset = db.scalar(select(ContentAsset).where(ContentAsset.id == asset_id).with_for_update())
+    # Интерфейс опрашивает этот адрес, пока идёт перекодирование, поэтому на
+    # чтении строку не блокируем: `FOR UPDATE` на GET держал файл под локом у
+    # каждого зрителя. Блокировка нужна только реальной записи — постановке
+    # рендишна, чтобы двое одновременно не создали две задачи.
+    asset = db.get(ContentAsset, asset_id)
     if not asset:
         raise HTTPException(404, "Материал недоступен")
     _asset_access_guard(db=db, user=user, aid=asset_id, asset=asset)
     row = current_rendition(db, asset)
     if (row is None or row.state == "skipped") and asset_is_active(db, asset):
-        row = stage_rendition(db, asset)
-        db.commit()
+        locked = db.scalar(select(ContentAsset).where(ContentAsset.id == asset_id).with_for_update())
+        if locked is not None:
+            asset = locked
+            row = current_rendition(db, asset)
+            if row is None or row.state == "skipped":
+                row = stage_rendition(db, asset)
+            db.commit()
     return {"state": row.state if row else "original", "source_version": asset.version,
             "mime_type": row.mime_type if row and row.state == "ready" else None,
             "error": row.error if row else None, "can_retry": is_admin(user) and asset_is_active(db, asset) and (user.role == UserRole.superadmin or not db.scalar(select(SalesEntry.id).where(SalesEntry.asset_id == asset.id)))}
