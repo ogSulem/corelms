@@ -741,6 +741,9 @@ def import_module_from_dir(
             db.flush()
             module.final_quiz_id = final.id
         module.content_revision += 1
+        # Импорт меняет сам контент: у тех, кто уже прошёл модуль, должна
+        # появиться отметка «есть обновления».
+        module.learning_revision = int(getattr(module, "learning_revision", 1) or 1) + 1
         report["content_revision"] = module.content_revision
         db.flush()
         return mid

@@ -215,7 +215,9 @@ def open_module(
     # Note: do NOT introduce a new LearningEventType (would require DB enum migration).
     # Reuse submodule_opened with ref_id=None and encode action in meta.
     try:
-        meta = json.dumps({"action": "module_open", "module_id": str(m.id), "content_revision": m.content_revision}, ensure_ascii=False)
+        meta = json.dumps({"action": "module_open", "module_id": str(m.id),
+                           "content_revision": m.content_revision,
+                           "learning_revision": int(getattr(m, "learning_revision", 1) or 1)}, ensure_ascii=False)
     except Exception:
         meta = "module_open"
 

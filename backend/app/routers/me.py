@@ -260,20 +260,40 @@ def my_activity_feed(
 
 @router.get("/assignments", response_model=MyAssignmentsResponse)
 def my_assignments(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from datetime import timezone as _tz
+    from app.models.completion import ModuleCompletion
+    from app.models.assignment import AssignmentType
+
     rows = db.scalars(select(Assignment).where(Assignment.assigned_to == user.id).order_by(Assignment.created_at.desc())).all()
-    return {
-        "items": [
-            {
-                "id": str(a.id),
-                "type": a.type.value,
-                "target_id": str(a.target_id),
-                "status": a.status.value,
-                "priority": a.priority,
-                "deadline": a.deadline.isoformat() if a.deadline else None,
-            }
-            for a in rows
-        ]
-    }
+    # Статус назначения никогда не пересчитывался в базе: «Задач в работе» на
+    # дашборде не уменьшалось даже после прохождения модуля. Считаем актуальный
+    # статус на чтении — источник правды остаётся в прогрессе обучения.
+    module_ids = [a.target_id for a in rows if a.type == AssignmentType.module]
+    completed_modules = set(db.scalars(
+        select(ModuleCompletion.module_id).where(ModuleCompletion.user_id == user.id,
+                                                ModuleCompletion.module_id.in_(module_ids))
+    )) if module_ids else set()
+    now = datetime.now(_tz.utc)
+    items = []
+    for a in rows:
+        status = a.status.value
+        if status not in {"completed"}:
+            done = a.type == AssignmentType.module and a.target_id in completed_modules
+            if done:
+                status = "completed"
+            elif a.deadline is not None:
+                deadline = a.deadline if a.deadline.tzinfo else a.deadline.replace(tzinfo=_tz.utc)
+                if deadline < now:
+                    status = "overdue"
+        items.append({
+            "id": str(a.id),
+            "type": a.type.value,
+            "target_id": str(a.target_id),
+            "status": status,
+            "priority": a.priority,
+            "deadline": a.deadline.isoformat() if a.deadline else None,
+        })
+    return {"items": items}
 
 
 @router.get("/recent-activity", response_model=MyRecentActivityResponse)

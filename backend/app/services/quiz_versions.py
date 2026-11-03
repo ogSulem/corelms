@@ -10,7 +10,7 @@ from app.models.attempt import QuizAttempt, QuizAttemptAnswer
 from app.models.completion import LessonQuizVersion
 from app.models.module import Module, Submodule
 from app.models.quiz import Question, Quiz
-from app.services.content import lock_module, preserve_progress
+from app.services.content import lock_module, preserve_progress, touch_learning
 from app.services.learning import remember_quiz_version
 
 
@@ -59,6 +59,7 @@ def version_quiz_for_edit(db: Session, quiz_id: uuid.UUID, *, exclude: uuid.UUID
         mapping[old.id] = new
     lesson.quiz_id = target.id
     module.content_revision += 1
+    touch_learning(module)
     db.flush()
     remember_quiz_version(db, lesson)
     return target, mapping

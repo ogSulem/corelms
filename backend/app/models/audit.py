@@ -9,6 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 
+from app.core.timeutil import utcnow
+
 class LearningEventType(str, enum.Enum):
     submodule_opened = "submodule_opened"
     asset_viewed = "asset_viewed"
@@ -26,7 +28,7 @@ class LearningEvent(Base):
     ref_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     meta: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 # Same invariant as migration 0004, also enforced in SQLite test databases.

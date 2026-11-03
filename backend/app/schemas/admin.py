@@ -12,7 +12,10 @@ class ModuleCreateRequest(BaseModel):
     description: str | None = None
     difficulty: int = 1
     category: str | None = None
-    is_active: bool = True
+    # Новый модуль всегда создаётся черновиком: публикация проходит те же
+    # проверки, что и в редакторе. Иначе POST с is_active=True протаскивал в
+    # каталог пустую карточку в обход запрета «нельзя публиковать пустой модуль».
+    is_active: bool = False
 
 
 class ModuleUpdateRequest(BaseModel):

@@ -39,7 +39,7 @@ from app.services.thumbs import delete_thumbs, enqueue_thumb, thumb_keys
 from app.models.user import User, UserRole
 from app.schemas.content import (ArchiveAssets, AssetEdit, DeleteAssets, DeleteLesson, LessonDraft, LessonEdit, ModuleDraft, ModuleEdit,
     MoveAssets, ReorderRequest, UploadStart, VersionRestore)
-from app.services.content import (clean_folder, ensure_filename_available, lock_module, next_lesson_order, normalize_name,
+from app.services.content import (clean_folder, ensure_filename_available, find_module_by_title, lock_module, next_lesson_order, normalize_name, touch_learning,
     preserve_progress, reorder_lessons, require_lesson, require_owned_asset, safe_filename, snapshot_asset,
     storage_key, workspace, snapshot_lesson, read_lesson_text)
 from app.services.learning import remember_quiz_version
@@ -53,8 +53,12 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/content/modules", tags=["content editor"], dependencies=[Depends(require_roles(UserRole.admin))])
 
 
-def _finish(db: Session, request: Request, user: User, module: Module, action: str, **meta) -> dict:
+def _finish(db: Session, request: Request, user: User, module: Module, action: str, learning_change: bool = True, **meta) -> dict:
     module.content_revision += 1
+    # Метка «есть обновления» у учеников считается по learning_revision, поэтому
+    # правка только названия/описания не должна её поднимать.
+    if learning_change:
+        touch_learning(module)
     audit_log(db=db, request=request, actor_user_id=user.id, event_type=action,
               meta={"module_id": str(module.id), "content_revision": module.content_revision, **meta})
     db.commit()
@@ -101,7 +105,7 @@ def list_workspaces(include_archived: bool = False, db: Session = Depends(get_db
 
 @router.post("", status_code=201)
 def create_workspace(body: ModuleDraft, request: Request, db: Session = Depends(get_db), user: User = Depends(require_roles(UserRole.admin))):
-    if db.scalar(select(Module.id).where(func.lower(Module.title) == body.title.lower())):
+    if find_module_by_title(db, body.title) is not None:
         raise HTTPException(409, "Модуль с таким названием уже существует")
     module = Module(title=body.title, description=body.description, category=body.category, is_active=False)
     db.add(module)
@@ -122,9 +126,12 @@ def edit_workspace(module_id: uuid.UUID, body: ModuleEdit, request: Request, db:
     module = lock_module(db, module_id, body.revision)
     preserve_progress(db, module)
     if body.title is not None:
-        if db.scalar(select(Module.id).where(Module.id != module.id, func.lower(Module.title) == body.title.lower())):
+        title = str(body.title or "").strip()
+        if not title:
+            raise HTTPException(422, "Укажите название модуля")
+        if find_module_by_title(db, title, exclude_id=module.id) is not None:
             raise HTTPException(409, "Модуль с таким названием уже существует")
-        module.title = body.title
+        module.title = title
     for field in ("description", "category"):
         if field in body.model_fields_set:
             setattr(module, field, getattr(body, field))
@@ -147,7 +154,11 @@ def edit_workspace(module_id: uuid.UUID, body: ModuleEdit, request: Request, db:
                 raise HTTPException(409, "Модуль находится в архиве")
             _check_publishable(db, module)
         module.is_active = body.is_active
-    return _finish(db, request, user, module, "content_module_updated", fields=sorted(body.model_fields_set - {"revision"}))
+    # Переименование, описание и категория — не новый материал: у всех, кто уже
+    # прошёл модуль, не должно появляться «есть обновления» из-за правки текста.
+    learning_change = bool(body.model_fields_set & {"is_active", "visibility", "tag_ids", "is_archived"})
+    return _finish(db, request, user, module, "content_module_updated", learning_change=learning_change,
+                   fields=sorted(body.model_fields_set - {"revision"}))
 
 
 @router.post("/{module_id}/lessons", status_code=201)
@@ -353,8 +364,10 @@ def _register_content_asset(db: Session, request: Request, user: User, module_id
         created_lesson.primary_asset_id = asset.id
     db.flush()
     stage_rendition(db, asset)
-    # File changes alone do not change required learning steps.
+    # File changes alone do not change required learning steps, but they are new
+    # material for the learner — поэтому учебная ревизия растёт.
     module.content_revision += 1
+    touch_learning(module)
     audit_log(db=db, request=request, actor_user_id=user.id, event_type="content_asset_replaced" if replace_asset_id else "content_asset_uploaded",
               meta={"module_id": str(module.id), "asset_id": str(asset.id), "version": asset.version, "size_bytes": size})
     progress["committed"] = True

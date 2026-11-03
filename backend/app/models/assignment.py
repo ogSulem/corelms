@@ -9,6 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 
+from app.core.timeutil import utcnow
+
 class AssignmentType(str, enum.Enum):
     module = "module"
     skill = "skill"
@@ -36,4 +38,4 @@ class Assignment(Base):
     deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[AssignmentStatus] = mapped_column(Enum(AssignmentStatus), default=AssignmentStatus.pending)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

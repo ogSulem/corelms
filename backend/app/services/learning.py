@@ -116,7 +116,12 @@ class LearningService:
                     if isinstance(data, dict) and data.get("action") == "module_open":
                         key = (uid, uuid.UUID(str(data.get("module_id"))))
                         opened.add(key)
-                        viewed_revisions[key] = max(viewed_revisions.get(key, 0), int(data.get("content_revision") or 0))
+                        # События до разделения ревизий писали content_revision —
+                        # читаем оба ключа, чтобы история просмотров не потерялась.
+                        revision_seen = data.get("learning_revision")
+                        if revision_seen is None:
+                            revision_seen = data.get("content_revision")
+                        viewed_revisions[key] = max(viewed_revisions.get(key, 0), int(revision_seen or 0))
                 except (TypeError, ValueError):
                     pass
 
@@ -177,9 +182,12 @@ class LearningService:
                     "completed": bool(achievement or current_completed), "current_completed": current_completed,
                     "completed_at": achievement.completed_at.isoformat() if achievement else None,
                     "completed_revision": achievement.content_revision if achievement else None,
+                    # content_revision — токен редактора (для совместимости фронтенда),
+                    # learning_revision — «то, что видит ученик»: по нему считаются обновления.
                     "content_revision": module.content_revision,
+                    "learning_revision": int(getattr(module, "learning_revision", 1) or 1),
                     "has_materials": bool(lessons or module.id in has_assets),
-                    "has_updates": bool(achievement and (not current_completed or module.content_revision > max(
+                    "has_updates": bool(achievement and (not current_completed or int(getattr(module, "learning_revision", 1) or 1) > max(
                         achievement.content_revision, viewed_revisions.get((user.id, module.id), 0)))),
                     "submodules": items,
                 }
@@ -230,7 +238,9 @@ class LearningService:
             if p["current_completed"] and p["completed_at"] is None:
                 self.db.add(ModuleCompletion(
                     user_id=learner.id, module_id=module.id,
-                    completed_at=datetime.now(timezone.utc), content_revision=module.content_revision,
+                    completed_at=datetime.now(timezone.utc),
+                    # Снимок именно учебной ревизии: сравнение has_updates идёт с ней.
+                    content_revision=int(getattr(module, "learning_revision", 1) or 1),
                 ))
                 count += 1
         self.db.flush()

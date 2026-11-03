@@ -12,6 +12,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 
+from app.core.timeutil import utcnow
+
 class UserRole(str, enum.Enum):
     employee = "employee"
     admin = "admin"
@@ -61,7 +63,7 @@ class User(Base):
 
     last_activity_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     password_hash: Mapped[str] = mapped_column(String(255))
 

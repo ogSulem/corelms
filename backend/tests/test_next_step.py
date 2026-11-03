@@ -96,3 +96,35 @@ def test_recent_unfinished_module_is_preferred_and_private_modules_never_leak(cl
     second.is_archived = True
     db.commit()
     assert next_step(client, headers)["next"]["module_id"] == str(first.id)
+
+
+def test_rename_does_not_mark_module_as_updated(client, db, make_user, make_module, admin_headers):
+    """Правка названия/описания не должна рисовать «есть обновления».
+
+    content_revision — токен редактора: он растёт на любое сохранение и защищает
+    от перезаписи из второй вкладки. Метка обновлений считается по
+    learning_revision, которая меняется только вместе с учебным контентом.
+    """
+    module, lesson, _ = make_module()
+    _, headers = make_user()
+    assert client.post(f"/submodules/{lesson.id}/read", headers=headers).status_code == 200
+    assert next_step(client, headers)["state"] == "completed"
+
+    state = workspace(client, admin_headers, module.id)
+    renamed = client.patch(f"/admin/content/modules/{module.id}", headers=admin_headers,
+                           json={"revision": state["module"]["content_revision"], "title": "Переименованный",
+                                 "description": "Новое описание"})
+    assert renamed.status_code == 200, renamed.text
+    assert next_step(client, headers)["state"] == "completed", "переименование выдало «есть обновления»"
+
+    # Токен редактора при этом обязан сдвинуться, иначе вторая вкладка перезапишет данные.
+    stale = client.patch(f"/admin/content/modules/{module.id}", headers=admin_headers,
+                         json={"revision": state["module"]["content_revision"], "title": "Из старой вкладки"})
+    assert stale.status_code == 409
+
+    # А новый урок — это действительно обновление.
+    current = workspace(client, admin_headers, module.id)
+    added = client.post(f"/admin/content/modules/{module.id}/lessons", headers=admin_headers,
+                        json={"revision": current["module"]["content_revision"], "title": "Новое", "content": "Текст"})
+    assert added.status_code == 201, added.text
+    assert next_step(client, headers)["state"] == "updates"

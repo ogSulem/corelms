@@ -8,6 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 
+from app.core.timeutil import utcnow
+
 class QuizAttempt(Base):
     __tablename__ = "quiz_attempts"
 
@@ -19,7 +21,7 @@ class QuizAttempt(Base):
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     xp_awarded: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
-    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     score: Mapped[int | None] = mapped_column(Integer, nullable=True)
