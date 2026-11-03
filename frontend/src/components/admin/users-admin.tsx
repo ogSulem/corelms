@@ -430,7 +430,7 @@ export function UsersAdmin() {
                       <p className="font-medium text-zinc-900">{u.name}{u.id === me?.id && <span className="ml-2 text-xs text-zinc-400">это вы</span>}
                         {u.is_archived && <span className="ml-2 rounded-full bg-zinc-200 px-2 py-0.5 text-[10px] font-medium text-zinc-600">в архиве</span>}
                       </p>
-                      <p className="text-xs text-zinc-500">{u.email || "почта не указана"}{u.position ? ` · ${u.position}` : ""}</p>
+                      <p className="break-words text-xs text-zinc-500">{u.email || "почта не указана"}{u.position ? ` · ${u.position}` : ""}</p>
                       {!!u.tags.length && (
                         <p className="mt-1 flex flex-wrap gap-1">{u.tags.map((tag) => (
                           <span key={tag} className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] text-zinc-600">{tag}</span>
