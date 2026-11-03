@@ -112,6 +112,8 @@ def test_reimport_deduplicates_before_upload_and_metadata_exists_at_enqueue(clie
     assert len(jobs) == len(storage.uploaded) == 1
     jid = first.json()["job_id"]
     assert redis_memory.get(f"content:import:{module.id}") == jid
+    # Журнал импорта в Redis ограничен по длине и по времени жизни.
+    assert 0 < redis_memory.ttl("admin:import_jobs") <= 60 * 60 * 24 * 30
     snapshot = client.get(f"/admin/jobs/{jid}", headers=admin_headers)
     assert snapshot.status_code == 200 and snapshot.json()["status"] == "queued"
     # Legacy retry must not turn a targeted update into a brand new module.

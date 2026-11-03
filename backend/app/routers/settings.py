@@ -310,13 +310,36 @@ def settings_overview(
     schema_expected = expected_schema_revision()
     workers = None
     regen_queue = None
+    queues: dict[str, int] | None = None
+    redis_memory: dict[str, int | float | None] = {"used_bytes": None, "limit_bytes": None, "used_percent": None}
     try:
-        import redis as redis_lib
         from rq import Queue
         from rq.worker import Worker
-        conn = redis_lib.Redis.from_url(str(getattr(settings, "redis_url", "") or ""))
+
+        from app.core.redis_client import get_redis, get_redis_rq
+
+        conn = get_redis_rq()
         workers = int(len(Worker.all(connection=conn)))
-        regen_queue = int(Queue(str(getattr(settings, "rq_queue_regen", "") or ""), connection=conn).count)
+        # Задачи живут в четырёх очередях: если показывать только «черновики тестов»,
+        # зависший импорт или медиа выглядят как «всё хорошо».
+        queues = {}
+        for key in ("default", "import", "regen", "cleanup", "media"):
+            name = str(getattr(settings, f"rq_queue_{key}", "") or "").strip()
+            if not name:
+                continue
+            try:
+                queues[key] = int(Queue(name, connection=conn).count)
+            except Exception:
+                pass
+        regen_queue = queues.get("regen")
+        try:
+            info = get_redis().info("memory")
+            used = int(info.get("used_memory") or 0)
+            limit = int(info.get("maxmemory") or 0)
+            redis_memory = {"used_bytes": used, "limit_bytes": limit,
+                            "used_percent": round(used * 100 / limit, 1) if limit else None}
+        except Exception:
+            pass
     except Exception:
         workers = None
     platform = get_platform_settings(db)
@@ -333,7 +356,9 @@ def settings_overview(
                    "up_to_date": schema_revision == schema_expected},
         "queue": {"media": str(getattr(settings, "rq_queue_media", "") or ""),
                   "regen": str(getattr(settings, "rq_queue_regen", "") or ""),
-                  "workers": workers, "regen_pending": regen_queue},
+                  "workers": workers, "regen_pending": regen_queue,
+                  "pending": queues},
+        "redis_memory": redis_memory,
     }
 
 

@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal
 from app.services.content import referenced_storage_keys
-from app.services.storage import ensure_bucket_exists, get_s3_client
+from app.services.storage import effective_bucket, ensure_bucket_exists, get_s3_client
 
 
 log = logging.getLogger(__name__)
@@ -51,7 +51,7 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int 
     token: str | None = None
     while True:
         kwargs: dict[str, object] = {
-            "Bucket": settings.s3_bucket,
+            "Bucket": effective_bucket(),
             "Prefix": prefix,
             "MaxKeys": 1000,
         }
@@ -154,7 +154,7 @@ def cleanup_admin_multipart_uploads_job(
             break
 
         kwargs: dict[str, object] = {
-            "Bucket": settings.s3_bucket,
+            "Bucket": effective_bucket(),
             "Prefix": prefix,
             "MaxUploads": 1000,
         }
@@ -202,7 +202,7 @@ def cleanup_admin_multipart_uploads_job(
                         hb_check_errors += 1
 
                 try:
-                    s3.abort_multipart_upload(Bucket=settings.s3_bucket, Key=key, UploadId=upload_id)
+                    s3.abort_multipart_upload(Bucket=effective_bucket(), Key=key, UploadId=upload_id)
                     aborted += 1
                     if r is not None:
                         try:
@@ -212,7 +212,7 @@ def cleanup_admin_multipart_uploads_job(
                 except Exception:
                     log.warning(
                         "cleanup_admin_multipart_uploads_job: abort failed bucket=%s key=%s upload_id=%s",
-                        settings.s3_bucket,
+                        effective_bucket(),
                         key,
                         upload_id,
                     )

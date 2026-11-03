@@ -31,7 +31,7 @@ from app.models.module import Module, Submodule
 from app.models.quiz import Quiz
 from app.services.module_importer import import_module_from_dir
 from app.services.modules import modules_bump_rev, modules_invalidate_storage_cache
-from app.services.storage import ensure_bucket_exists, get_s3_client
+from app.services.storage import effective_bucket, ensure_bucket_exists, get_s3_client
 
 
 log = logging.getLogger(__name__)
@@ -455,7 +455,7 @@ def _run_import_module_zip_job(
                     continue
                 if src and kk == src:
                     continue
-                s3c.delete_object(Bucket=settings.s3_bucket, Key=kk)
+                s3c.delete_object(Bucket=effective_bucket(), Key=kk)
             except Exception:
                 continue
 
@@ -525,11 +525,11 @@ def _run_import_module_zip_job(
                         use_threads=True,
                     )
                     try:
-                        s3.download_fileobj(settings.s3_bucket, object_key, f, Config=config)
+                        s3.download_fileobj(effective_bucket(), object_key, f, Config=config)
                     except Exception:
                         f.seek(0)
                         f.truncate(0)  # Managed transfer may have already written partial bytes.
-                        resp = s3.get_object(Bucket=settings.s3_bucket, Key=object_key)
+                        resp = s3.get_object(Bucket=effective_bucket(), Key=object_key)
                         expected_len = None
                         try:
                             expected_len = int(resp.get("ContentLength") or 0) or None
@@ -592,7 +592,7 @@ def _run_import_module_zip_job(
             # Some S3 providers (including certain gateways) may return 404 for HEAD even when
             # the object exists and is readable via GET. Use a 1-byte ranged GET as existence check.
             # This keeps imports reliable across providers.
-            pre = s3.get_object(Bucket=settings.s3_bucket, Key=s3_object_key, Range="bytes=0-0")
+            pre = s3.get_object(Bucket=effective_bucket(), Key=s3_object_key, Range="bytes=0-0")
             try:
                 body = pre.get("Body")
                 if body is not None:

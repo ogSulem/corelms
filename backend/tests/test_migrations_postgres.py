@@ -34,6 +34,11 @@ def test_legacy_upgrade_backfills_completion_and_asset_ownership(monkeypatch):
                            {**values, "event": uuid.uuid4(), "meta": '{"action": "read"}'})
         connection.execute(text("INSERT INTO content_assets (id,bucket,object_key,original_filename) VALUES (:aid,'testing','modules/legacy/lesson/a.csv','a.csv'),(:general,'testing','modules/legacy/_module/general.csv','general.csv')"), values)
         connection.execute(text('INSERT INTO submodule_asset_map (submodule_id,asset_id,"order") VALUES (:sid,:aid,1)'), values)
+    # Ревизия редактора у «живого» модуля уже больше 1: после 0028 учебная
+    # ревизия обязана её догнать, иначе у учеников появится ложное «есть обновления».
+    command.upgrade(cfg, "0027")
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE modules SET content_revision = 5 WHERE id = :mid"), values)
     command.upgrade(cfg, "head")
     command.upgrade(cfg, "head")  # Running a deploy twice is safe.
     with engine.connect() as connection:
@@ -41,9 +46,9 @@ def test_legacy_upgrade_backfills_completion_and_asset_ownership(monkeypatch):
         assert completions == [(uid, mid, 1)]
         assert connection.execute(text("SELECT module_id FROM content_assets WHERE id IN (:aid,:general)"), values).scalars().all() == [mid, mid]
         assert connection.execute(text("SELECT submodule_id FROM lesson_quiz_versions WHERE quiz_id=:qid"), values).scalar_one() == sid
-        assert connection.execute(text("SELECT content_revision FROM modules WHERE id=:mid"), values).scalar_one() == 1
+        assert connection.execute(text("SELECT content_revision FROM modules WHERE id=:mid"), values).scalar_one() == 5
         # 0028 добавляет учебную ревизию и выравнивает её с текущей.
-        assert connection.execute(text("SELECT learning_revision FROM modules WHERE id=:mid"), values).scalar_one() == 1
+        assert connection.execute(text("SELECT learning_revision FROM modules WHERE id=:mid"), values).scalar_one() == 5
         assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0028"
         assert connection.execute(text("SELECT content_mode, content_version FROM submodules WHERE id=:sid"), values).one() == ("manual", 1)
         assert connection.execute(text("SELECT count(*) FROM lesson_revisions")).scalar_one() == 0

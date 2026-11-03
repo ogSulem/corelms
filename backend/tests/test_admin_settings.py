@@ -260,6 +260,18 @@ def test_overview_reports_schema_target_and_server_limits(client, admin_headers)
     assert body["schema"]["expected"] == expected_schema_revision()
     assert expected_schema_revision() == "0028"
     assert body["upload_max_bytes"] > 0
+    # Очереди показываются по отдельности: импорт и медиа не должны прятаться
+    # за счётчиком одной «тестовой» очереди.
+    assert "pending" in body["queue"]
+    assert "redis_memory" in body
+
+
+def test_system_diagnostics_count_every_queue(client, admin_headers):
+    response = client.get("/admin/system/status", headers=admin_headers)
+    assert response.status_code == 200, response.text
+    rq = response.json()["rq"]
+    assert set(rq) >= {"workers", "queued", "started", "failed", "deferred", "scheduled", "queues"}
+    assert "redis" in response.json()
 
 
 def test_reset_returns_to_server_defaults(client, db, admin_headers, monkeypatch):

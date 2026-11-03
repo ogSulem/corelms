@@ -103,6 +103,7 @@ from app.services.modules import modules_bump_rev, modules_invalidate_storage_ca
 from app.services.module_storage_prefix_jobs import backfill_module_storage_prefix_job
 from app.services.llm_handler import generate_quiz_questions_ai
 from app.services.storage import (
+    effective_bucket,
     ensure_bucket_exists,
     get_s3_client,
     multipart_abort,
@@ -685,6 +686,16 @@ def system_status(
         r = get_redis()
         r.ping()
         out["redis"] = {"ok": True}
+        # Политика noeviction: при заполнении памяти Redis перестаёт принимать
+        # записи, а вместе с ними ломаются вход и очереди. Показываем запас.
+        try:
+            info = r.info("memory")
+            used = int(info.get("used_memory") or 0)
+            limit = int(info.get("maxmemory") or 0)
+            out["redis"].update({"used_memory_bytes": used, "maxmemory_bytes": limit,
+                                 "used_memory_percent": round(used * 100 / limit, 1) if limit else None})
+        except Exception:
+            pass
     except Exception:
         out["redis"] = {"ok": False}
 
@@ -694,24 +705,37 @@ def system_status(
         from rq.worker import Worker
         from rq.registry import DeferredJobRegistry, FailedJobRegistry, ScheduledJobRegistry, StartedJobRegistry
 
-        conn = _redis.Redis.from_url(settings.redis_url)
-        q = Queue(name=str(settings.rq_queue_default), connection=conn)
+        from app.core.redis_client import get_redis_rq
+
+        conn = get_redis_rq()
         workers = Worker.all(connection=conn)
-        started = StartedJobRegistry(queue=q, connection=conn)
-        failed = FailedJobRegistry(queue=q, connection=conn)
-        deferred = DeferredJobRegistry(queue=q, connection=conn)
-        scheduled = ScheduledJobRegistry(queue=q, connection=conn)
-        out["rq"] = {
-            "ok": True,
-            "workers": int(len(workers)),
-            "queued": int(q.count),
-            "started": int(getattr(started, "count", 0) or 0),
-            "failed": int(getattr(failed, "count", 0) or 0),
-            "deferred": int(getattr(deferred, "count", 0) or 0),
-            "scheduled": int(getattr(scheduled, "count", 0) or 0),
-        }
+        # Считаем по всем очередям, а не только по default: импорт ZIP, черновики
+        # тестов, уборка и медиа — отдельные очереди, и «0 в очереди» по одной
+        # из них раньше скрывало зависшую работу.
+        totals = {"queued": 0, "started": 0, "failed": 0, "deferred": 0, "scheduled": 0}
+        per_queue: dict[str, dict[str, int]] = {}
+        for key in ("default", "import", "regen", "cleanup", "media"):
+            name = str(getattr(settings, f"rq_queue_{key}", "") or "").strip()
+            if not name:
+                continue
+            try:
+                q = Queue(name=name, connection=conn)
+                row = {
+                    "queued": int(q.count),
+                    "started": int(getattr(StartedJobRegistry(queue=q, connection=conn), "count", 0) or 0),
+                    "failed": int(getattr(FailedJobRegistry(queue=q, connection=conn), "count", 0) or 0),
+                    "deferred": int(getattr(DeferredJobRegistry(queue=q, connection=conn), "count", 0) or 0),
+                    "scheduled": int(getattr(ScheduledJobRegistry(queue=q, connection=conn), "count", 0) or 0),
+                }
+            except Exception:
+                continue
+            per_queue[name] = row
+            for metric, value in row.items():
+                totals[metric] += value
+        out["rq"] = {"ok": True, "workers": int(len(workers)), **totals, "queues": per_queue}
     except Exception:
-        out["rq"] = {"ok": False, "workers": 0, "queued": 0, "started": 0, "failed": 0, "deferred": 0, "scheduled": 0}
+        out["rq"] = {"ok": False, "workers": 0, "queued": 0, "started": 0, "failed": 0,
+                     "deferred": 0, "scheduled": 0, "queues": {}}
 
     # S3: the same values the uploads use (database overrides first), never secrets.
     storage = get_storage_settings(db)
@@ -960,7 +984,7 @@ def maintenance_modules_storage_scan(
         try:
             while len(keys) < sk:
                 kwargs: dict[str, object] = {
-                    "Bucket": settings.s3_bucket,
+                    "Bucket": effective_bucket(),
                     "Prefix": pfx,
                     "MaxKeys": min(1000, sk - len(keys)),
                 }
@@ -1056,7 +1080,7 @@ def maintenance_storage_module_prefixes(
         return _degraded_storage_payload(problem, prefix=pfx, items=[], truncated=False)
     s3 = get_s3_client()
 
-    resp = s3.list_objects_v2(Bucket=settings.s3_bucket, Prefix=pfx, Delimiter="/", MaxKeys=1000)
+    resp = s3.list_objects_v2(Bucket=effective_bucket(), Prefix=pfx, Delimiter="/", MaxKeys=1000)
     cps = resp.get("CommonPrefixes") or []
     out: list[str] = []
     for it in cps:
@@ -1092,7 +1116,7 @@ def maintenance_storage_orphan_module_prefixes(
     if problem:
         return _degraded_storage_payload(problem, items=[], truncated=False)
     s3 = get_s3_client()
-    resp = s3.list_objects_v2(Bucket=settings.s3_bucket, Prefix="modules/", Delimiter="/", MaxKeys=1000)
+    resp = s3.list_objects_v2(Bucket=effective_bucket(), Prefix="modules/", Delimiter="/", MaxKeys=1000)
     cps = resp.get("CommonPrefixes") or []
 
     # We treat a prefix as a module prefix if it looks like:
@@ -1129,7 +1153,7 @@ def maintenance_storage_orphan_module_prefixes(
         sample: list[str] = []
         try:
             if sk > 0:
-                r2 = s3.list_objects_v2(Bucket=settings.s3_bucket, Prefix=p, MaxKeys=sk)
+                r2 = s3.list_objects_v2(Bucket=effective_bucket(), Prefix=p, MaxKeys=sk)
                 sample = [str((x or {}).get("Key") or "") for x in (r2.get("Contents") or []) if (x or {}).get("Key")]
         except Exception:
             sample = []
@@ -1488,7 +1512,7 @@ async def import_module_zip(
     # Hard dedupe: if the canonical ZIP already exists, block re-upload/import.
     object_key = canonical_object_key
     try:
-        s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+        s3.head_object(Bucket=effective_bucket(), Key=object_key)
         raise HTTPException(
             status_code=409,
             detail={
@@ -1508,7 +1532,7 @@ async def import_module_zip(
         except Exception:
             log.debug("admin import zip: failed to seek upload file", exc_info=True)
         put_kwargs: dict[str, object] = {
-            "Bucket": settings.s3_bucket,
+            "Bucket": effective_bucket(),
             "Key": object_key,
             "Body": file.file,
             "ContentType": "application/zip",
@@ -1584,7 +1608,7 @@ async def import_module_zip(
         )
     except Exception as e:
         try:
-            s3.delete_object(Bucket=settings.s3_bucket, Key=object_key)
+            s3.delete_object(Bucket=effective_bucket(), Key=object_key)
         except Exception:
             log.debug("admin import zip: cleanup delete_object failed after enqueue error", exc_info=True)
         raise HTTPException(status_code=503, detail={
@@ -1603,7 +1627,7 @@ async def import_module_zip(
         try:
             ensure_bucket_exists()
             s3 = get_s3_client()
-            head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+            head = s3.head_object(Bucket=effective_bucket(), Key=object_key)
             etag = str(head.get("ETag") or "").strip().strip('"')
             size = str(head.get("ContentLength") or "").strip()
             if etag and size:
@@ -1737,13 +1761,13 @@ def get_bucket_cors(
     # настроек обязан открыться и объяснить причину.
     problem = _storage_problem()
     if problem:
-        return _degraded_storage_payload(problem, bucket=settings.s3_bucket, rules=[])
+        return _degraded_storage_payload(problem, bucket=effective_bucket(), rules=[])
     s3 = get_s3_client()
     try:
-        cfg = s3.get_bucket_cors(Bucket=settings.s3_bucket) or {}
+        cfg = s3.get_bucket_cors(Bucket=effective_bucket()) or {}
     except Exception as e:
         # Some providers return NoSuchCORSConfiguration
-        return {"ok": True, "bucket": settings.s3_bucket, "rules": [], "detail": str(e)[:300]}
+        return {"ok": True, "bucket": effective_bucket(), "rules": [], "detail": str(e)[:300]}
 
     rules = cfg.get("CORSRules") or []
     out: list[dict[str, object]] = []
@@ -1759,7 +1783,7 @@ def get_bucket_cors(
                 "max_age_seconds": r.get("MaxAgeSeconds"),
             }
         )
-    return {"ok": True, "bucket": settings.s3_bucket, "rules": out}
+    return {"ok": True, "bucket": effective_bucket(), "rules": out}
 
 
 @router.post("/storage/bucket-cors")
@@ -1797,7 +1821,7 @@ def set_bucket_cors(
         raise HTTPException(status_code=400, detail="no valid cors rules")
 
     try:
-        s3.put_bucket_cors(Bucket=settings.s3_bucket, CORSConfiguration={"CORSRules": cors_rules})
+        s3.put_bucket_cors(Bucket=effective_bucket(), CORSConfiguration={"CORSRules": cors_rules})
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Хранилище не приняло настройку CORS: {type(e).__name__}") from e
 
@@ -1806,11 +1830,11 @@ def set_bucket_cors(
         request=request,
         event_type="admin_set_bucket_cors",
         actor_user_id=current.id,
-        meta={"bucket": settings.s3_bucket, "rules": cors_rules},
+        meta={"bucket": effective_bucket(), "rules": cors_rules},
     )
     db.commit()
 
-    return {"ok": True, "bucket": settings.s3_bucket, "rules": cors_rules}
+    return {"ok": True, "bucket": effective_bucket(), "rules": cors_rules}
 
 
 @router.get("/storage/objects")
@@ -1838,7 +1862,7 @@ def list_storage_objects(
     dbg: dict[str, object] | None = None
     if debug:
         dbg = {
-            "bucket": settings.s3_bucket,
+            "bucket": effective_bucket(),
             "endpoint_url": str(getattr(settings, "s3_endpoint_url", "") or "").strip(),
             "public_endpoint_url": str(getattr(settings, "s3_public_endpoint_url", "") or "").strip(),
             "prefix_in": str(prefix or ""),
@@ -1851,7 +1875,7 @@ def list_storage_objects(
         try:
             ensure_bucket_exists()
             s3 = get_s3_client()
-            resp0 = s3.list_objects_v2(Bucket=settings.s3_bucket, Prefix=pfx, MaxKeys=50)
+            resp0 = s3.list_objects_v2(Bucket=effective_bucket(), Prefix=pfx, MaxKeys=50)
             contents0 = resp0.get("Contents") or []
             dbg["sample_keys"] = [str((it or {}).get("Key") or "") for it in contents0 if str((it or {}).get("Key") or "")][:50]
         except Exception as e:
@@ -1870,7 +1894,7 @@ def list_storage_objects(
             pages = 0
             t0 = time.monotonic()
             while pages < 200 and len(found) < take and (time.monotonic() - t0) < 5.0:
-                kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Prefix": pfx, "MaxKeys": 1000}
+                kwargs: dict[str, object] = {"Bucket": effective_bucket(), "Prefix": pfx, "MaxKeys": 1000}
                 if token:
                     kwargs["ContinuationToken"] = token
                 resp = s3.list_objects_v2(**kwargs)
@@ -1928,7 +1952,7 @@ def list_storage_objects(
     if include_used:
         out = {
             "ok": True,
-            "bucket": settings.s3_bucket,
+            "bucket": effective_bucket(),
             "prefix": str(prefix or "").strip(),
             "items": items,
         }
@@ -2049,7 +2073,7 @@ def list_storage_objects(
     # Keep response minimal & stable for frontend.
     return {
         "ok": True,
-        "bucket": settings.s3_bucket,
+        "bucket": effective_bucket(),
         "prefix": str(prefix or "").strip(),
         "items": items,
     }
@@ -2078,7 +2102,7 @@ def delete_storage_object(
     ensure_bucket_exists()
     s3 = get_s3_client()
     try:
-        s3.delete_object(Bucket=settings.s3_bucket, Key=object_key)
+        s3.delete_object(Bucket=effective_bucket(), Key=object_key)
     except Exception as e:
         raise HTTPException(status_code=500, detail="failed to delete object") from e
 
@@ -2087,7 +2111,7 @@ def delete_storage_object(
         request=request,
         event_type="admin_delete_storage_object",
         actor_user_id=current.id,
-        meta={"bucket": settings.s3_bucket, "object_key": object_key},
+        meta={"bucket": effective_bucket(), "object_key": object_key},
     )
     db.commit()
 
@@ -2450,7 +2474,7 @@ def enqueue_import_zip(
     try:
         ensure_bucket_exists()
         s3 = get_s3_client()
-        head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+        head = s3.head_object(Bucket=effective_bucket(), Key=object_key)
         etag = str(head.get("ETag") or "").strip().strip('"')
         size = str(head.get("ContentLength") or "").strip()
         if etag and size:
@@ -3089,7 +3113,7 @@ def retry_import_job(
     try:
         ensure_bucket_exists()
         s3 = get_s3_client()
-        head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+        head = s3.head_object(Bucket=effective_bucket(), Key=object_key)
         etag = str(head.get("ETag") or "").strip().strip('"')
         size = str(head.get("ContentLength") or "").strip()
         if etag and size:

@@ -9,7 +9,7 @@ from app.core.rate_limit import rate_limit
 from app.core.redis_client import get_redis
 from app.core.config import settings
 from app.services.storage_cleanup_jobs import cleanup_admin_uploads_job
-from app.services.storage import get_s3_client
+from app.services.storage import effective_bucket, get_s3_client
 
 router = APIRouter(tags=["health"])
 
@@ -87,7 +87,7 @@ def _check_ready() -> None:
     if bool(getattr(settings, "health_ready_check_s3", True)):
         try:
             s3 = get_s3_client()
-            s3.head_bucket(Bucket=settings.s3_bucket)
+            s3.head_bucket(Bucket=effective_bucket())
         except Exception as e:
             raise HTTPException(status_code=503, detail="s3 not ready") from e
 
