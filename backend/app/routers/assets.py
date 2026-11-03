@@ -187,14 +187,17 @@ def presign_download(
         )
         db.commit()
 
-    audit_log(
-        db=db,
-        request=request,
-        event_type="asset_presign_download",
-        actor_user_id=user.id,
-        meta={"asset_id": str(asset.id), "object_key": str(asset.object_key), "mime_type": str(asset.mime_type or "")},
-    )
-    db.commit()
+    if act == "download":
+        # В аудит пишем только выгрузку оригинала: обычное открытие уже есть в
+        # журнале обучения, а дубль на каждый просмотр раздувал аудит без пользы.
+        audit_log(
+            db=db,
+            request=request,
+            event_type="asset_presign_download",
+            actor_user_id=user.id,
+            meta={"asset_id": str(asset.id), "object_key": str(asset.object_key), "mime_type": str(asset.mime_type or "")},
+        )
+        db.commit()
 
     expires_seconds = 300
 
@@ -296,33 +299,6 @@ def stream_asset(
             original_filename=str(PurePath(asset.original_filename).with_suffix(".mp4" if rendition.mime_type == "video/mp4" else ".pdf")))
 
 
-    # Thumbnails stay out of the learning journal: a file listed in a cabinet is not «просмотр материала».
-    # Видео приходит десятками Range-запросов — событие пишем один раз на просмотр.
-    if not thumb and _should_record_asset_event(user_id=user.id, asset_id=asset.id):
-        record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
-        try:
-            meta = {
-                "action": "download" if downloading else "stream",
-                "filename": str(asset.original_filename or ""),
-                "object_key": str(asset.object_key or ""),
-                "mime_type": str(asset.mime_type or ""),
-                "module_id": module_id,
-                "submodule_id": submodule_id,
-            }
-            db.add(
-                LearningEvent(
-                    user_id=user.id,
-                    type=LearningEventType.asset_viewed,
-                    ref_id=asset.id,
-                    meta=json.dumps(meta, ensure_ascii=False),
-                )
-            )
-            db.commit()
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
 
     asset = SimpleNamespace(**snapshot)
     s3 = get_s3_client()
@@ -360,6 +336,36 @@ def stream_asset(
         raise HTTPException(415, "Для этого формата используйте предпросмотр или скачайте оригинал")
     if downloading:
         disposition = f"attachment; filename*=UTF-8''{quoted}"
+
+    # Событие пишем только после всех проверок: иначе отказ 415 «формат не
+    # открывается в браузере» попадал в журнал как просмотр материала.
+    # Thumbnails stay out of the learning journal: a file listed in a cabinet is not «просмотр материала».
+    # Видео приходит десятками Range-запросов — событие пишем один раз на просмотр.
+    if not thumb and _should_record_asset_event(user_id=user.id, asset_id=asset.id):
+        record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
+        try:
+            meta = {
+                "action": "download" if downloading else "stream",
+                "filename": str(asset.original_filename or ""),
+                "object_key": str(asset.object_key or ""),
+                "mime_type": str(asset.mime_type or ""),
+                "module_id": module_id,
+                "submodule_id": submodule_id,
+            }
+            db.add(
+                LearningEvent(
+                    user_id=user.id,
+                    type=LearningEventType.asset_viewed,
+                    ref_id=asset.id,
+                    meta=json.dumps(meta, ensure_ascii=False),
+                )
+            )
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     # Parse Range: bytes=start-end
     range_value = str(range_header or "").strip()

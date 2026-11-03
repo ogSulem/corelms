@@ -31,4 +31,6 @@ class ModuleProgressResponse(BaseModel):
     completed_at: str | None = None
     completed_revision: int | None = None
     content_revision: int = 1
+    # Ревизия учебного контента: по ней считается has_updates.
+    learning_revision: int = 1
     submodules: list[SubmoduleStatus]

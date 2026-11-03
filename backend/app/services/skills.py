@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.timeutil import as_utc
 from app.models.audit import LearningEvent
 
 
@@ -54,7 +55,9 @@ def _apply_streak_on_activity(db: Session, *, user_id: str, now: datetime) -> No
         user.last_activity_at = now
         return
 
-    last_day = last_ts.date()
+    # Даты считаем в UTC: иначе активность у полуночи попадала бы в соседний
+    # день при другой зоне сессии БД, и streak «ломался» без причины.
+    last_day = as_utc(last_ts).date()
     today = now.date()
     if last_day == today:
         user.last_activity_at = now

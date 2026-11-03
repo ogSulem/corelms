@@ -33,6 +33,30 @@ def safe_filename(value: str) -> str:
     return value
 
 
+def touch_learning(module: Module) -> None:
+    """Отметить, что изменился контент, который видит ученик (для метки «обновления»)."""
+    module.learning_revision = int(getattr(module, "learning_revision", 1) or 1) + 1
+
+
+def find_module_by_title(db: Session, title: str, *, exclude_id: uuid.UUID | None = None) -> Module | None:
+    """Найти модуль с таким же названием без учёта регистра и лишних пробелов.
+
+    `lower()` в SQLite понижает только ASCII, поэтому кириллица «Пустой модуль»
+    и «пустой модуль» считались разными названиями: на тестах/дев-базе проверка
+    дублей молча не срабатывала. Сравниваем нормализованные строки в Python —
+    модулей десятки, полная выборка дешевле расхождения между базами.
+    """
+    wanted = normalize_name(title).casefold()
+    if not wanted:
+        return None
+    for module in db.scalars(select(Module)).all():
+        if exclude_id is not None and module.id == exclude_id:
+            continue
+        if normalize_name(module.title).casefold() == wanted:
+            return module
+    return None
+
+
 def storage_key(module: Module, filename: str) -> str:
     # Object identity is unrelated to display name, ordering or Unicode URL encoding.
     suffix = pathlib.PurePath(filename).suffix.lower()

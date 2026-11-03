@@ -272,3 +272,33 @@ def test_admin_reports_use_same_earned_completion_as_learner(client, admin_heade
     assert analytics.status_code == 200, analytics.text
     row = next(item for item in analytics.json()["rows"] if item["user_id"] == str(user.id))
     assert row["completed"] and row["passed_count"] == 1 and row["total_lessons"] == 2
+
+
+def test_legacy_module_create_endpoint_never_publishes_empty(client, admin_headers, db):
+    """POST /admin/modules не должен протаскивать в каталог пустую карточку.
+
+    Раньше схема по умолчанию ставила is_active=True, и этот маршрут обходил
+    правило «нельзя публиковать модуль без уроков/файлов», которое держит PATCH
+    в редакторе.
+    """
+    title = f"Пустой {uuid.uuid4().hex[:6]}"
+    direct = client.post("/admin/modules", headers=admin_headers, json={"title": title, "is_active": True})
+    assert direct.status_code == 409, direct.text
+    assert db.scalar(select(Module.id).where(Module.title == title)) is None
+
+    created = client.post("/admin/modules", headers=admin_headers, json={"title": title})
+    assert created.status_code == 200, created.text
+    body = created.json()
+    module = db.get(Module, uuid.UUID(body["id"]))
+    assert module is not None and module.is_active is False and module.is_archived is False
+
+    duplicate = client.post("/admin/modules", headers=admin_headers, json={"title": title})
+    assert duplicate.status_code == 409, duplicate.text
+    # Регистр: SQLite понижает только ASCII, поэтому проверяем латиницей — в
+    # Postgres тот же запрос ловит и кириллицу.
+    latin = f"Draft {uuid.uuid4().hex[:6]}"
+    assert client.post("/admin/modules", headers=admin_headers, json={"title": latin}).status_code == 200
+    assert client.post("/admin/modules", headers=admin_headers, json={"title": latin.upper()}).status_code == 409
+
+    empty = client.post("/admin/modules", headers=admin_headers, json={"title": "   "})
+    assert empty.status_code == 422, empty.text

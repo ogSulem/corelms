@@ -19,6 +19,10 @@ class Module(Base):
     visibility: Mapped[str] = mapped_column(String(20), default="public", index=True)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
     content_revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # Ревизия «того, что видит ученик». content_revision — токен редактора: он
+    # меняется на любое сохранение (включая переименование), поэтому по нему
+    # нельзя решать «есть обновления». Здесь растёт только реальный контент.
+    learning_revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
     import_object_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     storage_prefix: Mapped[str | None] = mapped_column(String(400), nullable=True)
     final_quiz_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")

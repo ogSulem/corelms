@@ -13,6 +13,7 @@ class ModuleProgressPreview(BaseModel):
     has_updates: bool = False
     completed_at: str | None = None
     content_revision: int = 1
+    learning_revision: int = 1
 
 
 class ModuleOverviewItem(BaseModel):

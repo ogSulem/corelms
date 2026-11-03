@@ -9,6 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 
+from app.core.timeutil import utcnow
+
 class LessonRevision(Base):
     __tablename__ = "lesson_revisions"
 
@@ -19,7 +21,7 @@ class LessonRevision(Base):
     content_mode: Mapped[str] = mapped_column(String(16), default="manual")
     content_object_key: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     bucket: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
     __table_args__ = (UniqueConstraint("submodule_id", "version", name="uq_lesson_revision"),)

@@ -32,6 +32,7 @@ from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.core.security import require_roles, require_roles_stream
 from app.core.security_audit_log import audit_log
+from app.core.timeutil import as_utc
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal, get_db
 from app.models.assignment import Assignment, AssignmentStatus, AssignmentType
@@ -94,7 +95,7 @@ log = logging.getLogger(__name__)
 from app.schemas.me import HistoryResponse
 
 from app.services.learning import LearningService
-from app.services.content import lock_module, preserve_progress
+from app.services.content import find_module_by_title, lock_module, preserve_progress, touch_learning
 from app.core.queue import fetch_job, get_queue
 from app.services.module_import_jobs import import_module_zip_job
 from app.services.modules import modules_bump_rev, modules_invalidate_storage_cache
@@ -779,12 +780,7 @@ def update_module(
             raise HTTPException(status_code=400, detail="title is required")
         if len(next_title) > 300:
             raise HTTPException(status_code=400, detail="title too long")
-        existing = db.scalar(
-            select(Module).where(
-                (Module.id != mid) & (func.lower(Module.title) == func.lower(next_title))
-            )
-        )
-        if existing is not None:
+        if find_module_by_title(db, next_title, exclude_id=mid) is not None:
             raise HTTPException(status_code=409, detail="module title already exists")
         if next_title != m.title:
             changed["title_from"] = m.title
@@ -865,21 +861,23 @@ def maintenance_thumbs_status(
     assets = list(db.execute(select(ContentAsset.id, ContentAsset.original_filename,
                                     ContentAsset.version, ContentAsset.bucket, ContentAsset.object_key)).all())
     previewable = [row for row in assets if thumb_kind(row.original_filename)]
+    # Одна выборка на все превью: раньше здесь был запрос на каждый файл и
+    # страница «Здоровье хранилища» открывалась минутами на большом каталоге.
+    thumbs = {
+        (row.asset_id, row.source_version): row
+        for row in db.scalars(select(AssetThumb).where(AssetThumb.asset_id.in_([row[0] for row in previewable])))
+    } if previewable else {}
     counts: dict[str, int] = {}
-
-    def add(state: str) -> None:
+    states: list[str] = []
+    for asset_id, _name, version, _bucket, _key in previewable:
+        row = thumbs.get((asset_id, version))
+        state = row.state if row is not None else "missing"
         counts[state] = counts.get(state, 0) + 1
-
-    for asset_id, _name, version, bucket, key in previewable:
-        row = db.scalar(select(AssetThumb).where(AssetThumb.asset_id == asset_id,
-            AssetThumb.source_version == version, AssetThumb.source_bucket == bucket,
-            AssetThumb.source_object_key == key))
-        add(row.state if row else "missing")
+        states.append(state)
     total_bytes = int(db.scalar(select(sa_func.coalesce(sa_func.sum(AssetThumb.size_bytes), 0))) or 0)
     return {"ok": True, "previewable": len(previewable), "states": counts,
             "thumb_bytes": total_bytes, "items": [{"asset_id": str(row[0]), "name": row[1], "version": row[2],
-            "state": (db.scalar(select(AssetThumb.state).where(AssetThumb.asset_id == row[0])) or "missing")}
-            for row in previewable[:50]]}
+            "state": states[index]} for index, row in enumerate(previewable[:50])]}
 
 
 @router.post("/maintenance/thumbs/backfill", status_code=202)
@@ -1739,7 +1737,11 @@ class AdminBucketCorsRequest(BaseModel):
 def get_bucket_cors(
     _: User = Depends(require_roles(UserRole.admin)),
 ):
-    ensure_bucket_exists()
+    # Диагностика хранилища не должна отдавать 500, когда S3 лежит: экран
+    # настроек обязан открыться и объяснить причину.
+    problem = _storage_problem()
+    if problem:
+        return _degraded_storage_payload(problem, bucket=settings.s3_bucket, rules=[])
     s3 = get_s3_client()
     try:
         cfg = s3.get_bucket_cors(Bucket=settings.s3_bucket) or {}
@@ -1772,7 +1774,10 @@ def set_bucket_cors(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_set_bucket_cors", limit=10, window_seconds=60),
 ):
-    ensure_bucket_exists()
+    problem = _storage_problem()
+    if problem:
+        # Сохранить настройку в недоступное хранилище нельзя: честно 503, а не 500.
+        raise HTTPException(status_code=503, detail=f"Хранилище недоступно: {problem}")
     s3 = get_s3_client()
 
     cors_rules: list[dict[str, object]] = []
@@ -1798,7 +1803,7 @@ def set_bucket_cors(
     try:
         s3.put_bucket_cors(Bucket=settings.s3_bucket, CORSConfiguration={"CORSRules": cors_rules})
     except Exception as e:
-        raise HTTPException(status_code=500, detail="failed to set bucket cors") from e
+        raise HTTPException(status_code=503, detail=f"Хранилище не приняло настройку CORS: {type(e).__name__}") from e
 
     audit_log(
         db=db,
@@ -1826,7 +1831,13 @@ def list_storage_objects(
     if pfx and (not pfx.endswith("/")):
         pfx = pfx + "/"
     suf = str(suffix or "").strip() or None
-    items = s3_list_objects(prefix=pfx, limit=int(limit or 50), suffix=suf)
+    problem = _storage_problem()
+    if problem:
+        return _degraded_storage_payload(problem, items=[], prefix=pfx, suffix=suf)
+    try:
+        items = s3_list_objects(prefix=pfx, limit=int(limit or 50), suffix=suf)
+    except Exception as exc:
+        return _degraded_storage_payload(f"{type(exc).__name__}: {exc}"[:300], items=[], prefix=pfx, suffix=suf)
 
     dbg: dict[str, object] | None = None
     if debug:
@@ -3252,12 +3263,28 @@ def create_module(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_create_module", limit=30, window_seconds=60),
 ):
+    title = str(body.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Укажите название модуля")
+    # То же правило, что в редакторе: одинаковые названия путают ученика и
+    # ломают поиск/импорт, который матчит модуль по названию.
+    if find_module_by_title(db, title) is not None:
+        raise HTTPException(status_code=409, detail="Модуль с таким названием уже существует")
+
+    # Публикация — отдельное действие с проверками. Создать можно только
+    # черновик: иначе POST с is_active=True протаскивал в каталог пустую карточку.
+    if body.is_active:
+        raise HTTPException(
+            status_code=409,
+            detail="Модуль создаётся черновиком. Добавьте уроки или файлы и опубликуйте его в редакторе.",
+        )
+
     m = Module(
-        title=body.title,
+        title=title,
         description=body.description,
         difficulty=body.difficulty,
         category=body.category,
-        is_active=body.is_active,
+        is_active=False,
     )
     db.add(m)
     db.commit()
@@ -3461,6 +3488,7 @@ def set_module_access(
 
     m = lock_module(db, m.id)
     m.content_revision += 1
+    touch_learning(m)
     if body.visibility is not None:
         vis = str(body.visibility).strip().lower()
         if vis not in {"public", "hidden", "restricted"}:
@@ -3708,6 +3736,7 @@ def set_module_visibility(
         from app.routers.content import _check_publishable
         _check_publishable(db, m)
     m.content_revision += 1
+    touch_learning(m)
 
     m.is_active = target
 
@@ -4849,6 +4878,7 @@ def create_submodule(
         raise HTTPException(409, "Этот тест уже принадлежит другому уроку")
     preserve_progress(db, m)
     m.content_revision += 1
+    touch_learning(m)
     s = Submodule(module_id=m.id, title=body.title, order=body.order, quiz_id=q.id, content="")
     db.add(s)
     db.flush()
@@ -4885,6 +4915,7 @@ def update_submodule(
         raise HTTPException(409, "Материал в архиве или является каталогом файлов")
     preserve_progress(db, module)
     module.content_revision += 1
+    touch_learning(module)
 
     before = {
         "requires_quiz": bool(getattr(sub, "requires_quiz", True)),
@@ -5005,10 +5036,21 @@ def create_assignment(
     except ValueError as e:
         raise HTTPException(status_code=400, detail="invalid assignment type") from e
 
+    # Цель должна существовать: иначе получается висящее назначение на
+    # архивный модуль или удалённый навык, которое никто не сможет выполнить.
+    if t is AssignmentType.module:
+        target = db.scalar(select(Module).where(Module.id == target_id))
+        if target is None or target.is_archived:
+            raise HTTPException(status_code=404, detail="Модуль не найден или в архиве")
+    else:
+        from app.models.skill import Skill
+        if db.scalar(select(Skill.id).where(Skill.id == target_id)) is None:
+            raise HTTPException(status_code=404, detail="Навык не найден")
+
     deadline_dt = None
     if body.deadline:
         try:
-            deadline_dt = datetime.fromisoformat(body.deadline)
+            deadline_dt = as_utc(datetime.fromisoformat(body.deadline))
         except ValueError as e:
             raise HTTPException(status_code=400, detail="invalid deadline") from e
 
@@ -6229,9 +6271,12 @@ def analytics_overview(
     events_30d = int(db.scalar(
         select(func.count()).select_from(LearningEvent).where(LearningEvent.created_at >= month_ago)
     ) or 0)
+    # last_activity_at может прийти «наивным» (SQLite/драйвер без зоны) —
+    # сравниваем только UTC-aware значения, иначе страница «Результаты» падала.
     active_7d = sum(
         1 for u in users
-        if u.last_activity_at is not None and u.last_activity_at >= week_ago
+        if as_utc(getattr(u, "last_activity_at", None)) is not None
+        and as_utc(u.last_activity_at) >= week_ago
     )
 
     published_module_ids = {
