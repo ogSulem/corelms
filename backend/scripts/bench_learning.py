@@ -138,7 +138,7 @@ def main():
         print("достижений в базе:", db.query(ModuleCompletion).count())
 
 
-def build_many(modules=100, lessons=10, users=500, events_per_user=25):
+def build_many(modules=100, lessons=10, users=500, events_per_user=25):  # noqa: D401
     """Много модулей и людей: так выглядит «Результаты» на живой базе."""
     from app.models.quiz import Question, Quiz, QuizType
     with SessionLocal() as db:
@@ -183,6 +183,9 @@ def measure_big():
         users = db.query(User).limit(200).all()
         measure("матрица «Результаты» (200 человек × 100 модулей)",
                 lambda: (LearningService(db).get_progress_matrix(users, modules), db.rollback()), rounds=3)
+        all_users = db.query(User).all()
+        measure(f"матрица «Результаты» ({len(all_users)} человек × 100 модулей)",
+                lambda: (LearningService(db).get_progress_matrix(all_users, modules), db.rollback()), rounds=2)
         measure("аналитика одного модуля (500 человек)",
                 lambda: (LearningService(db).get_modules_analytics_batch(modules[0].id), db.rollback()), rounds=3)
 

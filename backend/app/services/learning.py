@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections import defaultdict
+from itertools import chain
 from datetime import datetime, timezone
 from typing import Any
 
@@ -57,6 +58,10 @@ def remember_quiz_version(db: Session, sub: Submodule) -> None:
     if sub.quiz_id and db.get(LessonQuizVersion, sub.quiz_id) is None:
         db.add(LessonQuizVersion(quiz_id=sub.quiz_id, submodule_id=sub.id))
         db.flush()
+
+
+# Переключатель для теста эквивалентности: с ним и без него отчёт должен совпадать.
+_COMPACT_FAST_PATH = True
 
 
 class LearningService:
@@ -151,10 +156,47 @@ class LearningService:
         earned = {(c.user_id, c.module_id): c for c in self.db.scalars(select(ModuleCompletion).where(
             ModuleCompletion.user_id.in_(uids), ModuleCompletion.module_id.in_(mids)
         ))}
+        # Быстрый путь для отчётов (compact): у человека, который модуль не
+        # открывал, ответ всегда один и тот же. Пропускаем перебор уроков — на
+        # отчёте «1000 человек × 100 модулей» это основная стоимость.
+        touched: dict[uuid.UUID, set[uuid.UUID]] = defaultdict(set)
+        lesson_module = {sub.id: sub.module_id for sub in subs}
+        final_module = {m.final_quiz_id: m.id for m in modules if m.final_quiz_id}
+        for (uid, ref) in chain(reads, best.keys(), last.keys()):
+            mid_ = lesson_module.get(ref) or final_module.get(ref)
+            if mid_ is not None:
+                touched[uid].add(mid_)
+        for (uid, mid_) in opened:
+            touched[uid].add(mid_)
+        for (uid, mid_) in earned:
+            touched[uid].add(mid_)
+        final_of_module = {m.id: (m.final_quiz_id if m.final_quiz_enabled
+                                  and any(sub.requires_quiz for sub in lessons_by_module[m.id]) else None)
+                           for m in modules}
+
         result = {}
         for user in users:
+            user_touched = touched.get(user.id) or ()
             for module in modules:
                 lessons = lessons_by_module[module.id]
+                if _COMPACT_FAST_PATH and compact and lessons and module.id not in user_touched:
+                    fast_final_id = final_of_module[module.id]
+                    fast_total = len(lessons) + int(fast_final_id is not None)
+                    result[(user.id, module.id)] = {
+                        "module_id": str(module.id), "title": module.title,
+                        "total": fast_total, "passed": 0, "read_count": 0,
+                        "total_lessons": fast_total, "passed_count": 0,
+                        "final_submodule_id": None,
+                        "final_quiz_id": str(fast_final_id) if fast_final_id else None,
+                        "final_passed": False, "final_best_score": None,
+                        "completed": False, "current_completed": False,
+                        "completed_at": None, "completed_revision": None,
+                        "content_revision": module.content_revision,
+                        "learning_revision": int(getattr(module, "learning_revision", 1) or 1),
+                        "has_materials": True, "has_updates": False,
+                        "submodules": [],
+                    }
+                    continue
                 items = []
                 completed_lessons = read_count = 0
                 for sub in lessons:
