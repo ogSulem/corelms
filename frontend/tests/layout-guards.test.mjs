@@ -91,3 +91,11 @@ test("ссылка «обновить существующий модуль» в
   assert.match(admin, /\?tab=import/, "после конфликта названий нужна ссылка на обновление модуля");
   assert.match(admin, /module_already_exists/, "конфликт названий обрабатывается отдельно от прочих ошибок");
 });
+
+test("температура и таймаут AI правятся из админки, а не только в .env", async () => {
+  const page = await readFile(new URL("../src/app/admin/settings/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /Температура/, "поле температуры должно быть на экране настроек");
+  assert.match(page, /Таймаут ответа/, "поле таймаута должно быть на экране настроек");
+  assert.match(page, /temperature: tempValue/, "PUT /admin/settings/ai должен отправлять температуру");
+  assert.match(page, /request_timeout: timeoutValue/, "PUT /admin/settings/ai должен отправлять таймаут");
+});

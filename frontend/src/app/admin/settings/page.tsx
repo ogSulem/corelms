@@ -20,11 +20,13 @@ type AISettings = {
   base_url: string;
   http_referer: string;
   app_title: string;
+  temperature: number;
+  request_timeout: number;
   sources: Record<string, string>;
   stored: boolean;
   updated_at: string | null;
   secret_storage: string;
-  env: { enabled: boolean; api_key_present: boolean; model: string; base_url: string };
+  env: { enabled: boolean; api_key_present: boolean; model: string; base_url: string; temperature?: number; request_timeout?: number };
 };
 
 type SalesSettings = {
@@ -174,7 +176,7 @@ export default function AdminSettingsPage() {
   const isSuperadmin = user?.role === "superadmin";
 
   const [ai, setAi] = useState<AISettings | null>(null);
-  const [aiDraft, setAiDraft] = useState({ enabled: true, api_key: "", clear_api_key: false, model: "", base_url: "", http_referer: "", app_title: "" });
+  const [aiDraft, setAiDraft] = useState({ enabled: true, api_key: "", clear_api_key: false, model: "", base_url: "", http_referer: "", app_title: "", temperature: "", request_timeout: "" });
   const [sales, setSales] = useState<SalesSettings | null>(null);
   const [salesDraft, setSalesDraft] = useState({ spreadsheet_id: "", service_account_json: "", api_key: "", clear_service_account: false, clear_api_key: false });
   const [serverErrors, setServerErrors] = useState<ServerErrors | null>(null);
@@ -207,7 +209,9 @@ export default function AdminSettingsPage() {
 
   const applyAI = useCallback((data: AISettings) => {
     setAi(data);
-    setAiDraft({ enabled: data.enabled, api_key: "", clear_api_key: false, model: data.model, base_url: data.base_url, http_referer: data.http_referer, app_title: data.app_title });
+    setAiDraft({ enabled: data.enabled, api_key: "", clear_api_key: false, model: data.model, base_url: data.base_url, http_referer: data.http_referer, app_title: data.app_title,
+      temperature: data.temperature === undefined || data.temperature === null ? "" : String(data.temperature),
+      request_timeout: data.request_timeout === undefined || data.request_timeout === null ? "" : String(data.request_timeout) });
   }, []);
 
   const applyStorage = useCallback((data: StorageSettings) => {
@@ -321,6 +325,19 @@ export default function AdminSettingsPage() {
 
   async function saveAI() {
     if (savingAI) return;
+    // Проверяем здесь, чтобы опечатка не превращалась в «тихо не сохранилось».
+    const tempRaw = aiDraft.temperature.trim().replace(",", ".");
+    const tempValue = tempRaw === "" ? null : Number(tempRaw);
+    if (tempValue !== null && (!Number.isFinite(tempValue) || tempValue < 0 || tempValue > 2)) {
+      setError("Температура должна быть числом от 0 до 2");
+      return;
+    }
+    const timeoutRaw = aiDraft.request_timeout.trim();
+    const timeoutValue = timeoutRaw === "" ? null : Number(timeoutRaw);
+    if (timeoutValue !== null && (!Number.isFinite(timeoutValue) || timeoutValue < 5 || timeoutValue > 900)) {
+      setError("Таймаут ответа должен быть от 5 до 900 секунд");
+      return;
+    }
     setSavingAI(true);
     setError(null);
     try {
@@ -334,6 +351,9 @@ export default function AdminSettingsPage() {
           base_url: aiDraft.base_url.trim(),
           http_referer: aiDraft.http_referer.trim(),
           app_title: aiDraft.app_title.trim(),
+          // Пустое поле = «как в .env», поэтому на сервер уходит null.
+          temperature: tempValue,
+          request_timeout: timeoutValue,
         }),
       });
       applyAI(data.settings);
@@ -741,6 +761,16 @@ export default function AdminSettingsPage() {
                     <label className="block space-y-2 text-sm font-medium">
                       Название приложения
                       <input className={field} value={aiDraft.app_title} onChange={(event) => setAiDraft((prev) => ({ ...prev, app_title: event.target.value }))} placeholder="CoreLMS" />
+                    </label>
+                    <label className="block space-y-2 text-sm font-medium">
+                      Температура (0–2)
+                      <input inputMode="decimal" className={field} value={aiDraft.temperature} onChange={(event) => setAiDraft((prev) => ({ ...prev, temperature: event.target.value }))} placeholder="0.4" />
+                      <span className="block text-xs font-normal leading-5 text-zinc-500">Меньше — точнее и однообразнее, больше — свободнее. Пусто — значение сервера ({ai?.env.temperature ?? "0.4"}).</span>
+                    </label>
+                    <label className="block space-y-2 text-sm font-medium">
+                      Таймаут ответа, сек (5–900)
+                      <input inputMode="numeric" className={field} value={aiDraft.request_timeout} onChange={(event) => setAiDraft((prev) => ({ ...prev, request_timeout: event.target.value }))} placeholder="120" />
+                      <span className="block text-xs font-normal leading-5 text-zinc-500">Сколько ждать генерацию теста. Пусто — значение сервера ({ai?.env.request_timeout ?? 120} с).</span>
                     </label>
                   </div>
                 </details>

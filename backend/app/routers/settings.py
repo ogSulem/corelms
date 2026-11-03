@@ -77,6 +77,9 @@ class AISettingsSave(BaseModel):
     model: str = ""
     http_referer: str = ""
     app_title: str = ""
+    # None = keep the saved value; .env provides the starting value.
+    temperature: float | None = None
+    request_timeout: float | None = None
 
 
 class AITestRequest(BaseModel):
@@ -136,6 +139,8 @@ def write_ai_settings(
             model=body.model,
             http_referer=body.http_referer,
             app_title=body.app_title,
+            temperature=body.temperature,
+            request_timeout=body.request_timeout,
         )
     except SettingsValidationError as exc:
         db.rollback()
@@ -144,7 +149,8 @@ def write_ai_settings(
     audit_log(db=db, request=request, actor_user_id=user.id, event_type="admin_ai_settings_saved",
               meta={"enabled": config.enabled, "configured": config.configured,
                     "token_source": config.sources.get("api_key"), "model": config.model,
-                    "base_url": config.base_url})
+                    "base_url": config.base_url, "temperature": config.temperature,
+                    "request_timeout": config.request_timeout})
     db.commit()
     return _ok({"settings": ai_settings_payload(config), "restart_required": False})
 

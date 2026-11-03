@@ -5,7 +5,6 @@ import time
 import re
 from typing import Any
 
-from app.core.config import settings
 from app.services.openrouter import generate_quiz_questions_openrouter
 from app.services.app_settings import get_ai_settings
 
@@ -146,6 +145,11 @@ def generate_quiz_questions_ai(
     ai_cfg = get_ai_settings()
     if debug_out is not None:
         debug_out.setdefault("config_source", ai_cfg.sources)
+        debug_out.setdefault("temperature", ai_cfg.temperature)
+        debug_out.setdefault("request_timeout", ai_cfg.request_timeout)
+    # Effective behaviour knobs come from the admin screen (fallback — .env).
+    gen_temperature = float(ai_cfg.temperature)
+    per_attempt = float(ai_cfg.request_timeout)
 
     # Product configuration: OpenRouter-only.
     # Ignore other providers even if configured.
@@ -226,7 +230,6 @@ def generate_quiz_questions_ai(
                 # Each OpenRouter attempt may take up to its read timeout.
                 # Cap attempts so we stay within the overall budget.
                 rem = _remaining_s()
-                per_attempt = float(getattr(settings, "openrouter_timeout_read", 15.0) or 15.0)
                 cap_tries = _cap_tries_by_budget(rem_s=rem, per_attempt_s=per_attempt, max_tries_in=max_tries)
                 for attempt in range(1, cap_tries + 1):
                     if _budget_exhausted():
@@ -246,7 +249,7 @@ def generate_quiz_questions_ai(
                         n_questions=n_questions,
                         debug_out=local_debug,
                         system_prompt=strict_prompt,
-                        temperature=0.2,
+                        temperature=gen_temperature,
                         timeout_read_seconds=dyn_read,
                     )
                     valid = _filter_questions(list(out or []), want=want)
@@ -308,7 +311,7 @@ def generate_quiz_questions_ai(
                                     n_questions=missing,
                                     debug_out=more_debug,
                                     system_prompt=strict_prompt,
-                                    temperature=0.2,
+                                    temperature=gen_temperature,
                                     timeout_read_seconds=dyn_read,
                                 )
                                 merged = list(valid) + list(more or [])
