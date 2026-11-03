@@ -132,6 +132,29 @@ test("validation details are readable instead of object Object", async t => {
   await assert.rejects(apiFetch("/invalid"), error => /title.*Title is required/.test(error.message) && !error.message.includes("[object Object]"));
 });
 
+test("ошибка «модуль уже есть» несёт код и id модуля, обычная — только текст", async t => {
+  const { apiFetch } = await loadSource("src/lib/api.ts");
+  t.mock.method(globalThis, "fetch", async () => json({
+    ok: false, error_code: "module_already_exists",
+    error_message: "Модуль «Продажи» уже есть на платформе. Обновите его из ZIP — прогресс учеников сохранится.",
+    module_id: "11111111-2222-3333-4444-555555555555", request_id: "rid",
+  }, 409));
+  await assert.rejects(apiFetch("/admin/modules/enqueue-import-zip", { method: "POST", body: "{}" }), error => {
+    assert.equal(error.status, 409);
+    assert.equal(error.errorCode, "module_already_exists");
+    assert.equal(error.moduleId, "11111111-2222-3333-4444-555555555555");
+    assert.match(error.message, /Обновите его из ZIP/);
+    return true;
+  });
+
+  t.mock.method(globalThis, "fetch", async () => json({ detail: "module title already exists" }, 409));
+  await assert.rejects(apiFetch("/x", { method: "POST", body: "{}" }), error => {
+    assert.equal(error.moduleId, undefined);
+    assert.match(error.message, /already exists/);
+    return true;
+  });
+});
+
 test("browser auth rejects foreign and opaque origins, not same-origin or CLI requests", async () => {
   const { allowedAuthRequest } = await loadSource("src/app/api/auth/_request.ts");
   const request = headers => new Request("https://lms.example/api/auth/login", { method: "POST", headers });

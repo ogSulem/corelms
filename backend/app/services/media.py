@@ -104,8 +104,11 @@ def cleanup_superseded_derivatives(asset_ids: list[uuid.UUID]) -> dict[str, int]
                 versions = sorted({int(v) for v in db.scalars(
                     select(model.source_version).where(model.asset_id == asset.id, model.source_version < asset.version))})
                 keep = versions[-1:]  # самая свежая из предыдущих
+                # Версию, которую прямо сейчас перекодирует воркер, не отбираем:
+                # он дописывает строку по своему run_token и упал бы с «нет строки».
                 stale = [row for row in db.scalars(select(model).where(
-                    model.asset_id == asset.id, model.source_version < asset.version)) if row.source_version not in keep]
+                    model.asset_id == asset.id, model.source_version < asset.version))
+                    if row.source_version not in keep and row.state != "processing"]
                 for row in stale:
                     bucket, key = getattr(row, bucket_attr), getattr(row, key_attr)
                     if bucket and key:

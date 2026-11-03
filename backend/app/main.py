@@ -206,6 +206,10 @@ def create_app() -> FastAPI:
             "error_message": error_message,
             "request_id": rid,
         }
+        # Единственное поле сверх конверта, которое нужно интерфейсу для действия:
+        # «модуль уже есть» → ссылка на его обновление вместо создания копии.
+        if isinstance(detail, dict) and detail.get("module_id"):
+            payload["module_id"] = str(detail["module_id"])
         return JSONResponse(status_code=int(exc.status_code), content=payload, headers=getattr(exc, "headers", None))
 
     @app.exception_handler(Exception)

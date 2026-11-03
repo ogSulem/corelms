@@ -571,7 +571,7 @@ def import_module_from_dir(
     report = report_out if report_out is not None else {}
     report.update({"module_title": module_title, "submodules": 0, "lesson_assets": 0, "module_assets": 0,
                    "lessons_added": 0, "lessons_updated": 0, "lessons_kept": 0,
-                   "files_added": 0, "files_updated": 0, "files_unchanged": 0,
+                   "files_added": 0, "files_updated": 0, "files_unchanged": 0, "files_missing": 0,
                    "questions_total": 0, "needs_regen": 0, "progress_preserved": True,
                    "warnings": []})
     specs = _import_specs(module_dir)
@@ -650,6 +650,12 @@ def import_module_from_dir(
                 if len(candidates) == 1:
                     sub = candidates[0]
                     report["lessons_updated"] += 1
+                    # Архивный урок обновится, но ученик этого не увидит: без
+                    # предупреждения админ считает, что материалы уже у людей.
+                    if sub.is_archived:
+                        report["warnings"].append(
+                            f"«{sub.title}»: урок в архиве — новое содержимое сохранено, но ученикам не видно. "
+                            "Восстановите урок в разделе «Архив».")
                     if sub.content != spec["theory"]:
                         if sub.content_mode == "manual":
                             report["warnings"].append(f"«{sub.title}»: ручной текст сохранён; обновлены только вложения.")
@@ -690,6 +696,7 @@ def import_module_from_dir(
                 if matches and not matches[0].source_path and matches[0].created_by is not None:
                     raise ValueError(f"«{data['filename']}» уже добавлен вручную. Переименуйте файл в ZIP или редакторе, чтобы импорт не заменил его без явной привязки к источнику.")
                 asset = require_owned_asset(db, module, matches[0].id) if matches else None
+                file_touched = asset is None
                 if asset is None:
                     if not data["key"]:
                         raise ValueError("Файл перемещён в редакторе во время подготовки. Повторите импорт.")
@@ -709,6 +716,7 @@ def import_module_from_dir(
                     if not data["key"]:
                         raise ValueError("Версия файла изменилась. Повторите импорт.")
                     snapshot_asset(db, asset)
+                    file_touched = True
                     asset.object_key, asset.bucket = data["key"], bucket
                     asset.mime_type, asset.size_bytes = data["mime"], data["size"]
                     asset.checksum_sha256 = data["checksum"]
@@ -725,13 +733,29 @@ def import_module_from_dir(
                         uploaded.remove(data["key"])
                 if sub and new_lesson and not sub.is_folder and sub.primary_asset_id is None:
                     sub.primary_asset_id = asset.id
-                from app.services.media import stage_rendition
-                from app.services.thumbs import enqueue_thumb
-                db.flush()
-                stage_rendition(db, asset)
-                enqueue_thumb(asset.id)
+                # Производные (браузерная копия, превью) нужны только новой версии.
+                # Раньше они ставились в очередь и для неизменённых файлов: импорт
+                # 40-файлового модуля каждый раз будил ffmpeg/превью впустую.
+                if file_touched:
+                    from app.services.media import stage_rendition
+                    from app.services.thumbs import enqueue_thumb
+                    db.flush()
+                    stage_rendition(db, asset)
+                    enqueue_thumb(asset.id)
                 report["lesson_assets" if sub else "module_assets"] += 1
         report["lessons_kept"] = len([s for s in old_subs if s.id not in used])
+        # Файлы, которых больше нет в архиве, остаются у уроков (удалять чужие
+        # материалы импорт не вправе). Без счётчика админ не замечает, что у
+        # ученика рядом с новой версией лежит устаревшая.
+        zip_sources = {data["source"] for spec in specs for data in spec["assets"]}
+        missing = [a for a in assets if a.source_path and not a.is_archived and a.source_path not in zip_sources]
+        if module_id_override and missing:
+            report["files_missing"] = len(missing)
+            names = ", ".join(f"«{a.original_filename}»" for a in missing[:3])
+            tail = f" и ещё {len(missing) - 3}" if len(missing) > 3 else ""
+            report["warnings"].append(
+                f"Нет в новом архиве: {names}{tail}. Файлы оставлены у уроков, чтобы ничего не потерять — "
+                "архивируйте лишние в «Материалах».")
         db.flush()
         if not module_id_override and module.final_quiz_id is None and db.scalar(select(Submodule.id).where(
             Submodule.module_id == mid, Submodule.requires_quiz.is_(True), Submodule.is_archived.is_(False)

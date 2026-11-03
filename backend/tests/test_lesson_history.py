@@ -146,3 +146,26 @@ def test_zip_cannot_silently_claim_a_manually_uploaded_file(client, db, admin_he
     assert storage.objects[original_key] == b"manual notes" and original_key not in storage.deleted
     db.expire_all()
     assert db.scalar(select(ContentAsset).where(ContentAsset.module_id == module.id)).version == 1
+
+
+def test_deleting_archived_lesson_with_text_history_does_not_fail(client, db, admin_headers, make_module, storage):
+    """Урок с историей текста удаляется навсегда, а не падает на связях."""
+    from sqlalchemy import func, select
+    from app.models.lesson_revision import LessonRevision
+    module, lesson, _ = make_module(title="Удаление с историей")
+    workspace = client.get(f"/admin/content/modules/{module.id}", headers=admin_headers).json()
+    revision = workspace["module"]["content_revision"]
+    edited = client.patch(f"/admin/content/modules/{module.id}/lessons/{lesson.id}", headers=admin_headers,
+                          json={"revision": revision, "content": "Изменённый текст урока"})
+    assert edited.status_code == 200, edited.text
+    revision = edited.json()["module"]["content_revision"]
+    assert db.scalar(select(func.count()).select_from(LessonRevision).where(
+        LessonRevision.submodule_id == lesson.id)) >= 1
+    assert client.patch(f"/admin/content/modules/{module.id}/lessons/{lesson.id}", headers=admin_headers,
+                        json={"revision": revision, "is_archived": True}).status_code == 200
+    workspace = client.get(f"/admin/content/modules/{module.id}", headers=admin_headers).json()
+    deleted = client.post(f"/admin/content/modules/{module.id}/lessons/{lesson.id}/delete", headers=admin_headers,
+                          json={"revision": workspace["module"]["content_revision"]})
+    assert deleted.status_code == 200, deleted.text
+    assert db.scalar(select(func.count()).select_from(LessonRevision).where(
+        LessonRevision.submodule_id == lesson.id)) == 0

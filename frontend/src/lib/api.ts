@@ -2,13 +2,16 @@ class CoreApiError extends Error {
   status: number;
   errorCode?: string;
   requestId?: string;
+  /** Модуль, к которому относится ошибка (например, «такой уже есть»). */
+  moduleId?: string;
 
-  constructor(message: string, opts: { status: number; errorCode?: string; requestId?: string }) {
+  constructor(message: string, opts: { status: number; errorCode?: string; requestId?: string; moduleId?: string }) {
     super(message);
     this.name = "CoreApiError";
     this.status = opts.status;
     this.errorCode = opts.errorCode;
     this.requestId = opts.requestId;
+    this.moduleId = opts.moduleId;
   }
 }
 
@@ -101,6 +104,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
     let msg = "";
     let errorCode = "";
     let requestId = "";
+    let moduleId = "";
     const ct = res.headers.get("content-type") || "";
     try {
       if (ct.includes("application/json")) {
@@ -109,6 +113,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
         if (data && typeof data === "object" && (data.ok === false || data.ok === "false")) {
           errorCode = String((data as any).error_code || "");
           requestId = String((data as any).request_id || "");
+          moduleId = String((data as any).module_id || "");
           msg = String((data as any).error_message || "");
         }
 
@@ -161,6 +166,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
         status: res.status,
         errorCode: errorCode || undefined,
         requestId: requestId || undefined,
+        moduleId: moduleId || undefined,
       });
     }
     if (res.status === 429) {
@@ -200,6 +206,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
       status: res.status,
       errorCode: errorCode || undefined,
       requestId: requestId || undefined,
+      moduleId: moduleId || undefined,
     });
   }
 
