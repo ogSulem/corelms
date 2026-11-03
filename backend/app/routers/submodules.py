@@ -4,7 +4,7 @@ import json
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import exists, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -16,7 +16,7 @@ from app.models.module import Submodule
 from app.models.user import User
 from app.services.skills import award_xp, record_activity_and_award_xp
 from app.services.access import require_submodule_access
-from app.services.learning import LearningService
+from app.services.learning import LearningService, read_meta_clause
 from app.services.storage import get_s3_client
 from app.core.config import settings
 
@@ -28,20 +28,6 @@ def _uuid(value: str, *, field: str) -> uuid.UUID:
         return uuid.UUID(value)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"invalid {field}") from e
-
-
-def _meta_action_is_read(meta: str | None) -> bool:
-    if not meta:
-        return False
-    if str(meta).strip().lower() == "read":
-        return True
-    try:
-        obj = json.loads(str(meta))
-        if isinstance(obj, dict) and str(obj.get("action") or "").strip().lower() == "read":
-            return True
-    except Exception:
-        return False
-    return False
 
 
 @router.post("/{submodule_id}/open")
@@ -113,31 +99,21 @@ def read_submodule(
 
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
 
+    # Уже отмечено прочитанным? Спрашиваем базу точечно (метка — "read" или
+    # JSON с action=read), а не выгружаем все открытия урока в память: после
+    # сотни открытий эта выборка росла бесконечно.
     already_read = db.scalar(
-        select(func.count(LearningEvent.id)).where(
+        select(exists().where(
             LearningEvent.user_id == user.id,
             LearningEvent.type == LearningEventType.submodule_opened,
             LearningEvent.ref_id == sub.id,
-            LearningEvent.meta.is_not(None),
-        )
+            read_meta_clause(),
+        ))
     )
-    if already_read and already_read > 0:
-        # Soft check: if there is ANY read meta already, skip awarding XP.
-        # We keep a separate query to preserve old meta=="read" semantics.
-        existing = db.scalars(
-            select(LearningEvent.meta)
-            .where(
-                LearningEvent.user_id == user.id,
-                LearningEvent.type == LearningEventType.submodule_opened,
-                LearningEvent.ref_id == sub.id,
-                LearningEvent.meta.is_not(None),
-            )
-            .order_by(LearningEvent.created_at.desc())
-        ).all()
-        if any(_meta_action_is_read(m) for m in (existing or [])):
-            LearningService(db).remember_completions(module, user)
-            db.commit()
-            return {"ok": True, "xp_awarded": 0}
+    if already_read:
+        LearningService(db).remember_completions(module, user)
+        db.commit()
+        return {"ok": True, "xp_awarded": 0}
 
     # Legacy compatibility: keep meta=="read" in addition to JSON.
     meta_value = "read"
@@ -162,14 +138,11 @@ def read_status(submodule_id: str, db: Session = Depends(get_db), user: User = D
     if sub is None:
         raise HTTPException(404, "Материал не найден")
     require_submodule_access(db, user, sub)
-    metas = db.scalars(
-        select(LearningEvent.meta)
-        .where(
+    return {"read": bool(db.scalar(
+        select(exists().where(
             LearningEvent.user_id == user.id,
             LearningEvent.type == LearningEventType.submodule_opened,
             LearningEvent.ref_id == sid,
-            LearningEvent.meta.is_not(None),
-        )
-        .order_by(LearningEvent.created_at.desc())
-    ).all()
-    return {"read": bool(any(_meta_action_is_read(m) for m in (metas or [])))}
+            read_meta_clause(),
+        ))
+    ))}

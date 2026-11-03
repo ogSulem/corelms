@@ -151,3 +151,27 @@ def test_admin_creates_and_deletes_tags(client, db, admin_headers, make_user):
 
     # Ученик не может управлять тегами.
     assert client.post("/admin/tags", headers=employee_headers, json={"name": "Свои"}).status_code == 403
+
+
+def test_rename_module_does_not_mark_new_materials(client, admin_headers, db, make_module):
+    """Смена названия модуля не должна выглядеть для ученика как новые материалы."""
+    from sqlalchemy import select
+
+    from app.models.module import Module
+
+    module, _, _ = make_module(title="Старое название")
+    before = db.scalar(select(Module.content_revision).where(Module.id == module.id))
+
+    response = client.patch(f"/admin/modules/{module.id}", headers=admin_headers,
+                            json={"title": "Новое название"})
+    assert response.status_code == 200, response.text
+    db.expire_all()
+    row = db.get(Module, module.id)
+    assert row.title == "Новое название"
+    assert row.content_revision == before
+
+    # Повторный PATCH тем же названием — без изменений и без ошибок.
+    again = client.patch(f"/admin/modules/{module.id}", headers=admin_headers, json={"title": "Новое название"})
+    assert again.status_code == 200
+    duplicate = client.patch(f"/admin/modules/{module.id}", headers=admin_headers, json={"title": ""})
+    assert duplicate.status_code == 400

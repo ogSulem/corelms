@@ -52,7 +52,10 @@ def _historical_quiz_contexts(db: Session, quiz_ids: list[uuid.UUID]) -> dict[st
 
 @router.get("/profile", response_model=MyProfileResponse)
 def my_profile(user: User = Depends(get_current_user)):
-    role = "admin" if user.role.value in ("admin", "superadmin") else "user"
+    # Роль отдаём как есть для админских значений: раньше суперадмин превращался
+    # в "admin", и карточка профиля не могла показать «СУПЕРАДМИН» — подпись
+    # была недостижимой веткой.
+    role = "superadmin" if user.role.value == "superadmin" else ("admin" if user.role.value == "admin" else "user")
     return {
         "id": str(user.id),
         "name": user.name,

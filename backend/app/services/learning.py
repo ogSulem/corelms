@@ -11,7 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.asset import ContentAsset
@@ -31,6 +31,26 @@ def is_read_meta(meta: str | None) -> bool:
         return isinstance(obj, dict) and str(obj.get("action", "")).lower() == "read"
     except (TypeError, ValueError):
         return False
+
+
+def read_meta_clause():
+    """SQL-условие «событие помечает урок прочитанным».
+
+    `is_read_meta` разбирает JSON в Python, но прогресс читал ВСЕ события
+    `submodule_opened` (включая каждый простой «открыл урок») и фильтровал их
+    в памяти. За полгода работы это десятки тысяч строк на каждый расчёт
+    прогресса. Тот же смысл выражается в SQL и переносится в индексный отбор:
+    метка хранится либо строкой `read` (старый формат), либо JSON-объектом с
+    `"action": "read"`.
+    """
+    meta = func.lower(func.trim(LearningEvent.meta))
+    return or_(meta == "read", meta.like('%"action": "read"%'), meta.like('%"action":"read"%'))
+
+
+def module_open_meta_clause():
+    """SQL-условие «событие открытия модуля» (нужно для «продолжить обучение»)."""
+    meta = func.lower(LearningEvent.meta)
+    return or_(meta.like('%"action": "module_open"%'), meta.like('%"action":"module_open"%'))
 
 
 def remember_quiz_version(db: Session, sub: Submodule) -> None:
@@ -82,7 +102,10 @@ class LearningService:
         viewed_revisions: dict[tuple[uuid.UUID, uuid.UUID], int] = {}
         events = self.db.execute(select(LearningEvent.user_id, LearningEvent.ref_id, LearningEvent.meta).where(
             LearningEvent.user_id.in_(uids), LearningEvent.type == LearningEventType.submodule_opened,
-            or_(LearningEvent.ref_id.in_(lesson_ids), LearningEvent.ref_id.is_(None))
+            or_(
+                and_(LearningEvent.ref_id.in_(lesson_ids), read_meta_clause()),
+                and_(LearningEvent.ref_id.is_(None), module_open_meta_clause()),
+            )
         ))
         for uid, ref, meta in events:
             if ref is not None and is_read_meta(meta):

@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 
 from app.core.queue import get_queue
+from app.core.rate_limit import rate_limit
 from app.core.redis_client import get_redis
 from app.core.config import settings
 from app.services.storage_cleanup_jobs import cleanup_admin_uploads_job
@@ -66,8 +67,7 @@ def live_head():
     return Response(status_code=200)
 
 
-@router.get("/health/ready")
-def ready():
+def _check_ready() -> None:
     try:
         from app.db.session import SessionLocal
         db = SessionLocal()
@@ -91,12 +91,18 @@ def ready():
         except Exception as e:
             raise HTTPException(status_code=503, detail="s3 not ready") from e
 
+
+# Готовность дёргает и docker-healthcheck, и внешний мониторинг. Без ограничения
+# публичный адрес позволял бесплатно нагружать S3 и БД (каждый вызов — head_bucket).
+@router.get("/health/ready")
+def ready(_: object = rate_limit(key_prefix="health_ready", limit=240, window_seconds=60)):
+    _check_ready()
     return {"status": "ready"}
 
 
 @router.head("/health/ready", include_in_schema=False)
-def ready_head():
-    ready()
+def ready_head(_: object = rate_limit(key_prefix="health_ready", limit=240, window_seconds=60)):
+    _check_ready()
     return Response(status_code=200)
 
 

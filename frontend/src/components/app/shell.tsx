@@ -11,6 +11,25 @@ import { AppNav, AppNavBottom } from "@/components/app/nav";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { timeoutSignal } from "@/lib/fetch-timeout";
 
+/** Локальные следы работы, которые нельзя оставлять следующему пользователю. */
+function clearPrivateBrowserState() {
+  try {
+    for (const store of [window.sessionStorage, window.localStorage]) {
+      const keys: string[] = [];
+      for (let i = 0; i < store.length; i += 1) {
+        const key = store.key(i);
+        if (!key) continue;
+        // Черновики ответов теста: `corelms:quiz:<userId>:<quizId>`.
+        if (key.startsWith("corelms:quiz:")) keys.push(key);
+      }
+      for (const key of keys) store.removeItem(key);
+    }
+  } catch {
+    // Приватный режим браузера может запрещать доступ к хранилищу — выход всё равно работает.
+  }
+}
+
+
 export function AppShell({ children }: { children?: React.ReactNode }) {
   const { user, loading, error, refresh } = useAuth();
   const authenticated = !!user;
@@ -333,6 +352,9 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
                 onClick={async () => {
                   if (!window.dispatchEvent(new Event("corelms:before-navigate", { cancelable: true }))) return;
                   setLoggingOut(true);
+                  // Общее устройство: черновики ответов теста и адреса задач
+                  // импорта не должны достаться следующему человеку.
+                  clearPrivateBrowserState();
                   try {
                     const response = await fetch("/api/auth/logout", { method: "POST", signal: timeoutSignal(15000) });
                     if (!response.ok) throw new Error("Не удалось выйти. Проверьте соединение и повторите действие.");

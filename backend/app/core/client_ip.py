@@ -64,22 +64,6 @@ def _normalize_ip(value: str | None) -> str | None:
         return None
 
 
-def _forwarded_for_ip(forwarded: str) -> str | None:
-    s = str(forwarded or "").strip()
-    if not s:
-        return None
-
-    for chunk in [c.strip() for c in s.split(",") if c.strip()]:
-        parts = [p.strip() for p in chunk.split(";") if p.strip()]
-        for part in parts:
-            if part.lower().startswith("for="):
-                v = part.split("=", 1)[1].strip().strip('"').strip()
-                ip = _normalize_ip(v)
-                if ip:
-                    return ip
-    return None
-
-
 def _xff_client_ip(xff: str, trusted_proxies: list[ipaddress._BaseNetwork]) -> str | None:
     raw = str(xff or "").strip()
     if not raw:
@@ -116,7 +100,14 @@ def _xff_client_ip(xff: str, trusted_proxies: list[ipaddress._BaseNetwork]) -> s
     return chain[0]
 
 
-def client_ip_from_request(request: Request) -> str | None:
+def resolve_client_ip(request: Request) -> tuple[str | None, str]:
+    """Адрес клиента и источник, откуда он взят: `x-real-ip`, `x-forwarded-for`, `direct`.
+
+    Один разбор на всех: по нему считаются лимиты входа, пишется журнал
+    безопасности и строится диагностика в админке. Раньше диагностика собирала
+    источник своей копией правил и показывала `x-real-ip` даже когда заголовкам
+    не доверяли — админ видел не тот адрес, который реально применялся.
+    """
     remote_ip = None
     try:
         remote_ip = str(getattr(getattr(request, "client", None), "host", None) or "").strip() or None
@@ -124,20 +115,34 @@ def client_ip_from_request(request: Request) -> str | None:
         remote_ip = None
 
     if bool(getattr(settings, "trust_proxy_headers", False)) and _is_trusted_proxy(remote_ip):
-        fwd = str(request.headers.get("forwarded") or "")
-        ip = _forwarded_for_ip(fwd)
-        if ip:
-            return ip
-
+        # Порядок источников — от самого надёжного к самому подделываемому.
+        #
+        # X-Real-IP наш край (Caddy/nginx) выставляет сам и перезаписывает
+        # присланное клиентом. X-Forwarded-For край дописывает справа, поэтому
+        # настоящий адрес ищется справа налево (см. _xff_client_ip).
+        #
+        # Заголовок RFC 7239 `Forwarded` в нашем стеке не выставляет никто,
+        # то есть его значение целиком приходит от клиента. Раньше он проверялся
+        # ПЕРВЫМ — и любой мог подставить себе любой IP: обойти лимит входа по
+        # адресу и подделать записи в журнале безопасности.
         xri = _normalize_ip(str(request.headers.get("x-real-ip") or ""))
         if xri:
-            return xri
+            return xri, "x-real-ip"
 
         xff = str(request.headers.get("x-forwarded-for") or "")
         trusted = _parse_trusted_proxies(getattr(settings, "trusted_proxy_ips", None))
         ip = _xff_client_ip(xff, trusted)
         if ip:
-            return ip
+            return ip, "x-forwarded-for"
 
-    ip = _normalize_ip(remote_ip)
-    return ip
+        # `Forwarded` намеренно НЕ читаем: в нашем стеке его не формирует никто
+        # (Caddy и nginx ставят X-Real-IP и X-Forwarded-For), значит значение
+        # приходит только от клиента — и это готовый способ подставить себе
+        # любой адрес. Если такой прокси появится, лучше показать адрес
+        # соединения, чем поверить подделке.
+
+    return _normalize_ip(remote_ip), "direct"
+
+
+def client_ip_from_request(request: Request) -> str | None:
+    return resolve_client_ip(request)[0]

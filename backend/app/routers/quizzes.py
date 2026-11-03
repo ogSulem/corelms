@@ -34,6 +34,39 @@ def _session_key(user_id: str, quiz_id: str) -> str:
     return f"quiz_session:{user_id}:{quiz_id}"
 
 
+# Сколько секунд после формального конца таймера ещё принимаем ответы.
+# Нужен для автопоиска отправки с клиента и на расхождение часов в браузере.
+SESSION_GRACE_SECONDS = 30
+
+
+def _close_expired_attempt(*, db: Session, user: User, quiz: Quiz, session: dict, session_id: str) -> bool:
+    """Закрыть попытку, у которой вышло время, и засчитать её.
+
+    Без этого таймер был декорацией: «Начать заново» выдавал новый таймер с
+    нуля, а лимит попыток не расходовался совсем — проверить можно было
+    бесконечно. Отвеченные вопросы при этом не теряются: страница теста
+    отправляет их автоматически в момент истечения, а сюда попадают только
+    брошенные попытки (закрыли вкладку, пропала связь).
+    """
+    if not session_id:
+        return False
+    if db.scalar(select(QuizAttempt.id).where(QuizAttempt.session_id == session_id)):
+        return False
+    limit = session.get("time_limit", quiz.time_limit)
+    started = int(session.get("started_at") or 0) or int(time.time())
+    attempt_no = (db.scalar(
+        select(func.count(QuizAttempt.id)).where(QuizAttempt.quiz_id == quiz.id, QuizAttempt.user_id == user.id)
+    ) or 0) + 1
+    db.add(QuizAttempt(
+        quiz_id=quiz.id, user_id=user.id, attempt_no=attempt_no,
+        started_at=datetime.utcfromtimestamp(started), finished_at=datetime.utcnow(),
+        session_id=session_id, score=0, passed=False,
+        time_spent_seconds=int(limit or 0), xp_awarded=0,
+    ))
+    db.commit()
+    return True
+
+
 def _map_option_letter(ch: str) -> str:
     c = (ch or "").strip().upper()
     # Support Russian option letters commonly used in prompts.
@@ -285,7 +318,12 @@ def start_quiz(
             if db.scalar(select(QuizAttempt.id).where(QuizAttempt.session_id == session_id)):
                 raise ValueError("session already submitted")
             session_limit = session.get("time_limit", quiz.time_limit)
-            if session_limit and time.time() - int(session.get("started_at") or 0) > session_limit:
+            if session_limit and time.time() - int(session.get("started_at") or 0) > session_limit + SESSION_GRACE_SECONDS:
+                _close_expired_attempt(db=db, user=user, quiz=quiz, session=session, session_id=session_id)
+                try:
+                    r.delete(key)
+                except Exception:
+                    pass
                 raise ValueError("session timer expired")
             parsed: list[uuid.UUID] = []
             for qid in existing_qids:
@@ -313,6 +351,11 @@ def start_quiz(
             # If session is corrupted, fall through and create a fresh one.
             pass
 
+    # Пересчитываем: истёкшая попытка могла только что закрыться и израсходовать лимит.
+    attempts_used = db.scalar(
+        select(func.count(QuizAttempt.id)).where(QuizAttempt.quiz_id == quiz.id, QuizAttempt.user_id == user.id)
+    ) or 0
+
     if is_final_quiz and not module.final_quiz_enabled:
         raise HTTPException(409, "Итоговый тест отключён. Вернитесь к материалам модуля.")
 
@@ -320,7 +363,10 @@ def start_quiz(
         raise HTTPException(409, "Тест обновлён. Вернитесь к уроку, чтобы начать новую попытку.")
 
     if quiz.attempts_limit and int(attempts_used or 0) >= quiz.attempts_limit and not is_admin(user):
-        raise HTTPException(409, "Лимит попыток исчерпан. Обратитесь к администратору.")
+        raise HTTPException(409, {
+            "error_code": "attempts_exhausted",
+            "error_message": "Лимит попыток исчерпан. Обратитесь к администратору.",
+        })
 
     selected_final_qids: list[str] | None = None
     if is_final_quiz:
@@ -473,7 +519,10 @@ def submit_quiz(
 
     if raw is None:
         # Client-provided question subsets must never define the denominator.
-        raise HTTPException(409, "quiz session not found or expired")
+        raise HTTPException(409, {
+            "error_code": "quiz_session_missing",
+            "error_message": "Попытка не найдена или время истекло. Начните новую.",
+        })
     else:
         try:
             session = json.loads(raw)
@@ -491,10 +540,18 @@ def submit_quiz(
             raise HTTPException(409, "Сессия теста повреждена. Начните новую попытку.") from exc
 
         started_at = int(session.get("started_at") or 0)
-        time_spent = max(0, int(time.time()) - started_at)
+        raw_time_spent = max(0, int(time.time()) - started_at)
         session_limit = session.get("time_limit", quiz.time_limit)
-        if session_limit and time_spent > session_limit:
-            raise HTTPException(status_code=409, detail="time limit exceeded")
+        if session_limit and raw_time_spent > session_limit + SESSION_GRACE_SECONDS:
+            # Время вышло с запасом — попытку не принимаем, но и не теряем её
+            # молча: /start закроет её как непройденную.
+            raise HTTPException(409, {
+                "error_code": "time_limit_exceeded",
+                "error_message": "Время на попытку вышло — ответы не приняты. Начните новую попытку.",
+            })
+        # Автоотправка с клиента приходит через секунду-две после нуля и может
+        # выйти за лимит на доли секунды: записываем ровно лимит.
+        time_spent = min(raw_time_spent, session_limit) if session_limit else raw_time_spent
 
     if not question_ids or len(set(question_ids)) != len(question_ids):
         raise HTTPException(409, "invalid quiz session")

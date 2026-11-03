@@ -249,6 +249,29 @@ def _admin_jobs_build_lane(*, kind: str, listing: dict) -> dict:
     }
 
 
+def _enqueue_or_unavailable(queue_name: str, fn, *args, **kwargs):
+    """Поставить задачу в очередь, а при недоступном Redis объяснить причину.
+
+    Раньше `q.enqueue(...)` в обработчике пробрасывал соединение redis наружу:
+    админ получал `500 internal server error` без подсказки, а в логах —
+    трассировку. Очередь недоступна — это 503 «повторите», а не поломка кода.
+    """
+    try:
+        return get_queue(str(queue_name or getattr(settings, "rq_queue_default", "") or "")).enqueue(fn, *args, **kwargs)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.warning("enqueue failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": "queue_unavailable",
+                "error_message": "Очередь задач недоступна: проверьте Redis и обработчики (воркеры).",
+                "error_hint": "Повторите после восстановления Redis; данные не изменены.",
+            },
+        ) from exc
+
+
 @router.post("/transcode/videos/enqueue")
 def enqueue_transcode_videos(
     after_asset_id: uuid.UUID | None = None,
@@ -743,8 +766,11 @@ def update_module(
         raise HTTPException(status_code=404, detail="module not found")
 
     m = lock_module(db, mid)
-    m.content_revision += 1
 
+    # Переименование — это не новый материал. Раньше здесь всегда увеличивался
+    # content_revision, и у всех, кто уже прошёл модуль, появлялась отметка
+    # «есть обновления» из-за смены названия. Ревизия содержимого меняется
+    # только вместе с содержимым (уроки, файлы, тесты).
     changed: dict[str, object] = {}
 
     if body.title is not None:
@@ -1197,10 +1223,13 @@ def admin_update_user(
     role_raw = body.role
     if role_raw is not None:
         next_role = UserRole(str(role_raw))
-        prev_role = getattr(u, "role", None)
         if not is_superadmin:
             raise HTTPException(status_code=403, detail="cannot change user role")
-
+        # Свою роль не меняем даже суперадмину: единственный суперадмин,
+        # понизивший себя, оставляет платформу без управления навсегда
+        # (bootstrap создаёт администратора только при полном отсутствии админов).
+        if u.id == current.id:
+            raise HTTPException(status_code=400, detail="Нельзя изменить собственную роль — попросите другого суперадминистратора")
         u.role = next_role
 
     if body.must_change_password is not None:
@@ -1559,7 +1588,11 @@ async def import_module_zip(
             s3.delete_object(Bucket=settings.s3_bucket, Key=object_key)
         except Exception:
             log.debug("admin import zip: cleanup delete_object failed after enqueue error", exc_info=True)
-        raise HTTPException(status_code=500, detail="failed to enqueue import job") from e
+        raise HTTPException(status_code=503, detail={
+            "error_code": "queue_unavailable",
+            "error_message": "Очередь импорта недоступна: проверьте Redis и обработчики (воркеры).",
+            "error_hint": "Загруженный архив удалён, повторите загрузку после восстановления Redis.",
+        }) from e
 
     try:
         jm = dict(job.meta or {})
@@ -1657,31 +1690,13 @@ def abort_import_zip(
     _: User = Depends(require_roles(UserRole.admin)),
     __: object = rate_limit(key_prefix="admin_abort_import_zip", limit=30, window_seconds=60),
 ):
-    object_key = str(body.object_key or "").strip()
-    if not object_key:
-        raise HTTPException(status_code=400, detail="missing object_key")
+    object_key = _require_uploaded_zip_key(body.object_key)
 
-    require_unused_temporary_object(db, object_key)
-
-    fingerprint = ""
-    try:
-        ensure_bucket_exists()
-        s3 = get_s3_client()
-        head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
-        etag = str(head.get("ETag") or "").strip().strip('"')
-        size = str(head.get("ContentLength") or "").strip()
-        if etag and size:
-            fingerprint = f"{etag}:{size}"
-    except Exception:
-        fingerprint = ""
-
-    # Best-effort delete the uploaded (or partially uploaded) object.
-    try:
-        ensure_bucket_exists()
-        s3 = get_s3_client()
-        s3.delete_object(Bucket=settings.s3_bucket, Key=object_key)
-    except Exception:
-        pass
+    # Исходный ZIP не удаляем: он хранится для повторного импорта и
+    # восстановления (это же правило проверяет require_unused_temporary_object).
+    # Раньше здесь стоял delete_object, а перед ним — та самая проверка, поэтому
+    # «отмена» всегда падала с 409 и ничего не отменяла. Теперь отмена честно
+    # снимает только пометку о постановке в очередь.
 
     # Best-effort clear filename->object_key mapping to avoid future 'reused' pointing to an aborted upload.
     fn = str(body.filename or "").strip()
@@ -2114,6 +2129,40 @@ def _multipart_forget(*, object_key: str, upload_id: str) -> None:
         pass
 
 
+def _require_import_object_key(object_key: str) -> str:
+    """Ключ, с которым разрешено работать multipart-загрузке импорта.
+
+    Эти эндпоинты принимают object_key от клиента и работают с S3 напрямую.
+    Без проверки админ мог завершить или прервать загрузку по ЛЮБОМУ ключу в
+    бакете — например, перезаписать файл материала или библиотеку продаж.
+    Импорт всегда пишет в uploads/sources/.../<имя>.zip, поэтому разрешаем
+    только этот префикс.
+    """
+    key = str(object_key or "").strip()
+    if (not key.startswith("uploads/sources/") or not key.lower().endswith(".zip")
+            or ".." in key.split("/") or "//" in key):
+        raise HTTPException(status_code=422, detail="Недопустимый объект загрузки: ожидается uploads/sources/….zip")
+    return key
+
+
+def _require_uploaded_zip_key(object_key: str) -> str:
+    """Ключ загруженного исходника импорта: только `uploads/…zip`.
+
+    `enqueue-import-zip` и `abort-import-zip` берут ключ от клиента и работают
+    с ним в S3. Без проверки можно было направить импорт (а раньше — и
+    удаление) на любой объект бакета, включая файлы материалов и библиотеки
+    продаж. Новые загрузки всегда лежат в `uploads/sources/…zip`, но старые
+    (до перехода на этот префикс) — просто в `uploads/…zip`, поэтому
+    разрешаем оба варианта и запрещаем выход за `uploads/`.
+    """
+    key = str(object_key or "").strip()
+    parts = key.split("/")
+    if (not key.startswith("uploads/") or not key.lower().endswith(".zip")
+            or ".." in parts or "//" in key or any(not part for part in parts)):
+        raise HTTPException(status_code=422, detail="Недопустимый объект импорта: ожидается uploads/…zip")
+    return key
+
+
 class AdminMultipartCreateResponse(BaseModel):
     ok: bool = True
     object_key: str
@@ -2282,10 +2331,10 @@ def multipart_import_presign_part(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_multipart_import_presign_part", limit=240, window_seconds=60),
 ):
-    object_key = str(body.object_key or "").strip()
+    object_key = _require_import_object_key(body.object_key)
     upload_id = str(body.upload_id or "").strip()
     pn = int(body.part_number or 0)
-    if not object_key or not upload_id or pn <= 0:
+    if not upload_id or pn <= 0:
         raise HTTPException(status_code=400, detail="invalid multipart params")
 
     _multipart_touch(object_key=object_key, upload_id=upload_id)
@@ -2308,9 +2357,9 @@ def multipart_import_list_parts(
     _: User = Depends(require_roles(UserRole.admin)),
     __: object = rate_limit(key_prefix="admin_multipart_import_list_parts", limit=120, window_seconds=60),
 ):
-    object_key = str(body.object_key or "").strip()
+    object_key = _require_import_object_key(body.object_key)
     upload_id = str(body.upload_id or "").strip()
-    if not object_key or not upload_id:
+    if not upload_id:
         raise HTTPException(status_code=400, detail="invalid multipart params")
 
     _multipart_touch(object_key=object_key, upload_id=upload_id)
@@ -2326,9 +2375,9 @@ def multipart_import_complete(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_multipart_import_complete", limit=30, window_seconds=60),
 ):
-    object_key = str(body.object_key or "").strip()
+    object_key = _require_import_object_key(body.object_key)
     upload_id = str(body.upload_id or "").strip()
-    if not object_key or not upload_id:
+    if not upload_id:
         raise HTTPException(status_code=400, detail="invalid multipart params")
     multipart_complete(object_key=object_key, upload_id=upload_id, parts=list(body.parts or []))
     _multipart_forget(object_key=object_key, upload_id=upload_id)
@@ -2351,9 +2400,9 @@ def multipart_import_abort(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_multipart_import_abort", limit=30, window_seconds=60),
 ):
-    object_key = str(body.object_key or "").strip()
+    object_key = _require_import_object_key(body.object_key)
     upload_id = str(body.upload_id or "").strip()
-    if not object_key or not upload_id:
+    if not upload_id:
         raise HTTPException(status_code=400, detail="invalid multipart params")
     try:
         multipart_abort(object_key=object_key, upload_id=upload_id)
@@ -2386,9 +2435,7 @@ def enqueue_import_zip(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_enqueue_import_zip", limit=30, window_seconds=60),
 ):
-    object_key = str(body.object_key or "").strip()
-    if not object_key:
-        raise HTTPException(status_code=400, detail="missing object_key")
+    object_key = _require_uploaded_zip_key(body.object_key)
 
     lock_key = f"admin:import_enqueued_by_object_key:{object_key}"
 
@@ -2571,7 +2618,11 @@ def enqueue_import_zip(
             failure_ttl=60 * 60 * 24 * 7,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail="failed to enqueue import job") from e
+        raise HTTPException(status_code=503, detail={
+            "error_code": "queue_unavailable",
+            "error_message": "Очередь импорта недоступна: проверьте Redis и обработчики (воркеры).",
+            "error_hint": "Архив остался в хранилище — повторите запуск импорта после восстановления Redis.",
+        }) from e
 
     # Store normalized title in job.meta so the worker can release title locks on end.
     try:
@@ -3047,8 +3098,8 @@ def retry_import_job(
         raise HTTPException(409, "Модуль уже изменён. Повторите обновление из его редактора.")
     db.commit()
 
-    q = get_queue(settings.rq_queue_import)
-    job = q.enqueue(
+    job = _enqueue_or_unavailable(
+        settings.rq_queue_import,
         import_module_zip_job,
         meta={"job_kind": "import", "module_id": str(stub_module.id), "module_title": stub_module.title, "import_object_key": object_key},
         s3_object_key=object_key,
@@ -3179,8 +3230,7 @@ def backfill_modules_storage_prefix(
     current: User = Depends(require_roles(UserRole.admin)),
     _: object = rate_limit(key_prefix="admin_backfill_module_storage_prefix", limit=10, window_seconds=60),
 ):
-    q = get_queue(str(settings.rq_queue_default))
-    job = q.enqueue(backfill_module_storage_prefix_job, limit=int(limit or 2000))
+    job = _enqueue_or_unavailable(settings.rq_queue_default, backfill_module_storage_prefix_job, limit=int(limit or 2000))
 
     audit_log(
         db=db,
@@ -4896,6 +4946,18 @@ def link_asset_to_submodule(
     submodule_id = _uuid(body.submodule_id, field="submodule_id")
     asset_id = _uuid(body.asset_id, field="asset_id")
 
+    # Проверяем обе стороны связи до вставки: раньше «битый» идентификатор давал
+    # IntegrityError и 500, а файл чужого модуля, привязанный к уроку, открывался
+    # всем, у кого есть доступ к этому уроку.
+    lesson = db.get(Submodule, submodule_id)
+    if lesson is None:
+        raise HTTPException(status_code=404, detail="Урок не найден")
+    asset = db.get(ContentAsset, asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    if asset.module_id is not None and asset.module_id != lesson.module_id:
+        raise HTTPException(status_code=409, detail="Файл принадлежит другому модулю")
+
     existing = db.scalar(
         select(SubmoduleAssetMap).where(
             SubmoduleAssetMap.submodule_id == submodule_id,
@@ -6027,9 +6089,18 @@ def reset_user_password(
     if user is None:
         raise HTTPException(status_code=404, detail="user not found")
 
+    # Свой пароль меняют в профиле: там текущий пароль подтверждается, а сеанс
+    # остаётся. Через админский сброс прежние сеансы отзываются, новый пароль
+    # показывается один раз — админ случайно запирал сам себя снаружи.
+    if user.id == current.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Свой пароль меняйте в профиле: «Безопасность» → «Сменить пароль».",
+        )
+
     is_superadmin = getattr(current, "role", None) == UserRole.superadmin
     if not is_superadmin:
-        if getattr(user, "role", None) in {UserRole.admin, UserRole.superadmin} and user.id != current.id:
+        if getattr(user, "role", None) in {UserRole.admin, UserRole.superadmin}:
             raise HTTPException(status_code=403, detail="cannot reset password for admin user")
 
     # Issue a temporary password (must be changed on first login).

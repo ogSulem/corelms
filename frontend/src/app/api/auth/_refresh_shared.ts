@@ -16,7 +16,7 @@ function timeoutMs(): number {
 export async function sharedRefresh(args: {
   apiBaseUrl: string;
   refreshToken: string;
-  proxyHeaders?: { xRealIp?: string | null; xForwardedFor?: string | null; forwarded?: string | null; userAgent?: string | null; origin?: string | null };
+  proxyHeaders?: { xRealIp?: string | null; xForwardedFor?: string | null; userAgent?: string | null; origin?: string | null };
 }): Promise<RefreshResult> {
   const token = String(args.refreshToken || "").trim();
   if (!token) return { ok: false, status: 401 };
@@ -34,7 +34,6 @@ export async function sharedRefresh(args: {
       const proxy = args.proxyHeaders;
       if (proxy?.xRealIp) headers.set("x-real-ip", proxy.xRealIp);
       if (proxy?.xForwardedFor) headers.set("x-forwarded-for", proxy.xForwardedFor);
-      if (proxy?.forwarded) headers.set("forwarded", proxy.forwarded);
       if (proxy?.userAgent) headers.set("user-agent", proxy.userAgent);
       if (proxy?.origin) headers.set("origin", proxy.origin);
       const response = await fetch(`${args.apiBaseUrl}/auth/refresh`, { method: "POST", cache: "no-store", headers, signal: controller.signal });
