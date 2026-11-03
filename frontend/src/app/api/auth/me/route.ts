@@ -37,7 +37,7 @@ export async function GET(request: Request) {
   const renew = async () => {
     for (const token of refreshCandidates) {
       const result = await sharedRefresh({ apiBaseUrl: API_BASE_URL, refreshToken: token, proxyHeaders: {
-        xRealIp: request.headers.get("x-real-ip"), xForwardedFor: request.headers.get("x-forwarded-for"), forwarded: request.headers.get("forwarded"), userAgent: request.headers.get("user-agent"), origin: request.headers.get("origin"),
+        xRealIp: request.headers.get("x-real-ip"), xForwardedFor: request.headers.get("x-forwarded-for"), userAgent: request.headers.get("user-agent"), origin: request.headers.get("origin"),
       } });
       if (result.ok) { rotation = result; access = result.access; return null; }
       if (result.status !== 401 && result.status !== 403) return unavailable();
@@ -49,7 +49,7 @@ export async function GET(request: Request) {
     const timer = setTimeout(() => controller.abort(), 25000);
     try {
       const headers = new Headers({ Authorization: `Bearer ${token}` });
-      for (const name of ["x-real-ip", "x-forwarded-for", "forwarded", "user-agent"]) {
+      for (const name of ["x-real-ip", "x-forwarded-for", "user-agent"]) {
         const value = request.headers.get(name); if (value) headers.set(name, value);
       }
       const response = await fetch(`${API_BASE_URL}/auth/me`, { cache: "no-store", headers, signal: controller.signal });

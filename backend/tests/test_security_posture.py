@@ -107,3 +107,64 @@ def test_cookie_secure_check_reports_what_the_browser_will_actually_get(client, 
     forced_off = client.get("/admin/settings/security", headers={**admin_headers, "X-Forwarded-Proto": "https"}).json()
     assert forced_off["cookies"]["access"]["effective_secure"] is False
     assert "COOKIE_SECURE=false" in checks(forced_off)["cookie_secure"]["detail"]
+
+
+def test_forwarded_header_from_client_cannot_spoof_ip(client, admin_headers, monkeypatch):
+    """Клиент не должен подменять себе IP заголовком RFC 7239 `Forwarded`.
+
+    Раньше он проверялся первым, поэтому подделка давала обход лимита входа по
+    адресу и ложные записи «вход с нового IP» в журнале безопасности.
+    """
+    import app.core.client_ip as client_ip_module
+
+    monkeypatch.setattr(settings, "trust_proxy_headers", True)
+    monkeypatch.setattr(settings, "trusted_proxy_ips", "127.0.0.1,10.0.0.0/8")
+    monkeypatch.setattr(client_ip_module, "_is_trusted_proxy", lambda remote: True)
+    response = client.get("/admin/settings/security", headers={
+        **admin_headers,
+        "Forwarded": "for=6.6.6.6",
+        "X-Real-IP": "203.0.113.7",
+        "X-Forwarded-For": "203.0.113.7",
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["client"]["ip"] == "203.0.113.7"
+    assert body["client"]["source"] == "x-real-ip"
+
+
+def test_forwarded_header_is_ignored_when_real_ip_is_absent(client, admin_headers, monkeypatch):
+    import app.core.client_ip as client_ip_module
+
+    monkeypatch.setattr(settings, "trust_proxy_headers", True)
+    monkeypatch.setattr(settings, "trusted_proxy_ips", "127.0.0.1,10.0.0.0/8")
+    monkeypatch.setattr(client_ip_module, "_is_trusted_proxy", lambda remote: True)
+    body = client.get("/admin/settings/security", headers={
+        **admin_headers, "Forwarded": "for=6.6.6.6",
+    }).json()
+    # Ни X-Real-IP, ни X-Forwarded-For нет — остаётся адрес самого соединения.
+    assert body["client"]["ip"] != "6.6.6.6"
+
+
+def test_diagnostics_show_the_ip_actually_used_for_limits(client, admin_headers, monkeypatch):
+    """Источник IP в диагностике обязан совпадать с тем, что применяют лимиты.
+
+    Диагностика считала `source` своей копией правил и показывала `x-real-ip`,
+    даже когда заголовкам не доверяют, — админ видел адрес, который нигде не
+    используется, и не мог понять, почему лимит срабатывает не по клиенту.
+    """
+    monkeypatch.setattr(settings, "trust_proxy_headers", True)
+    monkeypatch.setattr(settings, "trusted_proxy_ips", "10.0.0.0/8")
+    body = client.get("/admin/settings/security", headers={
+        **admin_headers, "X-Real-IP": "198.51.100.5", "X-Forwarded-For": "198.51.100.5",
+    }).json()
+    assert body["proxy"]["trusted"] is False
+    assert body["client"]["source"] == "direct"
+    assert body["client"]["ip"] != "198.51.100.5"  # заголовку не доверяем
+
+    import app.core.client_ip as client_ip_module
+    from starlette.requests import Request
+
+    monkeypatch.setattr(client_ip_module, "_is_trusted_proxy", lambda remote: True)
+    request = Request({"type": "http", "headers": [(b"x-real-ip", b"198.51.100.5")],
+                       "client": ("10.1.2.3", 443), "scheme": "https"})
+    assert client_ip_module.resolve_client_ip(request) == ("198.51.100.5", "x-real-ip")

@@ -62,12 +62,15 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
 
   // Preserve real client IP through the Next.js proxy.
   // Backend will only trust these headers if TRUST_PROXY_HEADERS=true and request comes from TRUSTED_PROXY_IPS.
+  // RFC 7239 `Forwarded` наш край не формирует — значит, его значение пришло
+  // от клиента. Backend доверяет адресу прокси, поэтому такой заголовок давал
+  // возможность подставить себе любой IP (обход лимита входа по адресу и
+  // ложные записи «вход с нового IP»). Просто не пускаем его дальше.
+  headers.delete("forwarded");
   const xri = req.headers.get("x-real-ip");
   const xff = req.headers.get("x-forwarded-for");
-  const fwd = req.headers.get("forwarded");
   if (xri) headers.set("x-real-ip", xri);
   if (xff) headers.set("x-forwarded-for", xff);
-  if (fwd) headers.set("forwarded", fwd);
 
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
@@ -109,7 +112,7 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     for (const refresh of refreshTokens(req)) {
       const result = await sharedRefresh({ apiBaseUrl: API_BASE_URL, refreshToken: refresh, proxyHeaders: {
         xRealIp: req.headers.get("x-real-ip"), xForwardedFor: req.headers.get("x-forwarded-for"),
-        forwarded: req.headers.get("forwarded"), userAgent: req.headers.get("user-agent"), origin: req.headers.get("origin"),
+        userAgent: req.headers.get("user-agent"), origin: req.headers.get("origin"),
       } });
       if (!result.ok) continue;
       rotation.value = { access: result.access, refresh: result.nextRefresh, expiresIn: result.expiresIn, refreshExpiresIn: result.refreshExpiresIn };

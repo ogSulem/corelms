@@ -67,6 +67,40 @@ def _asset_access_guard(*, db: Session, user: User, aid: uuid.UUID, asset: Conte
     return str(allowed), str(sub_id) if sub_id else None
 
 
+ASSET_EVENT_WINDOW_SECONDS = 600
+
+
+def _should_record_asset_event(*, user_id: object, asset_id: object, action: str = "view") -> bool:
+    """Одно открытие файла даёт одно событие в журнале обучения.
+
+    Браузер забирает видео десятками Range-запросов, а один просмотр в
+    интерфейсе идёт через `presign-download`, `stream` и `preview` сразу.
+    Раньше каждый такой запрос писал отдельное `asset_viewed` и делал
+    `SELECT ... FOR UPDATE` по пользователю: журнал и «активность» заполнялись
+    копиями одного просмотра, а строка пользователя блокировалась на каждом
+    куске видео. Склеиваем окном на Redis; если Redis недоступен — пишем, как
+    раньше, чтобы не терять событие.
+    """
+    try:
+        from app.core.redis_client import get_redis
+
+        redis = get_redis()
+        key = f"asset:event:{user_id}:{asset_id}"
+        previous = redis.get(key)
+        if previous is None:
+            redis.set(key, action, ex=ASSET_EVENT_WINDOW_SECONDS)
+            return True
+        # Скачивание — отдельное намерение: «открыл» и «скачал» в журнале
+        # должны быть двумя разными событиями, но повторное скачивание того же
+        # файла в том же окне дублем не считается.
+        if action == "download" and str(previous) != "download":
+            redis.set(key, "download", ex=ASSET_EVENT_WINDOW_SECONDS)
+            return True
+        return False
+    except Exception:
+        return True
+
+
 @router.post("/presign-upload", response_model=AssetCreateResponse)
 def presign_upload(
     request: Request,
@@ -103,7 +137,14 @@ def presign_download(
 
     # Count asset views as activity for streak, but do not award XP.
     # Important: update streak BEFORE inserting the learning event to avoid autoflush affecting streak init.
-    record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
+    # Одно открытие = одно событие: следом интерфейс делает stream/preview, и без
+    # склейки журнал получал три записи про один и тот же файл.
+    record_event = _should_record_asset_event(
+        user_id=user.id, asset_id=asset.id,
+        action="download" if str(action or "").strip().lower() == "download" else "view",
+    )
+    if record_event:
+        record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
 
     # Enrich meta: this is the most reliable place to log file-level activity.
     # Note: we intentionally treat "presign download" as a learning event, because it reflects intent to open/download.
@@ -135,15 +176,16 @@ def presign_download(
         "submodule_id": submodule_id,
     }
 
-    db.add(
-        LearningEvent(
-            user_id=user.id,
-            type=LearningEventType.asset_viewed,
-            ref_id=asset.id,
-            meta=json.dumps(meta, ensure_ascii=False),
+    if record_event:
+        db.add(
+            LearningEvent(
+                user_id=user.id,
+                type=LearningEventType.asset_viewed,
+                ref_id=asset.id,
+                meta=json.dumps(meta, ensure_ascii=False),
+            )
         )
-    )
-    db.commit()
+        db.commit()
 
     audit_log(
         db=db,
@@ -255,7 +297,8 @@ def stream_asset(
 
 
     # Thumbnails stay out of the learning journal: a file listed in a cabinet is not «просмотр материала».
-    if not thumb:
+    # Видео приходит десятками Range-запросов — событие пишем один раз на просмотр.
+    if not thumb and _should_record_asset_event(user_id=user.id, asset_id=asset.id):
         record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
         try:
             meta = {
@@ -484,11 +527,12 @@ def preview_asset(
         except Exception as exc:
             raise HTTPException(503, "Хранилище временно недоступно. Повторите попытку.") from exc
         preview = build_preview(data, asset.original_filename, sheet=sheet)
-    record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
-    db.add(LearningEvent(user_id=user.id, type=LearningEventType.asset_viewed, ref_id=asset.id,
-                        meta=json.dumps({"action": "preview", "module_id": module_id, "submodule_id": submodule_id,
-                                         "filename": asset.original_filename}, ensure_ascii=False)))
-    db.commit()
+    if _should_record_asset_event(user_id=user.id, asset_id=asset.id):
+        record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
+        db.add(LearningEvent(user_id=user.id, type=LearningEventType.asset_viewed, ref_id=asset.id,
+                            meta=json.dumps({"action": "preview", "module_id": module_id, "submodule_id": submodule_id,
+                                             "filename": asset.original_filename}, ensure_ascii=False)))
+        db.commit()
     from fastapi.responses import JSONResponse
     return JSONResponse({**preview, "asset_id": str(asset.id), "version": asset.version}, headers={"Cache-Control": "private, no-store"})
 

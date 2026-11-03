@@ -153,9 +153,13 @@ def test_cleanup_and_manual_delete_protect_versions(client, db, admin_headers, m
     assert report["deleted_objects"] == 0 and storage.deleted == []
     assert report["candidate_objects"] == 1 and report["retention_policy"] == "report_only"
     for key in [original, current]:
-        for route in ["/admin/storage/object/delete", "/admin/modules/abort-import-zip"]:
-            response = client.post(route, headers=admin_headers, json={"object_key": key})
-            assert response.status_code == 409, (route, response.text)
+        # Удаление через хранилище отказывает 409 (файл используется версиями),
+        # а «отмена импорта» вообще не принимает ключ, который не является
+        # исходным ZIP (422). В обоих случаях объект остаётся на месте.
+        response = client.post("/admin/storage/object/delete", headers=admin_headers, json={"object_key": key})
+        assert response.status_code == 409, response.text
+        response = client.post("/admin/modules/abort-import-zip", headers=admin_headers, json={"object_key": key})
+        assert response.status_code in (409, 422), response.text
     assert storage.objects[original] and storage.objects[current]
     with pytest.raises(ValueError):
         cleanup_admin_uploads_job(prefix="modules/")

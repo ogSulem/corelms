@@ -292,3 +292,42 @@ def test_workbook_metadata_node_flood_is_rejected():
     with pytest.raises(HTTPException) as error:
         build_preview(data, "styles.xlsx")
     assert error.value.status_code == 413
+
+
+def test_one_viewing_produces_one_learning_event(client, db, make_module, make_user, storage):
+    """Видео забирается десятками Range-запросов, а журнал должен получить одно событие.
+
+    Раньше каждый Range-запрос писал `asset_viewed` и делал `SELECT ... FOR UPDATE`
+    по пользователю: один фильм давал сотню записей в «активности» и столько же
+    блокировок строки пользователя.
+    """
+    module, lesson, _ = make_module()
+    _, headers = make_user()
+    asset = attach(db, module, lesson, storage, name="Видео.mp4", content=b"\x00\x00\x00\x18ftypmp42" + b"0" * 500)
+
+    def events():
+        db.expire_all()
+        return db.scalar(select(func.count()).select_from(LearningEvent).where(LearningEvent.ref_id == asset.id))
+
+    assert events() == 0
+    for start in range(0, 500, 100):
+        part = client.get(f"/assets/{asset.id}/stream", headers={**headers, "Range": f"bytes={start}-{start + 99}"})
+        assert part.status_code == 206, part.text
+    assert events() == 1
+
+    # Скачивание — отдельное событие, но повторное скачивание в том же окне — нет.
+    for _ in range(2):
+        assert client.get(f"/assets/{asset.id}/presign-download?action=download", headers=headers).status_code == 200
+    assert events() == 2
+
+    # Другой файл — отдельное событие.
+    other = ContentAsset(module_id=module.id, bucket="testing", object_key=f"modules/{module.id}/second",
+                         original_filename="Второй.mp4")
+    db.add(other)
+    db.flush()
+    db.add(SubmoduleAssetMap(submodule_id=lesson.id, asset_id=other.id, order=2))
+    db.commit()
+    storage.objects[other.object_key] = b"\x00\x00\x00\x18ftypmp42" + b"1" * 300
+    assert client.get(f"/assets/{other.id}/stream", headers=headers).status_code == 200
+    db.expire_all()
+    assert db.scalar(select(func.count()).select_from(LearningEvent).where(LearningEvent.ref_id == other.id)) == 1

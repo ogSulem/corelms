@@ -494,7 +494,9 @@ export function UsersAdmin() {
             </Button>
           )}
           <div className="flex gap-2">
-            <Button variant="outline" className={btn} disabled={busy} onClick={() => void resetPassword()}><KeyRound size={15} />Сбросить пароль</Button>
+            <Button variant="outline" className={btn} disabled={busy || selected?.id === me?.id}
+              title={selected?.id === me?.id ? "Свой пароль меняется в профиле: «Безопасность» → «Сменить пароль»" : undefined}
+              onClick={() => void resetPassword()}><KeyRound size={15} />Сбросить пароль</Button>
             <Button className={btn} disabled={busy || !canEditSelected} title={canEditSelected ? undefined : "Изменять администраторов может только суперадмин"}
               onClick={() => void saveUser()}>{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}Сохранить</Button>
           </div>

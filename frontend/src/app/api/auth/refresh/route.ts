@@ -26,7 +26,6 @@ export async function POST(req: Request) {
       proxyHeaders: {
         xRealIp: req.headers.get("x-real-ip"),
         xForwardedFor: req.headers.get("x-forwarded-for"),
-        forwarded: req.headers.get("forwarded"),
         userAgent: req.headers.get("user-agent"),
         origin: req.headers.get("origin"),
       },

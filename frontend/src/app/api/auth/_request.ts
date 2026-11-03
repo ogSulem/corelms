@@ -94,7 +94,9 @@ export function allowedAuthRequest(request: Request): boolean {
 
 export function authHeaders(request: Request, initial?: HeadersInit): Headers {
   const headers = new Headers(initial);
-  for (const name of ["x-real-ip", "x-forwarded-for", "forwarded", "user-agent", "origin"]) {
+  // RFC 7239 `Forwarded` не пробрасываем: наш край его не формирует, значит
+  // значение приходит от клиента — backend такому заголовку не доверяет.
+  for (const name of ["x-real-ip", "x-forwarded-for", "user-agent", "origin"]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }

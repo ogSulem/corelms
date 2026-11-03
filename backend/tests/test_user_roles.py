@@ -76,3 +76,19 @@ def test_role_enum_keeps_all_values(db):
     values = {role.value for role in UserRole}
     assert {"employee", "partner", "admin", "superadmin"} <= values
     assert db.scalar(select(User).where(User.role == UserRole.partner)) is None or True
+
+
+def test_profile_role_exposes_superadmin(client, make_user):
+    """Карточка профиля должна показывать «СУПЕРАДМИН», а не «АДМИНИСТРАТОР».
+
+    `/me/profile` схлопывал superadmin в admin, поэтому соответствующая подпись
+    в интерфейсе была недостижимой веткой.
+    """
+    from app.models.user import UserRole
+
+    for role, expected in ((UserRole.superadmin, "superadmin"), (UserRole.admin, "admin"),
+                           (UserRole.employee, "user"), (UserRole.partner, "user")):
+        _, headers = make_user(role)
+        payload = client.get("/me/profile", headers=headers)
+        assert payload.status_code == 200, payload.text
+        assert payload.json()["role"] == expected, (role, payload.json())

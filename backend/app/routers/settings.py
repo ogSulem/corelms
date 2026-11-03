@@ -489,23 +489,16 @@ def read_security_posture(
     пароли не возвращаются. Нужна, чтобы админ мог сам проверить, что за
     прокси и HTTPS вход определяется верно, а не гадать по логам.
     """
-    from app.core.client_ip import client_ip_from_request, _is_trusted_proxy, _parse_trusted_proxies
+    from app.core.client_ip import _is_trusted_proxy, _parse_trusted_proxies, resolve_client_ip
     from app.services.auth_sessions import _limits
 
     platform = get_platform_settings(db)
     peer = str(getattr(getattr(request, "client", None), "host", "") or "") or None
-    ip = client_ip_from_request(request)
+    # Тот же разбор, что применяют лимиты входа и журнал безопасности: иначе
+    # диагностика показывала заголовок, который в реальности игнорируется.
+    ip, source = resolve_client_ip(request)
     forwarded = str(request.headers.get("x-forwarded-for") or "")
     real_ip = str(request.headers.get("x-real-ip") or "")
-    forwarded_header = str(request.headers.get("forwarded") or "")
-    if forwarded.strip():
-        source = "x-forwarded-for"
-    elif real_ip.strip():
-        source = "x-real-ip"
-    elif forwarded_header.strip():
-        source = "forwarded"
-    else:
-        source = "direct"
     proto = str(request.headers.get("x-forwarded-proto") or request.url.scheme or "").split(",")[0].strip()
     host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or "")
     secure_env = _cookie_flag(getattr(settings, "cookie_secure", None))
