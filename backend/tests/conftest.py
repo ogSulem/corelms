@@ -260,7 +260,20 @@ def storage(monkeypatch):
             self.deleted = []
             self.uploaded = []
             self.bodies = []
+            # Каждый вызов помнит бакет: так видно, работает ли админский путь с
+            # бакетом, сохранённым в интерфейсе, а не только со значением из .env.
+            self.buckets = []
+        def head_bucket(self, *, Bucket):
+            self.buckets.append(Bucket)
+            return {"ResponseMetadata": {"HTTPStatusCode": 200}}
+        def get_bucket_cors(self, *, Bucket):
+            self.buckets.append(Bucket)
+            return {"CORSRules": []}
+        def put_bucket_cors(self, *, Bucket, CORSConfiguration):
+            self.buckets.append(Bucket)
+            return {}
         def head_object(self, *, Bucket, Key):
+            self.buckets.append(Bucket)
             if Key not in self.objects:
                 raise ClientError({"Error": {"Code": "NoSuchKey"}, "ResponseMetadata": {"HTTPStatusCode": 404}}, "HeadObject")
             return {"ContentLength": len(self.objects[Key]), "ETag": '"test-etag"'}
@@ -280,18 +293,23 @@ def storage(monkeypatch):
                 result["ContentRange"] = f"bytes {start}-{end}/{len(original)}"
             return result
         def delete_object(self, *, Bucket, Key):
+            self.buckets.append(Bucket)
             self.deleted.append(Key)
             self.objects.pop(Key, None)
         def upload(self, *, s3, object_key, fileobj, **kwargs):
             self.uploaded.append(object_key)
             self.objects[object_key] = fileobj.read()
         def generate_presigned_url(self, operation, Params=None, ExpiresIn=None, **kwargs):
+            if (Params or {}).get("Bucket"):
+                self.buckets.append(Params["Bucket"])
             key = (Params or {}).get("Key", "object")
             return f"https://storage.test/{key}"
         def put_object(self, *, Bucket, Key, Body, **kwargs):
+            self.buckets.append(Bucket)
             self.objects[Key] = Body.read() if hasattr(Body, "read") else bytes(Body)
             self.uploaded.append(Key)
         def list_objects_v2(self, *, Bucket, Prefix, **kwargs):
+            self.buckets.append(Bucket)
             from datetime import datetime, timezone, timedelta
             entries = {}
             delimiter = kwargs.get("Delimiter")

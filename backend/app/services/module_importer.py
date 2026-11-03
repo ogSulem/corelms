@@ -474,7 +474,7 @@ def _s3_put_object_with_retry(*, s3, object_key: str, body: object, content_type
     last: Exception | None = None
     for attempt in range(1, tries + 1):
         try:
-            s3.put_object(Bucket=settings.s3_bucket, Key=object_key, Body=body, ContentType=content_type)
+            s3.put_object(Bucket=effective_bucket(), Key=object_key, Body=body, ContentType=content_type)
             return
         except Exception as e:
             last = e

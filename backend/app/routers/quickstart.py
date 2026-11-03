@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.core.security import get_current_user
-from app.services.storage import get_s3_client
+from app.services.storage import effective_bucket, get_s3_client
 
 router = APIRouter(prefix="/quickstart", tags=["quickstart"])
 
@@ -64,12 +64,12 @@ def stream_quickstart(
     s3 = get_s3_client()
     size_total = None
     try:
-        head = s3.head_object(Bucket=settings.s3_bucket, Key=object_key)
+        head = s3.head_object(Bucket=effective_bucket(), Key=object_key)
         size_total = int(head.get("ContentLength") or 0)
     except Exception:
         size_total = None
 
-    kwargs: dict[str, object] = {"Bucket": settings.s3_bucket, "Key": object_key}
+    kwargs: dict[str, object] = {"Bucket": effective_bucket(), "Key": object_key}
 
     if range_value_l.startswith("bytes=") and size_total is not None:
         invalid = False
