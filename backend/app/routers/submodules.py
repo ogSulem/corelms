@@ -23,6 +23,27 @@ from app.core.config import settings
 router = APIRouter(prefix="/submodules", tags=["submodules"])
 
 
+LESSON_OPEN_WINDOW_SECONDS = 1800
+
+
+def _should_record_open_event(*, user_id: object, submodule_id: object) -> bool:
+    """Склеиваем повторные открытия одного урока окном (30 минут).
+
+    Без Redis пишем событие как раньше: потеря истории хуже дубля.
+    """
+    try:
+        from app.core.redis_client import get_redis
+
+        redis = get_redis()
+        key = f"lesson:open:{user_id}:{submodule_id}"
+        if redis.get(key) is not None:
+            return False
+        redis.set(key, "1", ex=LESSON_OPEN_WINDOW_SECONDS)
+        return True
+    except Exception:
+        return True
+
+
 def _uuid(value: str, *, field: str) -> uuid.UUID:
     try:
         return uuid.UUID(value)
@@ -44,14 +65,18 @@ def open_submodule(
     module = require_submodule_access(db, user, sub, lock=True)
 
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
-    db.add(
-        LearningEvent(
-            user_id=user.id,
-            type=LearningEventType.submodule_opened,
-            ref_id=sub.id,
-            meta=json.dumps({"action": "open"}, ensure_ascii=False),
+    # Одно открытие урока = одна запись в журнале. Интерфейс обращается к уроку
+    # несколько раз (переход, возврат, перезагрузка вкладки), и раньше каждый
+    # такой заход добавлял строку — журнал и «активность» заполнялись копиями.
+    if _should_record_open_event(user_id=user.id, submodule_id=sub.id):
+        db.add(
+            LearningEvent(
+                user_id=user.id,
+                type=LearningEventType.submodule_opened,
+                ref_id=sub.id,
+                meta=json.dumps({"action": "open"}, ensure_ascii=False),
+            )
         )
-    )
     db.commit()
 
     return {"ok": True}

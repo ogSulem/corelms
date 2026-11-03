@@ -549,3 +549,20 @@ test("login cookies are emitted as separate headers with the right attributes", 
   delete process.env.COOKIE_DOMAIN;
   delete process.env.COOKIE_SECURE;
 });
+
+test("прокси обновляет почти истёкший токен до отправки потока", async t => {
+  const { tokenExpiresSoon } = await loadSource("src/app/api/auth/_token.ts");
+  const encode = payload => ["h", Buffer.from(JSON.stringify(payload)).toString("base64url"), "s"].join(".");
+  const now = Date.now();
+  // Истёк и истекает через минуту — обновляем заранее: тело загрузки не повторить.
+  assert.equal(tokenExpiresSoon(encode({ exp: Math.floor(now / 1000) - 10 }), 60, now), true);
+  assert.equal(tokenExpiresSoon(encode({ exp: Math.floor((now + 30_000) / 1000) }), 60, now), true);
+  // Живой токен не трогаем — лишних обновлений и гонок куки быть не должно.
+  assert.equal(tokenExpiresSoon(encode({ exp: Math.floor((now + 600_000) / 1000) }), 60, now), false);
+  // Мусор не должен ломать прокси.
+  assert.equal(tokenExpiresSoon("not-a-jwt", 60, now), false);
+  assert.equal(tokenExpiresSoon("", 60, now), false);
+
+  const route = await readFile(new URL("../src/app/api/backend/[...path]/route.ts", import.meta.url), "utf8");
+  assert.match(route, /tokenExpiresSoon\(token\)[\s\S]{0,120}rotate\(\)/, "прокси обязан обновлять сессию до отправки тела");
+});

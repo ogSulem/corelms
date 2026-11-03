@@ -25,8 +25,9 @@ from sqlalchemy.orm import Session
 
 from app.core.queue import get_job_status, normalize_job_status, release_job_lock
 from app.services import error_log
+from app.services.audit_meta import learning_meta_for_client, sanitize_learning_meta, sanitize_security_meta
 from app.services.content import require_unused_temporary_object
-from app.services.quiz_versions import version_quiz_for_edit, question_id_map
+from app.services.quiz_versions import cleanup_superseded_quiz_versions, version_quiz_for_edit, question_id_map
 from app.services.learning import remember_quiz_version
 from app.core.config import settings
 from app.core.rate_limit import rate_limit
@@ -4574,6 +4575,22 @@ def modules_needs_regen(
     return {"items": items}
 
 
+def _cleanup_quiz_versions(db: Session, quiz_id: uuid.UUID) -> None:
+    """Убрать версии теста, созданные для редактирования, но так и не пройденные.
+
+    Каждая правка вопроса копирует тест целиком (copy-on-write), чтобы история
+    попыток не менялась. Без уборки от авторской работы остаются десятки копий
+    вопросов, на которые никто не ссылается.
+    """
+    try:
+        lesson = db.scalar(select(Submodule).where(Submodule.quiz_id == quiz_id))
+        if lesson is not None and cleanup_superseded_quiz_versions(db, lesson.id):
+            db.commit()
+    except Exception:
+        db.rollback()
+        log.warning("admin: cleanup of superseded quiz versions failed", exc_info=True)
+
+
 @router.post("/quizzes", response_model=QuizCreateResponse)
 def create_quiz(
     request: Request,
@@ -4648,6 +4665,7 @@ def create_question(
         meta={"quiz_id": str(quiz.id), "question_id": str(question.id), "type": getattr(question.type, "value", str(question.type))},
     )
     db.commit()
+    _cleanup_quiz_versions(db, quiz.id)
     modules_bump_rev(reason="question_created")
     return {"id": str(question.id), "quiz_id": str(quiz.id), "id_map": question_id_map(mapping)}
 
@@ -4810,6 +4828,7 @@ def update_question(
         meta={"question_id": str(q.id), "quiz_id": str(q.quiz_id), "before": before, "after": after},
     )
     db.commit()
+    _cleanup_quiz_versions(db, q.quiz_id)
 
     modules_bump_rev(reason="question_updated")
     return {
@@ -4848,6 +4867,7 @@ def delete_question(
               meta={"question_id": str(qid), "old_quiz_id": str(original_quiz_id),
                     "quiz_id": str(quiz.id), "history_preserved": True})
     db.commit()
+    _cleanup_quiz_versions(db, quiz.id)
     modules_bump_rev(reason="question_removed")
     return {"ok": True, "quiz_id": str(quiz.id), "id_map": question_id_map(mapping)}
 
@@ -5624,50 +5644,10 @@ def admin_user_history(
         except Exception:
             return None
 
-    def _sanitize_security_meta(meta: dict | None) -> str | None:
-        if not isinstance(meta, dict) or not meta:
-            return None
-        allowed = {
-            "ip": meta.get("ip"),
-            "ip_fp": meta.get("ip_fp"),
-            "user_agent": meta.get("user_agent"),
-            "new_device": bool(meta.get("new_device")) if "new_device" in meta else None,
-            "new_ip": bool(meta.get("new_ip")) if "new_ip" in meta else None,
-        }
-        clean = {k: v for k, v in allowed.items() if v is not None and str(v).strip() != ""}
-        if not clean:
-            return None
-        return json.dumps(clean, ensure_ascii=False)
-
-    def _sanitize_learning_meta(meta: dict | None) -> str | None:
-        if not isinstance(meta, dict) or not meta:
-            return None
-        deny = {"object_key", "device_hash", "token", "refresh_token", "refresh"}
-        out: dict[str, object] = {}
-        for k, v in meta.items():
-            if k in deny:
-                continue
-            out[str(k)] = v
-
-        allow = {
-            "action",
-            "filename",
-            "mime_type",
-            "quiz_id",
-            "attempt_no",
-            "score",
-            "passed",
-            "correct",
-            "total",
-            "time_spent_seconds",
-            "module_id",
-            "submodule_id",
-        }
-        clean = {k: out.get(k) for k in allow if k in out}
-        clean = {k: v for k, v in clean.items() if v is not None and str(v).strip() != ""}
-        if not clean:
-            return None
-        return json.dumps(clean, ensure_ascii=False)
+    # Один фильтр на все журналы (app/services/audit_meta.py): правила выдачи
+    # меты не должны расходиться между кабинетом ученика и админкой.
+    _sanitize_security_meta = staticmethod(sanitize_security_meta)
+    _sanitize_learning_meta = staticmethod(sanitize_learning_meta)
 
     def _ua_device_label(ua: str) -> str | None:
         s = str(ua or "").strip()
@@ -5819,7 +5799,7 @@ def admin_user_history(
 
     for e in events:
         kind, title, subtitle = _event_display(e)
-        ev_meta = _sanitize_learning_meta(_try_parse_meta(e.meta))
+        ev_meta = learning_meta_for_client(e.meta)
         parsed_meta = _try_parse_meta(e.meta)
 
         module_id = None

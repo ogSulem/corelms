@@ -28,7 +28,7 @@ from app.core.config import settings
 from app.core.queue import fetch_job, get_job_status, get_queue
 from app.db.session import SessionLocal
 from app.models.asset import ContentAsset
-from app.models.media import AssetRendition
+from app.models.media import AssetRendition, AssetThumb
 from app.models.module import Module, Submodule
 from app.models.sales import SalesEntry
 from app.models.submodule_asset import SubmoduleAssetMap
@@ -79,6 +79,48 @@ def stage_rendition(db: Session, asset: ContentAsset, *, retry: bool = False) ->
         row.state, row.job_id, row.run_token, row.error, row.updated_at = "pending", None, None, None, utcnow()
         row.attempt_count = 0
     return row
+
+
+def cleanup_superseded_derivatives(asset_ids: list[uuid.UUID]) -> dict[str, int]:
+    """Убрать производные файлы версий, которые уже никто не откроет.
+
+    Замена файла создаёт новую версию оригинала, но браузерная копия и превью
+    остаются привязаны к объекту в S3. Без уборки каждая замена видео на 1 ГБ
+    оставляла ещё 1 ГБ mp4 и кадр навсегда — хранилище росло молча.
+
+    Правило: оставляем производные текущей версии и ОДНОЙ предыдущей (её берёт
+    восстановление версии, чтобы не перекодировать заново), всё более старое —
+    удаляем. Оригиналы, `AssetRevision` и история обучения не затрагиваются.
+    Вызывать после коммита: удаление строк и объектов — производное действие.
+    """
+    if not asset_ids:
+        return {"rows": 0, "objects": 0}
+    keys: list[tuple[str, str]] = []
+    rows = 0
+    with SessionLocal() as db:
+        for asset in db.scalars(select(ContentAsset).where(ContentAsset.id.in_(asset_ids))):
+            for model, bucket_attr, key_attr in ((AssetRendition, "bucket", "object_key"),
+                                                 (AssetThumb, "bucket", "object_key")):
+                versions = sorted({int(v) for v in db.scalars(
+                    select(model.source_version).where(model.asset_id == asset.id, model.source_version < asset.version))})
+                keep = versions[-1:]  # самая свежая из предыдущих
+                stale = [row for row in db.scalars(select(model).where(
+                    model.asset_id == asset.id, model.source_version < asset.version)) if row.source_version not in keep]
+                for row in stale:
+                    bucket, key = getattr(row, bucket_attr), getattr(row, key_attr)
+                    if bucket and key:
+                        keys.append((bucket, key))
+                    db.delete(row)
+                    rows += 1
+        db.commit()
+    if keys:
+        s3 = get_s3_client()
+        for bucket, key in keys:
+            try:
+                s3.delete_object(Bucket=bucket, Key=key)
+            except Exception:
+                log.warning("derivative cleanup: object delete failed %s", key, exc_info=True)
+    return {"rows": rows, "objects": len(keys)}
 
 
 def asset_is_active(db: Session, asset: ContentAsset) -> bool:

@@ -19,6 +19,11 @@ from app.models.module import Module, Submodule
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User
+from app.services.audit_meta import (
+    learning_meta_for_client,
+    sanitize_learning_meta,
+    sanitize_security_meta,
+)
 from app.schemas.me import (
     MyActivityFeedResponse,
     MyAssignmentsResponse,
@@ -437,7 +442,7 @@ def my_recent_activity(db: Session = Depends(get_db), user: User = Depends(get_c
                 "type": e.type.value,
                 "ref_id": str(e.ref_id) if e.ref_id else None,
                 "created_at": e.created_at.isoformat(),
-                "meta": e.meta,
+                "meta": learning_meta_for_client(e.meta),
                 "title": _event_title(e)[0],
                 "subtitle": _event_title(e)[1],
                 "module_id": (
@@ -593,53 +598,6 @@ def my_history(
             return obj if isinstance(obj, dict) else None
         except Exception:
             return None
-
-    def _sanitize_security_meta(meta: dict | None) -> str | None:
-        if not isinstance(meta, dict) or not meta:
-            return None
-        allowed = {
-            "ip": meta.get("ip"),
-            "ip_fp": meta.get("ip_fp"),
-            "user_agent": meta.get("user_agent"),
-            "new_device": bool(meta.get("new_device")) if "new_device" in meta else None,
-            "new_ip": bool(meta.get("new_ip")) if "new_ip" in meta else None,
-        }
-        clean = {k: v for k, v in allowed.items() if v is not None and str(v).strip() != ""}
-        if not clean:
-            return None
-        return json.dumps(clean, ensure_ascii=False)
-
-    def _sanitize_learning_meta(meta: dict | None) -> str | None:
-        if not isinstance(meta, dict) or not meta:
-            return None
-        # Never leak internal storage keys or fingerprints in the user-facing history.
-        deny = {"object_key", "device_hash", "token", "refresh_token", "refresh"}
-        out: dict[str, object] = {}
-        for k, v in meta.items():
-            if k in deny:
-                continue
-            out[str(k)] = v
-
-        # Keep only product-level fields.
-        allow = {
-            "action",
-            "filename",
-            "mime_type",
-            "quiz_id",
-            "attempt_no",
-            "score",
-            "passed",
-            "correct",
-            "total",
-            "time_spent_seconds",
-            "module_id",
-            "submodule_id",
-        }
-        clean = {k: out.get(k) for k in allow if k in out}
-        clean = {k: v for k, v in clean.items() if v is not None and str(v).strip() != ""}
-        if not clean:
-            return None
-        return json.dumps(clean, ensure_ascii=False)
 
     def _ua_device_label(ua: str) -> str | None:
         s = str(ua or "").strip()
@@ -801,7 +759,7 @@ def my_history(
                 "href": None,
                 "event_type": se.event_type,
                 "ref_id": None,
-                "meta": _sanitize_security_meta(sec_meta),
+                "meta": sanitize_security_meta(sec_meta),
                 "ip": str(se.ip) if se.ip else None,
                 "request_id": str(se.request_id) if se.request_id else None,
                 "module_id": None,
@@ -815,7 +773,7 @@ def my_history(
 
     for e in events:
         kind, title, subtitle, _code = _event_display(e)
-        ev_meta = _sanitize_learning_meta(_try_parse_meta(e.meta))
+        ev_meta = learning_meta_for_client(e.meta)
         parsed_meta = _try_parse_meta(e.meta)
 
         module_id = None

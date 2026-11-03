@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { asciiOrigin } from "../../auth/_request";
 import { accessTokens, refreshTokens } from "../../auth/_jar";
 import { setAccessCookie, setRefreshCookie } from "../../auth/_cookies";
+import { tokenExpiresSoon } from "../../auth/_token";
 import { sharedRefresh } from "../../auth/_refresh_shared";
 
 
@@ -126,6 +127,14 @@ async function proxy(req: Request, ctx: { params: Promise<{ path?: string[] }> }
     // Тело запроса — поток: повторять запрос с ним нельзя (оно уже прочитано).
     // Поэтому для POST/PUT/PATCH/DELETE обновляем сессию ДО отправки, а не после.
     const replayable = req.method === "GET" || req.method === "HEAD";
+
+    // Большая загрузка (ZIP, видео) не повторяется: тело — поток, второй раз его
+    // не отправить. Поэтому, если токен истекает вот-вот, обновляем сессию ДО
+    // отправки. Иначе пользователь загружал гигабайт, получал 401 и начинал
+    // заново уже с новым токеном.
+    if (token && tokenExpiresSoon(token) && (await rotate())) {
+      /* token обновлён внутри rotate(); тело запроса ещё не отправлено */
+    }
 
     if (!token) {
       // Куки доступа нет совсем (браузер её не сохранил): без обновления запрос

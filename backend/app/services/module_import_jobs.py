@@ -810,6 +810,17 @@ def _run_import_module_zip_job(
             committed = True
             log.info("import_module_zip_job: commit done module_id=%s", str(mid))
 
+            # Переимпорт заменяет файлы: производные копии прежних версий
+            # (браузерные mp4/pdf и превью) иначе копились бы в S3 навсегда.
+            try:
+                from app.services.media import cleanup_superseded_derivatives
+                from app.models.asset import ContentAsset
+                from sqlalchemy import select as _select
+                asset_ids = list(db.scalars(_select(ContentAsset.id).where(ContentAsset.module_id == mid)))
+                cleanup_superseded_derivatives(asset_ids)
+            except Exception:
+                log.warning("import: derivative cleanup failed", exc_info=True)
+
             # Event-driven refresh: storage + DB changed, invalidate caches and bump rev.
             try:
                 modules_invalidate_storage_cache(module_storage_prefix=str(getattr(m, "storage_prefix", "") or "") or None)
