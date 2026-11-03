@@ -74,3 +74,20 @@ test("страница не задаёт фиксированную ширину
   }
   assert.deepEqual(problems, [], `w-screen даёт горизонтальный скролл из-за полосы прокрутки:\n${problems.join("\n")}`);
 });
+
+test("разделы админ-центра переносятся, а не уезжают за экран телефона", async () => {
+  const source = await readFile(new URL("../src/components/admin/admin-nav.tsx", import.meta.url), "utf8");
+  assert.match(source, /flex flex-wrap/, "четыре раздела должны переноситься на новую строку");
+  assert.doesNotMatch(source, /flex-nowrap/, "на 320 px перенос обязателен");
+  for (const href of ["/admin/modules", "/admin/users", "/admin/analytics", "/admin/settings"]) {
+    assert.ok(source.includes(href), `раздел ${href} пропал из навигации`);
+  }
+});
+
+test("ссылка «обновить существующий модуль» ведёт прямо на вкладку импорта", async () => {
+  const editor = await readFile(new URL("../src/components/admin/module-editor.tsx", import.meta.url), "utf8");
+  assert.match(editor, /requestedTab === "import"/, "редактор должен открываться на ?tab=import");
+  const admin = await readFile(new URL("../src/components/admin/import-admin.tsx", import.meta.url), "utf8");
+  assert.match(admin, /\?tab=import/, "после конфликта названий нужна ссылка на обновление модуля");
+  assert.match(admin, /module_already_exists/, "конфликт названий обрабатывается отдельно от прочих ошибок");
+});

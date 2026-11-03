@@ -1631,11 +1631,6 @@ async def import_module_zip(
 
     try:
         r = get_redis()
-        try:
-            r.sadd("admin:import_used_object_keys", object_key)
-            r.expire("admin:import_used_object_keys", 60 * 60 * 24 * 30)
-        except Exception:
-            log.debug("admin import zip: failed to record used object key", exc_info=True)
         meta = {
             "job_id": job.id,
             "object_key": object_key,
@@ -2524,7 +2519,14 @@ def enqueue_import_zip(
             db.scalar(select(func.count()).select_from(Module).where(func.lower(Module.title) == func.lower(title))) or 0
         )
         if int(exists) > 0:
-            raise HTTPException(status_code=409, detail="module title already exists")
+            # Тот же код, что и ниже для имени файла: интерфейс по нему предлагает
+            # не создавать копию, а обновить существующий модуль (прогресс цел).
+            existing = db.scalar(select(Module).where(func.lower(Module.title) == func.lower(title)))
+            raise HTTPException(status_code=409, detail={
+                "error_code": "module_already_exists",
+                "error_message": f"Модуль «{title}» уже есть на платформе. Обновите его из ZIP — прогресс учеников сохранится.",
+                "module_id": str(existing.id) if existing is not None else None,
+            })
 
     # If title is not provided, we still must prevent duplicates.
     try:
@@ -2662,11 +2664,9 @@ def enqueue_import_zip(
 
     try:
         r = get_redis()
-        try:
-            r.sadd("admin:import_used_object_keys", object_key)
-            r.expire("admin:import_used_object_keys", 60 * 60 * 24 * 30)
-        except Exception:
-            pass
+        # Раньше здесь в Redis писался набор «использованных» ZIP
+        # (admin:import_used_object_keys), который никто не читал: список
+        # доступных архивов строится по базе и очереди. Набор только рос.
         r.set(lock_key, str(job.id))
         r.expire(lock_key, 60 * 60 * 6)
         if title_lock_key:

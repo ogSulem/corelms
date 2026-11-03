@@ -71,6 +71,8 @@ export function ImportAdmin() {
   const [jobsLoading, setJobsLoading] = useState(true);
   const [workers, setWorkers] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Модуль с таким названием уже есть: вместо копии предлагаем обновить его.
+  const [existing, setExisting] = useState<{ moduleId: string | null } | null>(null);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -166,6 +168,17 @@ export function ImportAdmin() {
     patch(file.name, { stage: "done", detail: "Разбор идёт в фоне", jobId: enqueued.job_id });
   }
 
+  /** Существующий модуль по названию — чтобы дать прямую ссылку на обновление. */
+  async function findModuleId(title: string): Promise<string | null> {
+    try {
+      const result = await apiFetch<{ items: { id: string; title: string }[] }>("/admin/content/modules");
+      const wanted = title.trim().toLocaleLowerCase("ru");
+      return result.items.find(item => item.title.trim().toLocaleLowerCase("ru") === wanted)?.id || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function start(files: File[]) {
     const archives = files.filter((file) => file.name.toLowerCase().endsWith(".zip"));
     if (!archives.length) {
@@ -174,12 +187,20 @@ export function ImportAdmin() {
     }
     setBusy(true);
     setError(null);
+    setExisting(null);
     for (const file of archives) {
       try {
         await uploadOne(file);
       } catch (e) {
         patch(file.name, { stage: "failed", detail: e instanceof Error ? e.message : "Не удалось загрузить" });
         setError(e instanceof Error ? e.message : "Не удалось загрузить архив");
+        // Модуль уже существует: импорт копией создал бы дубль и потерял бы
+        // прогресс. Ведём в редактор существующего модуля на «Обновить из ZIP».
+        if ((e as { errorCode?: string }).errorCode === "module_already_exists") {
+          const title = file.name.replace(/\.zip$/i, "").trim();
+          const moduleId = (e as { moduleId?: string }).moduleId;
+          setExisting({ moduleId: moduleId || await findModuleId(title) });
+        }
       }
     }
     setBusy(false);
@@ -211,7 +232,15 @@ export function ImportAdmin() {
         </Link>
       </div>
 
-      {error && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</p>}
+      {error && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+        <p>{error}</p>
+        {existing && <p className="mt-2 border-t border-rose-200 pt-2 text-xs leading-relaxed text-rose-800">
+          Обновление существующего модуля сохраняет пройденное обучение, тесты и историю версий — новую копию создавать не нужно.{" "}
+          <Link href={existing.moduleId ? `/admin/modules/${existing.moduleId}?tab=import` : "/admin/modules"} className="font-medium underline">
+            {existing.moduleId ? "Открыть модуль и обновить из ZIP" : "Открыть список модулей"}
+          </Link>
+        </p>}
+      </div>}
 
       <label className="block cursor-pointer rounded-2xl border-2 border-dashed border-zinc-300 bg-white p-8 text-center transition hover:border-amber-400 hover:bg-amber-50/30">
         <UploadCloud size={30} className="mx-auto mb-3 text-amber-600" />

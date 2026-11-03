@@ -20,7 +20,7 @@ from botocore.exceptions import ClientError
 from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ResponseStreamingError
 from rq import get_current_job
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.queue import get_job_status, normalize_job_status, release_job_lock
 from app.core.config import settings
@@ -805,6 +805,19 @@ def _run_import_module_zip_job(
 
             _set_job_stage(stage="commit")
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="commit")
+            # Список файлов читаем ДО коммита: после него любой запрос открыл бы
+            # новую транзакцию, которая простоит до конца задачи (idle in
+            # transaction на Postgres держит снимок и мешает autovacuum).
+            # Берём и файлы, привязанные к урокам модуля: у перенесённых из
+            # другого раздела module_id может быть пустым.
+            from app.models.asset import ContentAsset
+            from app.models.module import Submodule
+            from app.models.submodule_asset import SubmoduleAssetMap
+            linked_ids = select(SubmoduleAssetMap.asset_id).join(
+                Submodule, Submodule.id == SubmoduleAssetMap.submodule_id).where(Submodule.module_id == mid)
+            asset_ids = list(db.scalars(select(ContentAsset.id).where(or_(
+                ContentAsset.module_id == mid, ContentAsset.id.in_(linked_ids)))))
+
             commit_attempted = True
             db.commit()
             committed = True
@@ -814,9 +827,6 @@ def _run_import_module_zip_job(
             # (браузерные mp4/pdf и превью) иначе копились бы в S3 навсегда.
             try:
                 from app.services.media import cleanup_superseded_derivatives
-                from app.models.asset import ContentAsset
-                from sqlalchemy import select as _select
-                asset_ids = list(db.scalars(_select(ContentAsset.id).where(ContentAsset.module_id == mid)))
                 cleanup_superseded_derivatives(asset_ids)
             except Exception:
                 log.warning("import: derivative cleanup failed", exc_info=True)
