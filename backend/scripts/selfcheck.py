@@ -314,7 +314,14 @@ def infrastructure_report() -> tuple[list[str], list[str]]:
         r = get_redis()
         r.ping()
         lines.append("  Redis                     отвечает")
-        for queue in (settings.rq_queue_import, settings.rq_queue_regen, settings.rq_queue_media):
+        # Все очереди, а не только импорт/тесты/медиа: черновики и уборка тоже
+        # могут стоять, и по одному «default» этого не видно.
+        queue_names = []
+        for key in ("default", "import", "regen", "cleanup", "media"):
+            name = str(getattr(settings, f"rq_queue_{key}", "") or "").strip()
+            if name and name not in queue_names:
+                queue_names.append(name)
+        for queue in queue_names:
             try:
                 lines.append(f"  очередь {queue:<16} {int(r.llen(queue))} задач")
             except Exception:
@@ -325,16 +332,34 @@ def infrastructure_report() -> tuple[list[str], list[str]]:
             lines.append(f"  воркеров RQ               {len(Worker.all(connection=r))}")
         except Exception as exc:
             lines.append(f"  воркеров RQ               ошибка: {type(exc).__name__}")
+        # noeviction: при заполнении Redis перестаёт принимать записи, и тогда
+        # ломаются вход в систему и постановка задач. Предупреждаем заранее.
+        try:
+            memory = r.info("memory")
+            used = int(memory.get("used_memory") or 0)
+            limit = int(memory.get("maxmemory") or 0)
+            if limit:
+                percent = used * 100 / limit
+                lines.append(f"  память Redis              {used / 1024 ** 2:.0f} из {limit / 1024 ** 2:.0f} МБ ({percent:.0f}%)")
+                if percent >= 90:
+                    problems.append("Redis заполнен почти полностью: вход и очереди перестанут работать (noeviction)")
+            else:
+                lines.append(f"  память Redis              {used / 1024 ** 2:.0f} МБ, лимит не задан")
+        except Exception:
+            pass
     except Exception as exc:
         lines.append(f"  Redis                     НЕ отвечает: {type(exc).__name__}")
         problems.append("Redis недоступен: вход, очереди и rate limit работать не будут")
 
+    from app.services.storage import effective_bucket
+
+    bucket = effective_bucket()
     try:
-        get_s3_client().head_bucket(Bucket=settings.s3_bucket)
+        get_s3_client().head_bucket(Bucket=bucket)
         lines.append("  S3 bucket                 доступен")
     except Exception as exc:
         lines.append(f"  S3 bucket                 НЕ доступен: {type(exc).__name__}")
-        problems.append(f"S3 bucket {settings.s3_bucket} недоступен: файлы и предпросмотр не откроются")
+        problems.append(f"S3 bucket {bucket} недоступен: файлы и предпросмотр не откроются")
 
     return lines, problems
 
