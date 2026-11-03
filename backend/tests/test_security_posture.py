@@ -168,3 +168,24 @@ def test_diagnostics_show_the_ip_actually_used_for_limits(client, admin_headers,
     request = Request({"type": "http", "headers": [(b"x-real-ip", b"198.51.100.5")],
                        "client": ("10.1.2.3", 443), "scheme": "https"})
     assert client_ip_module.resolve_client_ip(request) == ("198.51.100.5", "x-real-ip")
+
+
+def test_cron_endpoint_is_closed_without_a_configured_secret(client, monkeypatch):
+    """Служебная ручка чистки не должна быть доступна «просто так»."""
+    monkeypatch.setattr(settings, "cron_secret", None)
+    assert client.post("/health/cron/admin-uploads-cleanup").status_code == 404
+    assert client.post("/health/cron/run-all").status_code == 404
+
+
+def test_cron_endpoint_rejects_a_wrong_secret(client, monkeypatch, redis_memory):
+    monkeypatch.setattr(settings, "cron_secret", "s3cret")
+    assert client.post("/health/cron/admin-uploads-cleanup", headers={"x-cron-secret": "wrong"}).status_code == 403
+    assert client.post("/health/cron/admin-uploads-cleanup").status_code == 403
+    # Верный секрет проходит саму проверку доступа (сама ручка дальше требует
+    # очередь, поэтому проверяем гвард напрямую, без HTTP и без Redis).
+    from starlette.requests import Request
+    from app.routers.health import _require_cron_secret
+
+    _require_cron_secret(Request({"type": "http", "headers": [(b"x-cron-secret", b"s3cret")]}))
+    with pytest.raises(Exception):
+        _require_cron_secret(Request({"type": "http", "headers": [(b"x-cron-secret", b"nope")]}))
