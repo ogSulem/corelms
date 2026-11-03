@@ -295,6 +295,17 @@ def _inspect_upload(file: UploadFile, *, max_bytes: int) -> tuple[str, int, str]
         raise HTTPException(422, "Файл пустой")
     if size > max_bytes:
         raise HTTPException(413, f"Файл превышает лимит {max_bytes // (1024 * 1024)} МБ")
+    # Один запрос уже лёг на диск целиком (Starlette пишет во временный файл),
+    # поэтому до обработки проверяем, что место ещё есть: иначе следующий шаг
+    # (копия в S3 или распаковка) добьёт диск сервера.
+    try:
+        from app.services.chunked_uploads import require_free_space
+
+        require_free_space(size)
+    except HTTPException:
+        raise
+    except Exception:
+        pass
     file.file.seek(0)
     checksum = hashlib.file_digest(file.file, "sha256").hexdigest()
     file.file.seek(0)
@@ -757,7 +768,9 @@ def reimport_module(
     _: object = rate_limit(key_prefix="content_reimport", limit=10, window_seconds=60),
 ):
     from app.services.module_import_jobs import import_module_zip_job
-    name, size, _ = _inspect_upload(file, max_bytes=1024 * 1024 * 1024)
+    from app.services.import_limits import archive_max_bytes
+
+    name, size, _ = _inspect_upload(file, max_bytes=archive_max_bytes())
     if pathlib.PurePath(name).suffix.lower() != ".zip":
         raise HTTPException(422, "Выберите ZIP-архив")
     import zipfile

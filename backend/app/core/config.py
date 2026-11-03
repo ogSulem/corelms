@@ -195,6 +195,9 @@ class Settings(BaseSettings):
     import_zip_max_files: int = Field(default=20000, validation_alias="IMPORT_ZIP_MAX_FILES")
     import_zip_max_entry_bytes: int = Field(default=3_000_000_000, validation_alias="IMPORT_ZIP_MAX_ENTRY_BYTES")
     import_zip_max_compression_ratio: int = Field(default=250, validation_alias="IMPORT_ZIP_MAX_COMPRESSION_RATIO")
+    # Предел самого ZIP-архива (сжатого). Отдельно от лимита материалов: архив
+    # распаковывается воркером на диск, поэтому у него свой потолок.
+    import_zip_max_archive_bytes: int = Field(default=1024 ** 3, validation_alias="IMPORT_ZIP_MAX_ARCHIVE_BYTES")
 
     openrouter_enabled: bool = Field(default=False, validation_alias="OPENROUTER_ENABLED")
     openrouter_base_url: str = Field(default="https://openrouter.ai/api/v1", validation_alias="OPENROUTER_BASE_URL")

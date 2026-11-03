@@ -246,6 +246,18 @@ def _cancel_checkpoint(*, s3_object_key: str, stage: str) -> None:
     raise ImportCanceledError("import canceled")
 
 
+def _content_range_total(response: object) -> int:
+    """Полный размер объекта из `ContentRange` вида `bytes 0-0/12345`."""
+    try:
+        raw = str((response or {}).get("ContentRange") or "") if isinstance(response, dict) else ""
+        if "/" not in raw:
+            return 0
+        tail = raw.rsplit("/", 1)[1].strip()
+        return int(tail) if tail.isdigit() else 0
+    except Exception:
+        return 0
+
+
 def _set_job_error(*, error: Exception, error_code: str | None = None, error_hint: str | None = None) -> None:
     try:
         job = get_current_job()
@@ -259,10 +271,15 @@ def _set_job_error(*, error: Exception, error_code: str | None = None, error_hin
         cls = type(error).__name__
         msg = str(error or "")
 
-        code = str(error_code or "").strip() or "IMPORT_FAILED"
+        # Уже записанный точный код не затираем общим IMPORT_FAILED: обёртка
+        # задачи видит то же исключение второй раз и раньше портила классификацию
+        # (например, IMPORT_SOURCE_ZIP_TOO_LARGE превращался в IMPORT_FAILED).
+        explicit_code = str(error_code or "").strip()
+        previous_code = str(meta.get("error_code") or "").strip()
+        code = explicit_code or (previous_code if previous_code and previous_code != "IMPORT_FAILED" else "IMPORT_FAILED")
         hint = str(error_hint or "").strip()
 
-        if not error_code:
+        if not explicit_code and code == "IMPORT_FAILED":
             try:
                 eno = getattr(error, "errno", None)
             except Exception:
@@ -588,11 +605,13 @@ def _run_import_module_zip_job(
         _cancel_checkpoint(s3_object_key=s3_object_key, stage="download")
         log.info("import_module_zip_job: downloading from s3 key=%s -> %s", s3_object_key, str(zip_path))
 
+        total_size = 0
         try:
             # Some S3 providers (including certain gateways) may return 404 for HEAD even when
             # the object exists and is readable via GET. Use a 1-byte ranged GET as existence check.
             # This keeps imports reliable across providers.
             pre = s3.get_object(Bucket=effective_bucket(), Key=s3_object_key, Range="bytes=0-0")
+            total_size = _content_range_total(pre)
             try:
                 body = pre.get("Body")
                 if body is not None:
@@ -620,7 +639,31 @@ def _run_import_module_zip_job(
                 raise err
             raise
 
+        # Размер объекта известен из ответа на ranged GET (`bytes 0-0/12345`).
+        # Отказ до скачивания: иначе гигабайты едут на диск воркера зря.
+        from app.services.import_limits import archive_max_bytes, too_large_message
+
+        limit = archive_max_bytes()
+        if total_size and total_size > limit:
+            err = ValueError(f"zip archive too large: {total_size} > {limit}")
+            _set_job_stage(stage="failed", detail=str(err))
+            _set_job_error(error=err, error_code="IMPORT_SOURCE_ZIP_TOO_LARGE",
+                           error_hint=too_large_message(total_size))
+            raise err
+
         _download_zip_with_retry(object_key=s3_object_key, dest_path=zip_path)
+
+        # Провайдеры без ContentRange: проверяем фактический файл после загрузки.
+        try:
+            downloaded = int(zip_path.stat().st_size)
+        except OSError:
+            downloaded = 0
+        if downloaded > limit:
+            err = ValueError(f"zip archive too large: {downloaded} > {limit}")
+            _set_job_stage(stage="failed", detail=str(err))
+            _set_job_error(error=err, error_code="IMPORT_SOURCE_ZIP_TOO_LARGE",
+                           error_hint=too_large_message(downloaded))
+            raise err
 
         _cancel_checkpoint(s3_object_key=s3_object_key, stage="download")
 

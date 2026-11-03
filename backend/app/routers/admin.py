@@ -642,6 +642,7 @@ def system_status(
                 "max_uncompressed_bytes": int(getattr(settings, "import_zip_max_uncompressed_bytes", 0) or 0),
                 "max_entry_bytes": int(getattr(settings, "import_zip_max_entry_bytes", 0) or 0),
                 "max_compression_ratio": int(getattr(settings, "import_zip_max_compression_ratio", 0) or 0),
+                "max_archive_bytes": int(getattr(settings, "import_zip_max_archive_bytes", 0) or 0),
             },
             "s3": {
                 # Effective values (settings saved in the UI win over .env).
@@ -2252,6 +2253,12 @@ def presign_import_zip(
     fn = _normalize_import_text(str(body.filename or "")).strip()
     if not fn.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="only .zip is supported")
+    from app.services.import_limits import archive_max_bytes, too_large_message
+
+    # Браузер сообщает размер до загрузки: отказываем сразу, а не после того,
+    # как гигабайты уедут в S3 и воркер их скачает.
+    if body.size_bytes and int(body.size_bytes) > archive_max_bytes():
+        raise HTTPException(status_code=413, detail=too_large_message(int(body.size_bytes)))
 
     # Metadata (filename, size, mtime) is not a content hash. Always allocate a
     # fresh source key; actual ZIP-byte deduplication happens inside the worker.
@@ -2331,6 +2338,10 @@ def multipart_import_create(
     fn = _normalize_import_text(str(body.filename or "")).strip()
     if not fn.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="only .zip is supported")
+    from app.services.import_limits import archive_max_bytes, too_large_message
+
+    if body.size_bytes and int(body.size_bytes) > archive_max_bytes():
+        raise HTTPException(status_code=413, detail=too_large_message(int(body.size_bytes)))
 
     # A fresh create request is a fresh upload, even for identical names/mtime.
     # Explicit resume uses the returned object_key/upload_id with list-parts
