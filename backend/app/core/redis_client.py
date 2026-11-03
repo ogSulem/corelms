@@ -6,7 +6,10 @@ import redis
 
 from app.core.config import settings
 
-_TIMEOUTS = {"socket_connect_timeout": 3, "socket_timeout": 3}
+# health_check_interval: долгоживущий процесс держит соединение открытым, а
+# простой Docker-сети/NAT иногда рвёт его молча. Дешёвый PING раз в 30 секунд
+# открывает новое соединение заранее, а не в момент запроса пользователя.
+_TIMEOUTS = {"socket_connect_timeout": 3, "socket_timeout": 3, "health_check_interval": 30}
 
 
 @lru_cache(maxsize=1)

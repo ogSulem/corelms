@@ -685,6 +685,16 @@ def system_status(
         r = get_redis()
         r.ping()
         out["redis"] = {"ok": True}
+        # Политика noeviction: при заполнении памяти Redis перестаёт принимать
+        # записи, а вместе с ними ломаются вход и очереди. Показываем запас.
+        try:
+            info = r.info("memory")
+            used = int(info.get("used_memory") or 0)
+            limit = int(info.get("maxmemory") or 0)
+            out["redis"].update({"used_memory_bytes": used, "maxmemory_bytes": limit,
+                                 "used_memory_percent": round(used * 100 / limit, 1) if limit else None})
+        except Exception:
+            pass
     except Exception:
         out["redis"] = {"ok": False}
 
@@ -697,23 +707,34 @@ def system_status(
         from app.core.redis_client import get_redis_rq
 
         conn = get_redis_rq()
-        q = Queue(name=str(settings.rq_queue_default), connection=conn)
         workers = Worker.all(connection=conn)
-        started = StartedJobRegistry(queue=q, connection=conn)
-        failed = FailedJobRegistry(queue=q, connection=conn)
-        deferred = DeferredJobRegistry(queue=q, connection=conn)
-        scheduled = ScheduledJobRegistry(queue=q, connection=conn)
-        out["rq"] = {
-            "ok": True,
-            "workers": int(len(workers)),
-            "queued": int(q.count),
-            "started": int(getattr(started, "count", 0) or 0),
-            "failed": int(getattr(failed, "count", 0) or 0),
-            "deferred": int(getattr(deferred, "count", 0) or 0),
-            "scheduled": int(getattr(scheduled, "count", 0) or 0),
-        }
+        # Считаем по всем очередям, а не только по default: импорт ZIP, черновики
+        # тестов, уборка и медиа — отдельные очереди, и «0 в очереди» по одной
+        # из них раньше скрывало зависшую работу.
+        totals = {"queued": 0, "started": 0, "failed": 0, "deferred": 0, "scheduled": 0}
+        per_queue: dict[str, dict[str, int]] = {}
+        for key in ("default", "import", "regen", "cleanup", "media"):
+            name = str(getattr(settings, f"rq_queue_{key}", "") or "").strip()
+            if not name:
+                continue
+            try:
+                q = Queue(name=name, connection=conn)
+                row = {
+                    "queued": int(q.count),
+                    "started": int(getattr(StartedJobRegistry(queue=q, connection=conn), "count", 0) or 0),
+                    "failed": int(getattr(FailedJobRegistry(queue=q, connection=conn), "count", 0) or 0),
+                    "deferred": int(getattr(DeferredJobRegistry(queue=q, connection=conn), "count", 0) or 0),
+                    "scheduled": int(getattr(ScheduledJobRegistry(queue=q, connection=conn), "count", 0) or 0),
+                }
+            except Exception:
+                continue
+            per_queue[name] = row
+            for metric, value in row.items():
+                totals[metric] += value
+        out["rq"] = {"ok": True, "workers": int(len(workers)), **totals, "queues": per_queue}
     except Exception:
-        out["rq"] = {"ok": False, "workers": 0, "queued": 0, "started": 0, "failed": 0, "deferred": 0, "scheduled": 0}
+        out["rq"] = {"ok": False, "workers": 0, "queued": 0, "started": 0, "failed": 0,
+                     "deferred": 0, "scheduled": 0, "queues": {}}
 
     # S3: the same values the uploads use (database overrides first), never secrets.
     storage = get_storage_settings(db)

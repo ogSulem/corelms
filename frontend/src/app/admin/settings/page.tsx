@@ -121,7 +121,31 @@ type Overview = {
   s3_endpoint: string;
   media_dispatcher_enabled: boolean;
   schema: { current: string | null; expected: string; up_to_date: boolean };
-  queue: { media: string; regen: string; workers: number | null; regen_pending: number | null };
+  queue: {
+    media: string;
+    regen: string;
+    workers: number | null;
+    regen_pending: number | null;
+    pending?: Record<string, number> | null;
+  };
+  redis_memory?: { used_bytes: number | null; limit_bytes: number | null; used_percent: number | null } | null;
+};
+
+const queueSummary = (overview?: Overview | null) => {
+  if (!overview) return "—";
+  if (overview.queue?.workers === null || overview.queue?.workers === undefined) return "нет связи с Redis";
+  const pending = overview.queue.pending || {};
+  const labels: [string, string][] = [["import", "импорт"], ["regen", "тесты"], ["cleanup", "уборка"], ["media", "медиа"]];
+  const busy = labels.filter(([key]) => (pending[key] ?? 0) > 0).map(([key, label]) => `${label} ${pending[key]}`);
+  return `${overview.queue.workers} · ${busy.length ? busy.join(", ") : "очереди пусты"}`;
+};
+
+const redisMemorySummary = (overview?: Overview | null) => {
+  const memory = overview?.redis_memory;
+  if (!memory?.used_bytes || !memory?.limit_bytes) return "нет данных";
+  const mb = (value: number) => `${Math.round(value / (1024 * 1024))} МБ`;
+  const percent = memory.used_percent == null ? "" : ` · ${memory.used_percent}%`;
+  return `${mb(memory.used_bytes)} из ${mb(memory.limit_bytes)}${percent}`;
 };
 
 const field = "w-full rounded-xl border border-zinc-200 bg-white px-3 py-2.5 text-sm text-zinc-900 outline-none transition placeholder:text-zinc-400 focus:border-amber-400 focus:ring-2 focus:ring-amber-100";
@@ -1062,7 +1086,8 @@ export default function AdminSettingsPage() {
                   ["Хранилище S3", overview ? `${overview.s3_bucket || "—"}${overview.s3_endpoint ? ` · ${overview.s3_endpoint}` : ""}` : "—"],
                   ["Схема БД", overview ? `${overview.schema.current || "не определена"} / ожидается ${overview.schema.expected}` : "—"],
                   ["Браузерные копии файлов", overview?.media_dispatcher_enabled ? "включены" : "выключены"],
-                  ["Фоновые воркеры", overview?.queue?.workers === null || overview?.queue?.workers === undefined ? "нет связи с Redis" : `${overview.queue.workers} · в очереди тестов ${overview.queue.regen_pending ?? 0}`],
+                  ["Фоновые воркеры", queueSummary(overview)],
+                  ["Память Redis", redisMemorySummary(overview)],
                 ].map(([label, value]) => (
                   <div key={String(label)} className="rounded-xl border border-zinc-200 px-4 py-3">
                     <dt className="text-xs uppercase tracking-wide text-zinc-500">{label}</dt>
