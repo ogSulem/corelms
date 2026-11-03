@@ -137,13 +137,11 @@ async def modules_events(request: Request, user: User = Depends(get_current_user
                 now_ms = int(datetime.utcnow().timestamp() * 1000)
                 timeout_s = max(0.25, (15000 - (now_ms - last_ping_ms)) / 1000.0) if last_ping_ms else 2.0
 
-                msg = None
                 try:
-                    msg = await asyncio.wait_for(q.get(), timeout=timeout_s)
-                except asyncio.TimeoutError:
-                    msg = None
+                    await asyncio.wait_for(q.get(), timeout=timeout_s)
                 except Exception:
-                    msg = None
+                    # Таймаут или пустое сообщение — просто перечитываем ревизию.
+                    pass
 
                 # Authoritative: always read current rev from Redis.
                 try:

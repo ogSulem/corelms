@@ -668,9 +668,10 @@ def system_status(
                     "model": ai.model,
                     "sources": ai.sources,
                     "timeout_connect": float(getattr(settings, "openrouter_timeout_connect", 0.0) or 0.0),
-                    "timeout_read": float(getattr(settings, "openrouter_timeout_read", 0.0) or 0.0),
+                    # Эффективные значения (важнее .env — то, что сохранено в админке).
+                    "timeout_read": float(ai.request_timeout),
                     "timeout_write": float(getattr(settings, "openrouter_timeout_write", 0.0) or 0.0),
-                    "temperature": float(getattr(settings, "openrouter_temperature", 0.0) or 0.0),
+                    "temperature": float(ai.temperature),
                 },
             },
         }
@@ -957,8 +958,13 @@ def maintenance_modules_storage_scan(
 
     mods = db.scalars(select(Module).order_by(Module.title).limit(take)).all()
 
+    # Листинг S3 — сетевой вызов на каждый модуль. Ограничиваем общее время,
+    # чтобы диагностика не висела минутами: лучше честный partial, чем таймаут.
+    deadline = time.monotonic() + 8.0
     out_items: list[dict[str, object]] = []
     for m in mods:
+        if time.monotonic() > deadline:
+            break
         mid = str(m.id)
         pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{mid}/"
         if pfx and (not pfx.endswith("/")):
@@ -1062,6 +1068,9 @@ def maintenance_modules_storage_scan(
         "items": out_items,
         "limit": int(take),
         "sample_keys": int(sk),
+        "scanned": len(out_items),
+        "candidates": len(mods),
+        "partial": len(out_items) < len(mods),
     }
 
 
@@ -6048,6 +6057,7 @@ def delete_user(
         rid_s = str(rid or "").strip()
         msg = " ".join(str(e or "").split())[:300]
         suffix = f" rid={rid_s}" if rid_s else ""
+        log.warning("admin delete user failed: %s%s", msg, suffix)
         raise HTTPException(status_code=500, detail=f"failed to delete user ({type(e).__name__}){suffix}") from e
 
     return {"ok": True, "archived": False, "deleted": True}

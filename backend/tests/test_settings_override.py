@@ -192,3 +192,16 @@ def test_generation_path_uses_the_ui_temperature(client, admin_headers, monkeypa
     assert calls, "генерация должна дойти до провайдера"
     assert calls[0]["temperature"] == 0.7
     assert calls[0]["timeout"] is None or calls[0]["timeout"] <= 200
+
+
+def test_private_responses_are_not_cacheable(client, admin_headers, make_user):
+    """Личные данные не должны оседать в кэше браузера или прокси."""
+    _user, headers = make_user()
+
+    for path in ("/me/profile", "/me/progress-summary", "/modules"):
+        response = client.get(path, headers=headers)
+        assert response.status_code < 400, (path, response.status_code)
+        assert response.headers.get("cache-control") == "private, no-store", (path, response.headers.get("cache-control"))
+
+    admin = client.get("/admin/settings/ai", headers=admin_headers)
+    assert admin.headers.get("cache-control") == "private, no-store"

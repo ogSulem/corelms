@@ -802,8 +802,6 @@ def _run_import_module_zip_job(
         db = SessionLocal()
         try:
             report: dict[str, object] = {}
-            if reimport_existing:
-                enqueue_regen = False
             _set_job_stage(stage="import")
             _cancel_checkpoint(s3_object_key=s3_object_key, stage="import")
             log.info("import_module_zip_job: importing to DB")
@@ -824,13 +822,6 @@ def _run_import_module_zip_job(
                 raise RuntimeError("Imported module is missing before commit")
             m.import_object_key = s3_object_key
             db.flush()
-
-            module_title_for_meta = ""
-            try:
-                if m is not None:
-                    module_title_for_meta = str(getattr(m, "title", "") or "").strip()
-            except Exception:
-                module_title_for_meta = ""
 
             try:
                 job = get_current_job()
@@ -912,7 +903,7 @@ def _run_import_module_zip_job(
             _set_job_stage(stage="done", detail=str(mid))
             _release_enqueue_locks()
             return {"ok": True, "module_id": str(mid), "report": report, "regen_job_id": regen_job_id}
-        except ImportCanceledError as e:
+        except ImportCanceledError:
             if committed:
                 _set_job_stage(stage="done", detail="Материалы сохранены до запроса отмены; последующие действия остановлены.")
                 return {"ok": True, "module_id": str(mid), "report": report, "regen_job_id": None,

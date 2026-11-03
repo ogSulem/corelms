@@ -16,8 +16,3 @@ export function throttleRefresh(run: () => void, intervalMs = 60_000, now: () =>
     run();
   };
 }
-
-/** Явное действие пользователя («Обновить») всегда работает без ограничений. */
-export function alwaysAllowed(run: () => void): () => void {
-  return () => run();
-}

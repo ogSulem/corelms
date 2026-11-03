@@ -342,12 +342,6 @@ test("возврат на вкладку не перезагружает спи�
   clock += 55_000;
   throttled();
   assert.equal(runs, 2, "через минуту список снова актуален");
-  // Явная кнопка «Обновить» не должна зависеть от ограничителя.
-  const { alwaysAllowed } = await loadSource("src/lib/refresh-throttle.ts");
-  let manual = 0;
-  const refreshNow = alwaysAllowed(() => { manual++; });
-  refreshNow(); refreshNow();
-  assert.equal(manual, 2);
 });
 
 test("куки входа: кириллический COOKIE_DOMAIN и чужой хост не ломают вход", async () => {

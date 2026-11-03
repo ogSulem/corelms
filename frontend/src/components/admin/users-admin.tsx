@@ -9,7 +9,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { apiFetch } from "@/lib/api";
-import { isAdminRole, isEmployeeRole, matchesRoleTab, type AdminRole, type RoleTab } from "@/lib/admin-users-filter";
+import { countByTab, isEmployeeRole, matchesRoleTab, type AdminRole, type RoleTab } from "@/lib/admin-users-filter";
 import { throttleRefresh } from "@/lib/refresh-throttle";
 import { useAuth } from "@/lib/hooks/use-auth";
 
@@ -153,13 +153,10 @@ export function UsersAdmin() {
   // Архивные учётные записи в счётчиках не участвуют: это не действующие люди,
   // а сохранённая история. Их число показываем отдельно.
   const archivedCount = useMemo(() => items.filter((u) => u.is_archived).length, [items]);
+  // Считаем теми же правилами, что и фильтр, иначе «Партнёры — 12, список пуст».
   const counters = useMemo(() => {
-    const active = items.filter((u) => !u.is_archived);
-    return {
-      all: active.length,
-      partners: active.filter((u) => isEmployeeRole(u.role)).length,
-      admins: active.filter((u) => isAdminRole(u.role)).length,
-    };
+    const roles = items.filter((u) => !u.is_archived).map((u) => u.role);
+    return { all: countByTab(roles, "all"), partners: countByTab(roles, "partner"), admins: countByTab(roles, "admins") };
   }, [items]);
 
   // «Сотрудники» и «Партнёры» были одним и тем же списком — оставляем одну вкладку.

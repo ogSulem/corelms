@@ -79,7 +79,7 @@ def test_cleanup_keeps_versions_with_attempts_and_answers(client, db, make_modul
 
     current = _version(db, lesson, questions)
     dead = _version(db, lesson, list(db.scalars(select(Question).where(Question.quiz_id == current))))
-    alive = _version(db, lesson, list(db.scalars(select(Question).where(Question.quiz_id == dead))))
+    _version(db, lesson, list(db.scalars(select(Question).where(Question.quiz_id == dead))))
     db.commit()
     lesson_id = lesson.id
 
