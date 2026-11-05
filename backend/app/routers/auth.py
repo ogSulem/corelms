@@ -27,6 +27,7 @@ from app.db.session import get_db
 from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User, UserRole
 from app.models.password_reset import PasswordResetToken
+from app.services import password_reset
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -140,8 +141,6 @@ def _verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def _reset_token_hash(token: str) -> str:
-    return hashlib.sha256(str(token or "").encode("utf-8", errors="ignore")).hexdigest()
 
 
 class ResetPasswordConfirmRequest(BaseModel):
@@ -167,7 +166,7 @@ def reset_password_confirm(
     if body.confirm_password is not None and str(body.confirm_password) != str(body.new_password):
         raise HTTPException(status_code=400, detail="passwords do not match")
 
-    h = _reset_token_hash(token_raw)
+    h = password_reset.hash_token(token_raw)
     now = datetime.now(timezone.utc)
 
     prt = db.scalar(select(PasswordResetToken).where(PasswordResetToken.token_hash == h).with_for_update())

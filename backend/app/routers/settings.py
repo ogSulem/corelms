@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/settings", tags=["admin-settings"])
 
 _SCHEMA_REVISION: str | None = None
-_SCHEMA_REVISION_FALLBACK = "0028"
+_SCHEMA_REVISION_FALLBACK = "0029"
 
 
 def expected_schema_revision() -> str:
@@ -389,6 +389,8 @@ class PlatformSettingsSave(BaseModel):
     session_idle_hours: int | None = None
     session_absolute_days: int | None = None
     session_refresh_days: int | None = None
+    # Предел ZIP-архива модуля: None = «не менять» (старые клиенты его не шлют).
+    zip_max_archive_bytes: int | None = None
 
 
 def _storage_payload(db: Session) -> dict:
@@ -651,7 +653,8 @@ def write_platform_settings(
                                allow_public_register=body.allow_public_register,
                                session_idle_hours=body.session_idle_hours,
                                session_absolute_days=body.session_absolute_days,
-                               session_refresh_days=body.session_refresh_days)
+                               session_refresh_days=body.session_refresh_days,
+                               zip_max_archive_bytes=body.zip_max_archive_bytes)
     except SettingsValidationError as exc:
         db.rollback()
         raise HTTPException(422, str(exc))
@@ -664,7 +667,8 @@ def write_platform_settings(
                     "allow_public_register": config.allow_public_register,
                     "session_idle_hours": config.session_idle_hours,
                     "session_absolute_days": config.session_absolute_days,
-                    "session_refresh_days": config.session_refresh_days})
+                    "session_refresh_days": config.session_refresh_days,
+                    "zip_max_archive_bytes": config.zip_max_archive_bytes})
     db.commit()
     return _ok({"settings": platform_settings_payload(config), "restart_required": False})
 

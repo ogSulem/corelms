@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import logging
-import os
 import pathlib
 import random
 import re
@@ -22,13 +20,11 @@ from botocore.exceptions import ResponseStreamingError
 from rq import get_current_job
 from sqlalchemy import or_, select
 
-from app.core.queue import get_job_status, normalize_job_status, release_job_lock
+from app.core.queue import get_job_status, release_job_lock
 from app.core.config import settings
-from app.core.queue import fetch_job, get_queue
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal
 from app.models.module import Module, Submodule
-from app.models.quiz import Quiz
 from app.services.module_importer import import_module_from_dir
 from app.services.modules import modules_bump_rev, modules_invalidate_storage_cache
 from app.services.storage import effective_bucket, ensure_bucket_exists, get_s3_client
@@ -643,6 +639,7 @@ def _run_import_module_zip_job(
         # Отказ до скачивания: иначе гигабайты едут на диск воркера зря.
         from app.services.import_limits import archive_max_bytes, too_large_message
 
+        # Сессия БД здесь ещё не открыта: настройка читается коротким запросом.
         limit = archive_max_bytes()
         if total_size and total_size > limit:
             err = ValueError(f"zip archive too large: {total_size} > {limit}")

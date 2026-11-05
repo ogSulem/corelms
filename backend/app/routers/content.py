@@ -770,7 +770,7 @@ def reimport_module(
     from app.services.module_import_jobs import import_module_zip_job
     from app.services.import_limits import archive_max_bytes
 
-    name, size, _ = _inspect_upload(file, max_bytes=archive_max_bytes())
+    name, size, _ = _inspect_upload(file, max_bytes=archive_max_bytes(db))
     if pathlib.PurePath(name).suffix.lower() != ".zip":
         raise HTTPException(422, "Выберите ZIP-архив")
     import zipfile

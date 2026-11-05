@@ -49,7 +49,7 @@ def test_legacy_upgrade_backfills_completion_and_asset_ownership(monkeypatch):
         assert connection.execute(text("SELECT content_revision FROM modules WHERE id=:mid"), values).scalar_one() == 5
         # 0028 добавляет учебную ревизию и выравнивает её с текущей.
         assert connection.execute(text("SELECT learning_revision FROM modules WHERE id=:mid"), values).scalar_one() == 5
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0028"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0029"
         assert connection.execute(text("SELECT content_mode, content_version FROM submodules WHERE id=:sid"), values).one() == ("manual", 1)
         assert connection.execute(text("SELECT count(*) FROM lesson_revisions")).scalar_one() == 0
         assert connection.execute(text("SELECT presentation_mode, primary_asset_id FROM submodules WHERE id=:sid"), values).one() == ("auto", None)

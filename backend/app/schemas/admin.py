@@ -4,7 +4,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from app.models.user import UserRole
 
 
 class ModuleCreateRequest(BaseModel):
@@ -150,6 +149,13 @@ class UserResetPasswordRequest(BaseModel):
 class UserResetPasswordResponse(BaseModel):
     ok: bool = True
     temp_password: str | None = None
+
+
+class UserResetLinkResponse(BaseModel):
+    ok: bool = True
+    url: str
+    expires_at: str
+    ttl_hours: int
 
 
 class UserUpdateRequest(BaseModel):

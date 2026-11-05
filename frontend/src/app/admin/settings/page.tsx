@@ -65,6 +65,7 @@ type PlatformSettings = {
   session_idle_hours: number;
   session_absolute_days: number;
   session_refresh_days: number;
+  zip_max_archive_bytes: number;
   sources: Record<string, string>;
   stored: boolean;
   updated_at: string | null;
@@ -74,6 +75,7 @@ type PlatformSettings = {
     session_idle_hours: number;
     session_absolute_days: number;
     session_refresh_days: number;
+    zip_max_archive_bytes: number;
   };
   limits: {
     min_upload_bytes: number;
@@ -82,6 +84,8 @@ type PlatformSettings = {
     max_session_idle_hours: number;
     min_session_days: number;
     max_session_days: number;
+    min_zip_bytes: number;
+    max_zip_bytes: number;
   };
 };
 
@@ -187,7 +191,7 @@ export default function AdminSettingsPage() {
   const [testingStorage, setTestingStorage] = useState(false);
   const [storageTest, setStorageTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [platform, setPlatform] = useState<PlatformSettings | null>(null);
-  const [platformDraft, setPlatformDraft] = useState({ upload_mb: 512, allow_public_register: false, session_idle_hours: 12, session_absolute_days: 30, session_refresh_days: 30 });
+  const [platformDraft, setPlatformDraft] = useState({ upload_mb: 512, zip_mb: 1024, allow_public_register: false, session_idle_hours: 12, session_absolute_days: 30, session_refresh_days: 30 });
   const [savingPlatform, setSavingPlatform] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadingData, setLoadingData] = useState(true);
@@ -230,12 +234,14 @@ export default function AdminSettingsPage() {
   const platformValid = Number.isFinite(platformDraft.upload_mb) && platformDraft.upload_mb >= 1 && platformDraft.upload_mb <= 20480
     && platformDraft.session_idle_hours >= 1 && platformDraft.session_idle_hours <= 168
     && platformDraft.session_absolute_days >= 1 && platformDraft.session_absolute_days <= 365
-    && platformDraft.session_refresh_days >= 1 && platformDraft.session_refresh_days <= 365;
+    && platformDraft.session_refresh_days >= 1 && platformDraft.session_refresh_days <= 365
+    && Number.isFinite(platformDraft.zip_mb) && platformDraft.zip_mb >= 100 && platformDraft.zip_mb <= 20480;
 
   const applyPlatform = useCallback((data: PlatformSettings) => {
     setPlatform(data);
     setPlatformDraft({
       upload_mb: Math.max(1, Math.round(data.upload_max_bytes / (1024 * 1024))),
+      zip_mb: Math.max(100, Math.round(data.zip_max_archive_bytes / (1024 * 1024))),
       allow_public_register: data.allow_public_register,
       session_idle_hours: data.session_idle_hours,
       session_absolute_days: data.session_absolute_days,
@@ -578,10 +584,11 @@ export default function AdminSettingsPage() {
           session_idle_hours: platformDraft.session_idle_hours,
           session_absolute_days: platformDraft.session_absolute_days,
           session_refresh_days: platformDraft.session_refresh_days,
+          zip_max_archive_bytes: Math.round(Number(platformDraft.zip_mb) * 1024 * 1024),
         }),
       });
       applyPlatform(data.settings);
-      toast("Настройки платформы сохранены", "Действуют сразу: загрузки, регистрация и сроки сессий");
+      toast("Настройки платформы сохранены", "Действуют сразу: загрузки, ZIP-импорт, регистрация и сроки сессий");
       setOverview(await apiFetch<Overview>("/admin/settings/overview"));
     } catch (saveError) {
       setError(errorText(saveError, "Не удалось сохранить настройки платформы"));
@@ -990,6 +997,21 @@ export default function AdminSettingsPage() {
                   />
                   <span className="block text-xs font-normal leading-5 text-zinc-500">
                     От 1 МБ до 20 ГБ. Действует для материалов, видео и файлов продаж. В <code className="rounded bg-zinc-100 px-1 py-0.5">.env</code>: {platform ? Math.round(platform.env.upload_max_bytes / (1024 * 1024)) : "—"} МБ.
+                  </span>
+                </label>
+                <label className="block space-y-2 text-sm font-medium">
+                  Предел ZIP-архива модуля, МБ
+                  <input
+                    type="number"
+                    min={100}
+                    max={20480}
+                    className={field}
+                    value={platformDraft.zip_mb}
+                    onChange={(event) => setPlatformDraft((prev) => ({ ...prev, zip_mb: Number(event.target.value) }))}
+                  />
+                  <span className="block text-xs font-normal leading-5 text-zinc-500">
+                    От 100 МБ до 20 ГБ. Один предел для прямой загрузки, докачки по частям, повторного импорта и распаковки. В{" "}
+                    <code className="rounded bg-zinc-100 px-1 py-0.5">.env</code>: {platform ? Math.round(platform.env.zip_max_archive_bytes / (1024 * 1024)) : "—"} МБ.
                   </span>
                 </label>
                 <label className="flex items-start gap-2 rounded-xl border border-zinc-200 px-3 py-2.5 text-sm">
