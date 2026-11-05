@@ -117,7 +117,9 @@ docker compose up --build
 Открыть:
 
 - UI: `http://127.0.0.1:8080/`
-- API: `http://127.0.0.1:8080/api/*`
+- API через интерфейс-прокси: `http://127.0.0.1:8080/api/*` (`/api/auth/*`, `/api/backend/*`)
+- Здоровье API: `http://127.0.0.1:8080/api/health/ready`
+- Прямая загрузка больших файлов: `http://127.0.0.1:8080/api/upload/*` (nginx → API, мимо Next.js)
 
 ### Отладочный профиль (прямой доступ к портам)
 
@@ -201,6 +203,9 @@ docker compose --profile tls up -d --build
 
 ## Обновление и миграции
 
+Пошаговая инструкция для работающего сервера (копия, обновление, проверка, откат) — **`docs/production-update.md`**.
+Ниже — то же самое в сокращении и с деталями по `.env` и миграциям.
+
 ### Что с вашим `.env` при обновлении
 
 **Менять `.env` не нужно.** Новых обязательных переменных эта версия не добавляет: настройки AI, Google Sheets, S3, лимит загрузки и открытая регистрация теперь хранятся в таблице `app_settings` и задаются в интерфейсе. Переменные `OPENROUTER_*`, `SALES_LINKS_*`, `S3_*`, `CONTENT_UPLOAD_MAX_BYTES`, `IMPORT_ZIP_MAX_ARCHIVE_BYTES`, `ALLOW_PUBLIC_REGISTER` остаются как значения по умолчанию, к которым возвращает кнопка «Сбросить к серверу».
@@ -231,7 +236,7 @@ git fetch origin && git checkout -f -B main origin/main
 #    Нет доступа к Docker Hub? Соберите офлайн: bash deploy/update.sh
 docker compose build backend frontend worker worker_media
 
-# 4) Миграции отдельным шагом (0026 только добавляет таблицу, старый код с ней работает)
+# 4) Миграции отдельным шагом (они аддитивные: старый код с новой схемой продолжает работать)
 docker compose run --rm --no-deps --entrypoint alembic backend current
 docker compose run --rm --no-deps --entrypoint alembic backend upgrade head
 
@@ -249,14 +254,16 @@ docker compose ps
 
 Если хочется совсем без обрыва: сделайте шаги 1–4 днём, а на шаге 5 перезапустите сервисы ночью или в обед — окно недоступности меньше десяти секунд, и его видит только тот, кто в этот момент отправляет форму.
 
-Актуальная версия схемы: **`0026`**. Миграция `0024` добавляет таблицу `app_settings` для настроек, которые администратор меняет в интерфейсе: токен AI, доступ к Google Sheets, подключение к S3 и лимиты платформы. Секреты в ней шифруются (`enc:v1:`), в JSON-поле открытого текста нет. Точный head всегда виден в интерфейсе — приложение берёт его из Alembic, а не из константы.
+Актуальная версия схемы в этом документе не зашита: она меняется с каждой миграцией. Точный head
+печатает `docker compose exec -T backend alembic heads` и показывает **Админ-центр → Настройки →
+«Сервер и схема данных»**. Миграция `0024` добавила таблицу `app_settings` для настроек, которые администратор меняет в интерфейсе: токен AI, доступ к Google Sheets, подключение к S3 и лимиты платформы. Секреты в ней шифруются (`enc:v1:`), в JSON-поле открытого текста нет. Точный head всегда виден в интерфейсе — приложение берёт его из Alembic, а не из константы.
 
 Применяйте миграции **явным отдельным шагом**, а не «на глаз» при первом `up`:
 
 ```bash
 # 0) Сначала резервная копия (обязательно)
 mkdir -p backups
-docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > backups/pre-0026.dump
+docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > backups/pre-update.dump
 
 # 1) Какая версия сейчас и какая ожидается
 docker compose run --rm --no-deps --entrypoint alembic backend current
@@ -278,7 +285,7 @@ docker compose up -d backend worker worker_media frontend
 
 ```bash
 docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "select version_num from alembic_version;"'
-# ожидается 0026
+# ожидается то же, что покажет: docker compose exec -T backend alembic heads
 curl -fsS http://127.0.0.1:8080/api/health/ready
 ```
 
@@ -286,12 +293,12 @@ curl -fsS http://127.0.0.1:8080/api/health/ready
 
 ```bash
 docker compose exec backend alembic upgrade head
-docker compose exec backend alembic current   # ожидается 0026 (head)
+docker compose exec backend alembic current   # должно совпасть с alembic heads
 ```
 
 (У `docker compose run ... --entrypoint alembic` тот же результат для остановленного стека.)
 
-Затем откройте **Админ-центр → Настройки**: блок «Сервер и схема данных» показывает текущую версию схемы и ожидаемый head. Если версии совпадают (например, `0026 / ожидается 0026`), миграция применена. Ожидаемый head вычисляется из каталога миграций, поэтому после следующего обновления сравнивать вручную не нужно.
+Затем откройте **Админ-центр → Настройки**: блок «Сервер и схема данных» показывает текущую версию схемы и ожидаемый head. Если обе версии совпадают (`текущая / ожидается`), миграция применена. Ожидаемый head вычисляется из каталога миграций, поэтому после следующего обновления сравнивать вручную не нужно.
 
 Альтернатива: `AUTO_MIGRATE_ON_START=true` заставляет API применить `upgrade head` при старте (с advisory-lock). Для controlled-обновления это менее прозрачно: сначала всё равно сделайте backup и обновите API/воркеры согласованно. В `docker-compose.yml` у воркеров этот флаг принудительно `false`.
 

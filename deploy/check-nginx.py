@@ -85,6 +85,15 @@ def check(text: str) -> list[str]:
         if "$http_x_real_ip" in raw or "$http_x_forwarded" in raw:
             problems.append(f"{name}: значение берётся из клиентского заголовка ({raw})")
 
+    # Проверка обновления из документации: `curl .../api/health/ready`. Если маршрута
+    # нет, запрос уходит в Next.js и возвращает 404 — «деплой сломался» на ровном месте.
+    for exact in ("/api/health", "/api/health/live", "/api/health/ready", "/api/health/version"):
+        if not re.search(rf"location\s+=\s*{re.escape(exact)}\s*{{", text):
+            problems.append(f"нет точного маршрута `location = {exact}` — проверка после обновления вернёт 404")
+    # Только точные совпадения: префикс выставил бы наружу /health/cron/*.
+    if re.search(r"location\s+\^?~?\s*/api/health/\s*{", text):
+        problems.append("`location /api/health/` префиксом выставляет наружу cron-эндпоинты backend")
+
     return problems
 
 

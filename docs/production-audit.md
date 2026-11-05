@@ -28,8 +28,8 @@ cd /opt/corelms
 docker compose ps
 grep -E '^(CADDY_DOMAIN|PUBLIC_APP_URL|CORS_ALLOW_ORIGINS|COOKIE_SECURE|COOKIE_DOMAIN|NEXT_PUBLIC_API_BASE_URL|CORE_INTERNAL_API_BASE_URL|AUTO_MIGRATE_ON_START|APP_ENV)=' .env
 ss -lntp | grep -E ':80|:443'
-curl -sSI https://edu.xn--80aaamzedb7cml.xn--p1ai/health/ready | head -5
-curl -sSI http://edu.xn--80aaamzedb7cml.xn--p1ai/health/ready | head -3
+curl -sSI https://edu.xn--80aaamzedb7cml.xn--p1ai/api/health/ready | head -5
+curl -sSI http://edu.xn--80aaamzedb7cml.xn--p1ai/api/health/ready | head -3
 ```
 
 Нормы:
@@ -43,8 +43,8 @@ curl -sSI http://edu.xn--80aaamzedb7cml.xn--p1ai/health/ready | head -3
 | `COOKIE_SECURE`                     | пусто (авто: Secure только на HTTPS) или `true` (сайт по https)    |
 | `COOKIE_DOMAIN`                     | пусто (рекомендуется) либо домен в любой форме записи              |
 | `AUTO_MIGRATE_ON_START`             | `false` (миграции применяются отдельной командой, см. п. 4)        |
-| `curl -I https://…/health/ready`    | `HTTP/2 200`                                                      |
-| `curl -I http://…/health/ready`     | `308` на https (если работает Caddy) или `200` (если сайт на nginx)|
+| `curl -I https://…/api/health/ready`    | `HTTP/2 200`                                                      |
+| `curl -I http://…/api/health/ready`     | `308` на https (если работает Caddy) или `200` (если сайт на nginx)|
 
 Домены можно писать кириллицей: браузер всегда отправляет `Origin` и `Host` в
 ASCII-форме (`https://edu.xn--80aaamzedb7cml.xn--p1ai`), поэтому backend и
@@ -238,7 +238,7 @@ docker compose up -d --no-deps backend worker worker_media frontend
 docker compose ps
 docker compose exec -T backend alembic upgrade head
 docker compose exec -T backend python scripts/selfcheck.py
-curl -sS https://<домен>/health/ready ; echo
+curl -sS https://<домен>/api/health/ready ; echo
 ```
 
 Порядок важен: миграции запускаются уже на новом образе, поэтому `alembic upgrade head`
@@ -265,7 +265,7 @@ Redis хранит сессии и очереди — при пересозда�
 Версия кода, которая реально работает, теперь видна снаружи:
 
 ```bash
-curl -sS https://edu.каркастайги.рф/health/version
+curl -sS https://edu.каркастайги.рф/api/health/version
 ```
 
 Если ответа нет или в нём `"version": "dev"` — деплой не применён (на сервере
