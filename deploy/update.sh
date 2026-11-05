@@ -19,7 +19,9 @@
 #   1) собирает образы (офлайн, с тегами отката);
 #   2) применяет миграции базы новым образом, пока старые контейнеры ещё работают;
 #   3) поднимает контейнеры приложений без --build (сеть не нужна);
-#   4) ждёт готовности API, запускает самопроверку и печатает команды отката.
+#   4) ждёт готовности API, перечитывает конфигурацию входа (nginx, в режиме tls — Caddy)
+#      и запускает самопроверку;
+#   5) печатает команды отката.
 
 set -euo pipefail
 
@@ -147,6 +149,20 @@ if docker compose ps --status running --services 2>/dev/null | grep -qx "nginx";
   fi
 else
   echo "  контейнер nginx не запущен — перечитывать нечего"
+fi
+
+# Caddy включается только профилем tls и держит 80/443. Его конфиг тоже
+# монтируется с диска и сам не перечитывается. Валидацию делает сам Caddy:
+# битый Caddyfile не должен уронить HTTPS-вход, поэтому сначала проверка.
+if docker compose ps --status running --services 2>/dev/null | grep -qx "caddy"; then
+  say "Конфигурация Caddy"
+  if docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+    docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 \
+      && echo "  конфигурация перечитана"
+  else
+    echo "!! caddy validate нашёл ошибку в Caddyfile — прежняя конфигурация продолжает работать"
+    docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile || true
+  fi
 fi
 
 say "Самопроверка"
