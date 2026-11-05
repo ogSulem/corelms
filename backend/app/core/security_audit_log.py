@@ -5,7 +5,6 @@ import json
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.client_ip import client_ip_from_request
 from app.models.security_audit import SecurityAuditEvent
 

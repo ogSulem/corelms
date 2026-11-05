@@ -23,7 +23,7 @@ from app.models.asset import AssetRevision, ContentAsset
 from app.models.attempt import QuizAttempt
 from app.models.audit import LearningEvent
 from app.models.completion import LessonQuizVersion
-from app.models.media import AssetRendition
+from app.models.media import AssetRendition, AssetThumb
 from app.models.sales import SalesEntry
 from app.models.module import Module, Submodule
 from app.models.lesson_revision import LessonRevision
@@ -36,7 +36,7 @@ from app.services.authoring import format_prompt, generate_quiz_draft_job, quest
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.tag import ModuleTagMap, Tag
 from app.services.media import stage_rendition
-from app.services.thumbs import delete_thumbs, enqueue_thumb, thumb_keys
+from app.services.thumbs import enqueue_thumb
 from app.models.user import User, UserRole
 from app.schemas.content import (ArchiveAssets, AssetEdit, DeleteAssets, DeleteLesson, LessonDraft, LessonEdit, ModuleDraft, ModuleEdit,
     MoveAssets, ReorderRequest, UploadStart, VersionRestore)
@@ -664,17 +664,23 @@ def delete_assets(module_id: uuid.UUID, body: DeleteAssets, request: Request, db
     sales_linked = list(db.scalars(select(SalesEntry.asset_id).where(SalesEntry.asset_id.in_(ids))))
     if sales_linked:
         raise HTTPException(409, "Файл используется в библиотеке продаж. Сначала уберите его оттуда.")
-    keys: list[tuple[str, str]] = []
+    # Ключи в хранилище собираем пакетно: раньше на каждый файл уходило три
+    # запроса за версиями, рендишенами и превью, и пачка из сотни файлов давала
+    # сотни запросов под одной транзакцией.
+    keys: list[tuple[str, str]] = [(asset.bucket, asset.object_key) for asset in assets]
+    for table in (AssetRevision, AssetRendition):
+        for bucket, object_key in db.execute(
+            select(table.bucket, table.object_key).where(table.asset_id.in_(ids), table.object_key.is_not(None))
+        ):
+            keys.append((bucket, object_key))
+    for bucket, object_key in db.execute(
+        select(AssetThumb.bucket, AssetThumb.object_key).where(AssetThumb.asset_id.in_(ids))
+    ):
+        if bucket and object_key:
+            keys.append((bucket, object_key))
+    db.execute(delete(AssetThumb).where(AssetThumb.asset_id.in_(ids)))
+    db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.asset_id.in_(ids)))
     for asset in assets:
-        keys.append((asset.bucket, asset.object_key))
-        for revision in db.scalars(select(AssetRevision).where(AssetRevision.asset_id == asset.id)):
-            keys.append((revision.bucket, revision.object_key))
-        for rendition in db.scalars(select(AssetRendition).where(AssetRendition.asset_id == asset.id)):
-            if rendition.object_key:
-                keys.append((rendition.bucket, rendition.object_key))
-        keys.extend(thumb_keys(db, asset.id))
-        delete_thumbs(db, asset.id)
-        db.execute(delete(SubmoduleAssetMap).where(SubmoduleAssetMap.asset_id == asset.id))
         db.delete(asset)
     state = _finish(db, request, user, module, "content_assets_deleted", asset_ids=[str(aid) for aid in ids])
     # Хранилище чистим после коммита: сбой S3 не должен отменять уже удалённые строки.
@@ -770,7 +776,7 @@ def reimport_module(
     from app.services.module_import_jobs import import_module_zip_job
     from app.services.import_limits import archive_max_bytes
 
-    name, size, _ = _inspect_upload(file, max_bytes=archive_max_bytes())
+    name, size, _ = _inspect_upload(file, max_bytes=archive_max_bytes(db))
     if pathlib.PurePath(name).suffix.lower() != ".zip":
         raise HTTPException(422, "Выберите ZIP-архив")
     import zipfile

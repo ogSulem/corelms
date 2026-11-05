@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import uuid
-from typing import List, Dict, Any, Optional
-from sqlalchemy import select, func
+from typing import List, Dict, Any
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 import json
 import re
 
 from app.core.redis_client import get_redis
 from app.models.module import Module, Submodule
-from app.models.tag import ModuleTagMap, UserTagMap
 from app.models.attempt import QuizAttempt
 from app.models.audit import LearningEvent, LearningEventType
 from app.models.user import User
-from app.models.user import UserRole
 
 from app.services.learning import LearningService
 from app.services.storage import s3_invalidate_common_prefixes, s3_invalidate_prefix_has_objects

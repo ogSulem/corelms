@@ -8,7 +8,6 @@ import threading
 import os
 import socket
 from datetime import datetime, timedelta, timezone
-import hashlib
 import secrets
 import string
 import time
@@ -28,6 +27,7 @@ from app.services import error_log
 from app.services.audit_meta import learning_meta_for_client, sanitize_learning_meta, sanitize_security_meta
 from app.services.content import require_unused_temporary_object
 from app.services.quiz_versions import cleanup_superseded_quiz_versions, version_quiz_for_edit, question_id_map
+from app.services import password_reset
 from app.services.learning import remember_quiz_version
 from app.core.config import settings
 from app.core.rate_limit import rate_limit
@@ -77,6 +77,7 @@ from app.schemas.admin import (
     UserCreateRequest,
     UserCreateResponse,
     UserForcePasswordChangeResponse,
+    UserResetLinkResponse,
     UserResetPasswordRequest,
     UserResetPasswordResponse,
     UserUpdateRequest,
@@ -447,16 +448,6 @@ def set_tag_users(
     return {"ok": True}
 
 
-def _reset_token_hash(token: str) -> str:
-    return hashlib.sha256(str(token or "").encode("utf-8", errors="ignore")).hexdigest()
-
-
-def _build_reset_link(token: str) -> str:
-    base = str(getattr(settings, "public_app_url", "") or "").strip().rstrip("/")
-    path = f"/reset-password?token={token}"
-    return (base + path) if base else path
-
-
 def _normalize_abcd_answer(raw: str) -> tuple[str, set[str]]:
     s = str(raw or "")
     letters = {ch.upper() for ch in re.findall(r"[A-Da-d]", s)}
@@ -702,7 +693,6 @@ def system_status(
         out["redis"] = {"ok": False}
 
     try:
-        import redis as _redis
         from rq import Queue
         from rq.worker import Worker
         from rq.registry import DeferredJobRegistry, FailedJobRegistry, ScheduledJobRegistry, StartedJobRegistry
@@ -2266,8 +2256,9 @@ def presign_import_zip(
 
     # Браузер сообщает размер до загрузки: отказываем сразу, а не после того,
     # как гигабайты уедут в S3 и воркер их скачает.
-    if body.size_bytes and int(body.size_bytes) > archive_max_bytes():
-        raise HTTPException(status_code=413, detail=too_large_message(int(body.size_bytes)))
+    limit = archive_max_bytes(db)
+    if body.size_bytes and int(body.size_bytes) > limit:
+        raise HTTPException(status_code=413, detail=too_large_message(int(body.size_bytes), db=db))
 
     # Metadata (filename, size, mtime) is not a content hash. Always allocate a
     # fresh source key; actual ZIP-byte deduplication happens inside the worker.
@@ -2349,8 +2340,9 @@ def multipart_import_create(
         raise HTTPException(status_code=400, detail="only .zip is supported")
     from app.services.import_limits import archive_max_bytes, too_large_message
 
-    if body.size_bytes and int(body.size_bytes) > archive_max_bytes():
-        raise HTTPException(status_code=413, detail=too_large_message(int(body.size_bytes)))
+    limit = archive_max_bytes(db)
+    if body.size_bytes and int(body.size_bytes) > limit:
+        raise HTTPException(status_code=413, detail=too_large_message(int(body.size_bytes), db=db))
 
     # A fresh create request is a fresh upload, even for identical names/mtime.
     # Explicit resume uses the returned object_key/upload_id with list-parts
@@ -6182,6 +6174,53 @@ def reset_user_password(
     db.commit()
 
     return {"ok": True, "temp_password": temp_password}
+
+
+@router.post("/users/{user_id}/reset-link", response_model=UserResetLinkResponse)
+def create_user_reset_link(
+    request: Request,
+    user_id: str,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_reset_link", limit=20, window_seconds=60),
+):
+    """Одноразовая ссылка «задать пароль»: админ не диктует пароль в мессенджере.
+
+    Ссылка живёт `PASSWORD_RESET_LINK_TTL_HOURS` (24 часа по умолчанию), хранится
+    в базе только её хеш, а новая выдача гасит предыдущую. Пароль человек задаёт
+    сам на `/reset-password`; сессии при этом отзываются уже после смены.
+    """
+    uid = _uuid(user_id, field="user_id")
+    user = db.scalar(select(User).where(User.id == uid))
+    if user is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    if bool(getattr(user, "is_archived", False)):
+        raise HTTPException(status_code=409, detail="Учётная запись в архиве: ссылка не нужна")
+
+    # Правила те же, что у сброса пароля: чужого администратора трогает только суперадмин.
+    is_superadmin = getattr(current, "role", None) == UserRole.superadmin
+    if not is_superadmin and getattr(user, "role", None) in {UserRole.admin, UserRole.superadmin}:
+        raise HTTPException(status_code=403, detail="cannot reset password for admin user")
+
+    token, expires_at = password_reset.issue_token(
+        db, user_id=user.id, created_by_admin_id=current.id
+    )
+    audit_log(
+        db=db,
+        request=request,
+        event_type="admin_reset_link_created",
+        actor_user_id=current.id,
+        target_user_id=user.id,
+        meta={"ttl_hours": password_reset.ttl_hours(), "expires_at": expires_at.isoformat()},
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "url": password_reset.build_link(token),
+        "expires_at": expires_at.isoformat(),
+        "ttl_hours": password_reset.ttl_hours(),
+    }
 
 
 @router.get("/analytics/overview")

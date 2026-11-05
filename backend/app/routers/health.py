@@ -4,11 +4,10 @@ import os
 from datetime import datetime, timezone
 from sqlalchemy import text
 
-from app.core.queue import get_queue
 from app.core.rate_limit import rate_limit
 from app.core.redis_client import get_redis
 from app.core.config import settings
-from app.services.storage_cleanup_jobs import cleanup_admin_uploads_job
+from app.services.maintenance_schedule import run_due_tasks
 from app.services.storage import effective_bucket, get_s3_client
 
 router = APIRouter(tags=["health"])
@@ -108,55 +107,16 @@ def ready_head(_: object = rate_limit(key_prefix="health_ready", limit=240, wind
 
 @router.post("/health/cron/admin-uploads-cleanup")
 def cron_admin_uploads_cleanup(request: Request):
+    """Старое имя cron-задачи: выполняет весь набор обслуживания хранилища.
+
+    Набор задач один (`maintenance_schedule`), поэтому старый cron на сервере
+    не «недоделывает» половину работы после обновления.
+    """
     _require_cron_secret(request)
-
-    interval_seconds = max(60, int(getattr(settings, "uploads_admin_cleanup_interval_minutes", 15)) * 60)
-    lock_key = "locks:admin_uploads_cleanup"
-    lock_ttl = max(60, interval_seconds - 5)
-
-    r = get_redis()
-    acquired = r.set(lock_key, "1", nx=True, ex=int(lock_ttl))
-    if not acquired:
-        return {"ok": True, "enqueued": False, "reason": "locked"}
-
-    q = get_queue(str(settings.rq_queue_cleanup))
-    job = q.enqueue(
-        cleanup_admin_uploads_job,
-        ttl_hours=int(getattr(settings, "uploads_admin_ttl_hours", 6)),
-        job_timeout=60 * 10,
-        result_ttl=60 * 60,
-        failure_ttl=60 * 60,
-    )
-    return {"ok": True, "enqueued": True, "job_id": str(job.id)}
+    return run_due_tasks()
 
 
 @router.post("/health/cron/run-all")
 def cron_run_all(request: Request):
     _require_cron_secret(request)
-
-    results: dict[str, object] = {"ok": True, "tasks": {}}
-
-    # 1) admin uploads cleanup
-    try:
-        interval_seconds = max(60, int(getattr(settings, "uploads_admin_cleanup_interval_minutes", 15)) * 60)
-        lock_key = "locks:admin_uploads_cleanup"
-        lock_ttl = max(60, interval_seconds - 5)
-
-        r = get_redis()
-        acquired = r.set(lock_key, "1", nx=True, ex=int(lock_ttl))
-        if not acquired:
-            results["tasks"]["admin_uploads_cleanup"] = {"ok": True, "enqueued": False, "reason": "locked"}
-        else:
-            q = get_queue(str(settings.rq_queue_cleanup))
-            job = q.enqueue(
-                cleanup_admin_uploads_job,
-                ttl_hours=int(getattr(settings, "uploads_admin_ttl_hours", 6)),
-                job_timeout=60 * 10,
-                result_ttl=60 * 60,
-                failure_ttl=60 * 60,
-            )
-            results["tasks"]["admin_uploads_cleanup"] = {"ok": True, "enqueued": True, "job_id": str(job.id)}
-    except Exception as e:
-        results["tasks"]["admin_uploads_cleanup"] = {"ok": False, "error": str(e)}
-
-    return results
+    return run_due_tasks()

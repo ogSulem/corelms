@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     password_min_length: int = Field(default=8, validation_alias="PASSWORD_MIN_LENGTH")
 
     public_app_url: str | None = Field(default=None, validation_alias="PUBLIC_APP_URL")
-    password_reset_token_minutes: int = Field(default=60, validation_alias="PASSWORD_RESET_TOKEN_MINUTES")
 
     bootstrap_admin_name: str | None = Field(default=None, validation_alias="BOOTSTRAP_ADMIN_NAME")
     bootstrap_admin_password: str | None = Field(default=None, validation_alias="BOOTSTRAP_ADMIN_PASSWORD")
@@ -170,17 +169,11 @@ class Settings(BaseSettings):
     uploads_admin_ttl_hours: int = Field(default=6, validation_alias="UPLOADS_ADMIN_TTL_HOURS")
     uploads_admin_cleanup_interval_minutes: int = Field(default=15, validation_alias="UPLOADS_ADMIN_CLEANUP_INTERVAL_MINUTES")
 
+    # Срок жизни ссылки «задать пароль» из админки (1–168 часов).
+    password_reset_link_ttl_hours: int = Field(default=24, validation_alias="PASSWORD_RESET_LINK_TTL_HOURS")
+
     uploads_admin_multipart_ttl_hours: int = Field(default=12, validation_alias="UPLOADS_ADMIN_MULTIPART_TTL_HOURS")
     uploads_admin_multipart_max_abort: int = Field(default=200, validation_alias="UPLOADS_ADMIN_MULTIPART_MAX_ABORT")
-
-    regen_ai_budget_seconds_per_lesson: float = Field(
-        default=300.0,
-        validation_alias="REGEN_AI_BUDGET_SECONDS_PER_LESSON",
-    )
-    regen_max_lesson_attempts: int = Field(
-        default=2,
-        validation_alias="REGEN_MAX_LESSON_ATTEMPTS",
-    )
 
     # По умолчанию 5 ГБ: видео уроков редко бывает меньше, а ограничение можно
     # изменить в «Админ-центр → Настройки» вплоть до 20 ГБ.
@@ -227,6 +220,8 @@ class Settings(BaseSettings):
 
     llm_debug_save: bool = Field(default=False, validation_alias="LLM_DEBUG_SAVE")
     llm_debug_log: bool = Field(default=False, validation_alias="LLM_DEBUG_LOG")
+    # Предел длины диагностических сниппетов (тело ошибки провайдера, сырой ответ
+    # модели). Срезы попадают в логи и в meta задачи, поэтому длина настраиваемая.
     llm_debug_max_chars: int = Field(default=2000, validation_alias="LLM_DEBUG_MAX_CHARS")
 
 

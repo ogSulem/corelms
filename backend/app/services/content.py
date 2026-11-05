@@ -238,7 +238,7 @@ def workspace(db: Session, module: Module) -> dict:
         "capabilities": {"ai_configured": ai.configured, "ai_enabled": ai.enabled,
                          "upload_max_bytes": get_platform_settings(db).upload_max_bytes,
                          # У ZIP-архива свой предел: его распаковывает воркер.
-                         "archive_max_bytes": archive_max_bytes()},
+                         "archive_max_bytes": archive_max_bytes(db)},
         "module": {
             "id": str(module.id), "title": module.title, "description": module.description,
             "category": module.category, "difficulty": module.difficulty,

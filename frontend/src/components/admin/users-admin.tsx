@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Archive, ArchiveRestore, Check, Copy, KeyRound, Loader2, Plus, RefreshCw, Search, ShieldCheck,
-  Tags, Trash2, UserRound, Users, X,
+  Archive, ArchiveRestore, Check, Copy, KeyRound, Link2, Loader2, Plus, RefreshCw, Search,
+  ShieldCheck, Tags, Trash2, UserRound, Users, X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -108,6 +108,8 @@ export function UsersAdmin() {
   const [newUser, setNewUser] = useState({ name: "", email: "", position: "" });
   const [tempPassword, setTempPassword] = useState<{ name: string; password: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [resetLink, setResetLink] = useState<{ name: string; url: string; expires_at: string; ttl_hours: number } | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
   const request = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
@@ -220,6 +222,34 @@ export function UsersAdmin() {
       setError(e instanceof Error ? e.message : "Не удалось сбросить пароль");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function createResetLink() {
+    if (!selected || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await apiFetch<{ url: string; expires_at: string; ttl_hours: number }>(
+        `/admin/users/${selected.id}/reset-link`,
+        { method: "POST", body: JSON.stringify({}) },
+      );
+      setResetLink({ name: selected.name, url: result.url, expires_at: result.expires_at, ttl_hours: result.ttl_hours });
+      setLinkCopied(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось создать ссылку для смены пароля");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyResetLink() {
+    if (!resetLink) return;
+    try {
+      await navigator.clipboard.writeText(resetLink.url);
+      setLinkCopied(true);
+    } catch {
+      setError("Браузер не дал скопировать. Выделите ссылку вручную.");
     }
   }
 
@@ -494,6 +524,11 @@ export function UsersAdmin() {
             <Button variant="outline" className={btn} disabled={busy || selected?.id === me?.id}
               title={selected?.id === me?.id ? "Свой пароль меняется в профиле: «Безопасность» → «Сменить пароль»" : undefined}
               onClick={() => void resetPassword()}><KeyRound size={15} />Сбросить пароль</Button>
+            <Button variant="outline" className={btn} disabled={busy || selected?.id === me?.id || !!selected?.is_archived}
+              title={selected?.is_archived ? "Учётная запись в архиве: сначала верните её из архива"
+                : selected?.id === me?.id ? "Свою ссылку не нужно создавать: пароль меняется в профиле"
+                : "Человек сам задаст пароль по ссылке — не нужно диктовать временный"}
+              onClick={() => void createResetLink()}><Link2 size={15} />Ссылка для пароля</Button>
             <Button className={btn} disabled={busy || !canEditSelected} title={canEditSelected ? undefined : "Изменять администраторов может только суперадмин"}
               onClick={() => void saveUser()}>{busy ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}Сохранить</Button>
           </div>
@@ -636,6 +671,28 @@ export function UsersAdmin() {
             <p className="text-sm text-zinc-600">Передайте пароль пользователю «{tempPassword.name}». Он больше не будет показан.</p>
             <p className="select-all rounded-xl bg-zinc-900 px-4 py-3 text-center font-mono text-lg text-white">{tempPassword.password}</p>
             <p className="flex items-center gap-2 text-xs text-amber-800"><X size={14} />После первого входа система потребует сменить пароль.</p>
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={!!resetLink} title="Ссылка для смены пароля" onClose={() => setResetLink(null)} className="max-w-lg"
+        footer={<div className="flex justify-end gap-2">
+          <Button variant="outline" className={btn} onClick={() => void copyResetLink()}>{linkCopied ? <Check size={15} /> : <Copy size={15} />}{linkCopied ? "Скопировано" : "Скопировать ссылку"}</Button>
+          <Button className={btn} onClick={() => setResetLink(null)}>Готово</Button>
+        </div>}>
+        {resetLink && (
+          <div className="space-y-3">
+            <p className="text-sm text-zinc-600">Отправьте ссылку пользователю «{resetLink.name}». Он сам задаст пароль — диктовать временный не нужно.</p>
+            <p className="select-all break-all rounded-xl bg-zinc-50 px-4 py-3 font-mono text-xs text-zinc-900">{resetLink.url}</p>
+            <p className="text-xs text-zinc-500">
+              Действует {resetLink.ttl_hours} ч (до {new Date(resetLink.expires_at).toLocaleString("ru-RU")}), один раз.
+              Новая ссылка отменяет предыдущую — отправляйте последнюю.
+            </p>
+            {!resetLink.url.startsWith("http") && (
+              <p className="rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                Адрес сайта не задан на сервере (PUBLIC_APP_URL): скопируйте путь и добавьте домен вручную.
+              </p>
+            )}
           </div>
         )}
       </Modal>

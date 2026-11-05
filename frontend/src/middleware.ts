@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
+import { loginRedirectUrl } from "@/lib/request-origin";
+
 /**
  * Серверная проверка сессии для закрытых разделов.
  *
@@ -26,9 +28,12 @@ export function middleware(req: NextRequest) {
 
   // Без сессии ведём на форму входа, а не на промо-страницу: раньше мобильный
   // «заходил» и молча оказывался на лендинге без объяснения причины.
-  const url = req.nextUrl.clone();
-  url.pathname = "/login";
-  url.search = "";
-  url.searchParams.set("redirect", `${pathname}${search || ""}`);
+  // Origin берём из заголовков прокси: `req.nextUrl` за обратным прокси может
+  // содержать внутренний адрес, и редирект уводил бы на него.
+  const url = loginRedirectUrl({
+    headers: req.headers,
+    fallbackOrigin: req.nextUrl.origin,
+    next: `${pathname}${search || ""}`,
+  });
   return NextResponse.redirect(url);
 }

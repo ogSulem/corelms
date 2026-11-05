@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request
 
-from app.core.config import settings
 from app.core.client_ip import client_ip_from_request
 from app.core.redis_client import get_redis
 

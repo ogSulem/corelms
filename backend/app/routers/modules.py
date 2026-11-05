@@ -8,7 +8,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
@@ -17,7 +17,7 @@ from app.core.rate_limit import rate_limit
 from app.db.session import get_db
 from app.models.asset import ContentAsset
 from app.models.audit import LearningEvent, LearningEventType
-from app.models.module import Module, Submodule
+from app.models.module import Submodule
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.user import User
 from app.schemas.modules_overview import ModulesOverviewResponse

@@ -12,10 +12,9 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from botocore.exceptions import ClientError
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.core.security import get_current_user, require_roles
 from app.core.security_audit_log import audit_log
@@ -167,6 +166,20 @@ def presign_download(
     if act == "download":
         disposition = f"attachment; filename*=UTF-8''{quoted}"
 
+    # SVG/HTML/XML — активное содержимое: браузер исполнит внутри них скрипт.
+    # Если хранилище отдаётся с того же домена, что и приложение (частый вариант
+    # с обратным прокси), открытие файла «в браузере» стало бы XSS. Такие файлы
+    # отдаём только как скачивание и с нейтральным типом.
+    active_ext = {"svg", "svgz", "html", "htm", "xhtml", "xml", "mht", "mhtml", "js", "mjs", "shtml"}
+    active_mime = {"image/svg+xml", "text/html", "application/xhtml+xml", "text/xml", "application/xml",
+                   "application/javascript", "text/javascript"}
+    asset_ct_l = str(asset.mime_type or "").strip().lower()
+    name_l = filename.lower()
+    asset_ext = name_l.rsplit(".", 1)[-1].strip() if "." in name_l else ""
+    active_file = asset_ext in active_ext or asset_ct_l in active_mime
+    if active_file:
+        disposition = f"attachment; filename*=UTF-8''{quoted}"
+
     # Ключ объекта в хранилище — внутренняя деталь: он не нужен ни журналу, ни
     # интерфейсу (а через /me/recent-activity уходил ученику). Пишем только то,
     # что видно в кабинете.
@@ -241,6 +254,9 @@ def presign_download(
         pass
 
     response_ct = str(asset.mime_type or "").strip() or None
+    if active_file:
+        # Даже при явном «открыть» тип остаётся нейтральным: содержимое не исполнится.
+        response_ct = "application/octet-stream"
     if is_office_ext:
         if not response_ct or response_ct.lower() in {"application/octet-stream", "binary/octet-stream"}:
             response_ct = office_ct_by_ext.get(ext) or response_ct

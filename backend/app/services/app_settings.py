@@ -827,10 +827,16 @@ class PlatformSettings:
     session_idle_hours: int = 12
     session_absolute_days: int = 30
     session_refresh_days: int = 30
+    # Предел ZIP-архива модуля: тот же лимит проверяют предподписанная загрузка,
+    # multipart, повторный импорт и воркер распаковки.
+    zip_max_archive_bytes: int = 1024 ** 3
 
 
 MIN_UPLOAD_BYTES = 1024 * 1024
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024 * 1024
+MIN_ZIP_BYTES = 100 * 1024 * 1024
+MAX_ZIP_BYTES = 20 * 1024 * 1024 * 1024
+DEFAULT_ZIP_BYTES = 1024 ** 3
 MIN_IDLE_HOURS, MAX_IDLE_HOURS = 1, 168
 MIN_SESSION_DAYS, MAX_SESSION_DAYS = 1, 365
 
@@ -863,6 +869,16 @@ def get_platform_settings(db: Session | None = None) -> PlatformSettings:
         sources[key] = "environment"
         return max(low, min(high, int(env_value)))
 
+    # Предел ZIP-архива: сохранённое значение важнее env, но env не зажимается в
+    # диапазон интерфейса — окружение может задавать и меньшее значение (так
+    # работают тесты и «строгий» серверный конфиг).
+    env_zip = int(getattr(settings, "import_zip_max_archive_bytes", DEFAULT_ZIP_BYTES) or DEFAULT_ZIP_BYTES)
+    stored_zip = value.get("zip_max_archive_bytes")
+    if isinstance(stored_zip, int) and MIN_ZIP_BYTES <= stored_zip <= MAX_ZIP_BYTES:
+        zip_bytes, sources["zip_max_archive_bytes"] = stored_zip, "database"
+    else:
+        zip_bytes, sources["zip_max_archive_bytes"] = (env_zip if env_zip > 0 else DEFAULT_ZIP_BYTES), "environment"
+
     idle_hours = _bounded("session_idle_hours", int(f"{getattr(settings, 'session_idle_timeout_hours', 12)}"),
                           MIN_IDLE_HOURS, MAX_IDLE_HOURS)
     absolute_days = _bounded("session_absolute_days", int(f"{getattr(settings, 'session_absolute_timeout_days', 30)}"),
@@ -876,6 +892,7 @@ def get_platform_settings(db: Session | None = None) -> PlatformSettings:
         session_idle_hours=idle_hours,
         session_absolute_days=absolute_days,
         session_refresh_days=refresh_days,
+        zip_max_archive_bytes=zip_bytes,
         sources=sources,
         stored=row.exists,
         updated_at=row.updated_at,
@@ -891,12 +908,14 @@ def save_platform_settings(
     session_idle_hours: int | None = None,
     session_absolute_days: int | None = None,
     session_refresh_days: int | None = None,
+    zip_max_archive_bytes: int | None = None,
 ) -> PlatformSettings:
     if not isinstance(upload_max_bytes, int) or not (MIN_UPLOAD_BYTES <= upload_max_bytes <= MAX_UPLOAD_BYTES):
         raise SettingsValidationError("Размер файла должен быть от 1 МБ до 20 ГБ")
     for value, low, high, label in ((session_idle_hours, MIN_IDLE_HOURS, MAX_IDLE_HOURS, "Простой сессии"),
                                     (session_absolute_days, MIN_SESSION_DAYS, MAX_SESSION_DAYS, "Срок сессии"),
-                                    (session_refresh_days, MIN_SESSION_DAYS, MAX_SESSION_DAYS, "Обновление входа")):
+                                    (session_refresh_days, MIN_SESSION_DAYS, MAX_SESSION_DAYS, "Обновление входа"),
+                                    (zip_max_archive_bytes, MIN_ZIP_BYTES, MAX_ZIP_BYTES, "Предел ZIP-архива")):
         if value is not None and (not isinstance(value, int) or not (low <= value <= high)):
             raise SettingsValidationError(f"{label}: допустимо от {low} до {high}")
     current = _read(db, PLATFORM_KEY)
@@ -910,6 +929,8 @@ def save_platform_settings(
         value["session_absolute_days"] = int(session_absolute_days)
     if session_refresh_days is not None:
         value["session_refresh_days"] = int(session_refresh_days)
+    if zip_max_archive_bytes is not None:
+        value["zip_max_archive_bytes"] = int(zip_max_archive_bytes)
     _write(db, PLATFORM_KEY, value, actor_id=actor_id)
     return get_platform_settings(db)
 
@@ -925,6 +946,7 @@ def platform_settings_payload(config: PlatformSettings) -> dict:
         "session_idle_hours": config.session_idle_hours,
         "session_absolute_days": config.session_absolute_days,
         "session_refresh_days": config.session_refresh_days,
+        "zip_max_archive_bytes": config.zip_max_archive_bytes,
         "sources": config.sources,
         "stored": config.stored,
         "updated_at": config.updated_at,
@@ -934,8 +956,10 @@ def platform_settings_payload(config: PlatformSettings) -> dict:
             "session_idle_hours": int(getattr(settings, "session_idle_timeout_hours", 12) or 12),
             "session_absolute_days": int(getattr(settings, "session_absolute_timeout_days", 30) or 30),
             "session_refresh_days": int(getattr(settings, "session_refresh_token_days", 30) or 30),
+            "zip_max_archive_bytes": int(getattr(settings, "import_zip_max_archive_bytes", DEFAULT_ZIP_BYTES) or DEFAULT_ZIP_BYTES),
         },
         "limits": {"min_upload_bytes": MIN_UPLOAD_BYTES, "max_upload_bytes": MAX_UPLOAD_BYTES,
                    "min_session_idle_hours": MIN_IDLE_HOURS, "max_session_idle_hours": MAX_IDLE_HOURS,
-                   "min_session_days": MIN_SESSION_DAYS, "max_session_days": MAX_SESSION_DAYS},
+                   "min_session_days": MIN_SESSION_DAYS, "max_session_days": MAX_SESSION_DAYS,
+                   "min_zip_bytes": MIN_ZIP_BYTES, "max_zip_bytes": MAX_ZIP_BYTES},
     }

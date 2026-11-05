@@ -26,6 +26,19 @@ class OpenRouterQuizResponse(BaseModel):
     questions: list[OpenRouterQuestion]
 
 
+def _debug_max_chars() -> int:
+    """Сколько символов диагностического среза допустимо (LLM_DEBUG_MAX_CHARS).
+
+    Срезы попадают в логи worker и в meta задачи, а тело ответа провайдера
+    может содержать эхо запроса (текст урока). Настройка ограничивает объём.
+    """
+
+    try:
+        value = int(getattr(settings, "llm_debug_max_chars", 2000) or 2000)
+    except Exception:
+        value = 2000
+    return max(200, min(value, 20000))
+
 def _extract_abcd_options(prompt: str) -> list[str] | None:
     # Expect 4 options formatted like A) / A. / A: / A - / A —.
     # We keep it fairly strict but tolerate common separators.
@@ -397,7 +410,9 @@ def generate_quiz_questions_openrouter(
             except Exception:
                 txt = None
             if isinstance(txt, str) and txt:
-                body_snip = txt[:600]
+                # Ошибка провайдера может содержать эхо запроса (текст урока),
+                # поэтому тело в диагностике ограничено настройкой.
+                body_snip = txt[: min(600, _debug_max_chars())]
         except Exception:
             status = None
             body_snip = None
@@ -422,7 +437,7 @@ def generate_quiz_questions_openrouter(
     if debug_out is not None:
         # Keep a bounded raw snippet to aid diagnostics and repair.
         if bool(getattr(settings, "llm_debug_log", False)) or bool(getattr(settings, "llm_debug_save", False)):
-            debug_out["raw"] = raw[:6000]
+            debug_out["raw"] = raw[:_debug_max_chars()]
     obj = _extract_json(raw)
     if not obj:
         _set_debug("invalid_json")

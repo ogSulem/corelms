@@ -1,7 +1,5 @@
 import asyncio
 import contextlib
-import ipaddress
-import hmac
 import uuid
 import json
 import logging
@@ -22,10 +20,8 @@ from sqlalchemy import select
 from app.core.config import settings
 from app.core.domains import ascii_origin, split_origins
 from app.core.client_ip import client_ip_from_request
-from app.core.redis_client import get_redis
-from app.core.queue import get_queue
 from app.services import error_log
-from app.services.storage_cleanup_jobs import cleanup_admin_multipart_uploads_job, cleanup_admin_uploads_job
+from app.services import maintenance_schedule
 from app.routers import admin, content, assets, auth, events, health, linear, me, modules, progress, quickstart, quizzes, sales_files, sales_links, settings as settings_router, submodules
 from app.db.session import SessionLocal
 from app.models.user import User, UserRole
@@ -309,30 +305,18 @@ def create_app() -> FastAPI:
     app.include_router(linear.router)
 
     def _start_admin_uploads_cleanup_scheduler() -> None:
-        interval_seconds = max(60, int(settings.uploads_admin_cleanup_interval_minutes) * 60)
+        """Периодическое обслуживание хранилища внутри API-процесса.
+
+        Набор задач берётся из `maintenance_schedule` — тот же, что запускает
+        внешний cron, поэтому включение планировщика не меняет поведение.
+        """
+        interval_seconds = maintenance_schedule.interval_seconds()
 
         def _tick() -> None:
             try:
-                r = get_redis()
-                lock_key = "locks:admin_uploads_cleanup"
-                lock_ttl = max(60, interval_seconds - 5)
-
-                acquired = r.set(lock_key, "1", nx=True, ex=int(lock_ttl))
-                if not acquired:
-                    return
-
-                q = get_queue(str(settings.rq_queue_cleanup))
-                q.enqueue(
-                    cleanup_admin_multipart_uploads_job,
-                    prefix="uploads/",
-                    ttl_hours=int(getattr(settings, "uploads_admin_multipart_ttl_hours", 12)),
-                    job_timeout=60 * 10,
-                    result_ttl=60 * 60,
-                    failure_ttl=60 * 60,
-                )
+                maintenance_schedule.run_due_tasks()
             except Exception:
-                logger.debug("admin uploads cleanup scheduler tick failed", exc_info=True)
-                return
+                logger.debug("maintenance scheduler tick failed", exc_info=True)
             finally:
                 t = threading.Timer(interval_seconds, _tick)
                 t.daemon = True

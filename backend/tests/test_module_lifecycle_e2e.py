@@ -275,6 +275,10 @@ def test_assignment_status_reflects_real_progress(client, db, admin_headers, mak
     items = client.get("/me/assignments", headers=learner_headers).json()["items"]
     assignment = next(item for item in items if item["id"] == created.json()["id"])
     assert assignment["status"] == "overdue", assignment
+    # Счётчик «задач в работе» без названия ничего не объясняет: цель приходит
+    # вместе с ссылкой, чтобы дашборд мог показать, что именно назначено.
+    assert assignment["title"], assignment
+    assert assignment["href"] == f"/modules/{module_id}", assignment
 
     assert client.post(f"/submodules/{workspace['lessons'][0]['id']}/read", headers=learner_headers).status_code == 200
     items = client.get("/me/assignments", headers=learner_headers).json()["items"]
@@ -288,3 +292,7 @@ def test_assignment_status_reflects_real_progress(client, db, admin_headers, mak
         "assigned_to": str(learner.id), "type": "module", "target_id": module_id,
     })
     assert again.status_code == 404, again.text
+
+    # И уже выданное назначение не висит у ученика «в работе»: выполнить его нельзя.
+    items = client.get("/me/assignments", headers=learner_headers).json()["items"]
+    assert all(item["id"] != created.json()["id"] for item in items), items

@@ -258,7 +258,7 @@ def test_overview_reports_schema_target_and_server_limits(client, admin_headers)
     body = response.json()
     from app.routers.settings import expected_schema_revision
     assert body["schema"]["expected"] == expected_schema_revision()
-    assert expected_schema_revision() == "0028"
+    assert expected_schema_revision() == "0029"
     assert body["upload_max_bytes"] > 0
     # Очереди показываются по отдельности: импорт и медиа не должны прятаться
     # за счётчиком одной «тестовой» очереди.
@@ -518,3 +518,49 @@ def test_public_registration_follows_the_saved_setting(client, admin_headers, mo
     # «Сбросить к серверу» возвращает поведение из .env без перезапуска.
     client.delete("/admin/settings/platform", headers=admin_headers)
     assert register(f"back_{uuid.uuid4().hex[:8]}").status_code == 200
+
+
+def test_zip_archive_limit_is_editable_and_applies_everywhere(client, db, admin_headers, make_module):
+    """Предел ZIP-архива: значение из интерфейса действует и в проверке загрузки.
+
+    Раньше предел брался только из окружения, поэтому админ не мог его изменить
+    без перезапуска, а разные входы (предподписанная загрузка, повторный импорт,
+    воркер) читали одно и то же env-значение.
+    """
+
+    from app.services.import_limits import archive_max_bytes
+
+    custom = 1500 * 1024 * 1024
+    saved = client.put("/admin/settings/platform", headers=admin_headers,
+                       json={"upload_max_bytes": 1024 * 1024, "allow_public_register": False,
+                             "zip_max_archive_bytes": custom})
+    assert saved.status_code == 200, saved.text
+    payload = saved.json()["settings"]
+    assert payload["zip_max_archive_bytes"] == custom
+    assert payload["sources"]["zip_max_archive_bytes"] == "database"
+    assert payload["limits"]["min_zip_bytes"] == 100 * 1024 * 1024
+    assert archive_max_bytes() == custom, "без сессии значение должно читаться из БД"
+
+    module, _, _ = make_module()
+    caps = client.get(f"/admin/content/modules/{module.id}", headers=admin_headers).json()["capabilities"]
+    assert caps["archive_max_bytes"] == custom
+
+    # Отказ в предподписанной загрузке считает тот же предел: 2 ГБ > 1.5 ГБ.
+    too_big = client.post("/admin/modules/presign-import-zip",
+                          headers=admin_headers,
+                          json={"filename": "module.zip", "title": "Архив сверх предела",
+                                "size_bytes": custom + 1})
+    assert too_big.status_code == 413, too_big.text
+    message = str(too_big.json().get("detail") or too_big.json().get("error_message") or "")
+    assert "1500 МБ" in message, too_big.json()
+
+    # Вне диапазона — отказ, значение не сохраняется.
+    for bad in (10 * 1024 * 1024, 21 * 1024 * 1024 * 1024):
+        rejected = client.put("/admin/settings/platform", headers=admin_headers,
+                              json={"upload_max_bytes": 1024 * 1024, "zip_max_archive_bytes": bad})
+        assert rejected.status_code == 422, bad
+    assert archive_max_bytes() == custom
+
+    reset = client.delete("/admin/settings/platform", headers=admin_headers)
+    assert reset.status_code == 200
+    assert reset.json()["settings"]["zip_max_archive_bytes"] == settings.import_zip_max_archive_bytes

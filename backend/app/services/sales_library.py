@@ -18,7 +18,6 @@ from app.models.media import AssetRendition, AssetThumb
 from app.models.sales import SalesEntry, SalesSection
 from app.services.content import normalize_name, safe_filename, serialize_asset
 from app.services.storage import effective_bucket, get_s3_client
-from app.services.thumbs import thumb_keys
 
 log = logging.getLogger(__name__)
 
@@ -269,26 +268,41 @@ def delete_subtree(db: Session, entry: SalesEntry) -> list[tuple[str, str]]:
     не даст удалить файл, пока на него смотрит запись.
     """
     rows = subtree(db, entry)
+    asset_ids = [row.asset_id for row in rows if row.asset_id]
+
+    # Раньше на каждый файл в папке приходилось пять запросов: удаление папки
+    # из сотни файлов давало пятьсот запросов и заметную паузу. Читаем всё
+    # пакетно — те же данные, четыре запроса на папку любого размера.
     keys: list[tuple[str, str]] = []
-    assets: list[ContentAsset] = []
+    if asset_ids:
+        for bucket, object_key in db.execute(
+            select(ContentAsset.bucket, ContentAsset.object_key).where(ContentAsset.id.in_(asset_ids))
+        ):
+            keys.append((bucket, object_key))
+        for bucket, object_key in db.execute(
+            select(AssetRevision.bucket, AssetRevision.object_key).where(AssetRevision.asset_id.in_(asset_ids))
+        ):
+            keys.append((bucket, object_key))
+        for bucket, object_key in db.execute(
+            select(AssetRendition.bucket, AssetRendition.object_key).where(
+                AssetRendition.asset_id.in_(asset_ids), AssetRendition.object_key.is_not(None))
+        ):
+            keys.append((bucket, object_key))
+        for bucket, object_key in db.execute(
+            select(AssetThumb.bucket, AssetThumb.object_key).where(
+                AssetThumb.asset_id.in_(asset_ids), AssetThumb.object_key.is_not(None))
+        ):
+            if bucket and object_key:
+                keys.append((bucket, object_key))
+
     for row in rows:
-        asset = db.get(ContentAsset, row.asset_id) if row.asset_id else None
-        if asset is not None:
-            assets.append(asset)
-            keys.append((asset.bucket, asset.object_key))
-            for revision in db.scalars(select(AssetRevision).where(AssetRevision.asset_id == asset.id)):
-                keys.append((revision.bucket, revision.object_key))
-            for rendition in db.scalars(select(AssetRendition).where(AssetRendition.asset_id == asset.id)):
-                if rendition.object_key:
-                    keys.append((rendition.bucket, rendition.object_key))
-            keys.extend(thumb_keys(db, asset.id))
         db.delete(row)
     db.flush()
-    for asset in assets:
-        db.execute(delete(AssetThumb).where(AssetThumb.asset_id == asset.id))
-        db.execute(delete(AssetRendition).where(AssetRendition.asset_id == asset.id))
-        db.execute(delete(AssetRevision).where(AssetRevision.asset_id == asset.id))
-        db.delete(asset)
+    if asset_ids:
+        db.execute(delete(AssetThumb).where(AssetThumb.asset_id.in_(asset_ids)))
+        db.execute(delete(AssetRendition).where(AssetRendition.asset_id.in_(asset_ids)))
+        db.execute(delete(AssetRevision).where(AssetRevision.asset_id.in_(asset_ids)))
+        db.execute(delete(ContentAsset).where(ContentAsset.id.in_(asset_ids)))
     db.flush()
     return keys
 

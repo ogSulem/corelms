@@ -37,8 +37,12 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int 
     # modules and historical versions. A storage listing is not a source of truth.
     with SessionLocal() as db:
         protected = referenced_storage_keys(db)
-    if prefix != "uploads/admin/":
-        raise ValueError("Automatic cleanup is restricted to uploads/admin/")
+    # Отчёт разрешён для всего staging (`uploads/`), а не только `uploads/admin/`:
+    # брошенные загрузки появляются и в `uploads/sources/`, и старый список
+    # кандидатов всегда был пустым. За пределы staging не выходим — там лежат
+    # файлы модулей, и листинг чужой области смысла не имеет.
+    if not str(prefix).startswith("uploads/"):
+        raise ValueError("Cleanup reports are limited to uploads/")
     # Source ZIPs may be waiting for a worker or a manual retry. Keep them even
     # before the import transaction attaches them to a module.
 
