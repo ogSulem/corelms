@@ -53,6 +53,12 @@ jobs:
           rm -f .env
           echo "ok: compose file is valid"
 
+      - name: nginx keeps the real client IP, not the header the client sent
+        run: |
+          set -e
+          python3 -m pip install --quiet crossplane
+          python3 deploy/check-nginx.py nginx/default.conf
+
       - name: Block large tracked files (>20MB)
         run: |
           python - <<'PY'

@@ -193,7 +193,8 @@ def upload_sales_file(request: Request, file: UploadFile = File(...), section: S
 
 @router.post("/uploads", status_code=201)
 def start_sales_upload(body: SalesUploadStart, db: Session = Depends(get_db),
-                       user: User = Depends(require_roles(UserRole.superadmin))):
+                       user: User = Depends(require_roles(UserRole.superadmin)),
+                       _: object = rate_limit(key_prefix="sales_upload_start", limit=240, window_seconds=60)):
     """Большие фото и каталоги принимаем частями: один длинный запрос обрывают прокси."""
     limit = get_platform_settings(db).upload_max_bytes
     if body.size_bytes > limit:
@@ -225,7 +226,8 @@ async def push_sales_chunk(upload_id: str, request: Request, offset: int = Query
 
 @router.post("/uploads/{upload_id}/complete")
 def complete_sales_upload(upload_id: str, request: Request, db: Session = Depends(get_db),
-                          user: User = Depends(require_roles(UserRole.superadmin))):
+                          user: User = Depends(require_roles(UserRole.superadmin)),
+                          _: object = rate_limit(key_prefix="sales_upload_complete", limit=240, window_seconds=60)):
     session = read_session(upload_id)
     if session.kind != "sales" or session.user_id != str(user.id):
         raise HTTPException(404, "Загрузка не найдена. Начните её заново.")

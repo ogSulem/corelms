@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Float, ForeignKey, Index, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -9,6 +9,7 @@ from app.db.base import Base
 
 class Module(Base):
     __tablename__ = "modules"
+    __table_args__ = (Index("ix_modules_import_object_key", "import_object_key"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(300), index=True)
@@ -35,8 +36,8 @@ class ModuleSkillMap(Base):
     module_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("modules.id"), primary_key=True)
     skill_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("skills.id"), primary_key=True)
     weight: Mapped[float] = mapped_column(Float, default=0.0)
-
-    __table_args__ = (UniqueConstraint("module_id", "skill_id", name="uq_module_skill"),)
+    # Пара (module_id, skill_id) уникальна составным ключом: отдельное
+    # ограничение дублировало бы её и расходилось с миграциями.
 
 
 class Submodule(Base):
@@ -60,4 +61,8 @@ class Submodule(Base):
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
     source_path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
-    __table_args__ = (UniqueConstraint("module_id", "order", name="uq_submodule_module_order"),)
+    __table_args__ = (
+        UniqueConstraint("module_id", "order", name="uq_submodule_module_order"),
+        # Импорт сопоставляет уроки по пути внутри архива именно в этом порядке.
+        Index("ix_submodules_module_id_outline_path", "module_id", "outline_path"),
+    )

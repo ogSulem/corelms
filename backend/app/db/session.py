@@ -27,11 +27,16 @@ POOL_SIZE = _int_env("DB_POOL_SIZE", 5)
 MAX_OVERFLOW = _int_env("DB_MAX_OVERFLOW", 10)
 POOL_TIMEOUT = _int_env("DB_POOL_TIMEOUT_SECONDS", 20)
 POOL_RECYCLE = _int_env("DB_POOL_RECYCLE_SECONDS", 1800)
+# Если Postgres недоступен по сети (чёрная дыра вместо отказа), TCP-соединение
+# висит столько, сколько скажет ОС — до двух минут на каждый запрос, и пул
+# забивается «вечными» попытками. Десяти секунд хватает, чтобы вернуть 503.
+CONNECT_TIMEOUT = _int_env("DB_CONNECT_TIMEOUT_SECONDS", 10)
 
 _url = str(settings.database_url or "")
 
 # SQLite (тесты) использует SingletonThreadPool и не принимает параметры размера пула.
 _pool_kwargs: dict[str, int] = {}
+_connect_args: dict[str, int] = {}
 if _url.startswith("postgresql"):
     _pool_kwargs = {
         "pool_size": POOL_SIZE,
@@ -39,8 +44,9 @@ if _url.startswith("postgresql"):
         "pool_timeout": POOL_TIMEOUT,
         "pool_recycle": POOL_RECYCLE,
     }
+    _connect_args = {"connect_timeout": CONNECT_TIMEOUT}
 
-engine = create_engine(_url, pool_pre_ping=True, **_pool_kwargs)
+engine = create_engine(_url, pool_pre_ping=True, connect_args=_connect_args, **_pool_kwargs)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

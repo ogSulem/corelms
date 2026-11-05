@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy import Boolean, DateTime, Index, Integer, String
 from sqlalchemy.dialects.postgresql import ENUM as PgEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -48,10 +48,16 @@ class RoleEnum(PgEnum):
 
 class User(Base):
     __tablename__ = "users"
+    # Активность за неделю и «список неактивных» идут по этой колонке.
+    __table_args__ = (Index("ix_users_last_activity_at", "last_activity_at"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name: Mapped[str] = mapped_column(String(200), index=True)
-    email: Mapped[str | None] = mapped_column(String(320), unique=True, index=True, nullable=True)
+    # Уникальность и поиск по email обеспечивает функциональный индекс
+    # ix_users_email_ci (lower(email)) из миграции 0016: обычный unique-индекс
+    # не ловил `Ivan@…` и `ivan@…` как один адрес. В модели индекс намеренно не
+    # объявлен, чтобы autogenerate не пытался заменить рабочий индекс своим.
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     role: Mapped[UserRole] = mapped_column(RoleEnum(UserRole), index=True)
     position: Mapped[str | None] = mapped_column(String(200), nullable=True)
 

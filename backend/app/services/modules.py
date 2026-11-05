@@ -33,11 +33,11 @@ def modules_get_rev() -> int:
 def modules_bump_rev(*, reason: str | None = None) -> int:
     try:
         r = get_redis()
-        v = int(r.incr("modules:rev"))
-        try:
-            r.expire("modules:rev", 60 * 60 * 24 * 30)
-        except Exception:
-            pass
+        # INCR и TTL одной транзакцией: иначе ключ без TTL жил бы вечно.
+        with r.pipeline() as pipe:
+            pipe.incr("modules:rev")
+            pipe.expire("modules:rev", 60 * 60 * 24 * 30, nx=True)
+            v = int(pipe.execute()[0])
         try:
             r.publish("modules:changed", str(reason or ""))
         except Exception:
