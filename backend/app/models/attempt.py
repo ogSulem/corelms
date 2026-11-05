@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,6 +28,11 @@ class QuizAttempt(Base):
     passed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     time_spent_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+# Попытки читают по пользователю с сортировкой по времени старта (лента
+# активности, результаты, история тестов).
+Index("ix_quiz_attempts_user_started_at", QuizAttempt.user_id, QuizAttempt.started_at)
 
 
 class QuizAttemptAnswer(Base):

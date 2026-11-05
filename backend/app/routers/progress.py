@@ -3,7 +3,6 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user

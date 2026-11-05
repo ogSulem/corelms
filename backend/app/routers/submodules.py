@@ -17,8 +17,6 @@ from app.models.user import User
 from app.services.skills import award_xp, record_activity_and_award_xp
 from app.services.access import require_submodule_access
 from app.services.learning import LearningService, read_meta_clause
-from app.services.storage import get_s3_client
-from app.core.config import settings
 
 router = APIRouter(prefix="/submodules", tags=["submodules"])
 

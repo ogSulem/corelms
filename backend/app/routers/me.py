@@ -21,7 +21,6 @@ from app.models.security_audit import SecurityAuditEvent
 from app.models.user import User
 from app.services.audit_meta import (
     learning_meta_for_client,
-    sanitize_learning_meta,
     sanitize_security_meta,
 )
 from app.schemas.me import (
@@ -262,6 +261,17 @@ def my_assignments(db: Session = Depends(get_db), user: User = Depends(get_curre
     from app.models.assignment import AssignmentType
 
     rows = db.scalars(select(Assignment).where(Assignment.assigned_to == user.id).order_by(Assignment.created_at.desc())).all()
+    # Модуль могли убрать в архив (или закрыть тегами) уже после назначения.
+    # Такое задание выполнить нельзя, поэтому оно не должно висеть «в работе»
+    # ни в счётчике на дашборде, ни в списке: иначе задача висит вечно.
+    module_targets = [a.target_id for a in rows if a.type.name == "module"]
+    if module_targets:
+        from app.services.access import accessible_modules_clause
+
+        reachable = set(db.scalars(
+            select(Module.id).where(Module.id.in_(module_targets), accessible_modules_clause(user))
+        ))
+        rows = [a for a in rows if a.type.name != "module" or a.target_id in reachable]
     # Статус назначения никогда не пересчитывался в базе: «Задач в работе» на
     # дашборде не уменьшалось даже после прохождения модуля. Считаем актуальный
     # статус на чтении — источник правды остаётся в прогрессе обучения.
@@ -763,6 +773,37 @@ def my_history(
             }
         )
 
+    # Названия для событий просмотра файлов раньше подтягивались запросом на
+    # каждое событие (до 40 запросов на один экран). Собираем нужные id заранее
+    # и читаем их одним запросом.
+    _meta_module_ids: set[str] = set()
+    _meta_submodule_ids: set[str] = set()
+    for e in events:
+        if e.type.value != "asset_viewed" or not e.ref_id:
+            continue
+        pm = _try_parse_meta(e.meta) or {}
+        for bucket, key in ((_meta_module_ids, "module_id"), (_meta_submodule_ids, "submodule_id")):
+            raw = str(pm.get(key) or "").strip()
+            if raw:
+                bucket.add(raw)
+
+    def _uuid_or_none(raw: str) -> uuid.UUID | None:
+        try:
+            return uuid.UUID(raw)
+        except (TypeError, ValueError):
+            return None
+
+    module_titles_for_events: dict[str, str] = {}
+    _module_uuids = [uid for uid in (_uuid_or_none(x) for x in _meta_module_ids) if uid]
+    if _module_uuids:
+        module_titles_for_events = {str(row[0]): str(row[1]) for row in db.execute(
+            select(Module.id, Module.title).where(Module.id.in_(_module_uuids))).all()}
+    submodule_titles_for_events: dict[str, str] = {}
+    _submodule_uuids = [uid for uid in (_uuid_or_none(x) for x in _meta_submodule_ids) if uid]
+    if _submodule_uuids:
+        submodule_titles_for_events = {str(row[0]): str(row[1]) for row in db.execute(
+            select(Submodule.id, Submodule.title).where(Submodule.id.in_(_submodule_uuids))).all()}
+
     for e in events:
         kind, title, subtitle, _code = _event_display(e)
         ev_meta = learning_meta_for_client(e.meta)
@@ -799,21 +840,11 @@ def my_history(
                 submodule_id = submodule_id or ctx.get("submodule_id")
                 submodule_title = submodule_title or ctx.get("submodule_title")
 
-            # If we only got IDs from meta, fill titles.
+            # Заголовки пришли из заранее собранных словарей, без запроса на событие.
             if module_id and not module_title:
-                try:
-                    row = db.execute(select(Module.id, Module.title).where(Module.id == uuid.UUID(module_id))).first()
-                    if row:
-                        module_title = str(row[1])
-                except Exception:
-                    pass
+                module_title = module_titles_for_events.get(str(module_id))
             if submodule_id and not submodule_title:
-                try:
-                    row = db.execute(select(Submodule.id, Submodule.title).where(Submodule.id == uuid.UUID(submodule_id))).first()
-                    if row:
-                        submodule_title = str(row[1])
-                except Exception:
-                    pass
+                submodule_title = submodule_titles_for_events.get(str(submodule_id))
 
         asset_id = assets_by_id.get(str(e.ref_id), {}).get("asset_id") if e.ref_id else None
         asset_name = assets_by_id.get(str(e.ref_id), {}).get("asset_name") if e.ref_id else None

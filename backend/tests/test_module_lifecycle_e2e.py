@@ -288,3 +288,7 @@ def test_assignment_status_reflects_real_progress(client, db, admin_headers, mak
         "assigned_to": str(learner.id), "type": "module", "target_id": module_id,
     })
     assert again.status_code == 404, again.text
+
+    # И уже выданное назначение не висит у ученика «в работе»: выполнить его нельзя.
+    items = client.get("/me/assignments", headers=learner_headers).json()["items"]
+    assert all(item["id"] != created.json()["id"] for item in items), items

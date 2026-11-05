@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
@@ -18,7 +18,7 @@ from app.db.session import get_db
 from app.models.attempt import QuizAttempt, QuizAttemptAnswer
 from app.models.audit import LearningEvent, LearningEventType
 from app.models.module import Submodule, Module
-from app.models.quiz import Question, QuestionType, Quiz, QuizType
+from app.models.quiz import Question, Quiz, QuizType
 from app.models.user import User
 from app.schemas.quiz import QuizStartResponse, QuizSubmitRequest, QuizSubmitResponse
 from app.services.skills import record_activity_and_award_xp

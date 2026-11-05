@@ -6,23 +6,18 @@ import mimetypes
 import pathlib
 import re
 import random
-import tempfile
 import time
 import uuid
-import zipfile
 import unicodedata
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from rq import get_current_job
 
-from app.core.config import settings
-from app.core.redis_client import get_redis
 from app.models.asset import ContentAsset
 from app.models.module import Module, Submodule
-from app.models.quiz import Question, QuestionType, Quiz, QuizType
+from app.models.quiz import Quiz, QuizType
 from app.models.submodule_asset import SubmoduleAssetMap
-from app.services.quiz_text import is_useful_quiz_text
 from app.services.content import lock_module, module_assets, normalize_name, preserve_progress, snapshot_asset, storage_key, require_owned_asset, snapshot_lesson
 from app.services.learning import remember_quiz_version
 from app.services.storage import effective_bucket, ensure_bucket_exists, get_s3_client, upload_fileobj_with_retry

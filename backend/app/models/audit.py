@@ -32,6 +32,12 @@ class LearningEvent(Base):
 
 
 # Same invariant as migration 0004, also enforced in SQLite test databases.
+# Журнал обучения читают по пользователю и по периоду: «моя активность» (последние
+# события), отчёты администратора и счётчик событий за месяц. Отдельные индексы по
+# user_id и created_at не покрывают сортировку внутри одного пользователя, поэтому
+# есть композитный индекс, а по created_at — для отчётов по всей платформе.
+Index("ix_learning_events_user_created_at", LearningEvent.user_id, LearningEvent.created_at)
+Index("ix_learning_events_created_at", LearningEvent.created_at)
 Index("ux_learning_events_read_once", LearningEvent.user_id, LearningEvent.ref_id, unique=True,
       postgresql_where=text("type = 'submodule_opened' AND meta = 'read'"),
       sqlite_where=text("type = 'submodule_opened' AND meta = 'read'"))

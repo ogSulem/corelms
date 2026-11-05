@@ -19,7 +19,6 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import HTTPException
 from rq import get_current_job
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
