@@ -62,3 +62,51 @@ def test_legacy_upgrade_backfills_completion_and_asset_ownership(monkeypatch):
     command.downgrade(cfg, "0020")
     command.upgrade(cfg, "head")
     engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_MIGRATION_DATABASE_URL"), reason="requires disposable PostgreSQL migration database")
+def test_hot_path_indexes_heal_after_interrupted_build(monkeypatch):
+    """Индекс, оставшийся INVALID от оборванного CONCURRENTLY, должен лечиться.
+
+    `CREATE INDEX CONCURRENTLY` умеет падать на середине (кончилось место, убили
+    контейнер, оборвался деплой). Такой индекс остаётся в каталоге, планировщик
+    его игнорирует, а `IF NOT EXISTS` при повторном запуске молча пропустит —
+    то есть быстрый поиск по журналу обучения «не применился», и никто этого не
+    заметит. Миграция должна увидеть invalid и пересоздать индекс.
+    """
+    from app.core.config import settings
+
+    url = os.environ["TEST_MIGRATION_DATABASE_URL"]
+    engine = create_engine(url)
+    with engine.begin() as connection:
+        connection.execute(text("DROP SCHEMA public CASCADE"))
+        connection.execute(text("CREATE SCHEMA public"))
+    monkeypatch.setattr(settings, "database_url", url)
+    root = Path(__file__).resolve().parents[1]
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "alembic"))
+    command.upgrade(cfg, "head")
+
+    names = ("ix_learning_events_user_created_at", "ix_learning_events_created_at", "ix_quiz_attempts_user_started_at")
+
+    def states() -> dict[str, bool]:
+        with engine.connect() as connection:
+            rows = connection.execute(text(
+                "SELECT c.relname, i.indisvalid FROM pg_index i "
+                "JOIN pg_class c ON c.oid = i.indexrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE c.relname = ANY(:names) AND n.nspname = current_schema()"
+            ), {"names": list(names)}).all()
+        return {str(name): bool(valid) for name, valid in rows}
+
+    assert states() == {name: True for name in names}
+
+    # Имитация оборванной сборки: индекса нет, а версия схемы откатывается на 0028.
+    with engine.begin() as connection:
+        connection.execute(text("DROP INDEX ix_quiz_attempts_user_started_at"))
+        connection.execute(text("UPDATE alembic_version SET version_num = '0028'"))
+    command.upgrade(cfg, "head")
+
+    assert states() == {name: True for name in names}
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0029"

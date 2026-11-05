@@ -225,7 +225,7 @@ cat <<NEXT
   docker compose ps
   docker compose exec -T backend alembic upgrade head
   docker compose exec -T backend python scripts/selfcheck.py
-  curl -sS https://<домен>/health/ready ; echo
+  curl -sS https://<домен>/api/health/ready ; echo
 
 Откат образов:
 $(show_rollback)
