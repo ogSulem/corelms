@@ -9,16 +9,9 @@ from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.core.security import get_current_user
 from app.services.storage import effective_bucket, get_s3_client
+from app.services.streaming import iter_s3_body
 
 router = APIRouter(prefix="/quickstart", tags=["quickstart"])
-
-
-def _body_iter(body):
-    while True:
-        chunk = body.read(1024 * 1024)
-        if not chunk:
-            break
-        yield chunk
 
 
 @router.get("/stream")
@@ -123,7 +116,7 @@ def stream_quickstart(
 
         status_code = 206 if ("Range" in kwargs) else 200
         return StreamingResponse(
-            _body_iter(body),
+            iter_s3_body(body, chunk_size=1024 * 1024),
             media_type=content_type,
             status_code=status_code,
             headers=headers,

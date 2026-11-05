@@ -11,7 +11,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, HTTPClientError, IncompleteReadError, ResponseStreamingError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,7 @@ from app.services.access import is_admin, accessible_modules_clause
 from app.services.document_preview import MAX_BYTES, build_preview, preview_slot
 from app.services.content import referenced_storage_keys
 from app.services.storage import get_s3_client, presign_get
+from app.services.streaming import iter_s3_body
 from app.services.thumbs import current_thumb, generate_thumb, thumb_kind
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -413,16 +414,6 @@ def stream_asset(
             end = None
             suffix_len = None
 
-    def _body_iter(body):
-        try:
-            while True:
-                chunk = body.read(1024 * 512)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            body.close()
-
     try:
         kwargs: dict[str, object] = {"Bucket": asset.bucket, "Key": object_key}
 
@@ -492,7 +483,7 @@ def stream_asset(
 
         status_code = 206 if ("Range" in kwargs) else 200
         resp = StreamingResponse(
-            _body_iter(body),
+            iter_s3_body(body),
             media_type=content_type,
             status_code=status_code,
             headers=headers,

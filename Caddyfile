@@ -46,7 +46,22 @@
     }
   }
 
-  # Backend health endpoints can be proxied directly.
+  # Здоровье API. Два пути к одному и тому же: `/api/health/*` — как в nginx и в
+  # инструкции обновления (`curl https://домен/api/health/ready`), `/health/*` —
+  # прежний адрес этого режима, оставлен, чтобы старые закладки и мониторинг не
+  # сломались. Порядок важен: префиксные обработчики Caddy разбирает сверху вниз.
+  handle /api/health/* {
+    uri strip_prefix /api
+    reverse_proxy backend:8000 {
+      header_up X-Real-IP {remote_host}
+      transport http {
+        dial_timeout 10s
+        read_timeout 60s
+        write_timeout 60s
+      }
+    }
+  }
+
   @health path /health/*
   handle @health {
     reverse_proxy backend:8000 {

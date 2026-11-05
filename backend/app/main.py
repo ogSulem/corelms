@@ -217,6 +217,16 @@ def create_app() -> FastAPI:
     async def unhandled_exception_handler(request: Request, exc: Exception):
         rid = _request_id(request)
 
+        # Клиент ушёл (закрыл вкладку, отвалился мобильный интернет) — это не
+        # ошибка сервера. Раньше такой обрыв попадал в журнал ошибок как 500 и
+        # администратор искал поломку там, где её нет.
+        from starlette.requests import ClientDisconnect
+
+        if isinstance(exc, ClientDisconnect):
+            logger.debug("client disconnected rid=%s path=%s", rid,
+                         getattr(getattr(request, "url", None), "path", ""))
+            return JSONResponse(status_code=499, content={"ok": False, "error_code": "client_disconnected"})
+
         # Исчерпанный пул соединений и недоступная база — это 503, а не 500:
         # пользователю нужно «повторите через минуту», а не «ошибка сервера».
         from sqlalchemy.exc import DBAPIError, OperationalError, TimeoutError as SATimeoutError
