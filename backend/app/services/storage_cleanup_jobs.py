@@ -6,6 +6,7 @@ import logging
 from rq import get_current_job
 
 from app.core.config import settings
+from app.core.timeutil import utc_iso
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal
 from app.services.content import referenced_storage_keys
@@ -92,7 +93,7 @@ def cleanup_admin_uploads_job(*, prefix: str = "uploads/admin/", ttl_hours: int 
         "ok": True,
         "prefix": prefix,
         "ttl_hours": ttl,
-        "cutoff": cutoff.isoformat(),
+        "cutoff": utc_iso(cutoff),
         "deleted_objects": int(deleted_objects),
         "deleted_bytes": int(deleted_bytes),
         "deleted_asset_rows": int(deleted_asset_rows),
@@ -235,7 +236,7 @@ def cleanup_admin_multipart_uploads_job(
         "ok": True,
         "prefix": prefix,
         "ttl_hours": ttl,
-        "cutoff": cutoff.isoformat(),
+        "cutoff": utc_iso(cutoff),
         "scanned_uploads": int(scanned),
         "aborted_uploads": int(aborted),
         "max_to_abort": int(cap),

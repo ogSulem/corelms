@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.timeutil import utc_iso
 from app.services.app_settings import get_ai_settings, get_platform_settings
 from app.services.import_limits import archive_max_bytes
 from app.models.media import AssetRendition, AssetThumb
@@ -213,7 +214,7 @@ def serialize_asset(asset: ContentAsset, *, submodule_id: uuid.UUID | None = Non
         "submodule_id": str(submodule_id) if submodule_id else None,
         # Готовая копия для браузера: её и показываем в превью, если формат оригинала не читается.
         "browser_copy": browser_copy,
-        "created_at": asset.created_at.isoformat(),
+        "created_at": utc_iso(asset.created_at),
     }
 
 

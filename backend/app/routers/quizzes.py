@@ -5,15 +5,17 @@ import random
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.redis_client import get_redis
 from app.core.rate_limit import rate_limit
 from app.core.security import get_current_user
+from app.core.timeutil import utc_iso, utcnow
 from app.db.session import get_db
 from app.models.attempt import QuizAttempt, QuizAttemptAnswer
 from app.models.audit import LearningEvent, LearningEventType
@@ -59,11 +61,18 @@ def _close_expired_attempt(*, db: Session, user: User, quiz: Quiz, session: dict
     ) or 0) + 1
     db.add(QuizAttempt(
         quiz_id=quiz.id, user_id=user.id, attempt_no=attempt_no,
-        started_at=datetime.utcfromtimestamp(started), finished_at=datetime.utcnow(),
+        # Осознанно aware-UTC: наивное значение timestamptz зависело бы от
+        # часового пояса сессии БД и разъезжалось с остальными отметками.
+        started_at=datetime.fromtimestamp(started, tz=timezone.utc), finished_at=utcnow(),
         session_id=session_id, score=0, passed=False,
         time_spent_seconds=int(limit or 0), xp_awarded=0,
     ))
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Другой запрос уже закрыл эту же попытку — не дублируем её.
+        db.rollback()
+        return False
     return True
 
 
@@ -482,6 +491,18 @@ def _submitted_result(db: Session, user: User, quiz: Quiz, session_id: str | Non
                               correct=correct, total=total, xp_awarded=attempt.xp_awarded, replayed=True)
 
 
+def _replay_or_conflict(db: Session, user: User, quiz: Quiz, session_id: str | None) -> QuizSubmitResponse:
+    """Проигравший гонку запрос откатывается и отдаёт результат первой попытки."""
+    db.rollback()
+    replay = _submitted_result(db, user, quiz, session_id)
+    if replay is not None:
+        return replay
+    raise HTTPException(409, {
+        "error_code": "attempt_already_finished",
+        "error_message": "Эта попытка уже завершена. Обновите страницу — результат сохранён.",
+    })
+
+
 @router.post("/{quiz_id}/submit", response_model=QuizSubmitResponse)
 def submit_quiz(
     quiz_id: str,
@@ -603,10 +624,16 @@ def submit_quiz(
         db.scalar(select(func.count(QuizAttempt.id)).where(QuizAttempt.quiz_id == quiz.id, QuizAttempt.user_id == user.id)) or 0
     ) + 1
 
-    attempt_started_at = datetime.utcfromtimestamp(started_at) if started_at else datetime.utcnow()
+    attempt_started_at = datetime.fromtimestamp(started_at, tz=timezone.utc) if started_at else utcnow()
     attempt = QuizAttempt(quiz_id=quiz.id, user_id=user.id, attempt_no=attempt_no, started_at=attempt_started_at, session_id=session_id)
     db.add(attempt)
-    db.flush()
+    try:
+        # Уникальный `session_id` — единственная защита от двух одновременных
+        # отправок (двойной клик, повтор после таймаута). Проигравший запрос
+        # обязан получить результат победителя, а не 500.
+        db.flush()
+    except IntegrityError:
+        return _replay_or_conflict(db, user, quiz, session_id)
 
     for qid in question_ids:
         q = qmap.get(qid)
@@ -621,7 +648,7 @@ def submit_quiz(
     score = int(round((correct / total) * 100)) if total > 0 else 0
     passed = score >= int(session.get("pass_threshold", quiz.pass_threshold))
 
-    attempt.finished_at = datetime.utcnow()
+    attempt.finished_at = utcnow()
     attempt.score = score
     attempt.passed = passed
     attempt.time_spent_seconds = time_spent
@@ -662,7 +689,12 @@ def submit_quiz(
     )
 
     LearningService(db).remember_completions(module, user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Тот же случай, но конфликт всплыл на коммите: ничего не записано
+        # повторно (XP, событие и ответы откатились вместе с транзакцией).
+        return _replay_or_conflict(db, user, quiz, session_id)
 
     try:
         if r is not None:
@@ -695,7 +727,7 @@ def latest_attempt_review(quiz_id: uuid.UUID, db: Session = Depends(get_db), use
     rows = list(db.execute(select(QuizAttemptAnswer, Question).join(Question, Question.id == QuizAttemptAnswer.question_id)
         .where(QuizAttemptAnswer.attempt_id == attempt.id).order_by(Question.position, Question.id)))
     return {"attempt": {"id": str(attempt.id), "score": attempt.score, "passed": attempt.passed,
-                        "attempt_no": attempt.attempt_no, "finished_at": attempt.finished_at.isoformat()},
+                        "attempt_no": attempt.attempt_no, "finished_at": utc_iso(attempt.finished_at)},
             "can_review": can_review, "attempts_remaining": max(0, quiz.attempts_limit - used) if quiz.attempts_limit else None,
             "questions": [{"id": str(q.id), "prompt": q.prompt, "type": q.type.value, "answer": a.answer,
                 **({"is_correct": a.is_correct, "correct_answer": q.correct_answer, "explanation": q.explanation} if can_review else {})}

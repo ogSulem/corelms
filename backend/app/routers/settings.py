@@ -391,6 +391,9 @@ class PlatformSettingsSave(BaseModel):
     session_refresh_days: int | None = None
     # Предел ZIP-архива модуля: None = «не менять» (старые клиенты его не шлют).
     zip_max_archive_bytes: int | None = None
+    # Политика входа: минимальная длина пароля и попыток входа в минуту.
+    password_min_length: int | None = None
+    login_attempts_per_minute: int | None = None
 
 
 def _storage_payload(db: Session) -> dict:
@@ -654,7 +657,9 @@ def write_platform_settings(
                                session_idle_hours=body.session_idle_hours,
                                session_absolute_days=body.session_absolute_days,
                                session_refresh_days=body.session_refresh_days,
-                               zip_max_archive_bytes=body.zip_max_archive_bytes)
+                               zip_max_archive_bytes=body.zip_max_archive_bytes,
+                               password_min_length=body.password_min_length,
+                               login_attempts_per_minute=body.login_attempts_per_minute)
     except SettingsValidationError as exc:
         db.rollback()
         raise HTTPException(422, str(exc))
@@ -668,7 +673,9 @@ def write_platform_settings(
                     "session_idle_hours": config.session_idle_hours,
                     "session_absolute_days": config.session_absolute_days,
                     "session_refresh_days": config.session_refresh_days,
-                    "zip_max_archive_bytes": config.zip_max_archive_bytes})
+                    "zip_max_archive_bytes": config.zip_max_archive_bytes,
+                    "password_min_length": config.password_min_length,
+                    "login_attempts_per_minute": config.login_attempts_per_minute})
     db.commit()
     return _ok({"settings": platform_settings_payload(config), "restart_required": False})
 

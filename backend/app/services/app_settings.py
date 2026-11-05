@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.redis_client import get_redis
 from app.core.secrets import SecretDecryptError, decrypt_secret, encrypt_secret
+from app.core.timeutil import utc_iso
 from app.db.session import SessionLocal
 from app.models.app_setting import AppSetting
 
@@ -118,7 +119,7 @@ def _read(db: Session | None, key: str) -> _RawSetting:
             value = {}
         if not isinstance(value, dict):
             value = {}
-        return _RawSetting(value=value, updated_at=row.updated_at.isoformat() if row.updated_at else None, exists=True)
+        return _RawSetting(value=value, updated_at=utc_iso(row.updated_at) if row.updated_at else None, exists=True)
     except SQLAlchemyError:
         # A deploy that has not run migration 0024 yet must still serve content
         # from environment variables instead of returning 500 for every editor.
@@ -830,6 +831,9 @@ class PlatformSettings:
     # Предел ZIP-архива модуля: тот же лимит проверяют предподписанная загрузка,
     # multipart, повторный импорт и воркер распаковки.
     zip_max_archive_bytes: int = 1024 ** 3
+    # Политика входа: минимальная длина пароля и предел попыток входа в минуту.
+    password_min_length: int = 8
+    login_attempts_per_minute: int = 10
 
 
 MIN_UPLOAD_BYTES = 1024 * 1024
@@ -838,6 +842,9 @@ MIN_ZIP_BYTES = 100 * 1024 * 1024
 MAX_ZIP_BYTES = 20 * 1024 * 1024 * 1024
 DEFAULT_ZIP_BYTES = 1024 ** 3
 MIN_IDLE_HOURS, MAX_IDLE_HOURS = 1, 168
+# Ниже 8 символов политику не опускаем даже из интерфейса.
+MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH = 8, 64
+MIN_LOGIN_ATTEMPTS, MAX_LOGIN_ATTEMPTS = 3, 60
 MIN_SESSION_DAYS, MAX_SESSION_DAYS = 1, 365
 
 
@@ -885,6 +892,10 @@ def get_platform_settings(db: Session | None = None) -> PlatformSettings:
                              MIN_SESSION_DAYS, MAX_SESSION_DAYS)
     refresh_days = _bounded("session_refresh_days", int(f"{getattr(settings, 'session_refresh_token_days', 30)}"),
                             MIN_SESSION_DAYS, MAX_SESSION_DAYS)
+    password_length = _bounded("password_min_length", int(getattr(settings, "password_min_length", 8) or 8),
+                               MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH)
+    login_attempts = _bounded("login_attempts_per_minute", int(getattr(settings, "login_attempts_per_minute", 10) or 10),
+                              MIN_LOGIN_ATTEMPTS, MAX_LOGIN_ATTEMPTS)
 
     return PlatformSettings(
         upload_max_bytes=upload,
@@ -893,6 +904,8 @@ def get_platform_settings(db: Session | None = None) -> PlatformSettings:
         session_absolute_days=absolute_days,
         session_refresh_days=refresh_days,
         zip_max_archive_bytes=zip_bytes,
+        password_min_length=password_length,
+        login_attempts_per_minute=login_attempts,
         sources=sources,
         stored=row.exists,
         updated_at=row.updated_at,
@@ -909,13 +922,19 @@ def save_platform_settings(
     session_absolute_days: int | None = None,
     session_refresh_days: int | None = None,
     zip_max_archive_bytes: int | None = None,
+    password_min_length: int | None = None,
+    login_attempts_per_minute: int | None = None,
 ) -> PlatformSettings:
     if not isinstance(upload_max_bytes, int) or not (MIN_UPLOAD_BYTES <= upload_max_bytes <= MAX_UPLOAD_BYTES):
         raise SettingsValidationError("Размер файла должен быть от 1 МБ до 20 ГБ")
     for value, low, high, label in ((session_idle_hours, MIN_IDLE_HOURS, MAX_IDLE_HOURS, "Простой сессии"),
                                     (session_absolute_days, MIN_SESSION_DAYS, MAX_SESSION_DAYS, "Срок сессии"),
                                     (session_refresh_days, MIN_SESSION_DAYS, MAX_SESSION_DAYS, "Обновление входа"),
-                                    (zip_max_archive_bytes, MIN_ZIP_BYTES, MAX_ZIP_BYTES, "Предел ZIP-архива")):
+                                    (zip_max_archive_bytes, MIN_ZIP_BYTES, MAX_ZIP_BYTES, "Предел ZIP-архива"),
+                                    (password_min_length, MIN_PASSWORD_LENGTH, MAX_PASSWORD_LENGTH,
+                                     "Минимальная длина пароля"),
+                                    (login_attempts_per_minute, MIN_LOGIN_ATTEMPTS, MAX_LOGIN_ATTEMPTS,
+                                     "Попыток входа в минуту")):
         if value is not None and (not isinstance(value, int) or not (low <= value <= high)):
             raise SettingsValidationError(f"{label}: допустимо от {low} до {high}")
     current = _read(db, PLATFORM_KEY)
@@ -931,6 +950,10 @@ def save_platform_settings(
         value["session_refresh_days"] = int(session_refresh_days)
     if zip_max_archive_bytes is not None:
         value["zip_max_archive_bytes"] = int(zip_max_archive_bytes)
+    if password_min_length is not None:
+        value["password_min_length"] = int(password_min_length)
+    if login_attempts_per_minute is not None:
+        value["login_attempts_per_minute"] = int(login_attempts_per_minute)
     _write(db, PLATFORM_KEY, value, actor_id=actor_id)
     return get_platform_settings(db)
 
@@ -947,6 +970,8 @@ def platform_settings_payload(config: PlatformSettings) -> dict:
         "session_absolute_days": config.session_absolute_days,
         "session_refresh_days": config.session_refresh_days,
         "zip_max_archive_bytes": config.zip_max_archive_bytes,
+        "password_min_length": config.password_min_length,
+        "login_attempts_per_minute": config.login_attempts_per_minute,
         "sources": config.sources,
         "stored": config.stored,
         "updated_at": config.updated_at,
@@ -957,9 +982,13 @@ def platform_settings_payload(config: PlatformSettings) -> dict:
             "session_absolute_days": int(getattr(settings, "session_absolute_timeout_days", 30) or 30),
             "session_refresh_days": int(getattr(settings, "session_refresh_token_days", 30) or 30),
             "zip_max_archive_bytes": int(getattr(settings, "import_zip_max_archive_bytes", DEFAULT_ZIP_BYTES) or DEFAULT_ZIP_BYTES),
+            "password_min_length": int(getattr(settings, "password_min_length", 8) or 8),
+            "login_attempts_per_minute": int(getattr(settings, "login_attempts_per_minute", 10) or 10),
         },
         "limits": {"min_upload_bytes": MIN_UPLOAD_BYTES, "max_upload_bytes": MAX_UPLOAD_BYTES,
                    "min_session_idle_hours": MIN_IDLE_HOURS, "max_session_idle_hours": MAX_IDLE_HOURS,
                    "min_session_days": MIN_SESSION_DAYS, "max_session_days": MAX_SESSION_DAYS,
-                   "min_zip_bytes": MIN_ZIP_BYTES, "max_zip_bytes": MAX_ZIP_BYTES},
+                   "min_zip_bytes": MIN_ZIP_BYTES, "max_zip_bytes": MAX_ZIP_BYTES,
+                   "min_password_length": MIN_PASSWORD_LENGTH, "max_password_length": MAX_PASSWORD_LENGTH,
+                   "min_login_attempts": MIN_LOGIN_ATTEMPTS, "max_login_attempts": MAX_LOGIN_ATTEMPTS},
     }

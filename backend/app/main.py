@@ -6,7 +6,6 @@ import logging
 import threading
 import time
 from pathlib import Path
-from datetime import datetime
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -18,6 +17,7 @@ from sqlalchemy import create_engine
 from sqlalchemy import select
 
 from app.core.config import settings
+from app.core.timeutil import utc_iso
 from app.core.domains import ascii_origin, split_origins
 from app.core.client_ip import client_ip_from_request
 from app.services import error_log
@@ -145,7 +145,7 @@ def create_app() -> FastAPI:
                     logger.info(
                         json.dumps(
                             {
-                                "ts": datetime.utcnow().isoformat(),
+                                "ts": utc_iso(),
                                 "rid": rid,
                                 "ip": ip,
                                 "user_id": getattr(getattr(request, "state", None), "user_id", None),

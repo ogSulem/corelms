@@ -23,6 +23,9 @@ class Settings(BaseSettings):
 
     allow_public_register: bool = Field(default=False, validation_alias="ALLOW_PUBLIC_REGISTER")
     password_min_length: int = Field(default=8, validation_alias="PASSWORD_MIN_LENGTH")
+    # Сколько неудачных попыток входа в минуту допускается на один логин.
+    # Значение из админки важнее env; env — только начальное.
+    login_attempts_per_minute: int = Field(default=10, validation_alias="LOGIN_ATTEMPTS_PER_MINUTE")
 
     public_app_url: str | None = Field(default=None, validation_alias="PUBLIC_APP_URL")
 

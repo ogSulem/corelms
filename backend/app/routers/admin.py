@@ -33,7 +33,7 @@ from app.core.config import settings
 from app.core.rate_limit import rate_limit
 from app.core.security import require_roles, require_roles_stream
 from app.core.security_audit_log import audit_log
-from app.core.timeutil import as_utc
+from app.core.timeutil import as_utc, parse_utc, utc_iso, utcnow
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal, get_db
 from app.models.assignment import Assignment, AssignmentStatus, AssignmentType
@@ -118,6 +118,7 @@ from app.services.storage import (
     s3_prefix_has_objects,
 )
 from app.services.openrouter_health import openrouter_healthcheck
+from app.services.auth_policy import ensure_password_complexity_or_422
 from app.services.app_settings import get_ai_settings, get_storage_settings
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -202,7 +203,9 @@ def _admin_jobs_pick_current(*, items: list[dict], history: list[dict]) -> dict 
                     v = str((x or {}).get(k) or "").strip()
                     if v:
                         try:
-                            return int(datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp() * 1000)
+                            parsed = parse_utc(v)
+                            if parsed is not None:
+                                return int(parsed.timestamp() * 1000)
                         except Exception:
                             continue
                 return 0
@@ -296,7 +299,7 @@ def admin_jobs_model(
         "rev": rev,
         "import": _admin_jobs_build_lane(kind="import", listing=imp),
         "regen": _admin_jobs_build_lane(kind="regen", listing=reg),
-        "ts": datetime.utcnow().isoformat(),
+        "ts": utc_iso(),
     }
 
 
@@ -597,7 +600,7 @@ def system_status(
         out["instance"] = {
             "app_env": str(getattr(settings, "app_env", "") or ""),
             "hostname": str(socket.gethostname() or ""),
-            "time_utc": datetime.utcnow().isoformat() + "Z",
+            "time_utc": utc_iso(),
             "python": str(os.getenv("PYTHON_VERSION") or ""),
             "public_app_url": str(getattr(settings, "public_app_url", "") or ""),
             "cors_allow_origins": str(getattr(settings, "cors_allow_origins", "") or ""),
@@ -837,7 +840,7 @@ def purge_modules_missing_storage(
 ):
     take = max(1, min(int(limit or 200), 1000))
 
-    mods = db.scalars(select(Module).order_by(Module.title).limit(take)).all()
+    mods = list(db.scalars(select(Module).order_by(Module.title).limit(take)))
     missing: list[Module] = []
     for m in mods:
         pfx = str(getattr(m, "storage_prefix", "") or "").strip() or f"modules/{str(m.id)}/"
@@ -913,16 +916,25 @@ def maintenance_thumbs_backfill(
     from app.models.media import AssetThumb
     from app.services.thumbs import enqueue_thumb, thumb_kind
 
+    candidates = list(db.scalars(select(ContentAsset).order_by(ContentAsset.created_at.desc()).limit(5000)))
+    # Один запрос вместо одного на файл: на 5000 строках это разница между
+    # «мгновенно» и несколькими секундами удержания рабочего потока.
+    ready_keys: set[tuple[uuid.UUID, int, str, str]] = set()
+    ids = [a.id for a in candidates]
+    for chunk_start in range(0, len(ids), 500):
+        chunk = ids[chunk_start:chunk_start + 500]
+        ready_keys.update(
+            (row.asset_id, int(row.source_version or 0), str(row.source_bucket or ""), str(row.source_object_key or ""))
+            for row in db.scalars(select(AssetThumb).where(AssetThumb.asset_id.in_(chunk),
+                                                          AssetThumb.state.in_({"ready", "processing"})))
+        )
     queued = 0
-    for asset in db.scalars(select(ContentAsset).order_by(ContentAsset.created_at.desc()).limit(5000)):
+    for asset in candidates:
         if queued >= limit:
             break
         if not thumb_kind(asset.original_filename):
             continue
-        row = db.scalar(select(AssetThumb).where(AssetThumb.asset_id == asset.id,
-            AssetThumb.source_version == asset.version, AssetThumb.source_bucket == asset.bucket,
-            AssetThumb.source_object_key == asset.object_key))
-        if row is not None and row.state in {"ready", "processing"}:
+        if (asset.id, int(asset.version or 0), str(asset.bucket or ""), str(asset.object_key or "")) in ready_keys:
             continue
         enqueue_thumb(asset.id)
         queued += 1
@@ -946,7 +958,15 @@ def maintenance_modules_storage_scan(
         return _degraded_storage_payload(problem, items=[], limit=int(take), sample_keys=int(sk))
     s3 = get_s3_client()
 
-    mods = db.scalars(select(Module).order_by(Module.title).limit(take)).all()
+    mods = list(db.scalars(select(Module).order_by(Module.title).limit(take)))
+    # Уроки всех модулей — одним запросом: диагностика не должна делать
+    # по запросу на каждый модуль (до 400 обращений подряд).
+    subs_by_module: dict[uuid.UUID, list[Submodule]] = {}
+    module_ids = [m.id for m in mods]
+    for chunk_start in range(0, len(module_ids), 200):
+        chunk = module_ids[chunk_start:chunk_start + 200]
+        for sub in db.scalars(select(Submodule).where(Submodule.module_id.in_(chunk)).order_by(Submodule.order)):
+            subs_by_module.setdefault(sub.module_id, []).append(sub)
 
     # Листинг S3 — сетевой вызов на каждый модуль. Ограничиваем общее время,
     # чтобы диагностика не висела минутами: лучше честный partial, чем таймаут.
@@ -960,7 +980,7 @@ def maintenance_modules_storage_scan(
         if pfx and (not pfx.endswith("/")):
             pfx = pfx + "/"
 
-        subs = db.scalars(select(Submodule).where(Submodule.module_id == m.id).order_by(Submodule.order)).all()
+        subs = subs_by_module.get(m.id, [])
         quiz_lessons = 0
         file_lessons = 0
         suspicious_quiz_lessons = 0
@@ -1659,7 +1679,7 @@ async def import_module_zip(
             "job_id": job.id,
             "object_key": object_key,
             "title": (effective_title or "").strip(),
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": utc_iso(),
             "actor_user_id": str(current.id),
             "source_filename": str(file.filename or "")[:200],
             "source": "legacy_multipart",
@@ -2725,7 +2745,7 @@ def enqueue_import_zip(
             "job_id": job.id,
             "object_key": object_key,
             "title": title or "",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": utc_iso(),
             "actor_user_id": str(current.id),
             "source_filename": str(body.source_filename or "")[:200],
             "source": "direct_s3",
@@ -2961,7 +2981,7 @@ def _admin_list_import_jobs(*, limit: int = 20, include_terminal: bool = False) 
                 "module_title": meta.get("module_title") or "",
                 "source_filename": meta.get("source_filename") or "",
                 "object_key": meta.get("object_key") or "",
-                "created_at": job.enqueued_at.isoformat() if getattr(job, "enqueued_at", None) else None,
+                "created_at": utc_iso(job.enqueued_at) if getattr(job, "enqueued_at", None) else None,
                 "status": st,
                 "stage": meta.get("stage"),
                 "stage_at": meta.get("stage_at"),
@@ -3008,7 +3028,7 @@ def _admin_list_import_jobs(*, limit: int = 20, include_terminal: bool = False) 
                 "module_title": meta.get("module_title") or "",
                 "source_filename": meta.get("source_filename") or "",
                 "object_key": meta.get("object_key") or "",
-                "created_at": job.enqueued_at.isoformat() if getattr(job, "enqueued_at", None) else None,
+                "created_at": utc_iso(job.enqueued_at) if getattr(job, "enqueued_at", None) else None,
                 "status": st,
                 "stage": meta.get("stage"),
                 "stage_at": meta.get("stage_at"),
@@ -3220,7 +3240,7 @@ def cancel_job(
     try:
         meta = dict(job.meta or {})
         meta["cancel_requested"] = True
-        meta["cancel_requested_at"] = datetime.utcnow().isoformat()
+        meta["cancel_requested_at"] = utc_iso()
         job.meta = meta
         job.save_meta()
     except Exception as exc:
@@ -4036,7 +4056,7 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
                 "submodule_id": meta.get("submodule_id") or "",
                 "submodule_title": meta.get("submodule_title") or "",
                 "target_questions": meta.get("target_questions"),
-                "created_at": job.enqueued_at.isoformat() if getattr(job, "enqueued_at", None) else None,
+                "created_at": utc_iso(job.enqueued_at) if getattr(job, "enqueued_at", None) else None,
                 "status": st,
                 "stage": meta.get("stage"),
                 "stage_at": meta.get("stage_at"),
@@ -4116,7 +4136,7 @@ def _admin_list_regen_jobs(*, limit: int = 20, include_terminal: bool = False) -
                 "submodule_id": meta.get("submodule_id") or "",
                 "submodule_title": meta.get("submodule_title") or "",
                 "target_questions": meta.get("target_questions"),
-                "created_at": job.enqueued_at.isoformat() if getattr(job, "enqueued_at", None) else None,
+                "created_at": utc_iso(job.enqueued_at) if getattr(job, "enqueued_at", None) else None,
                 "status": st0,
                 "stage": meta.get("stage"),
                 "stage_at": meta.get("stage_at"),
@@ -4306,7 +4326,7 @@ async def admin_job_events(
                 except Exception:
                     pass
 
-                now_ms = int(datetime.utcnow().timestamp() * 1000)
+                now_ms = int(time.time() * 1000)
                 timeout_s = max(0.25, (15000 - (now_ms - last_ping_ms)) / 1000.0) if last_ping_ms else 2.0
 
                 msg = None
@@ -4317,7 +4337,7 @@ async def admin_job_events(
                 except Exception:
                     msg = None
 
-                now_ms = int(datetime.utcnow().timestamp() * 1000)
+                now_ms = int(time.time() * 1000)
                 want_recompute = False
 
                 # Event-driven updates (fast path).
@@ -4341,7 +4361,7 @@ async def admin_job_events(
                             "rev": rev,
                             "import": _admin_jobs_build_lane(kind="import", listing=imp),
                             "regen": _admin_jobs_build_lane(kind="regen", listing=reg),
-                            "ts": datetime.utcnow().isoformat(),
+                            "ts": utc_iso(),
                         }
                         sig = ""
                         try:
@@ -4359,7 +4379,7 @@ async def admin_job_events(
                             # Keep the connection alive even if nothing changed.
                             yield "event: ping\ndata: {}\n\n"
 
-                now_ms = int(datetime.utcnow().timestamp() * 1000)
+                now_ms = int(time.time() * 1000)
                 if (not last_ping_ms) or (now_ms - last_ping_ms >= 15000):
                     last_ping_ms = now_ms
                     yield ": ping\n\n"
@@ -4522,9 +4542,9 @@ def job_status(
         "id": job.id,
         "status": status,
         "queue": str(getattr(job, "origin", "") or "").strip() or None,
-        "enqueued_at": job.enqueued_at.isoformat() if job.enqueued_at else None,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+        "enqueued_at": utc_iso(job.enqueued_at) if job.enqueued_at else None,
+        "started_at": utc_iso(job.started_at) if job.started_at else None,
+        "ended_at": utc_iso(job.ended_at) if job.ended_at else None,
         "job_kind": meta.get("job_kind"),
         "module_id": meta.get("module_id"),
         "module_title": meta.get("module_title"),
@@ -5287,8 +5307,8 @@ def list_admin_users(
                 "level": int(u.level or 0),
                 "streak": int(u.streak or 0),
                 "is_archived": bool(getattr(u, "is_archived", False)),
-                "last_activity_at": u.last_activity_at.isoformat() if getattr(u, "last_activity_at", None) else None,
-                "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
+                "last_activity_at": utc_iso(u.last_activity_at) if getattr(u, "last_activity_at", None) else None,
+                "created_at": utc_iso(u.created_at) if getattr(u, "created_at", None) else None,
                 "progress_summary": _safe_summary(u),
                 "tag_ids": _tag_ids(tag_ids_by_user.get(u.id, [])),
                 "tags": [tag_name_by_id.get(uuid.UUID(tid), "") for tid in _tag_ids(tag_ids_by_user.get(u.id, []))],
@@ -5462,7 +5482,7 @@ def get_user_detail(
             {
                 "id": str(ev.id),
                 "event_type": et_val,
-                "created_at": ev.created_at.isoformat(),
+                "created_at": utc_iso(ev.created_at),
                 "meta": meta_val or {},
                 "module_id": ctx.get("module_id"),
                 "module_title": ctx.get("module_title"),
@@ -5482,9 +5502,9 @@ def get_user_detail(
         "streak": int(u.streak or 0),
         "tag_ids": tag_ids,
         "must_change_password": bool(getattr(u, "must_change_password", False)),
-        "password_changed_at": u.password_changed_at.isoformat() if getattr(u, "password_changed_at", None) else None,
-        "last_activity_at": u.last_activity_at.isoformat() if getattr(u, "last_activity_at", None) else None,
-        "created_at": u.created_at.isoformat() if getattr(u, "created_at", None) else None,
+        "password_changed_at": utc_iso(u.password_changed_at) if getattr(u, "password_changed_at", None) else None,
+        "last_activity_at": utc_iso(u.last_activity_at) if getattr(u, "last_activity_at", None) else None,
+        "created_at": utc_iso(u.created_at) if getattr(u, "created_at", None) else None,
         "stats": {
             "assignments_total": int(assignments_total),
             "assignments_completed": int(assignments_completed),
@@ -5808,7 +5828,7 @@ def admin_user_history(
         items.append(
             {
                 "id": f"attempt:{a.id}",
-                "created_at": a.finished_at.isoformat() if a.finished_at else a.started_at.isoformat(),
+                "created_at": utc_iso(a.finished_at) if a.finished_at else utc_iso(a.started_at),
                 "kind": "quiz_attempt",
                 "title": "Тест завершён" if a.finished_at else "Тест в процессе",
                 "subtitle": (f"{int(a.score)}% · {'зачёт' if a.passed else 'не зачёт'}" if a.score is not None else None),
@@ -5894,7 +5914,7 @@ def admin_user_history(
         items.append(
             {
                 "id": str(e.id),
-                "created_at": e.created_at.isoformat(),
+                "created_at": utc_iso(e.created_at),
                 "kind": kind,
                 "title": title,
                 "subtitle": subtitle or asset_name,
@@ -5917,7 +5937,7 @@ def admin_user_history(
         items.append(
             {
                 "id": str(se.id),
-                "created_at": se.created_at.isoformat(),
+                "created_at": utc_iso(se.created_at),
                 "kind": "security",
                 "title": title,
                 "subtitle": subtitle,
@@ -6106,6 +6126,10 @@ def create_user(
 
     # Admin receives a temporary password (must be changed on first login).
     temp_password = str(body.password or "").strip() or _random_password(14)
+    # Явно заданный пароль подчиняется той же политике, что и смена своего:
+    # иначе админская форма создавала учётку со слабее настроенного минимума.
+    if str(body.password or "").strip():
+        ensure_password_complexity_or_422(temp_password, db=db)
 
     # Product invariant: user creation always creates an employee.
     # Role escalation (admin/superadmin) must be done explicitly via update flow
@@ -6164,9 +6188,11 @@ def reset_user_password(
 
     # Issue a temporary password (must be changed on first login).
     temp_password = str(body.password or "").strip() or _random_password(14)
+    if str(body.password or "").strip():
+        ensure_password_complexity_or_422(temp_password, db=db)
     user.password_hash = _hash_password(temp_password)
     user.must_change_password = bool(body.must_change_password)
-    user.password_changed_at = datetime.utcnow()
+    user.password_changed_at = utcnow()
     db.add(user)
     db.flush()
 
@@ -6211,14 +6237,14 @@ def create_user_reset_link(
         event_type="admin_reset_link_created",
         actor_user_id=current.id,
         target_user_id=user.id,
-        meta={"ttl_hours": password_reset.ttl_hours(), "expires_at": expires_at.isoformat()},
+        meta={"ttl_hours": password_reset.ttl_hours(), "expires_at": utc_iso(expires_at)},
     )
     db.commit()
 
     return {
         "ok": True,
         "url": password_reset.build_link(token),
-        "expires_at": expires_at.isoformat(),
+        "expires_at": utc_iso(expires_at),
         "ttl_hours": password_reset.ttl_hours(),
     }
 
@@ -6258,18 +6284,29 @@ def analytics_overview(
 
     attempts_by_module: dict[uuid.UUID, dict[str, float]] = defaultdict(lambda: {"count": 0, "passed": 0, "score_sum": 0.0})
     attempts_by_user: dict[uuid.UUID, dict[str, float]] = defaultdict(lambda: {"count": 0, "passed": 0, "score_sum": 0.0})
-    for user_id, quiz_id, score, passed in db.execute(
-        select(QuizAttempt.user_id, QuizAttempt.quiz_id, QuizAttempt.score, QuizAttempt.passed)
-        .where(QuizAttempt.finished_at.is_not(None))
+    # Итоги считает база: раньше сюда выгружалась каждая завершённая попытка,
+    # и страница «Результаты» держала в памяти всю историю платформы.
+    attempt_aggregates = (func.count(QuizAttempt.id),
+                          func.coalesce(func.sum(case((QuizAttempt.passed.is_(True), 1), else_=0)), 0),
+                          func.coalesce(func.sum(func.coalesce(QuizAttempt.score, 0)), 0))
+    finished_only = QuizAttempt.finished_at.is_not(None)
+    for user_id, count, passed, score_sum in db.execute(
+        select(QuizAttempt.user_id, *attempt_aggregates).where(finished_only).group_by(QuizAttempt.user_id)
     ).all():
-        score_value = float(score or 0)
-        for bucket, key in ((attempts_by_user, user_id), (attempts_by_module, quiz_to_module.get(quiz_id))):
-            if key is None:
-                continue
-            row = bucket[key]
-            row["count"] += 1
-            row["passed"] += int(bool(passed))
-            row["score_sum"] += score_value
+        row = attempts_by_user[user_id]
+        row["count"] += int(count or 0)
+        row["passed"] += int(passed or 0)
+        row["score_sum"] += float(score_sum or 0)
+    for quiz_id, count, passed, score_sum in db.execute(
+        select(QuizAttempt.quiz_id, *attempt_aggregates).where(finished_only).group_by(QuizAttempt.quiz_id)
+    ).all():
+        module_id = quiz_to_module.get(quiz_id)
+        if module_id is None:
+            continue
+        row = attempts_by_module[module_id]
+        row["count"] += int(count or 0)
+        row["passed"] += int(passed or 0)
+        row["score_sum"] += float(score_sum or 0)
 
     def _rate(passed: float, count: float) -> int:
         return round(passed / count * 100) if count else 0
@@ -6301,7 +6338,7 @@ def analytics_overview(
             "attempts": int(attempts_by_user[u.id]["count"]),
             "avg_score": _avg(attempts_by_user[u.id]["score_sum"], attempts_by_user[u.id]["count"]),
             "pass_rate": _rate(attempts_by_user[u.id]["passed"], attempts_by_user[u.id]["count"]),
-            "last_activity_at": u.last_activity_at.isoformat() if u.last_activity_at else None,
+            "last_activity_at": utc_iso(u.last_activity_at) if u.last_activity_at else None,
         }
         user_rows[u.id] = row
 
@@ -6357,7 +6394,7 @@ def analytics_overview(
     started_pairs = sum(row["started"] for row in module_rows.values())
 
     return {
-        "generated_at": now.isoformat(),
+        "generated_at": utc_iso(now),
         "totals": {
             "users": len(users),
             "employees": sum(1 for u in users if u.role not in {UserRole.admin, UserRole.superadmin}),

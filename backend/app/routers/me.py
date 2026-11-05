@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.security import get_current_user
+from app.core.timeutil import parse_utc, utc_iso
 from app.db.session import get_db
 from app.models.completion import LessonQuizVersion
 from app.models.attempt import QuizAttempt
@@ -68,7 +69,7 @@ def my_profile(user: User = Depends(get_current_user)):
         "xp": int(user.xp),
         "level": int(user.level),
         "streak": int(user.streak),
-        "last_activity_at": user.last_activity_at.isoformat() if user.last_activity_at else None,
+        "last_activity_at": utc_iso(user.last_activity_at) if user.last_activity_at else None,
     }
 
 
@@ -155,9 +156,10 @@ def my_activity_feed(
         duration_seconds = None
         try:
             if a.get("started_at") and a.get("finished_at"):
-                started = datetime.fromisoformat(str(a.get("started_at")))
-                finished = datetime.fromisoformat(str(a.get("finished_at")))
-                duration_seconds = int(max(0, (finished - started).total_seconds()))
+                started = parse_utc(a.get("started_at"))
+                finished = parse_utc(a.get("finished_at"))
+                if started and finished:
+                    duration_seconds = int(max(0, (finished - started).total_seconds()))
         except Exception:
             duration_seconds = None
         subtitle_parts = []
@@ -314,7 +316,7 @@ def my_assignments(db: Session = Depends(get_db), user: User = Depends(get_curre
             "target_id": str(a.target_id),
             "status": status,
             "priority": a.priority,
-            "deadline": a.deadline.isoformat() if a.deadline else None,
+            "deadline": utc_iso(a.deadline) if a.deadline else None,
             "title": (module_titles.get(a.target_id) if is_module else skill_titles.get(a.target_id)),
             "href": (f"/modules/{a.target_id}" if is_module else None),
         })
@@ -443,8 +445,8 @@ def my_recent_activity(db: Session = Depends(get_db), user: User = Depends(get_c
                 "attempt_no": int(a.attempt_no),
                 "score": int(a.score) if a.score is not None else None,
                 "passed": bool(a.passed),
-                "started_at": a.started_at.isoformat(),
-                "finished_at": a.finished_at.isoformat() if a.finished_at else None,
+                "started_at": utc_iso(a.started_at),
+                "finished_at": utc_iso(a.finished_at) if a.finished_at else None,
                 "module_id": subs_by_quiz.get(str(a.quiz_id), {}).get("module_id"),
                 "module_title": subs_by_quiz.get(str(a.quiz_id), {}).get("module_title"),
                 "submodule_id": subs_by_quiz.get(str(a.quiz_id), {}).get("submodule_id"),
@@ -461,7 +463,7 @@ def my_recent_activity(db: Session = Depends(get_db), user: User = Depends(get_c
             {
                 "type": e.type.value,
                 "ref_id": str(e.ref_id) if e.ref_id else None,
-                "created_at": e.created_at.isoformat(),
+                "created_at": utc_iso(e.created_at),
                 "meta": learning_meta_for_client(e.meta),
                 "title": _event_title(e)[0],
                 "subtitle": _event_title(e)[1],
@@ -737,7 +739,7 @@ def my_history(
         items.append(
             {
                 "id": f"attempt:{a.id}",
-                "created_at": a.finished_at.isoformat() if a.finished_at else a.started_at.isoformat(),
+                "created_at": utc_iso(a.finished_at) if a.finished_at else utc_iso(a.started_at),
                 "kind": "quiz_attempt",
                 "title": "Тест завершён" if a.finished_at else "Тест в процессе",
                 "subtitle": (
@@ -772,7 +774,7 @@ def my_history(
         items.append(
             {
                 "id": f"security:{se.id}",
-                "created_at": se.created_at.isoformat(),
+                "created_at": utc_iso(se.created_at),
                 "kind": "security",
                 "title": title,
                 "subtitle": subtitle,
@@ -875,7 +877,7 @@ def my_history(
 
         item = {
             "id": f"event:{e.id}",
-            "created_at": e.created_at.isoformat(),
+            "created_at": utc_iso(e.created_at),
             "kind": kind,
             "title": title,
             "subtitle": subtitle or asset_name,

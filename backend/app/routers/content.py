@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.queue import get_queue, fetch_job, get_job_status, release_job_lock
 from app.core.redis_client import get_redis
 from app.core.rate_limit import rate_limit
+from app.core.timeutil import utc_iso
 from app.core.security import require_roles
 from app.core.security_audit_log import audit_log
 from app.db.session import get_db
@@ -248,7 +249,7 @@ def lesson_versions(module_id: uuid.UUID, lesson_id: uuid.UUID, db: Session = De
                          .order_by(LessonRevision.version.desc())).all()
     # Text is fetched separately, not repeated for every history entry.
     return {"current_version": lesson.content_version, "items": [
-        {"version": v.version, "created_at": v.created_at.isoformat(), "content_mode": v.content_mode}
+        {"version": v.version, "created_at": utc_iso(v.created_at), "content_mode": v.content_mode}
         for v in versions]}
 
 
@@ -738,7 +739,7 @@ def asset_versions(module_id: uuid.UUID, asset_id: uuid.UUID, db: Session = Depe
     asset = require_owned_asset(db, module, asset_id)
     versions = list(db.scalars(select(AssetRevision).where(AssetRevision.asset_id == asset.id).order_by(AssetRevision.version.desc())))
     return {"current_version": asset.version, "items": [{"version": v.version, "filename": v.original_filename,
-            "size_bytes": v.size_bytes, "created_at": v.created_at.isoformat()} for v in versions]}
+            "size_bytes": v.size_bytes, "created_at": utc_iso(v.created_at)} for v in versions]}
 
 
 @router.post("/{module_id}/assets/{asset_id}/restore-version")

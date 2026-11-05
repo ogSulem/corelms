@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from app.core.config import settings  # noqa: F401 - compatibility with diagnostics/tests
 from app.core.queue import release_job_lock
 from app.core.redis_client import get_redis
+from app.core.timeutil import parse_utc
 from app.services.app_settings import get_sales_settings
 from app.services.google_sheets import read_sales_snapshot
 
@@ -112,8 +113,8 @@ def get_sales_links_payload(*, bypass_cache: bool = False) -> dict:
     cached, fresh_until = _memory.get(key, (None, 0))
     if cached:
         try:
-            age = datetime.now(timezone.utc) - datetime.fromisoformat(cached["last_success_at"])
-            if age.total_seconds() > 7 * 86400:
+            last_ok = parse_utc(cached.get("last_success_at"))
+            if last_ok is None or (datetime.now(timezone.utc) - last_ok).total_seconds() > 7 * 86400:
                 cached, fresh_until = None, 0
         except (KeyError, TypeError, ValueError):
             cached, fresh_until = None, 0

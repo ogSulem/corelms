@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 import uuid
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.redis_client import get_redis
 from app.core.security import get_current_user, get_current_user_stream
 from app.core.rate_limit import rate_limit
+from app.core.timeutil import utc_iso
 from app.db.session import get_db
 from app.models.asset import ContentAsset
 from app.models.audit import LearningEvent, LearningEventType
@@ -134,7 +135,7 @@ async def modules_events(request: Request, user: User = Depends(get_current_user
                 except Exception:
                     pass
 
-                now_ms = int(datetime.utcnow().timestamp() * 1000)
+                now_ms = int(time.time() * 1000)
                 timeout_s = max(0.25, (15000 - (now_ms - last_ping_ms)) / 1000.0) if last_ping_ms else 2.0
 
                 try:
@@ -151,7 +152,7 @@ async def modules_events(request: Request, user: User = Depends(get_current_user
 
                 if rev and rev > last_rev:
                     last_rev = rev
-                    payload = {"rev": int(rev), "ts": datetime.utcnow().isoformat()}
+                    payload = {"rev": int(rev), "ts": utc_iso()}
                     sig = ""
                     try:
                         sig = json.dumps(payload, ensure_ascii=False, sort_keys=True)
@@ -162,7 +163,7 @@ async def modules_events(request: Request, user: User = Depends(get_current_user
                         data = json.dumps(payload, ensure_ascii=False)
                         yield f"event: modules\ndata: {data}\n\n"
 
-                now_ms = int(datetime.utcnow().timestamp() * 1000)
+                now_ms = int(time.time() * 1000)
                 if (not last_ping_ms) or (now_ms - last_ping_ms >= 15000):
                     last_ping_ms = now_ms
                     yield ": ping\n\n"
