@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.timeutil import utc_iso
 from app.models.asset import ContentAsset
 from app.models.attempt import QuizAttempt
 from app.models.audit import LearningEvent, LearningEventType
@@ -234,7 +235,7 @@ class LearningService:
                     "final_submodule_id": None, "final_quiz_id": str(final_id) if final_id else None,
                     "final_passed": final_passed, "final_best_score": final_score,
                     "completed": bool(achievement or current_completed), "current_completed": current_completed,
-                    "completed_at": achievement.completed_at.isoformat() if achievement else None,
+                    "completed_at": utc_iso(achievement.completed_at) if achievement else None,
                     "completed_revision": achievement.content_revision if achievement else None,
                     # content_revision — токен редактора (для совместимости фронтенда),
                     # learning_revision — «то, что видит ученик»: по нему считаются обновления.
@@ -274,7 +275,7 @@ class LearningService:
         results = self._calculate(users, [module], compact=True)
         return [{
             **results[(u.id, module.id)], "user_id": str(u.id), "name": u.name,
-            "role": u.role.value, "last_activity": u.last_activity_at.isoformat() if u.last_activity_at else None,
+            "role": u.role.value, "last_activity": utc_iso(u.last_activity_at) if u.last_activity_at else None,
         } for u in users]
 
     def remember_completions(self, module: Module, user: User | None = None) -> int:

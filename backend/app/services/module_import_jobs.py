@@ -12,7 +12,6 @@ import time
 import unicodedata
 import uuid
 import zipfile
-from datetime import datetime
 
 from botocore.exceptions import ClientError
 from boto3.s3.transfer import TransferConfig
@@ -21,6 +20,7 @@ from rq import get_current_job
 from sqlalchemy import or_, select
 
 from app.core.queue import get_job_status, release_job_lock
+from app.core.timeutil import utc_iso, utcnow, parse_utc
 from app.core.config import settings
 from app.core.redis_client import get_redis
 from app.db.session import SessionLocal
@@ -89,13 +89,13 @@ def _persist_job_snapshot(*, job, meta: dict) -> None:
         payload = {
             "id": job_id,
             "status": get_job_status(job),
-            "enqueued_at": job.enqueued_at.isoformat() if getattr(job, "enqueued_at", None) else None,
-            "started_at": job.started_at.isoformat() if getattr(job, "started_at", None) else None,
-            "ended_at": job.ended_at.isoformat() if getattr(job, "ended_at", None) else None,
+            "enqueued_at": utc_iso(job.enqueued_at) if getattr(job, "enqueued_at", None) else None,
+            "started_at": utc_iso(job.started_at) if getattr(job, "started_at", None) else None,
+            "ended_at": utc_iso(job.ended_at) if getattr(job, "ended_at", None) else None,
             "queue": str(getattr(job, "origin", "") or "").strip() or None,
             "meta": meta,
             "result": result_payload,
-            "ts": datetime.utcnow().isoformat(),
+            "ts": utc_iso(),
         }
         r = get_redis()
         r.set(f"admin:job_snapshot:{job_id}", json.dumps(payload, ensure_ascii=False))
@@ -127,7 +127,7 @@ def _publish_admin_jobs_changed(*, job) -> None:
 
 def _publish_admin_jobs_changed_throttled(*, job, meta: dict, force: bool = False) -> None:
     try:
-        now_ms = int(datetime.utcnow().timestamp() * 1000)
+        now_ms = int(time.time() * 1000)
         last_ms = 0
         try:
             last_ms = int(meta.get("_admin_jobs_pub_at_ms") or 0)
@@ -150,7 +150,7 @@ def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
         return
 
     try:
-        now = datetime.utcnow()
+        now = utcnow()
         meta = dict(job.meta or {})
 
         # Stage timing
@@ -160,12 +160,14 @@ def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
         prev_stage = str(meta.get("stage") or "")
         prev_started_at = str(meta.get("stage_started_at") or "")
         if not meta.get("job_started_at"):
-            meta["job_started_at"] = now.isoformat()
+            meta["job_started_at"] = utc_iso(now)
 
         if prev_stage and prev_started_at and prev_stage != str(stage):
             try:
-                prev_dt = datetime.fromisoformat(prev_started_at)
-                dur = max(0.0, (now - prev_dt).total_seconds())
+                # Мета прошлых версий писала время без зоны: parse_utc считает
+                # такое значение UTC, и разница остаётся верной после обновления.
+                prev_dt = parse_utc(prev_started_at)
+                dur = max(0.0, (now - prev_dt).total_seconds()) if prev_dt else 0.0
                 durs = dict(meta.get("stage_durations_s") or {})
                 durs[prev_stage] = float(durs.get(prev_stage) or 0.0) + float(dur)
                 meta["stage_durations_s"] = durs
@@ -173,8 +175,8 @@ def _set_job_stage(*, stage: str, detail: str | None = None) -> None:
                 pass
 
         meta["stage"] = str(stage)
-        meta["stage_at"] = now.isoformat()
-        meta["stage_started_at"] = now.isoformat()
+        meta["stage_at"] = utc_iso(now)
+        meta["stage_started_at"] = utc_iso(now)
         if detail is not None:
             meta["detail"] = str(detail)
         _publish_admin_jobs_changed_throttled(job=job, meta=meta, force=True)
@@ -192,15 +194,15 @@ def _job_heartbeat(*, detail: str | None = None) -> None:
         return
 
     try:
-        now_dt = datetime.utcnow()
-        now = now_dt.isoformat()
+        now_dt = utcnow()
+        now = utc_iso(now_dt)
         meta = dict(job.meta or {})
 
         try:
             last = str(meta.get("_heartbeat_at") or "").strip()
             if last:
-                last_dt = datetime.fromisoformat(last)
-                if (now_dt - last_dt).total_seconds() < 3:
+                last_dt = parse_utc(last)
+                if last_dt and (now_dt - last_dt).total_seconds() < 3:
                     return
         except Exception:
             pass

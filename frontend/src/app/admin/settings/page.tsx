@@ -66,6 +66,8 @@ type PlatformSettings = {
   session_absolute_days: number;
   session_refresh_days: number;
   zip_max_archive_bytes: number;
+  password_min_length: number;
+  login_attempts_per_minute: number;
   sources: Record<string, string>;
   stored: boolean;
   updated_at: string | null;
@@ -76,6 +78,8 @@ type PlatformSettings = {
     session_absolute_days: number;
     session_refresh_days: number;
     zip_max_archive_bytes: number;
+    password_min_length: number;
+    login_attempts_per_minute: number;
   };
   limits: {
     min_upload_bytes: number;
@@ -86,6 +90,10 @@ type PlatformSettings = {
     max_session_days: number;
     min_zip_bytes: number;
     max_zip_bytes: number;
+    min_password_length: number;
+    max_password_length: number;
+    min_login_attempts: number;
+    max_login_attempts: number;
   };
 };
 
@@ -191,7 +199,7 @@ export default function AdminSettingsPage() {
   const [testingStorage, setTestingStorage] = useState(false);
   const [storageTest, setStorageTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [platform, setPlatform] = useState<PlatformSettings | null>(null);
-  const [platformDraft, setPlatformDraft] = useState({ upload_mb: 512, zip_mb: 1024, allow_public_register: false, session_idle_hours: 12, session_absolute_days: 30, session_refresh_days: 30 });
+  const [platformDraft, setPlatformDraft] = useState({ upload_mb: 512, zip_mb: 1024, allow_public_register: false, session_idle_hours: 12, session_absolute_days: 30, session_refresh_days: 30, password_min_length: 8, login_attempts_per_minute: 10 });
   const [savingPlatform, setSavingPlatform] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loadingData, setLoadingData] = useState(true);
@@ -235,7 +243,13 @@ export default function AdminSettingsPage() {
     && platformDraft.session_idle_hours >= 1 && platformDraft.session_idle_hours <= 168
     && platformDraft.session_absolute_days >= 1 && platformDraft.session_absolute_days <= 365
     && platformDraft.session_refresh_days >= 1 && platformDraft.session_refresh_days <= 365
-    && Number.isFinite(platformDraft.zip_mb) && platformDraft.zip_mb >= 100 && platformDraft.zip_mb <= 20480;
+    && Number.isFinite(platformDraft.zip_mb) && platformDraft.zip_mb >= 100 && platformDraft.zip_mb <= 20480
+    && Number.isFinite(platformDraft.password_min_length)
+    && platformDraft.password_min_length >= (platform?.limits.min_password_length ?? 8)
+    && platformDraft.password_min_length <= (platform?.limits.max_password_length ?? 64)
+    && Number.isFinite(platformDraft.login_attempts_per_minute)
+    && platformDraft.login_attempts_per_minute >= (platform?.limits.min_login_attempts ?? 3)
+    && platformDraft.login_attempts_per_minute <= (platform?.limits.max_login_attempts ?? 60);
 
   const applyPlatform = useCallback((data: PlatformSettings) => {
     setPlatform(data);
@@ -246,6 +260,8 @@ export default function AdminSettingsPage() {
       session_idle_hours: data.session_idle_hours,
       session_absolute_days: data.session_absolute_days,
       session_refresh_days: data.session_refresh_days,
+      password_min_length: data.password_min_length,
+      login_attempts_per_minute: data.login_attempts_per_minute,
     });
   }, []);
 
@@ -585,6 +601,8 @@ export default function AdminSettingsPage() {
           session_absolute_days: platformDraft.session_absolute_days,
           session_refresh_days: platformDraft.session_refresh_days,
           zip_max_archive_bytes: Math.round(Number(platformDraft.zip_mb) * 1024 * 1024),
+          password_min_length: Number(platformDraft.password_min_length),
+          login_attempts_per_minute: Number(platformDraft.login_attempts_per_minute),
         }),
       });
       applyPlatform(data.settings);
@@ -1050,6 +1068,45 @@ export default function AdminSettingsPage() {
                   <span className="block text-xs font-normal leading-5 text-zinc-500">Сколько браузер помнит вход, не спрашивая пароль снова.</span>
                 </label>
               </div>
+              <div className="mt-6 border-t border-zinc-200 pt-5">
+                <h3 className="text-sm font-semibold text-zinc-900">Вход и пароли</h3>
+                <p className="mt-1 text-xs leading-5 text-zinc-500">
+                  Действует сразу для входа, смены пароля, сброса по ссылке и создания пользователя администратором.
+                </p>
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <label className="block space-y-2 text-sm font-medium">
+                    Минимальная длина пароля, символов
+                    <input
+                      type="number"
+                      min={platform?.limits.min_password_length ?? 8}
+                      max={platform?.limits.max_password_length ?? 64}
+                      className={field}
+                      value={platformDraft.password_min_length}
+                      onChange={(event) => setPlatformDraft((prev) => ({ ...prev, password_min_length: Number(event.target.value) }))}
+                    />
+                    <span className="block text-xs font-normal leading-5 text-zinc-500">
+                      От {platform?.limits.min_password_length ?? 8} до {platform?.limits.max_password_length ?? 64}. Ниже 8 символов опустить нельзя.
+                      В <code className="rounded bg-zinc-100 px-1 py-0.5">.env</code>: {platform ? platform.env.password_min_length : "—"}.
+                    </span>
+                  </label>
+                  <label className="block space-y-2 text-sm font-medium">
+                    Попыток входа в минуту на один логин
+                    <input
+                      type="number"
+                      min={platform?.limits.min_login_attempts ?? 3}
+                      max={platform?.limits.max_login_attempts ?? 60}
+                      className={field}
+                      value={platformDraft.login_attempts_per_minute}
+                      onChange={(event) => setPlatformDraft((prev) => ({ ...prev, login_attempts_per_minute: Number(event.target.value) }))}
+                    />
+                    <span className="block text-xs font-normal leading-5 text-zinc-500">
+                      От {platform?.limits.min_login_attempts ?? 3} до {platform?.limits.max_login_attempts ?? 60}. Защита от подбора пароля; слишком строгий предел мешает офису за одним адресом.
+                      В <code className="rounded bg-zinc-100 px-1 py-0.5">.env</code>: {platform ? platform.env.login_attempts_per_minute : "—"}.
+                    </span>
+                  </label>
+                </div>
+              </div>
+
               <p className="mt-3 text-xs leading-5 text-zinc-500">Новые сроки действуют при следующем входе; уже открытые сессии завершатся по своим прежним правилам. Принудительно завершить все сессии можно в «Профиле».</p>
 
               <div className="mt-5 flex flex-wrap gap-2">

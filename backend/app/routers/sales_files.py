@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.rate_limit import rate_limit
 from app.core.security import get_current_user, require_roles
+from app.core.timeutil import utc_iso
 from app.core.security_audit_log import audit_log
 from app.db.session import get_db
 from app.services.app_settings import get_platform_settings
@@ -349,7 +350,7 @@ def file_versions(entry_id: uuid.UUID, db: Session = Depends(get_db), user: User
     asset = db.get(ContentAsset, entry.asset_id)
     rows = list(db.scalars(select(AssetRevision).where(AssetRevision.asset_id == asset.id).order_by(AssetRevision.version.desc())))
     return {"current_version": asset.version, "items": [{"version": r.version, "filename": r.original_filename,
-        "size_bytes": r.size_bytes, "created_at": r.created_at.isoformat()} for r in rows]}
+        "size_bytes": r.size_bytes, "created_at": utc_iso(r.created_at)} for r in rows]}
 
 
 @router.post("/entries/{entry_id}/restore-version")

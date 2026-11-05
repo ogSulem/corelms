@@ -22,6 +22,7 @@ from app.core.security_audit_log import audit_log
 from app.core.security import get_current_user
 from app.core.tokens import create_access_token, password_version
 from app.services import auth_sessions
+from app.services.auth_policy import ensure_password_or_400, login_attempts_per_minute
 from app.services.app_settings import get_platform_settings
 from app.db.session import get_db
 from app.models.security_audit import SecurityAuditEvent
@@ -160,8 +161,7 @@ def reset_password_confirm(
     if not token_raw:
         raise HTTPException(status_code=400, detail="invalid token")
 
-    if not body.new_password or len(body.new_password) < int(settings.password_min_length or 0):
-        raise HTTPException(status_code=400, detail="password too short")
+    ensure_password_or_400(body.new_password, db=db)
 
     if body.confirm_password is not None and str(body.confirm_password) != str(body.new_password):
         raise HTTPException(status_code=400, detail="passwords do not match")
@@ -336,8 +336,7 @@ def register(
     if not get_platform_settings(db).allow_public_register:
         raise HTTPException(status_code=403, detail="registration disabled")
 
-    if not payload.password or len(payload.password) < int(settings.password_min_length or 0):
-        raise HTTPException(status_code=400, detail="password too short")
+    ensure_password_or_400(payload.password, db=db)
 
     email_norm = _normalize_email(payload.email)
 
@@ -385,8 +384,9 @@ def token(
     login_norm = login_raw.lower()
 
     if login_norm:
-        # 10 неудачных попыток в минуту на один логин — независимо от адреса.
-        hit(key=f"rl:auth_login:{login_norm}", limit=10, window_seconds=60)
+        # Предел попыток на один логин — независимо от адреса; значение
+        # настраивается в админке (по умолчанию 10 в минуту).
+        hit(key=f"rl:auth_login:{login_norm}", limit=login_attempts_per_minute(db), window_seconds=60)
 
     user = None
     if "@" in login_norm:
@@ -634,8 +634,7 @@ def change_password(
         db.commit()
         raise HTTPException(status_code=400, detail="Текущий пароль неверен")
 
-    if not body.new_password or len(body.new_password) < int(settings.password_min_length or 0):
-        raise HTTPException(status_code=400, detail="password too short")
+    ensure_password_or_400(body.new_password, db=db)
 
     if body.confirm_password is not None and body.confirm_password != body.new_password:
         raise HTTPException(422, "Пароли не совпадают")
