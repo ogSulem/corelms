@@ -98,8 +98,7 @@ def _persist_job_snapshot(*, job, meta: dict) -> None:
             "ts": utc_iso(),
         }
         r = get_redis()
-        r.set(f"admin:job_snapshot:{job_id}", json.dumps(payload, ensure_ascii=False))
-        r.expire(f"admin:job_snapshot:{job_id}", 60 * 60 * 24 * 30)
+        r.set(f"admin:job_snapshot:{job_id}", json.dumps(payload, ensure_ascii=False), ex=60 * 60 * 24 * 30)
     except Exception:
         return
 
@@ -107,11 +106,11 @@ def _persist_job_snapshot(*, job, meta: dict) -> None:
 def _bump_admin_jobs_rev() -> None:
     try:
         r = get_redis()
-        r.incr("admin:jobs:rev")
-        try:
-            r.expire("admin:jobs:rev", 60 * 60 * 24 * 30)
-        except Exception:
-            log.debug("_bump_admin_jobs_rev: expire failed", exc_info=True)
+        # INCR и TTL одной транзакцией: иначе ключ без TTL переживал бы перезапуск.
+        with r.pipeline() as pipe:
+            pipe.incr("admin:jobs:rev")
+            pipe.expire("admin:jobs:rev", 60 * 60 * 24 * 30, nx=True)
+            pipe.execute()
     except Exception:
         return
 
@@ -513,8 +512,7 @@ def _run_import_module_zip_job(
         except Exception:
             return
         try:
-            r.set(_regen_dedupe_key(module_id), str(regen_job_id).strip())
-            r.expire(_regen_dedupe_key(module_id), 60 * 60 * 6)
+            r.set(_regen_dedupe_key(module_id), str(regen_job_id).strip(), ex=60 * 60 * 6)
         except Exception:
             pass
 
@@ -877,10 +875,8 @@ def _run_import_module_zip_job(
             if sha256:
                 try:
                     r = get_redis()
-                    r.set(f"admin:import_zip_sha256_to_module_id:{sha256}", str(mid))
-                    r.expire(f"admin:import_zip_sha256_to_module_id:{sha256}", 60 * 60 * 24 * 30)
-                    r.set(f"admin:import_zip_sha256_by_module_id:{str(mid)}", sha256)
-                    r.expire(f"admin:import_zip_sha256_by_module_id:{str(mid)}", 60 * 60 * 24 * 30)
+                    r.set(f"admin:import_zip_sha256_to_module_id:{sha256}", str(mid), ex=60 * 60 * 24 * 30)
+                    r.set(f"admin:import_zip_sha256_by_module_id:{str(mid)}", sha256, ex=60 * 60 * 24 * 30)
                 except Exception:
                     log.debug("import_module_zip_job: failed to persist zip sha256 idempotency mapping", exc_info=True)
 

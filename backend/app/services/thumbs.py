@@ -44,6 +44,15 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def thumb_extensions() -> set[str]:
+    """Все расширения, для которых делается превью (в нижнем регистре, без точки).
+
+    Нужен, чтобы фильтровать файлы в SQL, а не выгружать весь каталог в память:
+    источник правды остаётся один — `thumb_kind`.
+    """
+    return set(IMAGE_EXTENSIONS) | set(VIDEO_EXTENSIONS)
+
+
 def thumb_kind(filename: str | None) -> str | None:
     ext = pathlib.PurePosixPath(str(filename or "")).suffix.lower().lstrip(".")
     if ext in IMAGE_EXTENSIONS:

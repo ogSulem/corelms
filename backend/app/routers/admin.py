@@ -181,11 +181,10 @@ def _admin_jobs_get_rev() -> int:
 def _admin_jobs_bump_rev() -> int:
     try:
         r = get_redis()
-        v = int(r.incr("admin:jobs:rev"))
-        try:
-            r.expire("admin:jobs:rev", 60 * 60 * 24 * 30)
-        except Exception:
-            log.debug("admin_jobs: failed to set rev expiry", exc_info=True)
+        with r.pipeline() as pipe:
+            pipe.incr("admin:jobs:rev")
+            pipe.expire("admin:jobs:rev", 60 * 60 * 24 * 30, nx=True)
+            v = int(pipe.execute()[0])
         return v
     except Exception:
         log.debug("admin_jobs: failed to bump rev", exc_info=True)
@@ -875,29 +874,37 @@ def maintenance_thumbs_status(
     Превью — производные данные: их отсутствие не влияет на доступ к файлам.
     """
     from app.models.media import AssetThumb
-    from app.services.thumbs import thumb_kind
-    from sqlalchemy import func as sa_func
+    from app.services.thumbs import thumb_extensions
+    from sqlalchemy import func as sa_func, or_ as sa_or
 
-    assets = list(db.execute(select(ContentAsset.id, ContentAsset.original_filename,
-                                    ContentAsset.version, ContentAsset.bucket, ContentAsset.object_key)).all())
-    previewable = [row for row in assets if thumb_kind(row.original_filename)]
-    # Одна выборка на все превью: раньше здесь был запрос на каждый файл и
-    # страница «Здоровье хранилища» открывалась минутами на большом каталоге.
-    thumbs = {
-        (row.asset_id, row.source_version): row
-        for row in db.scalars(select(AssetThumb).where(AssetThumb.asset_id.in_([row[0] for row in previewable])))
-    } if previewable else {}
+    # Всё считает база. Раньше сюда выгружался весь каталог файлов (и все строки
+    # превью), а страница открывается вместе с «Здоровьем хранилища».
+    previewable_cond = sa_or(*[
+        sa_func.lower(ContentAsset.original_filename).like(f"%.{ext}") for ext in sorted(thumb_extensions())
+    ])
+    joined = select(ContentAsset.id, ContentAsset.original_filename, ContentAsset.version, AssetThumb.state) \
+        .select_from(ContentAsset) \
+        .outerjoin(AssetThumb, (AssetThumb.asset_id == ContentAsset.id) &
+                   (AssetThumb.source_version == ContentAsset.version)) \
+        .where(previewable_cond)
     counts: dict[str, int] = {}
-    states: list[str] = []
-    for asset_id, _name, version, _bucket, _key in previewable:
-        row = thumbs.get((asset_id, version))
-        state = row.state if row is not None else "missing"
-        counts[state] = counts.get(state, 0) + 1
-        states.append(state)
+    previewable = 0
+    for state, amount in db.execute(
+        select(sa_func.coalesce(AssetThumb.state, "missing").label("state"), sa_func.count())
+        .select_from(ContentAsset)
+        .outerjoin(AssetThumb, (AssetThumb.asset_id == ContentAsset.id) &
+                   (AssetThumb.source_version == ContentAsset.version))
+        .where(previewable_cond)
+        .group_by("state")
+    ).all():
+        counts[str(state)] = int(amount or 0)
+        previewable += int(amount or 0)
+    items = [
+        {"asset_id": str(row[0]), "name": row[1], "version": int(row[2] or 0), "state": str(row[3] or "missing")}
+        for row in db.execute(joined.order_by(ContentAsset.created_at.desc()).limit(50)).all()
+    ]
     total_bytes = int(db.scalar(select(sa_func.coalesce(sa_func.sum(AssetThumb.size_bytes), 0))) or 0)
-    return {"ok": True, "previewable": len(previewable), "states": counts,
-            "thumb_bytes": total_bytes, "items": [{"asset_id": str(row[0]), "name": row[1], "version": row[2],
-            "state": states[index]} for index, row in enumerate(previewable[:50])]}
+    return {"ok": True, "previewable": previewable, "states": counts, "thumb_bytes": total_bytes, "items": items}
 
 
 @router.post("/maintenance/thumbs/backfill", status_code=202)
@@ -1400,6 +1407,8 @@ class LlmProbeRequest(BaseModel):
 def llm_probe(
     body: LlmProbeRequest,
     _: User = Depends(require_roles(UserRole.admin)),
+    # Платный вызов провайдера: без предела кнопку «Проверить» легко зациклить.
+    __: object = rate_limit(key_prefix="admin_llm_probe", limit=10, window_seconds=60),
 ):
     title = str(body.title or "Проба")
     text = str(body.text or "")
@@ -1665,11 +1674,10 @@ async def import_module_zip(
     if fingerprint:
         try:
             r = get_redis()
-            r.set(f"admin:import_enqueued_by_fingerprint:{fingerprint}", str(job.id))
-            r.expire(f"admin:import_enqueued_by_fingerprint:{fingerprint}", 60 * 60 * 6)
+            r.set(f"admin:import_enqueued_by_fingerprint:{fingerprint}", str(job.id), ex=60 * 60 * 6)
             if stub_module is not None:
-                r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint)
-                r.expire(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
+                r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint,
+                      ex=60 * 60 * 24 * 30)
         except Exception:
             log.debug("admin import zip: failed to persist fingerprint dedupe keys", exc_info=True)
 
@@ -1692,8 +1700,8 @@ async def import_module_zip(
 
         try:
             if stub_module is not None:
-                r.set(f"admin:import_object_key_by_module_id:{str(stub_module.id)}", object_key)
-                r.expire(f"admin:import_object_key_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
+                r.set(f"admin:import_object_key_by_module_id:{str(stub_module.id)}", object_key,
+                      ex=60 * 60 * 24 * 30)
         except Exception:
             log.debug("admin import zip: failed to persist object_key_by_module_id", exc_info=True)
     except Exception:
@@ -2723,19 +2731,18 @@ def enqueue_import_zip(
         # Раньше здесь в Redis писался набор «использованных» ZIP
         # (admin:import_used_object_keys), который никто не читал: список
         # доступных архивов строится по базе и очереди. Набор только рос.
-        r.set(lock_key, str(job.id))
-        r.expire(lock_key, 60 * 60 * 6)
+        # `set(ex=...)` вместо `set` + отдельный `expire`: падение между двумя
+        # командами оставляло ключ без TTL навсегда — тихая утечка памяти Redis.
+        r.set(lock_key, str(job.id), ex=60 * 60 * 6)
         if title_lock_key:
-            r.set(title_lock_key, str(job.id))
-            r.expire(title_lock_key, 60 * 60 * 6)
+            r.set(title_lock_key, str(job.id), ex=60 * 60 * 6)
         if fingerprint:
             fp_key = f"admin:import_enqueued_by_fingerprint:{fingerprint}"
-            r.set(fp_key, str(job.id))
-            r.expire(fp_key, 60 * 60 * 6)
+            r.set(fp_key, str(job.id), ex=60 * 60 * 6)
             # Reverse mapping: allows immediate unlock when module is deleted.
             if stub_module is not None:
-                r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint)
-                r.expire(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
+                r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint,
+                      ex=60 * 60 * 24 * 30)
     except Exception:
         pass
 
@@ -2758,8 +2765,8 @@ def enqueue_import_zip(
 
         try:
             if stub_module is not None:
-                r.set(f"admin:import_object_key_by_module_id:{str(stub_module.id)}", object_key)
-                r.expire(f"admin:import_object_key_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
+                r.set(f"admin:import_object_key_by_module_id:{str(stub_module.id)}", object_key,
+                      ex=60 * 60 * 24 * 30)
         except Exception:
             pass
     except Exception:
@@ -3108,6 +3115,7 @@ def retry_import_job(
     request: Request,
     db: Session = Depends(get_db),
     current: User = Depends(require_roles(UserRole.admin)),
+    _: object = rate_limit(key_prefix="admin_import_retry", limit=30, window_seconds=60),
 ):
     previous_job = fetch_job(job_id)
     previous_meta = dict(previous_job.meta or {}) if previous_job else {}
@@ -3196,11 +3204,10 @@ def retry_import_job(
     if fingerprint:
         try:
             r = get_redis()
-            r.set(f"admin:import_enqueued_by_fingerprint:{fingerprint}", str(job.id))
-            r.expire(f"admin:import_enqueued_by_fingerprint:{fingerprint}", 60 * 60 * 6)
+            r.set(f"admin:import_enqueued_by_fingerprint:{fingerprint}", str(job.id), ex=60 * 60 * 6)
             if stub_module is not None:
-                r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint)
-                r.expire(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", 60 * 60 * 24 * 30)
+                r.set(f"admin:import_fingerprint_by_module_id:{str(stub_module.id)}", fingerprint,
+                      ex=60 * 60 * 24 * 30)
         except Exception:
             pass
 

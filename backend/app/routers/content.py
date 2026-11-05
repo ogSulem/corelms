@@ -445,7 +445,8 @@ def upload_asset(
 
 @router.post("/{module_id}/uploads", status_code=201)
 def start_chunked_upload(module_id: uuid.UUID, body: UploadStart, request: Request, db: Session = Depends(get_db),
-                         user: User = Depends(require_roles(UserRole.admin))):
+                         user: User = Depends(require_roles(UserRole.admin)),
+                         _: object = rate_limit(key_prefix="content_upload_start", limit=300, window_seconds=60)):
     """Начать приём большого файла частями: один длинный запрос обрывают прокси."""
     limit = get_platform_settings(db).upload_max_bytes
     if body.size_bytes > limit:
@@ -481,7 +482,8 @@ async def push_upload_chunk(module_id: uuid.UUID, upload_id: str, request: Reque
 
 @router.post("/{module_id}/uploads/{upload_id}/complete")
 def complete_chunked_upload(module_id: uuid.UUID, upload_id: str, request: Request, db: Session = Depends(get_db),
-                            user: User = Depends(require_roles(UserRole.admin))):
+                            user: User = Depends(require_roles(UserRole.admin)),
+                            _: object = rate_limit(key_prefix="content_upload_complete", limit=300, window_seconds=60)):
     """Собрать файл, проверить размер и контрольную сумму и сохранить как обычную загрузку."""
     session = read_session(upload_id)
     if session.kind != "content" or session.user_id != str(user.id) or session.meta.get("module_id") != str(module_id):

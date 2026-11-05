@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,7 +24,12 @@ class UserTagMap(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), primary_key=True)
     tag_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tags.id"), primary_key=True)
 
-    __table_args__ = (UniqueConstraint("user_id", "tag_id", name="uq_user_tag"),)
+    # Пара (user_id, tag_id) уникальна самим составным ключом. Отдельные индексы
+    # нужны для обратных выборок «кто с этим тегом» и «теги пользователя».
+    __table_args__ = (
+        Index("ix_user_tag_map_user_id", "user_id"),
+        Index("ix_user_tag_map_tag_id", "tag_id"),
+    )
 
 
 class ModuleTagMap(Base):
@@ -33,4 +38,7 @@ class ModuleTagMap(Base):
     module_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("modules.id"), primary_key=True)
     tag_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tags.id"), primary_key=True)
 
-    __table_args__ = (UniqueConstraint("module_id", "tag_id", name="uq_module_tag"),)
+    __table_args__ = (
+        Index("ix_module_tag_map_module_id", "module_id"),
+        Index("ix_module_tag_map_tag_id", "tag_id"),
+    )
