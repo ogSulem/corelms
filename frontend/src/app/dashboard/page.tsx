@@ -18,6 +18,9 @@ type AssignmentItem = {
   status: string;
   priority: number;
   deadline: string | null;
+  // Название цели и ссылка: счётчик без них не объясняет, что именно «в работе».
+  title?: string | null;
+  href?: string | null;
 };
 
 type ProgressSummary = {
@@ -37,6 +40,10 @@ export default function DashboardPage() {
   const [quoteNonce, setQuoteNonce] = useState(0);
 
   const telegramSuppliersBaseUrl = String(process.env.NEXT_PUBLIC_TELEGRAM_SUPPLIERS_BASE_URL || "").trim();
+
+  // Просроченные и текущие задания показываем вместе: статус «overdue» — это
+  // всё ещё работа, а не завершённая задача.
+  const activeAssignments = assignments.filter((a) => a.status !== "completed");
 
   const loadInFlightRef = useRef(false);
   const lastLoadAtRef = useRef(0);
@@ -266,17 +273,55 @@ export default function DashboardPage() {
         </div>
 
         {/* Bottom Task Bar (Minimal) */}
-        <div className="mt-8 flex items-center justify-between border-t border-zinc-200 pt-6">
-          <div className="flex items-center gap-6">
-            {assignments.filter(a => a.status !== 'completed').length > 0 && (
+        <div className="mt-8 flex flex-col gap-3 border-t border-zinc-200 pt-6">
+          {activeAssignments.length > 0 && (
+            <>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-black text-zinc-600 uppercase tracking-widest">
+                  Задач в работе: {activeAssignments.length}
+                </span>
+              </div>
+              {/* Сами задания: раньше счётчик вёл в общий каталог, и ученик не
+                  мог узнать, что именно ему назначили. */}
+              <ul className="flex flex-col gap-1.5">
+                {activeAssignments.slice(0, 3).map((task) => {
+                  const deadline = task.deadline ? new Date(task.deadline) : null;
+                  const overdue = Boolean(deadline && deadline.getTime() < Date.now());
+                  const label = task.title || (task.type === "module" ? "Назначенный модуль" : "Назначенный навык");
+                  return (
+                    <li key={task.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                      {task.href ? (
+                        <Link href={task.href} className="font-semibold text-zinc-700 hover:text-[#284e13] hover:underline">
+                          {label}
+                        </Link>
+                      ) : (
+                        <span className="font-semibold text-zinc-700">{label}</span>
+                      )}
+                      {deadline && (
+                        <span className={overdue ? "text-red-600" : "text-zinc-500"}>
+                          {overdue ? "просрочено до " : "до "}
+                          {deadline.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" })}
+                        </span>
+                      )}
+                    </li>
+                  );
+                })}
+                {activeAssignments.length > 3 && (
+                  <li className="text-xs text-zinc-500">и ещё {activeAssignments.length - 3}</li>
+                )}
+              </ul>
+            </>
+          )}
+          {activeAssignments.length === 0 && (
+            <div className="flex items-center gap-6">
               <Link href="/modules" className="flex items-center gap-2 group">
                 <span className="text-[10px] font-black text-zinc-600 uppercase tracking-widest group-hover:text-[#284e13] transition-colors">
-                  Задач в работе: {assignments.filter(a => a.status !== 'completed').length}
+                  Каталог модулей
                 </span>
                 <span className="text-[#fe9900] text-xs">→</span>
               </Link>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </AppShell>

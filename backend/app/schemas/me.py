@@ -10,6 +10,10 @@ class AssignmentItem(BaseModel):
     status: str
     priority: int
     deadline: str | None
+    # Человекочитаемая цель: счётчик «задач в работе» без названия ничего не
+    # объясняет. Для модуля — заголовок и ссылка на него, для навыка — название.
+    title: str | None = None
+    href: str | None = None
 
 
 class MyAssignmentsResponse(BaseModel):

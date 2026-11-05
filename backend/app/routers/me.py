@@ -281,6 +281,21 @@ def my_assignments(db: Session = Depends(get_db), user: User = Depends(get_curre
                                                 ModuleCompletion.module_id.in_(module_ids))
     )) if module_ids else set()
     now = datetime.now(_tz.utc)
+    # Названия целей одним запросом на тип: у ученика их единицы, но запрос
+    # на каждое задание всё равно лишний.
+    module_titles: dict[uuid.UUID, str] = {}
+    if module_ids:
+        module_titles = {mid: str(title) for mid, title in db.execute(
+            select(Module.id, Module.title).where(Module.id.in_(module_ids))
+        ).all()}
+    skill_ids = [a.target_id for a in rows if a.type == AssignmentType.skill]
+    skill_titles: dict[uuid.UUID, str] = {}
+    if skill_ids:
+        from app.models.skill import Skill
+
+        skill_titles = {sid: str(title) for sid, title in db.execute(
+            select(Skill.id, Skill.title).where(Skill.id.in_(skill_ids))
+        ).all()}
     items = []
     for a in rows:
         status = a.status.value
@@ -292,6 +307,7 @@ def my_assignments(db: Session = Depends(get_db), user: User = Depends(get_curre
                 deadline = a.deadline if a.deadline.tzinfo else a.deadline.replace(tzinfo=_tz.utc)
                 if deadline < now:
                     status = "overdue"
+        is_module = a.type == AssignmentType.module
         items.append({
             "id": str(a.id),
             "type": a.type.value,
@@ -299,6 +315,8 @@ def my_assignments(db: Session = Depends(get_db), user: User = Depends(get_curre
             "status": status,
             "priority": a.priority,
             "deadline": a.deadline.isoformat() if a.deadline else None,
+            "title": (module_titles.get(a.target_id) if is_module else skill_titles.get(a.target_id)),
+            "href": (f"/modules/{a.target_id}" if is_module else None),
         })
     return {"items": items}
 
