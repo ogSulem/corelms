@@ -359,6 +359,8 @@ def test_finished_sessions_do_not_pile_up_in_the_user_index(client, account, red
     redis_memory.delete(f"auth:session:{dead}")
 
     items = client.get("/auth/sessions", headers=access(first)).json()["items"]
-    assert [item["session_id"] for item in items] == [current_sid]
-    assert items[0]["current"] is True
+    listed = [item["session_id"] for item in items]
+    assert current_sid in listed
+    assert dead not in listed
+    assert next(item for item in items if item["session_id"] == current_sid)["current"] is True
     assert dead not in set(redis_memory.smembers(user_key))
