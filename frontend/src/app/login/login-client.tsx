@@ -6,7 +6,6 @@ import Link from "next/link";
 import { Eye, EyeOff } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { ConnectionCheck } from "@/components/auth/connection-check";
 import { useAuth } from "@/lib/hooks/use-auth";
 
 export function LoginClient() {
@@ -26,7 +25,6 @@ export function LoginClient() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
 
   // Возврат с истёкшей сессией: объясняем причину, а не молча показываем форму.
   const sessionExpired = useMemo(() => String(searchParams?.get("reason") || "") === "session", [searchParams]);
@@ -97,15 +95,12 @@ export function LoginClient() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const lower = msg.toLowerCase();
-      // Любая ошибка входа = повод показать диагностику: пользователь сразу
-      // видит причину (домен, HTTPS, недоступный API), а не только «не вошёл».
-      setShowDiagnostics(true);
       if (msg.includes("COOKIE_BLOCKED")) {
         setError("Вход выполнен, но браузер не сохранил сессию. Откройте сайт в обычном браузере (Chrome/Safari), выключите приватный режим и «экономию трафика».");
       } else if (msg.includes("SESSION_UNCONFIRMED")) {
         setError("Вход принят, но сервер не подтвердил сессию. Повторите через минуту.");
       } else if (lower.includes("invalid_origin")) {
-        setError("Сервер отклонил адрес сайта. Адрес, по которому вы открыли сайт, не совпадает с PUBLIC_APP_URL / CORS_ALLOW_ORIGINS в настройках сервера.");
+        setError("Сервер отклонил адрес сайта. Откройте сайт по обычному адресу или сообщите администратору.");
       } else if (lower.includes("rate_limited") || lower.includes("many")) {
         setError("Слишком много попыток входа. Подождите минуту и повторите.");
       } else if (lower.includes("invalid_credentials") || lower.includes("invalid")) {
@@ -232,8 +227,6 @@ export function LoginClient() {
               {loading ? "Вход..." : "Войти в систему"}
             </Button>
           </form>
-
-          <ConnectionCheck autoOpen={showDiagnostics} />
         </div>
       </div>
     </main>
