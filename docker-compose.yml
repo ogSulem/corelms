@@ -48,6 +48,32 @@ services:
 
   postgres:
     image: postgres:16
+    # Параметры под VPS с 1 ГБ на контейнер: дефолты Postgres рассчитаны на
+    # «средний сервер» и оставляют shared_buffers 128 МБ, а effective_cache_size —
+    # 4 ГБ, которых здесь нет. Значения ниже сняли лишние чтения с диска и
+    # убрали сортировки/агрегаты из временных файлов на типичных запросах
+    # (лента обучения, список пользователей, аналитика).
+    command:
+      - postgres
+      - -c
+      - max_connections=80
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=640MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=96MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - wal_compression=on
+      - -c
+      - jit=off
+    shm_size: 256mb
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-sdlp}
       POSTGRES_USER: ${POSTGRES_USER:-sdlp}

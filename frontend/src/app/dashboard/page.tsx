@@ -217,9 +217,9 @@ export default function DashboardPage() {
             )}
           </div>
           <div className="lg:col-span-5">
-            {loading ? (
-              <Skeleton className="h-[100px] rounded-[24px] bg-zinc-100" />
-            ) : (
+            {/* Карточка не делает запросов: ждать сводку, чтобы показать цитату,
+                значит показывать скелет вместо готового блока. */}
+            {(
               <div className="relative">
                 <div className="pointer-events-none absolute -inset-1 bg-gradient-to-r from-[#fe9900]/25 to-[#284e13]/15 rounded-[32px] blur opacity-25" />
                 <div className="relative border border-zinc-200 bg-white/70 backdrop-blur-xl rounded-[28px] overflow-hidden shadow-2xl shadow-zinc-950/10">
@@ -254,11 +254,9 @@ export default function DashboardPage() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0">
           {/* Left: Continue Learning */}
           <div className="h-full">
-            {loading ? (
-              <Skeleton className="h-full rounded-[32px] bg-zinc-100" />
-            ) : (
-              <ContinueCard />
-            )}
+            {/* У ContinueCard свой запрос и свой индикатор: если ждать сводку,
+                блок появлялся вторым скелетом и «догонял» страницу. */}
+            <ContinueCard />
           </div>
 
           {/* Right: реквизиты для счетов на рекламу и расчёта бюджета */}

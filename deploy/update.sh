@@ -106,6 +106,19 @@ for legacy in worker_import worker_regen worker_default; do
   done
 done
 
+say "Применяем настройки PostgreSQL"
+# Настройки сервера (shared_buffers, work_mem и т.д.) живут в `command:` сервиса
+# postgres. Compose пересоздаёт контейнер только если конфигурация изменилась —
+# при обычном обновлении кода здесь ничего не происходит, простоя нет.
+# Данные лежат в томе pg_data и при пересоздании контейнера не затрагиваются.
+docker compose up -d --no-build postgres >/dev/null
+for _ in $(seq 1 30); do
+  if docker compose exec -T postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
+    break
+  fi
+  sleep 2
+done
+
 say "Миграции базы"
 # Схема обновляется ДО переключения кода. Иначе новый backend несколько секунд
 # работает на старой схеме и отвечает 500 на запросах к новым колонкам и

@@ -12,6 +12,7 @@
 | Ключи Redis (сессии, блокировки, счётчики) | у каждого есть TTL; задаётся вместе со значением | `set(..., ex=)` и `expire(nx=True)` |
 | Неудачные задачи очереди | удаляются по `failure_ttl` (от часа до недели) | параметры `enqueue(...)` |
 | Резервные копии | `--keep 30` (30 последних каталогов) | `scripts/backup.sh` |
+| Память PostgreSQL | `shared_buffers=256MB`, `work_mem=8MB`, `max_connections=80` под контейнер 1 ГБ | `docker-compose.yml`, сервис `postgres` |
 | Образы отката `*:rollback-<дата>` | 3 последних набора из четырёх образов | `deploy/update.sh` |
 | Кэш сборки Docker (BuildKit) | всё старше 7 дней удаляется при обновлении | `deploy/update.sh` |
 | Промежуточные загрузки в S3 | отчёт по кандидатам каждые 15 минут | `app/services/maintenance_schedule.py` |
