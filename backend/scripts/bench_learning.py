@@ -13,7 +13,6 @@ import json
 import os
 import statistics
 import time
-import uuid
 
 # Принудительно: сценарный замер не должен попасть в боевую базу.
 os.environ["DATABASE_URL"] = "sqlite+pysqlite:///:memory:"

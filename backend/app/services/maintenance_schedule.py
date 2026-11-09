@@ -8,6 +8,11 @@ staging (отчёт), планировщик в API — только броше�
 
 Теперь набор задач описан здесь один раз, а вызывающие только решают, когда
 его запустить.
+
+Кроме задач очереди есть местные (`local_tasks`): они работают с диском того
+контейнера, где живёт планировщик, — промежуточные части докачки лежат на
+томе `backend_data`, который смонтирован только в backend. Отправить такую
+задачу в worker означало бы «успешно» убирать чужую пустую папку.
 """
 
 from __future__ import annotations
@@ -19,6 +24,9 @@ from typing import Any, Callable
 from app.core.config import settings
 from app.core.queue import get_queue
 from app.core.redis_client import get_redis
+from app.db.session import SessionLocal
+from app.services.chunked_uploads import sweep_stale as sweep_upload_staging
+from app.services.password_reset import purge_stale as purge_stale_reset_tokens
 from app.services.storage_cleanup_jobs import cleanup_admin_multipart_uploads_job, cleanup_admin_uploads_job
 
 log = logging.getLogger(__name__)
@@ -34,6 +42,16 @@ class MaintenanceTask:
     lock: str
     lock_ttl: int
     enqueue: Callable[[Any], Any]
+
+
+@dataclass(frozen=True)
+class LocalTask:
+    """Задача, которая выполняется в процессе API, а не в очереди."""
+
+    name: str
+    lock: str
+    lock_ttl: int
+    run: Callable[[], dict[str, Any]]
 
 
 def interval_seconds() -> int:
@@ -79,6 +97,42 @@ def tasks() -> list[MaintenanceTask]:
     ]
 
 
+def sweep_local_junk() -> dict[str, Any]:
+    """Убрать то, что лежит рядом с API и растёт без активности пользователей.
+
+    Шаги независимы: сбой одного не мешает другому, а ошибка попадает в отчёт.
+    """
+    result: dict[str, Any] = {"ok": True}
+    try:
+        result["removed_upload_sessions"] = int(sweep_upload_staging() or 0)
+    except Exception as exc:
+        result["ok"] = False
+        result["upload_sessions_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        log.warning("maintenance: уборка сессий докачки не удалась: %s", exc)
+    try:
+        with SessionLocal() as db:
+            result["removed_reset_tokens"] = int(purge_stale_reset_tokens(db))
+            db.commit()
+    except Exception as exc:
+        result["ok"] = False
+        result["reset_tokens_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        log.warning("maintenance: уборка старых ссылок сброса пароля не удалась: %s", exc)
+    return result
+
+
+def local_tasks() -> list[LocalTask]:
+    """Местные уборки: тот же интервал и та же защита от дублей, что у очереди."""
+    ttl_seconds = max(60, interval_seconds() - 5)
+    return [
+        LocalTask(
+            name="local_junk_sweep",
+            lock="locks:local_junk_sweep",
+            lock_ttl=ttl_seconds,
+            run=sweep_local_junk,
+        ),
+    ]
+
+
 def run_due_tasks() -> dict[str, Any]:
     """Поставить задачи в очередь, если их не поставил другой инстанс.
 
@@ -102,4 +156,15 @@ def run_due_tasks() -> dict[str, Any]:
         except Exception as exc:
             results["tasks"][task.name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
             log.warning("maintenance: %s не поставлена в очередь: %s", task.name, exc)
+
+    for local in local_tasks():
+        try:
+            acquired = redis.set(local.lock, "1", nx=True, ex=int(local.lock_ttl))
+            if not acquired:
+                results["tasks"][local.name] = {"ok": True, "ran": False, "reason": "locked"}
+                continue
+            results["tasks"][local.name] = {"ran": True, **local.run()}
+        except Exception as exc:
+            results["tasks"][local.name] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"[:200]}
+            log.warning("maintenance: %s не выполнена: %s", local.name, exc)
     return results

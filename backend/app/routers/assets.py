@@ -11,7 +11,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
-from botocore.exceptions import ClientError, HTTPClientError, IncompleteReadError, ResponseStreamingError
+from botocore.exceptions import ClientError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 

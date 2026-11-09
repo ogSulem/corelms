@@ -81,22 +81,30 @@ def _session_dir(upload_id: str) -> Path:
     return _root() / str(upload_id)
 
 
-def sweep_stale() -> None:
-    """Удаляем брошенные сессии: они занимают место на диске, но не нужны."""
+def sweep_stale() -> int:
+    """Удаляем брошенные сессии: они занимают место на диске, но не нужны.
+
+    Возвращает число убранных каталогов: результат виден в расписании
+    обслуживания, а не только в логе.
+    """
     root = _root()
     deadline = time.time() - _ttl_seconds()
     try:
         entries = list(root.iterdir())
     except OSError:
-        return
+        return 0
+    removed = 0
     for entry in entries:
         if not entry.is_dir() or not UPLOAD_ID_RE.match(entry.name):
             continue
         try:
             if entry.stat().st_mtime < deadline:
                 shutil.rmtree(entry, ignore_errors=True)
+                if not entry.exists():
+                    removed += 1
         except OSError:
             log.debug("chunked upload sweep failed for %s", entry, exc_info=True)
+    return removed
 
 
 def create_session(*, user_id: str, kind: str, filename: str, size_bytes: int, meta: dict) -> UploadSession:
