@@ -18,12 +18,10 @@
 
 from __future__ import annotations
 
-import json
 import sys
 import threading
 import time
 import traceback
-import uuid
 from typing import Any
 
 SKIP_PATHS = {

@@ -182,11 +182,31 @@ if [ "$check_code" -eq 2 ]; then
   echo "Предупреждения настройки выше. Они не отменяют обновление — исправьте .env и выполните bash deploy/update.sh ещё раз."
 fi
 
-say "Уборка старых слоёв"
-# Каждая пересборка оставляет промежуточные слои без тегов. `-f` удаляет только
-# их (dangling), не трогая `corelms-*:latest`, `:next` и `rollback-<дата>`, к
-# которым возвращается откат. Ошибка уборки не отменяет обновление.
+say "Уборка старых слоёв и кэша сборки"
+# `-f` удаляет только слои без тегов (dangling), не трогая `corelms-*:latest`,
+# `:next` и `rollback-<дата>`, к которым возвращается откат.
 docker image prune -f >/dev/null 2>&1 || true
+# Кэш BuildKit растёт с каждой пересборкой и не виден в `docker image ls`. Неделя
+# кэша оставляет быстрыми повторные сборки, всё старше — удаляем: на VPS с 39 ГБ
+# это главный источник «внезапно кончилось место через полгода».
+docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+
+say "Убираем старые образы отката"
+# Каждое обновление оставляет четыре тега `rollback-<дата>`. Держим три последних
+# набора (месяц работы при обновлениях раз в неделю) — этого хватает, чтобы
+# вернуться на одну-две версии назад, и диск не растёт бесконечно.
+KEEP_ROLLBACK=3
+pruned=0
+for repo in corelms-backend corelms-frontend corelms-worker corelms-worker_media; do
+  # Имена тегов начинаются с даты, поэтому сортировка по строке = по времени.
+  old_tags="$(docker image ls "$repo" --format '{{.Tag}}' 2>/dev/null | grep '^rollback-' | sort -r | tail -n +$((KEEP_ROLLBACK + 1)) || true)"
+  for tag in $old_tags; do
+    if docker image rm "$repo:$tag" >/dev/null 2>&1; then
+      pruned=$((pruned + 1))
+    fi
+  done
+done
+echo "  удалено наборов отката старше $KEEP_ROLLBACK последних: $pruned"
 
 say "Готово"
 cat <<NEXT
