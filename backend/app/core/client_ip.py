@@ -58,10 +58,21 @@ def _normalize_ip(value: str | None) -> str | None:
         if host:
             v = host
 
+    # `fe80::1%eth0` — адрес с зоной интерфейса: `ip_address` такой не разбирает,
+    # и клиент «пропадал» из лимитов и журнала.
+    if "%" in v:
+        v = v.split("%", 1)[0].strip()
+
     try:
-        return str(ipaddress.ip_address(v))
+        addr = ipaddress.ip_address(v)
     except Exception:
         return None
+    # `::ffff:203.0.113.9` — тот же клиент, что `203.0.113.9`. Без приведения
+    # у одного человека получались два разных ключа лимита и две карточки сессий.
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    return str(addr)
 
 
 def _xff_client_ip(xff: str, trusted_proxies: list[ipaddress._BaseNetwork]) -> str | None:

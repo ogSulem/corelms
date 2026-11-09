@@ -551,15 +551,6 @@ def preview_asset(
     return JSONResponse({**preview, "asset_id": str(asset.id), "version": asset.version}, headers={"Cache-Control": "private, no-store"})
 
 
-def _iter_body(body):
-    try:
-        while True:
-            chunk = body.read(1024 * 256)
-            if not chunk:
-                break
-            yield chunk
-    finally:
-        body.close()
 
 
 @router.get("/{asset_id}/thumb")
@@ -614,7 +605,7 @@ def asset_thumb(
     if body is None:
         raise HTTPException(status_code=404, detail="превью не найдено в хранилище")
     common["Content-Length"] = str(int(obj.get("ContentLength") or row.size_bytes or 0))
-    return StreamingResponse(_iter_body(body), media_type="image/jpeg", headers=common)
+    return StreamingResponse(iter_s3_body(body, chunk_size=1024 * 128), media_type="image/jpeg", headers=common)
 
 
 @router.get("/{asset_id}/viewer")

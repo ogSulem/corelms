@@ -559,16 +559,39 @@ def diagnostics_errors(
     _: User = Depends(require_roles(UserRole.admin)),
     limit: int = Query(default=50),
     request_id: str | None = Query(default=None),
+    days: int | None = Query(default=None, ge=0, le=365),
 ):
-    """Последние серверные ошибки с traceback — без SSH и без docker logs."""
-    items, path = error_log.read_recent(limit=limit, rid=request_id)
+    """Последние серверные ошибки с traceback — без SSH и без docker logs.
+
+    По умолчанию показываются записи за срок хранения (`ERROR_LOG_RETENTION_DAYS`,
+    7 дней): старый 500 в списке выглядит как текущая поломка, хотя её давно нет.
+    `days=0` — показать всё, что осталось в файле (разбор старого кода поддержки).
+    """
+    items, path = error_log.read_recent(limit=limit, rid=request_id, days=days)
+    retention = error_log.retention_days()
     return {
         "ok": True,
         "items": items,
         "count": len(items),
         "log_file": str(path) if path else None,
+        "retention_days": retention,
+        "days": retention if days is None else int(days),
         "hint": None if items else "Серверных ошибок не зафиксировано с момента запуска журнала.",
     }
+
+
+@router.delete("/diagnostics/errors")
+def clear_diagnostics_errors(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles(UserRole.admin)),
+):
+    """Очистить журнал серверных ошибок: разобранные записи не должны копиться."""
+    removed = error_log.clear()
+    audit_log(db=db, request=request, event_type="admin_error_log_cleared",
+              actor_user_id=user.id, meta={"bytes": removed})
+    db.commit()
+    return {"ok": True, "cleared_bytes": removed}
 
 
 @router.get("/system/status")

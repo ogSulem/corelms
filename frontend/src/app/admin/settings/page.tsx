@@ -125,7 +125,14 @@ type ServerError = {
   traceback?: string;
 };
 
-type ServerErrors = { items: ServerError[]; count: number; log_file: string | null; hint: string | null };
+type ServerErrors = {
+  items: ServerError[];
+  count: number;
+  log_file: string | null;
+  hint: string | null;
+  retention_days?: number;
+  days?: number;
+};
 
 type Overview = {
   app_env: string;
@@ -303,16 +310,29 @@ export default function AdminSettingsPage() {
     if (!loading && isAdmin) void load();
   }, [isAdmin, load, loading]);
 
-  const loadErrors = useCallback(async () => {
+  const loadErrors = useCallback(async (all = false) => {
     setLoadingErrors(true);
     try {
-      setServerErrors(await apiFetch<ServerErrors>("/admin/diagnostics/errors?limit=20"));
+      setServerErrors(await apiFetch<ServerErrors>(`/admin/diagnostics/errors?limit=20${all ? "&days=0" : ""}`));
     } catch (errorsError) {
       setServerErrors({ items: [], count: 0, log_file: null, hint: errorText(errorsError, "Не удалось прочитать журнал ошибок") });
     } finally {
       setLoadingErrors(false);
     }
   }, []);
+
+  const clearErrors = useCallback(async () => {
+    if (typeof window !== "undefined" && !window.confirm("Удалить все записи журнала ошибок? Это действие не отменяется.")) return;
+    setLoadingErrors(true);
+    try {
+      await apiFetch("/admin/diagnostics/errors", { method: "DELETE" });
+      await loadErrors(false);
+    } catch (errorsError) {
+      setServerErrors({ items: [], count: 0, log_file: null, hint: errorText(errorsError, "Не удалось очистить журнал ошибок") });
+    } finally {
+      setLoadingErrors(false);
+    }
+  }, [loadErrors]);
 
   useEffect(() => {
     if (!loading && isAdmin) void loadErrors();
@@ -1233,11 +1253,24 @@ export default function AdminSettingsPage() {
                       Последние ответы 5xx с местом падения. Код из сообщения «Код для поддержки» совпадает с полем{" "}
                       <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs">Код</code> ниже — по нему видно, что именно сломалось.
                     </p>
+                    <p className="mt-1 text-xs leading-5 text-zinc-500">
+                      Показываются ошибки за последние {serverErrors?.retention_days ?? 7} дн. Записи старше скрываются, чтобы разобранная
+                      ошибка не выглядела как текущая поломка.{" "}
+                      <button type="button" className="font-medium text-zinc-700 underline decoration-zinc-300 underline-offset-2 hover:text-zinc-900" onClick={() => void loadErrors(true)}>
+                        Показать всё
+                      </button>
+                      {serverErrors?.days === 0 ? " · сейчас показаны все записи из файла" : ""}
+                    </p>
                   </div>
                 </div>
-                <Button variant="outline" className={btn} disabled={loadingErrors} onClick={() => void loadErrors()}>
-                  {loadingErrors ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}Обновить
-                </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="outline" className={btn} disabled={loadingErrors} onClick={() => void loadErrors()} title="Обновить список">
+                    {loadingErrors ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}Обновить
+                  </Button>
+                  <Button variant="outline" className={btn} disabled={loadingErrors} onClick={() => void clearErrors()} title="Удалить все записи журнала">
+                    <Trash2 size={15} />Очистить журнал
+                  </Button>
+                </div>
               </div>
 
               {!serverErrors || serverErrors.items.length === 0 ? (

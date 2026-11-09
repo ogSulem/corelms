@@ -189,3 +189,14 @@ def test_cron_endpoint_rejects_a_wrong_secret(client, monkeypatch, redis_memory)
     _require_cron_secret(Request({"type": "http", "headers": [(b"x-cron-secret", b"s3cret")]}))
     with pytest.raises(Exception):
         _require_cron_secret(Request({"type": "http", "headers": [(b"x-cron-secret", b"nope")]}))
+
+
+def test_ipv4_mapped_and_zone_scoped_addresses_are_normalized():
+    """Один клиент — один ключ лимита, даже если прокси прислал IPv6-форму."""
+    from app.core.client_ip import _normalize_ip
+
+    assert _normalize_ip("::ffff:203.0.113.9") == "203.0.113.9"
+    assert _normalize_ip("[::ffff:203.0.113.9]:5555") == "203.0.113.9"
+    assert _normalize_ip("fe80::1%eth0") == "fe80::1"
+    assert _normalize_ip(" 198.51.100.7 ") == "198.51.100.7"
+    assert _normalize_ip("not-an-ip") is None

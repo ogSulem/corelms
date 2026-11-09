@@ -255,12 +255,22 @@ def rotate_session(token: str, user: User, request: Request) -> tuple[str, int, 
 def list_sessions(user_id: str) -> list[dict]:
     try:
         redis = get_redis()
-        result = []
+        result, dead = [], []
         for member in redis.smembers(_user_key(user_id)):
             session = _decode(redis.get(_session_key(member))) or _legacy(_decode(redis.get(f"auth:refresh:{member}")), member)
             if _alive(session) and session.get("user_id") == user_id:
                 result.append(session)
-            # Do not prune in a non-atomic read: rotation may have just re-added a SID.
+            elif not session or session.get("user_id") != user_id:
+                # Завершённые входы оставались в индексе пользователя навсегда:
+                # сам по себе он живёт, пока жива хотя бы одна сессия. Убираем
+                # только записи без сессии — их в этот момент не может создать
+                # параллельный вход: он пишет сессию до добавления в индекс.
+                dead.append(member)
+        if dead:
+            try:
+                redis.srem(_user_key(user_id), *dead)
+            except RedisError:
+                pass  # уборка не должна ломать показ списка
         return sorted(result, key=lambda item: item["last_used_at"], reverse=True)
     except RedisError as exc:
         raise unavailable() from exc
