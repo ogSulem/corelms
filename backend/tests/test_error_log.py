@@ -90,3 +90,72 @@ def test_error_log_rotates_instead_of_growing_forever(tmp_path, monkeypatch):
     assert path.exists()
     assert path.stat().st_size <= 2000 + 1024
     assert (tmp_path / "errors.jsonl.1").exists()
+
+
+def _append_entry(path, *, ts: str, rid: str, status: int = 500):
+    entry = {"ts": ts, "rid": rid, "method": "GET", "path": "/assets/x/stream", "status": status,
+             "user_id": None, "duration_ms": 1200}
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def test_old_errors_are_hidden_by_default_and_visible_on_request(client, admin_headers, error_file):
+    """Разобранная ошибка месячной давности не должна выглядеть как текущая поломка."""
+    from datetime import datetime, timedelta, timezone
+
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+    _append_entry(error_file, ts=old_ts, rid="rid-old")
+    error_log.record(rid="rid-fresh", method="GET", path="/modules", status=500)
+
+    body = client.get("/admin/diagnostics/errors", headers=admin_headers).json()
+    assert [item["rid"] for item in body["items"]] == ["rid-fresh"]
+    assert body["retention_days"] >= 1 and body["days"] == body["retention_days"]
+
+    everything = client.get("/admin/diagnostics/errors?days=0", headers=admin_headers).json()
+    assert [item["rid"] for item in everything["items"]] == ["rid-fresh", "rid-old"]
+    assert everything["days"] == 0
+
+
+def test_error_journal_can_be_cleared_and_does_not_pretend_to_have_old_entries(client, admin_headers, error_file):
+    error_log.record(rid="rid-a", method="GET", path="/a", status=500, exc=ValueError("boom"))
+    response = client.delete("/admin/diagnostics/errors", headers=admin_headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["ok"] is True
+    assert response.json()["cleared_bytes"] > 0
+    assert not error_file.exists() or error_file.read_text(encoding="utf-8").strip() == ""
+
+    body = client.get("/admin/diagnostics/errors?days=0", headers=admin_headers).json()
+    assert body["items"] == [] and body["hint"]
+
+
+def test_error_journal_clear_is_admin_only(client, make_user, error_file):
+    _, employee = make_user()
+    assert client.delete("/admin/diagnostics/errors", headers=employee).status_code == 403
+
+
+def test_client_disconnect_is_not_recorded_as_server_error(client, monkeypatch, error_file):
+    """Клиент закрыл видео — это не 500 в журнале (та самая ошибка из прода)."""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from app.services.streaming import is_stream_interrupted
+
+    from botocore.exceptions import IncompleteReadError, ResponseStreamingError
+
+    assert error_file.parent.exists()
+    interrupted = ResponseStreamingError(error=IncompleteReadError(actual_bytes=10, expected_bytes=20))
+    assert is_stream_interrupted(interrupted) is True
+    assert is_stream_interrupted(ExceptionGroup("tasks", [RuntimeError("x"), interrupted])) is True
+    assert is_stream_interrupted(ValueError("boom")) is False
+
+    app = create_app()
+
+    @app.get("/__selfcheck_interrupted")
+    def _interrupted():
+        raise ResponseStreamingError(error=IncompleteReadError(actual_bytes=10, expected_bytes=20))
+
+    local = TestClient(app, raise_server_exceptions=False)
+    response = local.get("/__selfcheck_interrupted")
+    assert response.status_code == 499
+    assert not error_file.exists() or "ResponseStreamingError" not in error_file.read_text(encoding="utf-8")

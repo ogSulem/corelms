@@ -220,11 +220,16 @@ def create_app() -> FastAPI:
         # Клиент ушёл (закрыл вкладку, отвалился мобильный интернет) — это не
         # ошибка сервера. Раньше такой обрыв попадал в журнал ошибок как 500 и
         # администратор искал поломку там, где её нет.
-        from starlette.requests import ClientDisconnect
+        from app.services.streaming import is_stream_interrupted
 
-        if isinstance(exc, ClientDisconnect):
-            logger.debug("client disconnected rid=%s path=%s", rid,
-                         getattr(getattr(request, "url", None), "path", ""))
+        # Обрыв бывает не только `ClientDisconnect`: botocore бросает
+        # `ResponseStreamingError`, сокет — `ConnectionResetError`, а anyio
+        # заворачивает всё это в `ExceptionGroup`. Раньше такая ошибка попадала
+        # в журнал как 500 `/assets/…/stream`, хотя сервер ничего не сломал:
+        # пользователь просто закрыл видео или у него пропал мобильный интернет.
+        if is_stream_interrupted(exc):
+            logger.warning("client disconnected rid=%s path=%s", rid,
+                           getattr(getattr(request, "url", None), "path", ""))
             return JSONResponse(status_code=499, content={"ok": False, "error_code": "client_disconnected"})
 
         # Исчерпанный пул соединений и недоступная база — это 503, а не 500:

@@ -169,6 +169,9 @@ class Settings(BaseSettings):
     s3_max_pool_connections: int = Field(default=50, validation_alias="S3_MAX_POOL_CONNECTIONS")
     s3_addressing_style: str = Field(default="path", validation_alias="S3_ADDRESSING_STYLE")
 
+    # Сколько дней серверные ошибки видны в админке: старые записи не должны
+    # выглядеть как текущая поломка. 0 — показывать всё, что есть в файле.
+    error_log_retention_days: int = Field(default=7, validation_alias="ERROR_LOG_RETENTION_DAYS")
     uploads_admin_ttl_hours: int = Field(default=6, validation_alias="UPLOADS_ADMIN_TTL_HOURS")
     uploads_admin_cleanup_interval_minutes: int = Field(default=15, validation_alias="UPLOADS_ADMIN_CLEANUP_INTERVAL_MINUTES")
 

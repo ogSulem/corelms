@@ -322,3 +322,45 @@ def test_admin_reset_wins_over_in_flight_password_change(client, account, admin_
     assert client.get("/auth/me", headers=access(tokens)).status_code == 401
     fresh = login(client, account, password="admin-latest-password")
     assert client.get("/auth/me", headers=access(fresh)).status_code == 200
+
+
+def test_two_devices_stay_logged_in_at_the_same_time(client, account, redis_memory):
+    """Телефон и ноутбук: вход на одном не выкидывает другой.
+
+    Сессия — это стабильный SID, а не «одна на пользователя»: каждый вход
+    создаёт свою, поэтому два устройства живут одновременно и видят друг друга
+    в списке сеансов.
+    """
+    phone = client.post("/auth/token", data={"username": account.name, "password": PASSWORD},
+                        headers={"User-Agent": "iPhone Safari", "X-Real-IP": "203.0.113.7"})
+    laptop = client.post("/auth/token", data={"username": account.name, "password": PASSWORD},
+                         headers={"User-Agent": "MacBook Chrome", "X-Real-IP": "198.51.100.9"})
+    assert phone.status_code == laptop.status_code == 200
+
+    items = client.get("/auth/sessions", headers=access(phone.json())).json()["items"]
+    agents = {item["user_agent"] for item in items}
+    assert "iPhone Safari" in agents and "MacBook Chrome" in agents
+    # Оба устройства продолжают работать: ни один refresh не отозван.
+    assert refresh(client, phone.json()).status_code == 200
+
+
+def test_finished_sessions_do_not_pile_up_in_the_user_index(client, account, redis_memory):
+    """Завершённые входы убираются из индекса, а не висят там годами."""
+    first = login(client, account)
+    login(client, account)
+    user_key = f"auth:user_sessions:{account.id}"
+    current_sid = jwt.get_unverified_claims(first["access_token"])["sid"]
+    members = set(redis_memory.smembers(user_key))
+    assert len(members) >= 2, members
+
+    # Второе устройство «закрыли»: сессии в Redis больше нет, но SID в индексе
+    # пользователя остался бы навсегда, если бы список его не убирал.
+    dead = next(member for member in members if member != current_sid)
+    redis_memory.delete(f"auth:session:{dead}")
+
+    items = client.get("/auth/sessions", headers=access(first)).json()["items"]
+    listed = [item["session_id"] for item in items]
+    assert current_sid in listed
+    assert dead not in listed
+    assert next(item for item in items if item["session_id"] == current_sid)["current"] is True
+    assert dead not in set(redis_memory.smembers(user_key))

@@ -6,7 +6,9 @@
 через `/admin/diagnostics/errors`.
 
 Файл не растёт бесконечно: при превышении лимита он переименовывается в
-`errors.jsonl.1` (предыдущая версия перезаписывается).
+`errors.jsonl.1` (предыдущая версия перезаписывается). Записи старше срока
+хранения не показываются и удаляются кнопкой «Очистить»: старые ошибки не
+должны выглядеть как текущая поломка.
 """
 
 from __future__ import annotations
@@ -25,6 +27,10 @@ log = logging.getLogger(__name__)
 
 MAX_BYTES = 2 * 1024 * 1024
 LOCK = threading.Lock()
+
+# Сколько дней ошибки видны администратору. Дальше запись либо исчезает сама
+# (файл перезаписывается по достижении 2 МБ), либо скрывается из списка.
+DEFAULT_RETENTION_DAYS = 7
 
 # Коды уже записанных запросов: обработчик исключения и middleware могут
 # увидеть одну и ту же ошибку, а дублировать её в журнале не нужно.
@@ -117,9 +123,64 @@ def _parse(line: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def read_recent(limit: int = 50, *, rid: str | None = None) -> tuple[list[dict[str, Any]], Path | None]:
-    """Вернуть последние ошибки (сначала свежие) и путь к файлу журнала."""
+def retention_days() -> int:
+    try:
+        from app.core.config import settings
+
+        value = int(getattr(settings, "error_log_retention_days", DEFAULT_RETENTION_DAYS) or DEFAULT_RETENTION_DAYS)
+    except Exception:
+        value = DEFAULT_RETENTION_DAYS
+    return max(1, value)
+
+
+def _age_ok(entry: dict[str, Any], cutoff: float | None) -> bool:
+    """Запись не старше срока хранения. Неизвестную дату не скрываем."""
+    if cutoff is None:
+        return True
+    raw = str(entry.get("ts") or "").strip()
+    if not raw:
+        return True
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        return moment.timestamp() >= cutoff
+    except (TypeError, ValueError):
+        return True
+
+
+def clear() -> int:
+    """Удалить журнал целиком (и предыдущую ротацию). Возвращает число байт."""
+    removed = 0
+    targets: list[Path] = []
+    for candidate in [*_read_candidates(), log_path()]:
+        if candidate not in targets:
+            targets.append(candidate)
+        rotated = candidate.with_suffix(candidate.suffix + ".1")
+        if rotated not in targets:
+            targets.append(rotated)
+    for path in targets:
+        try:
+            with LOCK:
+                if path.exists():
+                    removed += int(path.stat().st_size)
+                    path.unlink()
+        except Exception:
+            log.debug("error log clear failed for %s", path, exc_info=True)
+    RECORDED.clear()
+    return removed
+
+
+def read_recent(limit: int = 50, *, rid: str | None = None,
+                days: int | None = None) -> tuple[list[dict[str, Any]], Path | None]:
+    """Вернуть последние ошибки (сначала свежие) и путь к файлу журнала.
+
+    `days` — глубина показа: `None` — срок хранения по умолчанию, `0` — всё,
+    что есть в файле (для разбора старого случая по коду поддержки).
+    """
     take = max(1, min(int(limit or 50), 200))
+    window = retention_days() if days is None else max(0, int(days))
+    cutoff = None if window == 0 else (datetime.now(timezone.utc).timestamp() - window * 86400)
     for candidate in _read_candidates():
         if not candidate.exists():
             continue
@@ -135,6 +196,8 @@ def read_recent(limit: int = 50, *, rid: str | None = None) -> tuple[list[dict[s
             if not entry:
                 continue
             if rid and str(entry.get("rid") or "") != str(rid):
+                continue
+            if not _age_ok(entry, cutoff):
                 continue
             key = str(entry.get("rid") or "")
             if key and key in seen:
