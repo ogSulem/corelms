@@ -382,7 +382,10 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
         </div>
       </header>
       {!loading && authenticated ? <AppNavBottom role={user?.role} authenticated={authenticated} /> : null}
-      <main id="main-content" className="min-w-0 flex-1 min-h-0 animate-in fade-in duration-700">{children}</main>
+      {/* Без входной анимации: AppShell монтируется заново на каждой странице,
+                и fade-in 700 мс означал, что при каждом переходе контент
+                мигал с нулевой прозрачности. */}
+      <main id="main-content" className="min-w-0 flex-1 min-h-0">{children}</main>
 
 
 

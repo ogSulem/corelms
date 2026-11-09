@@ -10,6 +10,7 @@ import { AssetPreviewModal } from "@/components/materials/asset-preview";
 import { MaterialBrowser } from "@/components/materials/material-browser";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
+import { throttleRefresh } from "@/lib/refresh-throttle";
 import { cn } from "@/lib/cn";
 import { useAuth } from "@/lib/hooks/use-auth";
 import { formatFileCount, type Material } from "@/lib/materials";
@@ -68,10 +69,14 @@ export function LearningWorkspace({ moduleId, initialLessonId = "" }: { moduleId
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const events = new EventSource("/api/backend/modules/events");
+    // Живые события — по дебаунсу, возврат на вкладку — не чаще раза в 30 секунд:
+    // иначе каждый `focus` (в том числе клик по адресной строке) тянул шесть
+    // запросов и перерисовывал дерево уроков.
     const refresh = () => { clearTimeout(timer); timer = setTimeout(() => setContentRefresh(n => n + 1), 250); };
+    const onFocus = throttleRefresh(refresh, 30_000);
     events.addEventListener("modules", refresh);
-    window.addEventListener("focus", refresh);
-    return () => { events.close(); clearTimeout(timer); window.removeEventListener("focus", refresh); };
+    window.addEventListener("focus", onFocus);
+    return () => { events.close(); clearTimeout(timer); window.removeEventListener("focus", onFocus); };
   }, []);
 
   useEffect(() => {

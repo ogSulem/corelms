@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ContinueCard } from "@/app/dashboard/continue-card";
 import { apiFetch } from "@/lib/api";
+import { throttleRefresh } from "@/lib/refresh-throttle";
 import { useAuth } from "@/lib/hooks/use-auth";
 
 type AssignmentItem = {
@@ -47,6 +48,9 @@ export default function DashboardPage() {
 
   const loadInFlightRef = useRef(false);
   const lastLoadAtRef = useRef(0);
+  // Данные уже показывались: фоновая перезагрузка не должна подменять экран
+  // скелетами (из-за этого страница «мигала» при каждом возврате на вкладку).
+  const hasDataRef = useRef(false);
 
   async function loadData() {
     const now = Date.now();
@@ -55,8 +59,10 @@ export default function DashboardPage() {
     loadInFlightRef.current = true;
     lastLoadAtRef.current = now;
     try {
-      setError(null);
-      setLoading(true);
+      if (!hasDataRef.current) {
+        setError(null);
+        setLoading(true);
+      }
       // /me/profile больше не нужен: блок «цель дня» убран, а сводка и задания
       // приходят двумя запросами вместо трёх.
       const [as, pr] = await Promise.all([
@@ -65,11 +71,12 @@ export default function DashboardPage() {
       ]);
       setAssignments(as.items || []);
       setProgress(pr || null);
+      hasDataRef.current = true;
     } catch (e) {
       const anyErr = e as any;
       const msg = e instanceof Error ? e.message : "Не удалось загрузить данные";
       const rid = String(anyErr?.requestId || anyErr?.request_id || "").trim();
-      setError((msg || "Не удалось загрузить данные") + (rid ? ` (код: ${rid})` : ""));
+      if (!hasDataRef.current) setError((msg || "Не удалось загрузить данные") + (rid ? ` (код: ${rid})` : ""));
     } finally {
       setLoading(false);
       loadInFlightRef.current = false;
@@ -92,7 +99,9 @@ export default function DashboardPage() {
     };
 
     let lastHiddenAt = 0;
-    const onFocus = () => void loadData();
+    // `focus` приходит и при клике по адресной строке: без троттлинга каждое
+    // такое событие тянуло два запроса и перерисовывало карточки.
+    const onFocus = throttleRefresh(() => void loadData(), 30_000);
     const onVisibility = () => {
       const st = document.visibilityState;
       if (st === "hidden") {
