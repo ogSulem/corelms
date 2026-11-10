@@ -130,3 +130,63 @@ def test_lesson_page_does_not_scale_with_assets(client, db, make_module, auth_he
     assert response_empty.status_code == response_loaded.status_code == 200
     assert loaded == empty
     assert loaded <= 8, loaded
+
+
+def _add_ready_lessons(db, module, count: int) -> None:
+    """Уроки с текстом и готовым тестом: такие проходят проверку публикации."""
+    from app.models.quiz import Question, QuestionType
+
+    for index in range(count):
+        quiz = Quiz(type=QuizType.submodule, pass_threshold=70, attempts_limit=3)
+        db.add(quiz)
+        db.flush()
+        db.add(
+            Submodule(
+                module_id=module.id,
+                title=f"Урок {index + 2}",
+                order=index + 2,
+                quiz_id=quiz.id,
+                requires_quiz=True,
+                content=f"текст урока {index}",
+            )
+        )
+        db.add(
+            Question(
+                quiz_id=quiz.id,
+                type=QuestionType.single,
+                difficulty=1,
+                prompt="Вопрос\nA) Верно\nB) Неверно",
+                correct_answer="A",
+                concept_tag="ok:test",
+            )
+        )
+    db.commit()
+
+
+def test_publish_check_does_not_scale_with_lessons(client, db, make_module, admin_headers, query_counter):
+    """Публикация модуля: 41 урок — столько же запросов, сколько один.
+
+    Проверка «можно ли опубликовать» раньше делала два запроса на каждый урок
+    (файлы и вопросы) под блокировкой строки модуля: на большом модуле это
+    десятки запросов, и они держали блокировку дольше, чем нужно.
+    """
+    small, _lesson, _quiz = make_module(required=True, active=False)
+    big, _big_lesson, _big_quiz = make_module(required=True, active=False)
+    _add_ready_lessons(db, big, 40)
+    big_revision = int(big.content_revision)
+    small_revision = int(small.content_revision)
+
+    def publish(module_id, revision):
+        return lambda: client.patch(
+            f"/admin/content/modules/{module_id}",
+            headers=admin_headers,
+            json={"revision": revision, "is_active": True},
+        )
+
+    small_queries, response_small = query_counter(publish(small.id, small_revision))
+    big_queries, response_big = query_counter(publish(big.id, big_revision))
+
+    assert response_small.status_code == 200, response_small.text
+    assert response_big.status_code == 200, response_big.text
+    assert big_queries == small_queries, f"публикация выросла с {small_queries} до {big_queries} запросов"
+    assert big_queries <= 40, big_queries

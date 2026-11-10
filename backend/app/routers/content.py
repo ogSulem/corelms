@@ -77,14 +77,33 @@ def _editable(db: Session, module_id: uuid.UUID, revision: int) -> Module:
 
 def _check_publishable(db: Session, module: Module) -> None:
     lessons = list(db.scalars(select(Submodule).where(Submodule.module_id == module.id, Submodule.is_archived.is_(False))))
+    # Раньше здесь было два запроса на КАЖДЫЙ урок (есть ли файлы, есть ли
+    # вопросы) — на модуле из 41 урока публикация давала 80+ запросов, причём
+    # под блокировкой строки модуля. Достаточно двух выборок на весь модуль.
+    lesson_ids = [sub.id for sub in lessons]
+    quiz_ids = [sub.quiz_id for sub in lessons
+                if sub.requires_quiz and not sub.is_folder and sub.quiz_id is not None]
+
+    with_assets: set[uuid.UUID] = set()
+    if lesson_ids:
+        with_assets = set(db.scalars(
+            select(SubmoduleAssetMap.submodule_id)
+            .join(ContentAsset, ContentAsset.id == SubmoduleAssetMap.asset_id)
+            .where(SubmoduleAssetMap.submodule_id.in_(lesson_ids), ContentAsset.is_archived.is_(False))
+        ))
+
+    questions_by_quiz: dict[uuid.UUID, list[Question]] = {}
+    if quiz_ids:
+        for question in db.scalars(select(Question).where(Question.quiz_id.in_(quiz_ids))):
+            questions_by_quiz.setdefault(question.quiz_id, []).append(question)
+
     for sub in lessons:
-        if not sub.is_folder and not str(sub.content or "").strip() and not sub.content_object_key and not db.scalar(
-            select(ContentAsset.id).join(SubmoduleAssetMap, SubmoduleAssetMap.asset_id == ContentAsset.id)
-            .where(SubmoduleAssetMap.submodule_id == sub.id, ContentAsset.is_archived.is_(False)).limit(1)):
+        if (not sub.is_folder and not str(sub.content or "").strip()
+                and not sub.content_object_key and sub.id not in with_assets):
             raise HTTPException(409, f"В уроке «{sub.title}» пока нет текста или файлов")
         if not sub.requires_quiz or sub.is_folder:
             continue
-        questions = list(db.scalars(select(Question).where(Question.quiz_id == sub.quiz_id)))
+        questions = questions_by_quiz.get(sub.quiz_id, [])
         if not questions or any(str(q.concept_tag or "").startswith("needs_regen:") or not question_payload(q)["valid"] for q in questions):
             raise HTTPException(409, f"В уроке «{sub.title}» тест ещё не готов. Подготовьте вопросы или выключите обязательный тест.")
     if not lessons and not db.scalar(select(ContentAsset.id).where(ContentAsset.module_id == module.id, ContentAsset.is_archived.is_(False)).limit(1)):

@@ -163,8 +163,9 @@ export function LoginClient() {
 
           <form onSubmit={onSubmit} className="grid gap-8">
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-zinc-600 uppercase tracking-widest ml-1">Логин</label>
+              <label htmlFor="login-name" className="text-[10px] font-black text-zinc-600 uppercase tracking-widest ml-1">Логин</label>
               <input
+                id="login-name"
                 className="h-16 w-full rounded-2xl bg-white border border-zinc-200 px-6 text-lg text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all placeholder:text-zinc-400 font-medium"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -182,9 +183,10 @@ export function LoginClient() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-[10px] font-black text-zinc-600 uppercase tracking-widest ml-1">Пароль</label>
+              <label htmlFor="login-password" className="text-[10px] font-black text-zinc-600 uppercase tracking-widest ml-1">Пароль</label>
               <div className="relative">
                 <input
+                  id="login-password"
                   className="h-16 w-full rounded-2xl bg-white border border-zinc-200 px-6 pr-20 text-lg text-zinc-950 outline-none focus:border-[#fe9900]/50 focus:ring-4 focus:ring-[#fe9900]/15 transition-all placeholder:text-zinc-400 font-medium"
                   type={showPassword ? "text" : "password"}
                   value={password}

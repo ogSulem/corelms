@@ -64,3 +64,17 @@ def test_backup_is_only_run_when_database_container_is_up():
     """Первая установка запускает update.sh без работающего postgres."""
     text = _script()
     assert 'grep -qx "postgres"' in text
+
+
+def test_restore_reports_real_port_and_waits_for_readiness():
+    """Инструкция восстановления не должна вести на «чужой» порт.
+
+    Раньше в конце печатался адрес с зашитым 8080: на обычной установке (порт 80)
+    проверка после восстановления вела в никуда. Теперь порт берётся из .env,
+    а готовность API проверяется, а не предлагается «как-нибудь потом».
+    """
+    text = (ROOT / "scripts" / "restore.sh").read_text(encoding="utf-8")
+    assert "127.0.0.1:8080" not in text
+    assert 'PORT="${NGINX_HTTP_PORT:-80}"' in text
+    assert "/api/health/ready" in text
+    assert "curl -fsS" in text

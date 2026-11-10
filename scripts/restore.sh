@@ -9,7 +9,7 @@
 #   2) снимает свежую копию текущего состояния (отключается --no-safety-backup);
 #   3) останавливает API и воркеры, чтобы никто не писал в базу;
 #   4) заливает дамп: pg_restore --clean --if-exists --no-owner;
-#   5) поднимает сервисы и печатает текущую версию схемы.
+#   5) поднимает сервисы, печатает версию схемы и ждёт ответа /api/health/ready.
 #
 # Это разрушающая операция: данные, появившиеся после копии, будут потеряны.
 # Файлы S3 этим скриптом не трогаются вообще.
@@ -88,7 +88,25 @@ $COMPOSE up -d backend worker worker_media frontend >/dev/null
 
 SCHEMA="$( $COMPOSE exec -T postgres sh -c "psql -U '$PG_USER' -d '$PG_DB' -tAc 'select version_num from alembic_version'" 2>/dev/null | tr -d '[:space:]' || true )"
 echo "→ Схема после восстановления: ${SCHEMA:-не определена}"
-echo "→ Проверьте: curl -fsS http://127.0.0.1:8080/api/health/ready"
+
+# Раньше здесь печатался адрес с зашитым портом 8080: на обычной установке
+# (порт 80) проверка из инструкции вела в никуда. Порт берём из .env и ждём
+# готовности, а не предлагаем проверить вручную: восстановление — это тот
+# момент, когда «кажется, поднялось» должно быть заменено фактом.
+PORT="${NGINX_HTTP_PORT:-80}"
+READY_URL="http://127.0.0.1:${PORT}/api/health/ready"
+ready=0
+for _ in $(seq 1 30); do
+  if curl -fsS --max-time 5 "$READY_URL" >/dev/null 2>&1; then ready=1; break; fi
+  sleep 2
+done
+if [[ "$ready" == "1" ]]; then
+  echo "→ API отвечает: $READY_URL"
+else
+  echo "!! API не ответил на $READY_URL за 60 секунд." >&2
+  echo "   Логи: docker compose logs --tail=80 backend" >&2
+  echo "   База уже восстановлена; не запускайте обновление, пока не разберётесь." >&2
+fi
 echo "→ Откройте «Админ-центр → Настройки»: версия схемы и состояние S3 должны совпасть с копией."
 if [[ -f "$SRC/env.backup" ]]; then
   echo
