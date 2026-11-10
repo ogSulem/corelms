@@ -105,35 +105,55 @@ export default function AccountPage() {
     };
   }, [historyAll]);
 
+  const [reloadKey, setReloadKey] = useState(0);
+
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      try {
-        setError(null);
-        setLoading(true);
+      setError(null);
+      setLoading(true);
+      setSessionsLoading(true);
 
-        const p = await apiFetch<MyProfile>("/me/profile");
-        setProfile(p);
+      // Три независимых запроса идут параллельно: раньше они выстраивались в
+      // цепочку профиль → история → сеансы, и экран ждал три круга до сервера
+      // подряд. Частичный сбой больше не обнуляет страницу: то, что загрузилось,
+      // остаётся на экране, а причина видна в сообщении.
+      const [profileResult, historyResult, sessionsResult] = await Promise.allSettled([
+        apiFetch<MyProfile>("/me/profile"),
+        apiFetch<{ items: HistoryItem[] }>(`/me/history?limit=200`),
+        apiFetch<{ items: SessionItem[] }>(`/auth/sessions`),
+      ]);
+      if (cancelled) return;
 
-        const hist = await apiFetch<{ items: HistoryItem[] }>(`/me/history?limit=200`);
-        const items = Array.isArray(hist?.items) ? hist.items : [];
+      const problems: string[] = [];
+      if (profileResult.status === "fulfilled") setProfile(profileResult.value);
+      else problems.push("профиль");
+
+      if (historyResult.status === "fulfilled") {
+        const items = Array.isArray(historyResult.value?.items) ? historyResult.value.items : [];
         setHistoryAll(items);
-
-        try {
-          setSessionsLoading(true);
-          const sess = await apiFetch<{ items: SessionItem[] }>(`/auth/sessions`);
-          setSessions(Array.isArray(sess?.items) ? sess.items : []);
-        } catch {
-          setSessions([]);
-        } finally {
-          setSessionsLoading(false);
-        }
-      } catch (e) {
-        setError("НЕ УДАЛОСЬ ЗАГРУЗИТЬ ДАННЫЕ ПРОФИЛЯ");
-      } finally {
-        setLoading(false);
+      } else {
+        problems.push("история");
       }
+
+      if (sessionsResult.status === "fulfilled") {
+        const items = Array.isArray(sessionsResult.value?.items) ? sessionsResult.value.items : [];
+        setSessions(items);
+      } else {
+        setSessions([]);
+        problems.push("сеансы");
+      }
+
+      if (problems.length) {
+        setError(`Не удалось загрузить: ${problems.join(", ")}. Остальные данные на экране.`);
+      }
+      setLoading(false);
+      setSessionsLoading(false);
     })();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
   const sessionGroups = useMemo(() => groupSessions(sessions), [sessions]);
 
@@ -151,13 +171,11 @@ export default function AccountPage() {
     const ids = sessionIds.map((id) => String(id || "").trim()).filter(Boolean);
     if (!ids.length) return;
     setSessionsLoading(true);
-    for (const sid of ids) {
-      try {
-        await apiFetch(`/auth/sessions/revoke`, { method: "POST", body: JSON.stringify({ session_id: sid }) });
-      } catch {
-        // Продолжаем: одна неудача не должна оставлять остальные сессии живыми.
-      }
-    }
+    // Отзываем параллельно: последовательный цикл держал индикатор столько же
+    // раз, сколько сеансов выбрано. allSettled — одна неудача не мешает остальным.
+    await Promise.allSettled(
+      ids.map((sid) => apiFetch(`/auth/sessions/revoke`, { method: "POST", body: JSON.stringify({ session_id: sid }) })),
+    );
     await refreshSessions();
     setSessionsLoading(false);
   };
@@ -263,7 +281,7 @@ export default function AccountPage() {
           <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-8">
             <div className="min-w-0">
               <h1 className="text-5xl font-black tracking-tighter text-zinc-950 uppercase leading-none truncate">
-                {profile?.name || "ЗАГРУЗКА..."}
+                {profile?.name || (loading ? "ЗАГРУЗКА..." : "ПРОФИЛЬ")}
               </h1>
               <div className="mt-2 text-xl text-zinc-500 font-medium uppercase tracking-tight">
                 {profile?.role === "superadmin" ? "СУПЕРАДМИН" : profile?.role === "admin" ? "АДМИНИСТРАТОР" : "ПАРТНЁР"}
@@ -340,6 +358,19 @@ export default function AccountPage() {
             </div>
           </div>
         </div>
+        {error ? (
+          <div className="mb-8 flex flex-col gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <p role="alert" className="text-sm font-medium text-rose-800">{error}</p>
+            <Button
+              variant="outline"
+              className="shrink-0 rounded-xl border-rose-200 text-sm font-medium normal-case tracking-normal text-rose-800 hover:bg-rose-100"
+              onClick={() => setReloadKey((value) => value + 1)}
+              disabled={loading}
+            >
+              Повторить
+            </Button>
+          </div>
+        ) : null}
         <div className="grid gap-10 lg:grid-cols-12">
           <div className="lg:col-span-8 space-y-10">
             <div className="relative overflow-hidden rounded-[28px] border border-zinc-200 bg-white/70 p-5 shadow-2xl shadow-zinc-950/10 backdrop-blur-md transition-all duration-300 hover:bg-white sm:rounded-[32px] sm:p-10">

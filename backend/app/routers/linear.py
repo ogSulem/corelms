@@ -52,7 +52,7 @@ def next_unlocked_submodule(db: Session = Depends(get_db), user: User = Depends(
 @router.get("/next-unlocked-resolved")
 def next_unlocked_resolved(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     from app.services.modules import ModuleService
-    from app.services.learning import LearningService
+    from app.services.learning import LearningService, module_open_meta_clause
     modules = ModuleService(db)._get_accessible_modules(user)
     progress = LearningService(db).get_modules_progress(user, [m.id for m in modules])
     import json
@@ -61,9 +61,19 @@ def next_unlocked_resolved(db: Session = Depends(get_db), user: User = Depends(g
     # Resume the latest visible, unfinished module, not an invented first card.
     recent_id = None
     by_id = {str(m.id): m for m in modules}
-    events = db.scalars(select(LearningEvent.meta).where(LearningEvent.user_id == user.id,
-        LearningEvent.type == LearningEventType.submodule_opened, LearningEvent.ref_id.is_(None))
-        .order_by(LearningEvent.created_at.desc()).execution_options(yield_per=100))
+    # Тип `submodule_opened` с ref_id=NULL используется и для «открыл модуль», и
+    # для клика по внешней ссылке. Раньше сюда выгружались ВСЕ такие события
+    # пользователя за всё время и разбирались JSON'ом в Python: на активном
+    # аккаунте это тысячи строк на каждое открытие дашборда. Условие «это
+    # открытие модуля» теперь проверяется в SQL (тем же хелпером, что и в
+    # расчёте прогресса), а глубина поиска ограничена: для карточки «продолжить»
+    # нужен самый свежий незакрытый модуль, а не история за полгода.
+    events = db.scalars(select(LearningEvent.meta).where(
+        LearningEvent.user_id == user.id,
+        LearningEvent.type == LearningEventType.submodule_opened,
+        LearningEvent.ref_id.is_(None),
+        module_open_meta_clause(),
+    ).order_by(LearningEvent.created_at.desc()).limit(200))
     for raw in events:
         try:
             event = json.loads(raw or "{}")
