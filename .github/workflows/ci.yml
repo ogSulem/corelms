@@ -31,7 +31,10 @@ jobs:
       - name: Deploy scripts are valid and images stay runnable
         run: |
           set -e
-          for f in deploy/*.sh; do bash -n "$f"; echo "syntax ok: $f"; done
+          for f in deploy/*.sh scripts/*.sh; do bash -n "$f"; echo "syntax ok: $f"; done
+          # update.sh теперь вызывает scripts/backup.sh: без файла обновление
+          # остановится на шаге копии, поэтому его наличие проверяем в CI.
+          test -f scripts/backup.sh
           grep -q 'chmod +x /app/scripts' deploy/rebuild-offline.sh
           for f in backend/scripts/*.sh; do
             if [ ! -x "$f" ]; then

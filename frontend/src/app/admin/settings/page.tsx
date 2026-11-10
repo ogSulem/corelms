@@ -281,23 +281,31 @@ export default function AdminSettingsPage() {
     setError(null);
     setLoadingData(true);
     try {
-      const [aiData, overviewData, storageData, platformData] = await Promise.all([
+      // Разделы независимы: сервер без S3 не должен закрывать экран настроек AI.
+      // Раньше Promise.all отменял весь результат при одной ошибке — админ видел
+      // пустую страницу и не мог исправить ни одну настройку. Теперь загружается
+      // всё, что ответило, а вверху перечислено, что именно не открылось.
+      const [aiResult, overviewResult, storageResult, platformResult] = await Promise.allSettled([
         apiFetch<AISettings>("/admin/settings/ai"),
         apiFetch<Overview>("/admin/settings/overview"),
         apiFetch<StorageSettings>("/admin/settings/storage"),
         apiFetch<PlatformSettings>("/admin/settings/platform"),
       ]);
-      applyAI(aiData);
-      setOverview(overviewData);
-      applyStorage(storageData);
-      applyPlatform(platformData);
+      const problems: string[] = [];
+      if (aiResult.status === "fulfilled") applyAI(aiResult.value); else problems.push("AI для тестов");
+      if (overviewResult.status === "fulfilled") setOverview(overviewResult.value); else problems.push("сервер и схема");
+      if (storageResult.status === "fulfilled") applyStorage(storageResult.value); else problems.push("хранилище");
+      if (platformResult.status === "fulfilled") applyPlatform(platformResult.value); else problems.push("платформа");
       void loadThumbs();
       if (isSuperadmin) {
         try {
           applySales(await apiFetch<SalesSettings>("/admin/settings/sales"));
-        } catch (salesError) {
-          setError(errorText(salesError, "Не удалось загрузить настройки продаж"));
+        } catch {
+          problems.push("продажи (Sheets)");
         }
+      }
+      if (problems.length) {
+        setError(`Не удалось загрузить: ${problems.join(", ")}. Остальные разделы ниже — их можно сохранить.`);
       }
     } catch (loadError) {
       setError(errorText(loadError, "Не удалось загрузить настройки"));
@@ -828,7 +836,7 @@ export default function AdminSettingsPage() {
               )}
 
               <div className="mt-5 flex flex-wrap gap-2">
-                <Button className={btn} onClick={() => void saveAI()} disabled={savingAI}>
+                <Button className={btn} onClick={() => void saveAI()} disabled={savingAI || !ai}>
                   {savingAI ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}Сохранить
                 </Button>
                 <Button variant="outline" className={btn} onClick={() => void testAI()} disabled={testingAI}>
@@ -901,7 +909,7 @@ export default function AdminSettingsPage() {
                   )}
 
                   <div className="mt-5 flex flex-wrap gap-2">
-                    <Button className={btn} onClick={() => void saveSales()} disabled={savingSales}>
+                    <Button className={btn} onClick={() => void saveSales()} disabled={savingSales || !sales}>
                       {savingSales ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}Сохранить
                     </Button>
                     <Button variant="outline" className={btn} onClick={() => void testSales()} disabled={testingSales}>
@@ -992,7 +1000,7 @@ export default function AdminSettingsPage() {
               </div>
 
               <div className="mt-5 flex flex-wrap gap-2">
-                <Button className={btn} onClick={() => void saveStorage()} disabled={savingStorage}>
+                <Button className={btn} onClick={() => void saveStorage()} disabled={savingStorage || !storageSettings}>
                   {savingStorage ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}Сохранить
                 </Button>
                 <Button variant="outline" className={btn} onClick={() => void testStorage()} disabled={testingStorage}>
@@ -1130,7 +1138,7 @@ export default function AdminSettingsPage() {
               <p className="mt-3 text-xs leading-5 text-zinc-500">Новые сроки действуют при следующем входе; уже открытые сессии завершатся по своим прежним правилам. Принудительно завершить все сессии можно в «Профиле».</p>
 
               <div className="mt-5 flex flex-wrap gap-2">
-                <Button className={btn} onClick={() => void savePlatform()} disabled={savingPlatform || !platformValid}>
+                <Button className={btn} onClick={() => void savePlatform()} disabled={savingPlatform || !platformValid || !platform}>
                   {savingPlatform ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}Сохранить
                 </Button>
                 <Button variant="outline" className={btn} onClick={() => void resetPlatform()} disabled={savingPlatform || !platform?.stored}>

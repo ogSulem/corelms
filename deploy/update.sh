@@ -16,8 +16,10 @@
 #   bash deploy/update.sh --build    # сначала попробовать обычную сборку с Docker Hub
 #
 # Что делает по шагам:
+#   0) делает резервную копию базы ДО любых изменений (SKIP_BACKUP=1 — пропустить);
 #   1) собирает образы (офлайн, с тегами отката);
-#   2) применяет миграции базы новым образом, пока старые контейнеры ещё работают;
+#   2) применяет настройки PostgreSQL и миграции базы новым образом, пока старые
+#      контейнеры ещё работают;
 #   3) поднимает контейнеры приложений без --build (сеть не нужна);
 #   4) ждёт готовности API, перечитывает конфигурацию входа (nginx, в режиме tls — Caddy)
 #      и запускает самопроверку;
@@ -44,7 +46,7 @@ for arg in "$@"; do
   case "$arg" in
     --build) TRY_BUILD=1 ;;
     backend|frontend|workers|all) WHAT="$arg" ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "Неизвестный аргумент: $arg (backend | frontend | workers | all | --build)"; exit 2 ;;
   esac
 done
@@ -71,6 +73,24 @@ fi
 DATA_VOLUMES="pg_data redis_data backend_data s3_data caddy_data caddy_config"
 say "Проверка томов с данными"
 docker volume ls --format '{{.Name}}' | grep -E "^(${DATA_VOLUMES// /|})\$|_(${DATA_VOLUMES// /|})\$" || true
+
+# Копия делается ДО любых изменений: миграция может быть необратимой, а откат
+# образов её не отменяет. Раньше шаг был только в инструкции, и обновление,
+# запущенное одной командой (bash deploy/update.sh), шло вообще без копии.
+# Копию не удаляем: ротация оставляет BACKUP_KEEP последних (по умолчанию 14).
+# Пропустить осознанно: SKIP_BACKUP=1 bash deploy/update.sh
+say "Резервная копия перед обновлением"
+if [ "${SKIP_BACKUP:-0}" = "1" ]; then
+  echo "  пропущено: SKIP_BACKUP=1"
+elif docker compose ps --status running --services 2>/dev/null | grep -qx "postgres"; then
+  if bash scripts/backup.sh --dir "${BACKUP_DIR:-./backups}" --keep "${BACKUP_KEEP:-14}"; then
+    echo "  копия готова"
+  else
+    die "Резервная копия не создана — обновление остановлено, ничего не изменено. Проверьте место на диске (df -h) и свободный доступ к postgres, затем повторите. Осознанный пропуск: SKIP_BACKUP=1 bash deploy/update.sh"
+  fi
+else
+  echo "  postgres не запущен — это первая установка, копировать нечего"
+fi
 
 if [ "$TRY_BUILD" -eq 1 ]; then
   say "Пробуем обычную сборку (нужен доступ к Docker Hub)"
@@ -112,12 +132,18 @@ say "Применяем настройки PostgreSQL"
 # при обычном обновлении кода здесь ничего не происходит, простоя нет.
 # Данные лежат в томе pg_data и при пересоздании контейнера не затрагиваются.
 docker compose up -d --no-build postgres >/dev/null
+pg_ready=0
 for _ in $(seq 1 30); do
   if docker compose exec -T postgres sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then
+    pg_ready=1
     break
   fi
   sleep 2
 done
+# Раньше цикл просто заканчивался, и на неготовой базе сразу запускались
+# миграции: alembic падал с невнятной ошибкой подключения вместо «база не
+# поднялась».
+[ "$pg_ready" -eq 1 ] || die "PostgreSQL не ответил за 60 секунд. Логи: docker compose logs --tail=80 postgres"
 
 say "Миграции базы"
 # Схема обновляется ДО переключения кода. Иначе новый backend несколько секунд
