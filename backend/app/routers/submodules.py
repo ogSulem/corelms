@@ -46,7 +46,7 @@ def _uuid(value: str, *, field: str) -> uuid.UUID:
     try:
         return uuid.UUID(value)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"invalid {field}") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Урок не найден: ссылка устарела."}) from e
 
 
 @router.post("/{submodule_id}/open")
@@ -59,7 +59,7 @@ def open_submodule(
     sid = _uuid(submodule_id, field="submodule_id")
     sub = db.scalar(select(Submodule).where(Submodule.id == sid))
     if sub is None:
-        raise HTTPException(status_code=404, detail="submodule not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Урок не найден. Обновите страницу модуля."})
     require_submodule_access(db, user, sub, lock=True)
 
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)
@@ -85,7 +85,7 @@ def get_submodule(submodule_id: str, db: Session = Depends(get_db), user: User =
     sid = _uuid(submodule_id, field="submodule_id")
     sub = db.scalar(select(Submodule).where(Submodule.id == sid))
     if sub is None:
-        raise HTTPException(status_code=404, detail="submodule not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Урок не найден. Обновите страницу модуля."})
     require_submodule_access(db, user, sub, lock=False)
 
     from app.services.content import read_lesson_text
@@ -117,7 +117,7 @@ def read_submodule(
     sid = _uuid(submodule_id, field="submodule_id")
     sub = db.scalar(select(Submodule).where(Submodule.id == sid))
     if sub is None:
-        raise HTTPException(status_code=404, detail="submodule not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Урок не найден. Обновите страницу модуля."})
     module = require_submodule_access(db, user, sub, lock=True)
 
     record_activity_and_award_xp(db, user_id=str(user.id), xp=0)

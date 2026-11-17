@@ -22,11 +22,11 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token", auto_error=False)
 def require_cron_secret(request: Request) -> None:
     secret = str(getattr(settings, "cron_secret", "") or "").strip()
     if not secret:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Не найдено."})
 
     provided = str(request.headers.get("x-cron-secret") or "").strip()
     if not provided or not hmac.compare_digest(provided, secret):
-        raise HTTPException(status_code=403, detail="forbidden")
+        raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Недостаточно прав для этого действия."})
 
 
 def _resolve_user(request: Request, db: Session, token: str) -> User:
@@ -34,7 +34,7 @@ def _resolve_user(request: Request, db: Session, token: str) -> User:
     if not token:
         token = request.cookies.get("core_token")
     if not token:
-        raise HTTPException(status_code=401, detail="not authenticated")
+        raise HTTPException(status_code=401, detail={"error_code": "unauthorized", "error_message": "Нужно войти в систему."})
 
     try:
         payload = jwt.decode(
@@ -45,18 +45,18 @@ def _resolve_user(request: Request, db: Session, token: str) -> User:
         )
         user_id = payload.get("sub")
         if not user_id:
-            raise HTTPException(status_code=401, detail="invalid token")
+            raise HTTPException(status_code=401, detail={"error_code": "invalid_token", "error_message": "Сессия истекла — войдите снова."})
     except JWTError as e:
-        raise HTTPException(status_code=401, detail="invalid token") from e
+        raise HTTPException(status_code=401, detail={"error_code": "invalid_token", "error_message": "Сессия истекла — войдите снова."}) from e
 
     try:
         user_id = uuid.UUID(str(user_id))
     except ValueError as e:
-        raise HTTPException(status_code=401, detail="invalid token") from e
+        raise HTTPException(status_code=401, detail={"error_code": "invalid_token", "error_message": "Сессия истекла — войдите снова."}) from e
 
     user = db.scalar(select(User).where(User.id == user_id))
     if user is None:
-        raise HTTPException(status_code=401, detail="invalid token")
+        raise HTTPException(status_code=401, detail={"error_code": "invalid_token", "error_message": "Сессия истекла — войдите снова."})
 
     # Архивная учётная запись не должна пользоваться даже ранее выданным токеном:
     # архив — это «доступ отозван», а не «скрыт из списка».
@@ -72,10 +72,10 @@ def _resolve_user(request: Request, db: Session, token: str) -> User:
     # Old access tokens refresh once into the SID-bound format at rollout.
     sid = payload.get("sid")
     if not sid or payload.get("pv") != password_version(user):
-        raise HTTPException(401, "invalid token")
+        raise HTTPException(401, {"error_code": "invalid_token", "error_message": "Сессия истекла — войдите снова."})
     session = get_session(str(sid))
     if not session or session.get("user_id") != str(user.id) or session.get("password_version") != payload.get("pv"):
-        raise HTTPException(401, "session revoked")
+        raise HTTPException(401, {"error_code": "session_revoked", "error_message": "Сессия завершена — войдите снова."})
     request.state.user_id = str(user.id)
     request.state.session_id = str(sid)
     if user.must_change_password and request.url.path not in {"/auth/me", "/auth/change-password", "/auth/sessions", "/auth/sessions/revoke-all"}:
@@ -123,7 +123,7 @@ def require_roles_stream(*roles: UserRole):
         if user.role == UserRole.superadmin:
             return user
         if user.role not in roles:
-            raise HTTPException(status_code=403, detail="forbidden")
+            raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Недостаточно прав для этого действия."})
         return user
 
     return _dep
@@ -136,7 +136,7 @@ def require_roles(*roles: UserRole):
             return user
 
         if user.role not in roles:
-            raise HTTPException(status_code=403, detail="forbidden")
+            raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Недостаточно прав для этого действия."})
         return user
 
     return _dep

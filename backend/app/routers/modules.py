@@ -256,7 +256,7 @@ def list_submodules(module_id: uuid.UUID, db: Session = Depends(get_db), user: U
 def submodule_assets(submodule_id: uuid.UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     sub = db.scalar(select(Submodule).where(Submodule.id == submodule_id))
     if sub is None:
-        raise HTTPException(status_code=404, detail="submodule not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Урок не найден. Обновите страницу модуля."})
 
     require_submodule_access(db, user, sub)
     stmt = (

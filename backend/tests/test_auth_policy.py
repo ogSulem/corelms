@@ -83,7 +83,10 @@ def test_admin_policy_applies_to_public_registration(client, admin_headers, db):
     assert _save_platform(client, admin_headers, allow_public_register=True, password_min_length=12).status_code == 200
     short = client.post("/auth/register", json={"name": f"reg_{uuid.uuid4().hex[:8]}", "password": "12345678"})
     assert short.status_code == 400, short.text
-    assert short.json()["error_message"] == "password too short"
+    # Текст ошибки — по-русски и с фактическим требованием политики (12 из админки),
+    # а не английское «password too short» из прошлых версий.
+    assert short.json()["error_code"] == "invalid_value"
+    assert "12" in short.json()["error_message"]
     long = client.post("/auth/register", json={"name": f"reg_{uuid.uuid4().hex[:8]}", "password": "123456789012"})
     assert long.status_code in {200, 201}, long.text
 

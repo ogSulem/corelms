@@ -67,8 +67,9 @@ def password_problem(password: str, *, db: Session | None = None) -> str | None:
 
 def ensure_password_or_400(password: str, *, db: Session | None = None) -> None:
     """Проверить пароль для эндпоинтов, которые отвечают `400 password too short`."""
-    if not password or len(str(password)) < password_min_length(db):
-        raise HTTPException(status_code=400, detail="password too short")
+    problem = password_problem(password, db=db)
+    if problem:
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": problem})
 
 
 def ensure_password_complexity_or_422(password: str, *, db: Session | None = None) -> None:

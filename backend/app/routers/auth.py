@@ -96,7 +96,7 @@ def _normalize_email(email: str | None) -> str | None:
         return None
     v = v.lower()
     if not EMAIL_RE.fullmatch(v):
-        raise HTTPException(status_code=400, detail="invalid email")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Проверьте адрес электронной почты: нужен формат name@domen.ru."})
     return v
 
 
@@ -107,7 +107,7 @@ def _normalize_phone(phone: str | None) -> str | None:
     keep_plus = raw.startswith("+")
     digits = "".join([ch for ch in raw if ch.isdigit()])
     if not digits:
-        raise HTTPException(status_code=400, detail="invalid phone")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Проверьте номер телефона: нужны только цифры, можно с «+»."})
 
     # Common RU normalization:
     # - 8XXXXXXXXXX -> +7XXXXXXXXXX
@@ -124,7 +124,7 @@ def _normalize_phone(phone: str | None) -> str | None:
 
     out = ("+" + digits) if keep_plus else digits
     if len(digits) < 10 or len(digits) > 15:
-        raise HTTPException(status_code=400, detail="invalid phone")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Проверьте номер телефона: нужны только цифры, можно с «+»."})
     return out
 
 
@@ -160,12 +160,12 @@ def reset_password_confirm(
 ):
     token_raw = str(body.token or "").strip()
     if not token_raw:
-        raise HTTPException(status_code=400, detail="invalid token")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_token", "error_message": "Ссылка недействительна или уже использована. Запросите новую."})
 
     ensure_password_or_400(body.new_password, db=db)
 
     if body.confirm_password is not None and str(body.confirm_password) != str(body.new_password):
-        raise HTTPException(status_code=400, detail="passwords do not match")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Пароли не совпадают."})
 
     h = password_reset.hash_token(token_raw)
     now = datetime.now(timezone.utc)
@@ -174,35 +174,35 @@ def reset_password_confirm(
     if prt is None:
         audit_log(db=db, request=request, event_type="auth_password_reset_failed", meta={"reason": "token_not_found"})
         db.commit()
-        raise HTTPException(status_code=400, detail="invalid token")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_token", "error_message": "Ссылка недействительна или уже использована. Запросите новую."})
 
     if getattr(prt, "used_at", None) is not None:
         audit_log(db=db, request=request, event_type="auth_password_reset_failed", actor_user_id=prt.user_id, target_user_id=prt.user_id, meta={"reason": "token_used"})
         db.commit()
-        raise HTTPException(status_code=400, detail="invalid token")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_token", "error_message": "Ссылка недействительна или уже использована. Запросите новую."})
 
     try:
         exp = getattr(prt, "expires_at", None)
         if exp is None or now.timestamp() >= auth_sessions.timestamp(exp):
             audit_log(db=db, request=request, event_type="auth_password_reset_failed", actor_user_id=prt.user_id, target_user_id=prt.user_id, meta={"reason": "token_expired"})
             db.commit()
-            raise HTTPException(status_code=400, detail="token expired")
+            raise HTTPException(status_code=400, detail={"error_code": "token_expired", "error_message": "Срок действия ссылки истёк. Запросите новую."})
     except HTTPException:
         raise
     except Exception:
-        raise HTTPException(status_code=400, detail="invalid token")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_token", "error_message": "Ссылка недействительна или уже использована. Запросите новую."})
 
     user = db.scalar(select(User).where(User.id == prt.user_id).with_for_update())
     if user is None:
         audit_log(db=db, request=request, event_type="auth_password_reset_failed", meta={"reason": "user_missing"})
         db.commit()
-        raise HTTPException(status_code=400, detail="invalid token")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_token", "error_message": "Ссылка недействительна или уже использована. Запросите новую."})
     if bool(getattr(user, "is_archived", False)):
         # Ссылка на сброс для архивной записи бесполезна: вход всё равно закрыт.
         audit_log(db=db, request=request, event_type="auth_password_reset_failed",
                   actor_user_id=user.id, target_user_id=user.id, meta={"reason": "archived"})
         db.commit()
-        raise HTTPException(status_code=400, detail="invalid token")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_token", "error_message": "Ссылка недействительна или уже использована. Запросите новую."})
 
     user.password_hash = _hash_password(body.new_password)
     user.must_change_password = False
@@ -335,7 +335,7 @@ def register(
     _: object = rate_limit(key_prefix="auth_register", limit=10, window_seconds=60),
 ):
     if not get_platform_settings(db).allow_public_register:
-        raise HTTPException(status_code=403, detail="registration disabled")
+        raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Самостоятельная регистрация отключена. Обратитесь к администратору."})
 
     ensure_password_or_400(payload.password, db=db)
 
@@ -346,7 +346,7 @@ def register(
         if existing_email is not None:
             audit_log(db=db, request=request, event_type="auth_register_failed", meta={"reason": "email_exists", "email": email_norm})
             db.commit()
-            raise HTTPException(status_code=409, detail="email already exists")
+            raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": "Пользователь с такой почтой уже есть. Войдите или восстановите пароль."})
 
     user = User(
         name=payload.name,
@@ -407,11 +407,11 @@ def token(
         elif len(matches) > 1:
             audit_log(db=db, request=request, event_type="auth_login_failed", meta={"username": form_data.username, "reason": "ambiguous_name"})
             db.commit()
-            raise HTTPException(status_code=400, detail="ambiguous login; use email")
+            raise HTTPException(status_code=400, detail={"error_code": "ambiguous_login", "error_message": "Такой логин есть у нескольких человек — войдите по e-mail."})
     if user is None or not _verify_password(form_data.password, user.password_hash):
         audit_log(db=db, request=request, event_type="auth_login_failed", meta={"username": form_data.username})
         db.commit()
-        raise HTTPException(status_code=401, detail="invalid credentials")
+        raise HTTPException(status_code=401, detail={"error_code": "invalid_credentials", "error_message": "Неверный логин или пароль"})
 
     # Архивную учётную запись не пускаем: пароль проверен, поэтому можно честно
     # сказать причину, не раскрывая существование аккаунта посторонним.
@@ -502,17 +502,17 @@ def refresh_token(
     if auth.lower().startswith("bearer "):
         token = auth.split(" ", 1)[1].strip()
     if not token:
-        raise HTTPException(status_code=401, detail="not authenticated")
+        raise HTTPException(status_code=401, detail={"error_code": "unauthorized", "error_message": "Нужно войти в систему."})
 
     session = auth_sessions.resolve_refresh(token)
     if session is None:
-        raise HTTPException(401, "invalid token")
+        raise HTTPException(401, {"error_code": "invalid_token", "error_message": "Сессия истекла — войдите снова."})
     try:
         user = db.get(User, uuid.UUID(session["user_id"]))
     except (ValueError, KeyError):
         user = None
     if user is None or bool(getattr(user, "is_archived", False)):
-        raise HTTPException(401, "invalid token")
+        raise HTTPException(401, {"error_code": "invalid_token", "error_message": "Сессия истекла — войдите снова."})
     rotated = auth_sessions.rotate_session(token, user, request)
     if rotated is None:
         # The same device may have just changed its password in another tab.
@@ -520,7 +520,7 @@ def refresh_token(
         user = db.scalar(select(User).where(User.id == user.id).execution_options(populate_existing=True))
         rotated = auth_sessions.rotate_session(token, user, request) if user else None
     if rotated is None:
-        raise HTTPException(401, "invalid token")
+        raise HTTPException(401, {"error_code": "invalid_token", "error_message": "Сессия истекла — войдите снова."})
     new_refresh, refresh_ttl, sid = rotated
     token_out = create_access_token(user, sid)
     audit_log(
@@ -646,11 +646,11 @@ def change_password(
     # Product rule: when admin issued a temporary password, enforce extra confirmation + phone collection.
     if bool(getattr(user, "must_change_password", False)):
         if str(body.confirm_password or "") != str(body.new_password or ""):
-            raise HTTPException(status_code=400, detail="passwords do not match")
+            raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Пароли не совпадают."})
 
         norm_phone = _normalize_phone(body.phone)
         if not norm_phone:
-            raise HTTPException(status_code=400, detail="phone is required")
+            raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Укажите номер телефона: он нужен для связи."})
         user.phone = norm_phone
     else:
         # Optional phone collection on regular password change.

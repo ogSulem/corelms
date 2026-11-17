@@ -23,7 +23,7 @@ def stream_quickstart(
 ):
     object_key = str(getattr(settings, "quickstart_object_key", "") or "").strip()
     if not object_key:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Видео не найдено."})
 
     filename = object_key.split("/")[-1] or "quickstart"
     quoted = urllib.parse.quote(filename, safe="")
@@ -90,7 +90,7 @@ def stream_quickstart(
 
         if invalid:
             headers = {"Accept-Ranges": "bytes", "Content-Range": f"bytes */{int(size_total)}"}
-            raise HTTPException(status_code=416, detail="invalid range", headers=headers)
+            raise HTTPException(status_code=416, detail={"error_code": "invalid_range", "error_message": "Некорректный диапазон файла — обновите страницу и откройте видео заново."}, headers=headers)
 
         if start is not None and end is None:
             kwargs["Range"] = f"bytes={start}-"
@@ -101,7 +101,7 @@ def stream_quickstart(
         obj = s3.get_object(**kwargs)
         body = obj.get("Body")
         if body is None:
-            raise HTTPException(status_code=404, detail="not found")
+            raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Видео не найдено."})
 
         content_type = str(getattr(settings, "quickstart_mime_type", "") or "").strip() or str(obj.get("ContentType") or "video/mp4")
 
@@ -124,4 +124,4 @@ def stream_quickstart(
     except HTTPException:
         raise
     except Exception:
-        raise HTTPException(status_code=404, detail="not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Видео не найдено."})

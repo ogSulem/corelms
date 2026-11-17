@@ -19,12 +19,13 @@ import pathlib
 import subprocess
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.timeutil import utcnow
 from app.models.asset import ContentAsset
 from app.models.media import AssetThumb
 from app.services.storage import effective_bucket, get_s3_client
@@ -38,10 +39,6 @@ THUMB_QUALITY = 4  # ffmpeg mjpeg: 2 — лучше, 31 — хуже
 THUMB_TIMEOUT_SECONDS = 25
 MAX_THUMB_BYTES = 3 * 1024 * 1024
 STALE_PROCESSING = timedelta(minutes=10)
-
-
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def thumb_extensions() -> set[str]:

@@ -488,7 +488,7 @@ def _uuid(value: str, *, field: str) -> uuid.UUID:
     try:
         return uuid.UUID(value)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"invalid {field}") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Некорректный идентификатор в адресе. Обновите страницу."}) from e
 
 
 def _slugify_s3_segment(v: str) -> str:
@@ -1951,7 +1951,7 @@ def set_bucket_cors(
         cors_rules.append(rule)
 
     if not cors_rules:
-        raise HTTPException(status_code=400, detail="no valid cors rules")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Нужно хотя бы одно корректное правило CORS: origin или «*»."})
 
     try:
         s3.put_bucket_cors(Bucket=effective_bucket(), CORSConfiguration={"CORSRules": cors_rules})
@@ -2226,9 +2226,9 @@ def delete_storage_object(
 ):
     object_key = str(getattr(body, "object_key", "") or "").strip()
     if not object_key:
-        raise HTTPException(status_code=400, detail="object_key required")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Не указан файл для удаления."})
     if not object_key.startswith("uploads/"):
-        raise HTTPException(status_code=400, detail="only uploads/ keys can be deleted")
+        raise HTTPException(status_code=400, detail={"error_code": "forbidden", "error_message": "Удалять можно только временные файлы из папки uploads/."})
 
     require_unused_temporary_object(db, object_key)
 
@@ -2237,7 +2237,7 @@ def delete_storage_object(
     try:
         s3.delete_object(Bucket=effective_bucket(), Key=object_key)
     except Exception as e:
-        raise HTTPException(status_code=500, detail="failed to delete object") from e
+        raise HTTPException(status_code=500, detail={"error_code": "storage_unavailable", "error_message": "Хранилище не подтвердило удаление. Повторите через минуту."}) from e
 
     audit_log(
         db=db,
@@ -2446,7 +2446,7 @@ def presign_import_zip(
         # Browsers may send a slightly different content-type (or none), which would cause SignatureDoesNotMatch.
         url = presign_put(object_key=object_key, content_type=None)
     except Exception as e:
-        raise HTTPException(status_code=500, detail="failed to presign upload url") from e
+        raise HTTPException(status_code=500, detail={"error_code": "storage_unavailable", "error_message": "Хранилище временно недоступно: не удалось выдать адрес загрузки. Повторите через минуту."}) from e
 
     audit_log(
         db=db,
@@ -2483,7 +2483,7 @@ def multipart_import_create(
     object_key = f"uploads/sources/{uuid.uuid4().hex}/{_sanitize_uploads_zip_filename(fn)}"
     upload_id = multipart_create(object_key=object_key, content_type=str(body.content_type or "").strip() or None)
     if not upload_id:
-        raise HTTPException(status_code=500, detail="failed to create multipart upload")
+        raise HTTPException(status_code=500, detail={"error_code": "storage_unavailable", "error_message": "Хранилище временно недоступно: не удалось начать загрузку. Повторите через минуту."})
 
     _multipart_touch(object_key=object_key, upload_id=upload_id)
 
@@ -2511,7 +2511,7 @@ def multipart_import_presign_part(
     upload_id = str(body.upload_id or "").strip()
     pn = int(body.part_number or 0)
     if not upload_id or pn <= 0:
-        raise HTTPException(status_code=400, detail="invalid multipart params")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Некорректные параметры загрузки. Начните загрузку файла заново."})
 
     _multipart_touch(object_key=object_key, upload_id=upload_id)
 
@@ -2536,7 +2536,7 @@ def multipart_import_list_parts(
     object_key = _require_import_object_key(body.object_key)
     upload_id = str(body.upload_id or "").strip()
     if not upload_id:
-        raise HTTPException(status_code=400, detail="invalid multipart params")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Некорректные параметры загрузки. Начните загрузку файла заново."})
 
     _multipart_touch(object_key=object_key, upload_id=upload_id)
     parts = multipart_list_parts(object_key=object_key, upload_id=upload_id)
@@ -2554,7 +2554,7 @@ def multipart_import_complete(
     object_key = _require_import_object_key(body.object_key)
     upload_id = str(body.upload_id or "").strip()
     if not upload_id:
-        raise HTTPException(status_code=400, detail="invalid multipart params")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Некорректные параметры загрузки. Начните загрузку файла заново."})
     multipart_complete(object_key=object_key, upload_id=upload_id, parts=list(body.parts or []))
     _multipart_forget(object_key=object_key, upload_id=upload_id)
     audit_log(
@@ -2579,7 +2579,7 @@ def multipart_import_abort(
     object_key = _require_import_object_key(body.object_key)
     upload_id = str(body.upload_id or "").strip()
     if not upload_id:
-        raise HTTPException(status_code=400, detail="invalid multipart params")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Некорректные параметры загрузки. Начните загрузку файла заново."})
     try:
         multipart_abort(object_key=object_key, upload_id=upload_id)
     except Exception:
@@ -2647,7 +2647,7 @@ def enqueue_import_zip(
             except Exception:
                 pass
         if existing_job_id:
-            raise HTTPException(status_code=409, detail=f"zip already enqueued: {existing_job_id}")
+            raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": f"Этот архив уже разбирается (задача {existing_job_id}). Дождитесь окончания."})
     except HTTPException:
         raise
     except Exception:
@@ -2673,7 +2673,7 @@ def enqueue_import_zip(
                 except Exception:
                     pass
             if existing_fp_job_id:
-                raise HTTPException(status_code=409, detail=f"zip already enqueued (fingerprint): {existing_fp_job_id}")
+                raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": f"Такой архив уже разбирается (задача {existing_fp_job_id}). Дождитесь окончания."})
     except HTTPException:
         raise
     except Exception:
@@ -2775,14 +2775,14 @@ def enqueue_import_zip(
                 except Exception:
                     pass
             if existing_title_job_id:
-                raise HTTPException(status_code=409, detail=f"module title already enqueued: {existing_title_job_id}")
+                raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": f"Архив с таким названием уже разбирается (задача {existing_title_job_id}). Дождитесь окончания."})
     except HTTPException:
         raise
     except Exception:
         title_lock_key = None
 
     if not fingerprint:
-        raise HTTPException(status_code=404, detail="source zip not found in s3")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Архив не найден в хранилище — загрузите его заново."})
 
     db.commit()
 
@@ -3248,11 +3248,11 @@ def retry_import_job(
     if meta and (meta.get("reimport_existing") or "/_sources/" in str(meta.get("object_key") or "")):
         raise HTTPException(409, "Повторите обновление из редактора модуля. Новый модуль не создаётся.")
     if not meta:
-        raise HTTPException(status_code=404, detail="import job meta not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Задача импорта не найдена."})
 
     object_key = str(meta.get("object_key") or "").strip()
     if not object_key:
-        raise HTTPException(status_code=400, detail="import job has no object_key")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "У задачи импорта нет файла архива — загрузите его заново."})
 
     fingerprint = ""
     try:
@@ -3339,7 +3339,7 @@ def cancel_job(
     except Exception:
         kind = ""
     if kind and kind not in {"regen", "import"}:
-        raise HTTPException(status_code=409, detail="job is not cancellable")
+        raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": "Эту задачу уже нельзя отменить: она завершилась или ещё не началась."})
 
     prev_status = get_job_status(job)
     if str(prev_status) in {"finished", "failed", "canceled", "stopped"}:
@@ -4764,7 +4764,7 @@ def create_quiz(
     try:
         qt = QuizType(body.type)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid quiz type") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Недопустимый тип теста."}) from e
 
     q = Quiz(
         type=qt,
@@ -4797,12 +4797,12 @@ def create_question(
     quiz_id = _uuid(body.quiz_id, field="quiz_id")
     quiz = db.scalar(select(Quiz).where(Quiz.id == quiz_id))
     if quiz is None:
-        raise HTTPException(status_code=404, detail="quiz not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Тест не найден — возможно, его пересобрали. Обновите страницу."})
 
     try:
         t = QuestionType(body.type)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid question type") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Недопустимый тип вопроса."}) from e
 
     correct_answer = _normalize_correct_answer_for_type(qtype=getattr(t, "value", str(t)), raw=str(body.correct_answer))
 
@@ -4842,7 +4842,7 @@ def list_questions_for_quiz(
     qid = _uuid(quiz_id, field="quiz_id")
     quiz = db.scalar(select(Quiz).where(Quiz.id == qid))
     if quiz is None:
-        raise HTTPException(status_code=404, detail="quiz not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Тест не найден — возможно, его пересобрали. Обновите страницу."})
 
     questions = db.scalars(select(Question).where(Question.quiz_id == quiz.id).order_by(Question.id)).all()
     audit_log(
@@ -4880,7 +4880,7 @@ def get_question(
     qid = _uuid(question_id, field="question_id")
     q = db.scalar(select(Question).where(Question.id == qid))
     if q is None:
-        raise HTTPException(status_code=404, detail="question not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Вопрос не найден — возможно, его уже удалили. Обновите страницу."})
 
     audit_log(
         db=db,
@@ -4916,7 +4916,7 @@ def update_question(
     qid = _uuid(question_id, field="question_id")
     q = db.scalar(select(Question).where(Question.id == qid))
     if q is None:
-        raise HTTPException(status_code=404, detail="question not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Вопрос не найден — возможно, его уже удалили. Обновите страницу."})
 
     _, mapping = version_quiz_for_edit(db, q.quiz_id)
     q = mapping[q.id]
@@ -4934,7 +4934,7 @@ def update_question(
         try:
             q.type = QuestionType(body.type)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail="invalid question type") from e
+            raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Недопустимый тип вопроса."}) from e
     if body.difficulty is not None:
         q.difficulty = max(1, int(body.difficulty))
     if body.prompt is not None:
@@ -5021,7 +5021,7 @@ def delete_question(
     qid = _uuid(question_id, field="question_id")
     q = db.scalar(select(Question).where(Question.id == qid))
     if q is None:
-        raise HTTPException(status_code=404, detail="question not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Вопрос не найден — возможно, его уже удалили. Обновите страницу."})
 
     original_quiz_id = q.quiz_id
     quiz, mapping = version_quiz_for_edit(db, original_quiz_id, exclude=q.id)
@@ -5051,7 +5051,7 @@ def create_submodule(
 
     q = db.scalar(select(Quiz).where(Quiz.id == quiz_id))
     if q is None:
-        raise HTTPException(status_code=404, detail="quiz not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Тест не найден — возможно, его пересобрали. Обновите страницу."})
 
     m = lock_module(db, m.id)
     if m.is_archived:
@@ -5089,7 +5089,7 @@ def update_submodule(
     sid = _uuid(submodule_id, field="submodule_id")
     sub = db.scalar(select(Submodule).where(Submodule.id == sid))
     if sub is None:
-        raise HTTPException(status_code=404, detail="submodule not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Урок не найден — возможно, его уже удалили. Обновите страницу."})
 
     module = lock_module(db, sub.module_id)
     db.refresh(sub)
@@ -5106,7 +5106,7 @@ def update_submodule(
     if body.requires_quiz is not None:
         wants = bool(body.requires_quiz)
         if wants and getattr(sub, "quiz_id", None) is None:
-            raise HTTPException(status_code=400, detail="cannot enable quiz: submodule has no quiz_id")
+            raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "У урока нет теста, поэтому включить проверку нельзя. Сначала сохраните вопросы."})
 
         if wants:
             questions = list(db.scalars(select(Question).where(Question.quiz_id == sub.quiz_id)))
@@ -5216,7 +5216,7 @@ def create_assignment(
     try:
         t = AssignmentType(body.type)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid assignment type") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Недопустимый тип назначения."}) from e
 
     # Цель должна существовать: иначе получается висящее назначение на
     # архивный модуль или удалённый навык, которое никто не сможет выполнить.
@@ -5234,7 +5234,7 @@ def create_assignment(
         try:
             deadline_dt = as_utc(datetime.fromisoformat(body.deadline))
         except ValueError as e:
-            raise HTTPException(status_code=400, detail="invalid deadline") from e
+            raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Срок сдачи указан неверно: нужна дата в будущем."}) from e
 
     a = Assignment(
         assigned_by=current.id,
@@ -5270,7 +5270,7 @@ def get_module_answers(
     try:
         mod_uuid = uuid.UUID(module_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid module_id") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Модуль не найден: ссылка устарела. Обновите страницу."}) from e
 
     # Verify module exists
     mod = db.scalar(select(Module).where(Module.id == mod_uuid))
@@ -6107,7 +6107,7 @@ def delete_user(
     """
     uid = _uuid(user_id, field="user_id")
     if uid == current.id:
-        raise HTTPException(status_code=400, detail="cannot delete self")
+        raise HTTPException(status_code=400, detail={"error_code": "forbidden", "error_message": "Нельзя удалить собственную учётную запись."})
 
     u = db.scalar(select(User).where(User.id == uid))
     if u is None:
@@ -6116,7 +6116,7 @@ def delete_user(
     is_superadmin = getattr(current, "role", None) == UserRole.superadmin
     if not is_superadmin:
         if getattr(u, "role", None) in {UserRole.admin, UserRole.superadmin}:
-            raise HTTPException(status_code=403, detail="cannot delete admin user")
+            raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Админскую учётную запись нельзя удалить. Сначала смените роль."})
 
     if not permanent:
         if bool(getattr(u, "is_archived", False)):
@@ -6176,7 +6176,7 @@ def delete_user(
         msg = " ".join(str(e or "").split())[:300]
         suffix = f" rid={rid_s}" if rid_s else ""
         log.warning("admin delete user failed: %s%s", msg, suffix)
-        raise HTTPException(status_code=500, detail=f"failed to delete user ({type(e).__name__}){suffix}") from e
+        raise HTTPException(status_code=500, detail={"error_code": "internal_error", "error_message": "Не удалось удалить пользователя: связанные данные не дали завершить удаление. Повторите попытку; если повторится — сообщите администратору."}) from e
 
     return {"ok": True, "archived": False, "deleted": True}
 
@@ -6346,7 +6346,7 @@ def reset_user_password(
     is_superadmin = getattr(current, "role", None) == UserRole.superadmin
     if not is_superadmin:
         if getattr(user, "role", None) in {UserRole.admin, UserRole.superadmin}:
-            raise HTTPException(status_code=403, detail="cannot reset password for admin user")
+            raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Пароль администратора здесь не сбрасывается: пусть сменит его сам в своём профиле."})
 
     # Issue a temporary password (must be changed on first login).
     temp_password = str(body.password or "").strip() or _random_password(14)
@@ -6388,7 +6388,7 @@ def create_user_reset_link(
     # Правила те же, что у сброса пароля: чужого администратора трогает только суперадмин.
     is_superadmin = getattr(current, "role", None) == UserRole.superadmin
     if not is_superadmin and getattr(user, "role", None) in {UserRole.admin, UserRole.superadmin}:
-        raise HTTPException(status_code=403, detail="cannot reset password for admin user")
+        raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Пароль администратора здесь не сбрасывается: пусть сменит его сам в своём профиле."})
 
     token, expires_at = password_reset.issue_token(
         db, user_id=user.id, created_by_admin_id=current.id
@@ -6692,7 +6692,7 @@ def quiz_answer_key(
     qid = _uuid(quiz_id, field="quiz_id")
     quiz = db.scalar(select(Quiz).where(Quiz.id == qid))
     if quiz is None:
-        raise HTTPException(status_code=404, detail="quiz not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Тест не найден — возможно, его пересобрали. Обновите страницу."})
 
     questions = db.scalars(select(Question).where(Question.quiz_id == quiz.id)).all()
     audit_log(
