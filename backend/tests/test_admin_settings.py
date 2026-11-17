@@ -258,7 +258,7 @@ def test_overview_reports_schema_target_and_server_limits(client, admin_headers)
     body = response.json()
     from app.routers.settings import expected_schema_revision
     assert body["schema"]["expected"] == expected_schema_revision()
-    assert expected_schema_revision() == "0029"
+    assert expected_schema_revision() == "0030"
     assert body["upload_max_bytes"] > 0
     # Очереди показываются по отдельности: импорт и медиа не должны прятаться
     # за счётчиком одной «тестовой» очереди.
