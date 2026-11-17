@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from passlib.context import CryptContext
 from sqlalchemy import case, delete, func, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.queue import get_job_status, normalize_job_status, release_job_lock
@@ -594,6 +595,40 @@ def clear_diagnostics_errors(
     return {"ok": True, "cleared_bytes": removed}
 
 
+def _db_connections_snapshot(db: Session) -> dict[str, object]:
+    """Соединения со стороны Postgres. На SQLite (тесты) просто пусто."""
+    if db.get_bind().dialect.name != "postgresql":
+        return {}
+    try:
+        row = db.execute(
+            text(
+                "select count(*) as total, "
+                "count(*) filter (where state = 'active') as active, "
+                "count(*) filter (where state = 'idle') as idle, "
+                "count(*) filter (where state = 'idle in transaction') as idle_in_transaction, "
+                "count(*) filter (where wait_event_type = 'Lock') as waiting_lock "
+                "from pg_stat_activity where datname = current_database()"
+            )
+        ).mappings().first()
+        limit = db.execute(text("show max_connections")).scalar()
+    except Exception:
+        return {}
+    try:
+        limit_int = int(limit or 0)
+    except Exception:
+        limit_int = 0
+    total = int((row or {}).get("total") or 0)
+    return {
+        "total": total,
+        "active": int((row or {}).get("active") or 0),
+        "idle": int((row or {}).get("idle") or 0),
+        "idle_in_transaction": int((row or {}).get("idle_in_transaction") or 0),
+        "waiting_lock": int((row or {}).get("waiting_lock") or 0),
+        "max_connections": limit_int,
+        "used_percent": round(total * 100 / limit_int, 1) if limit_int else None,
+    }
+
+
 @router.get("/system/status")
 def system_status(
     db: Session = Depends(get_db),
@@ -697,6 +732,10 @@ def system_status(
     try:
         db.execute(text("SELECT 1"))
         out["db"] = {"ok": True}
+        # Почему бывает «база перегружена»: видно, сколько соединений реально
+        # открыто со стороны Postgres и сколько разрешено. Без этого остаётся
+        # только гадать, пул это, лимит max_connections или упавшая база.
+        out["db_connections"] = _db_connections_snapshot(db)
     except Exception:
         out["db"] = {"ok": False}
 
@@ -758,6 +797,15 @@ def system_status(
     storage = get_storage_settings(db)
     eff_bucket = storage.bucket
     eff_ep = storage.endpoint_url
+    # Дальше идут сетевые проверки: S3 и OpenRouter отвечают секундами, а при
+    # недоступном провайдере — до таймаута. Сессия к базе на это время не нужна:
+    # возвращаем соединение в пул, иначе кнопка «Проверить» во время перегрузки
+    # отнимала бы у людей последние свободные соединения. `get_db` закроет её
+    # повторно — это безопасно.
+    try:
+        db.close()
+    except Exception:
+        pass
     out["s3"] = {
         "configured": bool(eff_bucket),
         "probed": bool(probe),
@@ -1274,7 +1322,8 @@ def admin_update_user(
     if name is not None:
         name = str(name).strip()
         if not name:
-            raise HTTPException(status_code=400, detail="invalid name")
+            raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Имя не может быть пустым."})
+        _check_user_field_lengths(name=name)
         u.name = name
 
     if body.email is not None:
@@ -1283,14 +1332,19 @@ def admin_update_user(
             u.email = None
         else:
             if not re.fullmatch(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", email, re.IGNORECASE):
-                raise HTTPException(status_code=400, detail="invalid email")
+                raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Почта выглядит неверно: нужен адрес вида name@company.ru."})
+            _check_user_field_lengths(email=email)
             existing_email = db.scalar(select(User).where(func.lower(User.email) == email).where(User.id != uid))
             if existing_email is not None:
-                raise HTTPException(status_code=409, detail="email already exists")
+                raise HTTPException(status_code=409, detail={
+                    "error_code": "conflict",
+                    "error_message": "Этот адрес уже занят другим человеком. Укажите другой.",
+                })
             u.email = email
 
     if body.position is not None:
         pos = str(body.position).strip()
+        _check_user_field_lengths(position=pos or None)
         u.position = pos or None
 
     role_raw = body.role
@@ -1309,7 +1363,14 @@ def admin_update_user(
         u.must_change_password = bool(body.must_change_password)
 
     db.add(u)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"error_code": "conflict", "error_message": _user_conflict_message(exc)},
+        ) from exc
 
     audit_log(
         db=db,
@@ -6131,6 +6192,50 @@ def restore_user(
     return {"ok": True}
 
 
+# Пределы полей users в базе. Проверяем до INSERT: иначе Postgres отвечает
+# «value too long for type character varying(200)», и администратор видел это
+# как «база перегружена, повторите» — то есть повторял одно и то же без толку.
+USER_NAME_LIMIT = 200
+USER_EMAIL_LIMIT = 320
+USER_POSITION_LIMIT = 200
+
+
+def _check_user_field_lengths(*, name: str | None = None, email: str | None = None,
+                              position: str | None = None) -> None:
+    for value, limit, label in (
+        (name, USER_NAME_LIMIT, "Имя"),
+        (email, USER_EMAIL_LIMIT, "Почта"),
+        (position, USER_POSITION_LIMIT, "Должность"),
+    ):
+        if value is not None and len(value) > limit:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error_code": "invalid_value",
+                    "error_message": f"Слишком длинное поле «{label}»: {len(value)} символов при пределе {limit}.",
+                },
+            )
+
+
+def _user_conflict_message(exc: Exception) -> str:
+    """Что именно не пропустила база при создании/правке человека.
+
+    На платформе, которая работает полгода, встречаются старые ограничения
+    (например, уникальное имя из первой миграции). Без расшифровки админ видел
+    «база перегружена» и повторял то же самое.
+    """
+    orig = getattr(exc, "orig", None)
+    diag = getattr(orig, "diag", None)
+    constraint = str(getattr(diag, "constraint_name", "") or "").strip().lower()
+    text = f"{constraint} {str(orig or exc or '').lower()}"
+    if "email" in text:
+        return "Пользователь с такой почтой уже есть. Найдите его в списке или укажите другой адрес."
+    if "name" in text:
+        return ("Пользователь с таким именем уже есть: в этой базе имя должно быть уникальным. "
+                "Добавьте отличие — например, фамилию.")
+    return "Такие данные уже есть в системе. Проверьте имя и почту."
+
+
 @router.post("/users", response_model=UserCreateResponse)
 def create_user(
     request: Request,
@@ -6142,17 +6247,21 @@ def create_user(
     name = (body.name or "").strip()
     email = str(getattr(body, "email", None) or "").strip().lower() or None
     if not name:
-        raise HTTPException(status_code=400, detail="invalid name")
+        raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Укажите имя: без него человек не отличим в списке."})
 
     if not email:
-        raise HTTPException(status_code=400, detail="invalid email")
+        raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Укажите почту: по ней человек входит в систему."})
     # Basic safe validation (not fully RFC-complete, but blocks obvious garbage).
     if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]{2,}$", str(email)):
-        raise HTTPException(status_code=400, detail="invalid email")
+        raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Почта выглядит неверно: нужен адрес вида name@company.ru."})
+    _check_user_field_lengths(name=name, email=email, position=(body.position or None))
 
     existing_email = db.scalar(select(User).where(func.lower(User.email) == str(email)))
     if existing_email is not None:
-        raise HTTPException(status_code=409, detail="user email already exists")
+        raise HTTPException(status_code=409, detail={
+            "error_code": "conflict",
+            "error_message": "Пользователь с такой почтой уже есть — найдите его в списке или укажите другой адрес.",
+        })
 
     # Admin receives a temporary password (must be changed on first login).
     temp_password = str(body.password or "").strip() or _random_password(14)
@@ -6179,10 +6288,16 @@ def create_user(
         password_changed_at=None,
     )
     db.add(user)
-    db.flush()
-
-    audit_log(db=db, request=request, event_type="admin_create_user", actor_user_id=current.id, target_user_id=user.id)
-    db.commit()
+    try:
+        db.flush()
+        audit_log(db=db, request=request, event_type="admin_create_user", actor_user_id=current.id, target_user_id=user.id)
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={"error_code": "conflict", "error_message": _user_conflict_message(exc)},
+        ) from exc
     db.refresh(user)
 
     return {"id": str(user.id), "temp_password": temp_password}

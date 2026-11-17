@@ -81,3 +81,28 @@ def test_fast_path_reports_module_without_lessons_as_empty(db, make_module, make
     cell = _matrix(db, [learner], [module])[(learner.id, module.id)]
     assert cell["total"] == 0 and cell["has_materials"] is False
     assert cell["completed"] is False
+
+
+def test_last_attempt_score_and_pass_are_reported(db, make_module, make_user):
+    """Отчёт урока берёт последнюю попытку — теперь без ORM-объектов.
+
+    Раньше `_calculate` выбирал полные `QuizAttempt` (десятки тысяч объектов на
+    списке пользователей). Расчёт переведён на колонки; тест фиксирует, что
+    `last_score`/`last_passed` — это именно последняя по времени попытка.
+    """
+    module, lesson, _quiz = make_module(title="Модуль с попытками", required=True)
+    learner, _ = make_user()
+    db.add(QuizAttempt(user_id=learner.id, quiz_id=lesson.quiz_id, attempt_no=1,
+                       passed=False, score=40,
+                       finished_at=datetime(2026, 1, 1, 10, 0, tzinfo=timezone.utc)))
+    db.add(QuizAttempt(user_id=learner.id, quiz_id=lesson.quiz_id, attempt_no=2,
+                       passed=True, score=100,
+                       finished_at=datetime(2026, 1, 1, 11, 0, tzinfo=timezone.utc)))
+    db.commit()
+
+    progress = LearningService(db).get_modules_progress(learner, [module.id])
+    item = next(i for i in progress[module.id]["submodules"] if i["submodule_id"] == str(lesson.id))
+    assert item["last_score"] == 100
+    assert item["last_passed"] is True
+    assert item["best_score"] == 100
+    assert item["passed"] is True

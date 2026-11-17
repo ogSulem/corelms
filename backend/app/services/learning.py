@@ -10,7 +10,7 @@ import uuid
 from collections import defaultdict
 from itertools import chain
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NamedTuple
 
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
@@ -23,6 +23,19 @@ from app.models.completion import LessonQuizVersion, ModuleCompletion
 from app.models.module import Module, Submodule
 from app.models.submodule_asset import SubmoduleAssetMap
 from app.models.user import User
+
+
+class _LastAttempt(NamedTuple):
+    """Последняя попытка теста без ORM-объекта.
+
+    Раньше отчёт выбирал полные `QuizAttempt` — на 93 человек и 40 модулях это
+    десятки тысяч объектов в сессии: их разбор, память и последующий flush
+    оплачивались на каждом открытии списка пользователей. Для расчёта нужны
+    только балл и признак «сдал».
+    """
+
+    score: int | None
+    passed: bool
 
 
 def is_read_meta(meta: str | None) -> bool:
@@ -92,16 +105,19 @@ class LearningService:
 
         quiz_ids = set(quiz_to_lesson) | {m.final_quiz_id for m in modules if m.final_quiz_id}
         best: dict[tuple[uuid.UUID, uuid.UUID], int] = {}
-        last: dict[tuple[uuid.UUID, uuid.UUID], QuizAttempt] = {}
-        for attempt in self.db.scalars(select(QuizAttempt).where(
+        last: dict[tuple[uuid.UUID, uuid.UUID], _LastAttempt] = {}
+        # Только нужные колонки: полные ORM-объекты здесь не нужны и дороги.
+        for user_id, quiz_id, score, passed in self.db.execute(select(
+            QuizAttempt.user_id, QuizAttempt.quiz_id, QuizAttempt.score, QuizAttempt.passed
+        ).where(
             QuizAttempt.user_id.in_(uids), QuizAttempt.quiz_id.in_(quiz_ids), QuizAttempt.finished_at.is_not(None)
         ).order_by(QuizAttempt.finished_at, QuizAttempt.id)):
             # Lesson identity is stable even when questions are regenerated.
-            ref = quiz_to_lesson.get(attempt.quiz_id, attempt.quiz_id)
-            key = (attempt.user_id, ref)
-            last[key] = attempt
-            if attempt.passed:
-                best[key] = max(best.get(key, 0), int(attempt.score or 0))
+            ref = quiz_to_lesson.get(quiz_id, quiz_id)
+            key = (user_id, ref)
+            last[key] = _LastAttempt(score=score, passed=bool(passed))
+            if passed:
+                best[key] = max(best.get(key, 0), int(score or 0))
 
         reads: set[tuple[uuid.UUID, uuid.UUID]] = set()
         opened: set[tuple[uuid.UUID, uuid.UUID]] = set()

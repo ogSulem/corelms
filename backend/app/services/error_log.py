@@ -76,8 +76,15 @@ def record(
     user_id: str | None = None,
     duration_ms: int | None = None,
     exc: BaseException | None = None,
+    hint: str | None = None,
 ) -> None:
-    """Записать ошибку. Никогда не бросает исключение наружу."""
+    """Записать ошибку. Никогда не бросает исключение наружу.
+
+    `hint` — короткое пояснение (состояние пула, SQLSTATE, код причины). Оно
+    видно администратору рядом с ошибкой: без него «база недоступна» одинаково
+    выглядит и при исчерпанном пуле, и при отказе соединений, и при нехватке
+    места на диске.
+    """
     entry: dict[str, Any] = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "rid": str(rid or ""),
@@ -87,6 +94,8 @@ def record(
         "user_id": str(user_id) if user_id else None,
         "duration_ms": int(duration_ms) if duration_ms is not None else None,
     }
+    if hint:
+        entry["hint"] = str(hint)[:MAX_MESSAGE_CHARS]
     if exc is not None:
         entry["error"] = f"{type(exc).__name__}: {exc}"[:MAX_MESSAGE_CHARS]
         entry["traceback"] = "".join(

@@ -90,6 +90,11 @@ export function UsersAdmin() {
   const [tags, setTags] = useState<TagItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Ошибка действия (создать/сохранить/архив) показывается ВНУТРИ открытого
+  // окна. Раньше она уходила в баннер под окном: человек нажимал «Создать»,
+  // окно оставалось, сообщения не было видно — со стороны это выглядело как
+  // «кнопка не работает».
+  const [actionError, setActionError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState<RoleTab>("all");
   const [onlyActive, setOnlyActive] = useState(false);
@@ -170,6 +175,7 @@ export function UsersAdmin() {
 
 
   async function openUser(target: AdminUser) {
+    setActionError(null);
     setSelected(target);
     setDetail(null);
     setDraft({ name: target.name, email: target.email || "", position: target.position || "", role: learnerRole(target.role) });
@@ -179,7 +185,7 @@ export function UsersAdmin() {
       const data = await apiFetch<UserDetail>(`/admin/users/${target.id}`);
       setDetail(data);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось открыть карточку");
+      setActionError(e instanceof Error ? e.message : "Не удалось открыть карточку");
     } finally {
       setDetailLoading(false);
     }
@@ -188,7 +194,7 @@ export function UsersAdmin() {
   async function saveUser() {
     if (!selected || busy) return;
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       const body: Record<string, unknown> = { name: draft.name.trim(), email: draft.email.trim(), position: draft.position.trim() };
       // Роль отправляем только когда её действительно поменяли: иначе открытие
@@ -200,7 +206,7 @@ export function UsersAdmin() {
       setSelected(null);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось сохранить пользователя");
+      setActionError(e instanceof Error ? e.message : "Не удалось сохранить пользователя");
     } finally {
       setBusy(false);
     }
@@ -210,7 +216,7 @@ export function UsersAdmin() {
     if (!selected || busy) return;
     if (!window.confirm(`Сбросить пароль пользователю «${selected.name}»? Старый пароль перестанет работать.`)) return;
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       const result = await apiFetch<{ temp_password: string }>(`/admin/users/${selected.id}/reset-password`, {
         method: "POST",
@@ -219,7 +225,7 @@ export function UsersAdmin() {
       setTempPassword({ name: selected.name, password: result.temp_password });
       setCopied(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось сбросить пароль");
+      setActionError(e instanceof Error ? e.message : "Не удалось сбросить пароль");
     } finally {
       setBusy(false);
     }
@@ -228,7 +234,7 @@ export function UsersAdmin() {
   async function createResetLink() {
     if (!selected || busy) return;
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       const result = await apiFetch<{ url: string; expires_at: string; ttl_hours: number }>(
         `/admin/users/${selected.id}/reset-link`,
@@ -237,7 +243,7 @@ export function UsersAdmin() {
       setResetLink({ name: selected.name, url: result.url, expires_at: result.expires_at, ttl_hours: result.ttl_hours });
       setLinkCopied(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось создать ссылку для смены пароля");
+      setActionError(e instanceof Error ? e.message : "Не удалось создать ссылку для смены пароля");
     } finally {
       setBusy(false);
     }
@@ -249,7 +255,7 @@ export function UsersAdmin() {
       await navigator.clipboard.writeText(resetLink.url);
       setLinkCopied(true);
     } catch {
-      setError("Браузер не дал скопировать. Выделите ссылку вручную.");
+      setActionError("Браузер не дал скопировать. Выделите ссылку вручную.");
     }
   }
 
@@ -257,14 +263,14 @@ export function UsersAdmin() {
     if (!selected || busy) return;
     if (!window.confirm(`Убрать «${selected.name}» в архив? Человек не сможет войти и исчезнет из списков, а его прогресс и попытки тестов останутся. Вернуть можно в любой момент.`)) return;
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       await apiFetch(`/admin/users/${selected.id}`, { method: "DELETE" });
       toast("Пользователь в архиве", "История обучения сохранена");
       setSelected(null);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось убрать пользователя в архив");
+      setActionError(e instanceof Error ? e.message : "Не удалось убрать пользователя в архив");
     } finally {
       setBusy(false);
     }
@@ -273,14 +279,14 @@ export function UsersAdmin() {
   async function restoreUser() {
     if (!selected || busy) return;
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       await apiFetch(`/admin/users/${selected.id}/restore`, { method: "POST" });
       toast("Пользователь восстановлен", "Он снова может войти");
       setSelected(null);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось восстановить пользователя");
+      setActionError(e instanceof Error ? e.message : "Не удалось восстановить пользователя");
     } finally {
       setBusy(false);
     }
@@ -292,14 +298,14 @@ export function UsersAdmin() {
     if (!selected || busy) return;
     if (!window.confirm(`Удалить «${selected.name}» навсегда? Это возможно только если у человека нет ни одной попытки теста, прогресса и назначений.`)) return;
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       await apiFetch(`/admin/users/${selected.id}?permanent=true`, { method: "DELETE" });
       toast("Пользователь удалён навсегда");
       setSelected(null);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось удалить пользователя");
+      setActionError(e instanceof Error ? e.message : "Не удалось удалить пользователя");
     } finally {
       setBusy(false);
     }
@@ -308,11 +314,11 @@ export function UsersAdmin() {
   async function createUser() {
     if (busy) return;
     if (!newUser.name.trim() || !newUser.email.trim()) {
-      setError("Нужны имя и почта — по почте человек входит в систему");
+      setActionError("Нужны имя и почта — по почте человек входит в систему");
       return;
     }
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       const result = await apiFetch<{ id: string; temp_password: string }>("/admin/users", {
         method: "POST",
@@ -329,7 +335,7 @@ export function UsersAdmin() {
       setCopied(false);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Не удалось создать пользователя");
+      setActionError(e instanceof Error ? e.message : "Не удалось создать пользователя");
     } finally {
       setBusy(false);
     }
@@ -339,14 +345,14 @@ export function UsersAdmin() {
     const name = newTagName.trim();
     if (!name || busy) return;
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       const created = await apiFetch<TagItem>("/admin/tags", { method: "POST", body: JSON.stringify({ name }) });
       setTags((prev) => (prev.some((t) => t.id === created.id) ? prev : [...prev, created].sort((a, b) => a.name.localeCompare(b.name, "ru"))));
       setNewTagName("");
       toast("Тег создан", `«${created.name}» появился в карточке каждого сотрудника`);
     } catch (e) {
-      setError(e instanceof Error ? `Не удалось создать тег: ${e.message}` : "Не удалось создать тег");
+      setActionError(e instanceof Error ? `Не удалось создать тег: ${e.message}` : "Не удалось создать тег");
     } finally {
       setBusy(false);
     }
@@ -356,7 +362,7 @@ export function UsersAdmin() {
     if (busy) return;
     if (!window.confirm(`Удалить тег «${tag.name}»? Он снимется со всех сотрудников и модулей.`)) return;
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       await apiFetch(`/admin/tags/${tag.id}`, { method: "DELETE" });
       setTags((prev) => prev.filter((t) => t.id !== tag.id));
@@ -364,7 +370,7 @@ export function UsersAdmin() {
       await load();
       toast("Тег удалён", `«${tag.name}» больше никому не выдаётся`);
     } catch (e) {
-      setError(e instanceof Error ? `Не удалось удалить тег: ${e.message}` : "Не удалось удалить тег");
+      setActionError(e instanceof Error ? `Не удалось удалить тег: ${e.message}` : "Не удалось удалить тег");
     } finally {
       setBusy(false);
     }
@@ -376,7 +382,7 @@ export function UsersAdmin() {
       await navigator.clipboard.writeText(tempPassword.password);
       setCopied(true);
     } catch {
-      setError("Браузер не дал скопировать. Выделите пароль вручную.");
+      setActionError("Браузер не дал скопировать. Выделите пароль вручную.");
     }
   }
 
@@ -398,16 +404,23 @@ export function UsersAdmin() {
           <Button variant="outline" className={btn} onClick={() => { setError(null); void load(); }}>
             <RefreshCw size={16} />Обновить
           </Button>
-          <Button variant="outline" className={btn} onClick={() => { setError(null); setTagsOpen(true); }}>
+          <Button variant="outline" className={btn} onClick={() => { setError(null); setActionError(null); setTagsOpen(true); }}>
             <Tags size={16} />Теги{tags.length ? <span className="text-xs text-zinc-400">{tags.length}</span> : null}
           </Button>
-          <Button className={btn} onClick={() => { setError(null); setCreating(true); }}>
+          <Button className={btn} onClick={() => { setError(null); setActionError(null); setCreating(true); }}>
             <Plus size={16} />Добавить
           </Button>
         </div>
       </div>
 
-      {error && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{error}</p>}
+      {error && (
+        <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+          <span>{error}</span>
+          <Button variant="outline" className="h-9 shrink-0" onClick={() => { setError(null); void load(); }}>
+            <RefreshCw size={15} />Повторить
+          </Button>
+        </div>
+      )}
 
       <div className="rounded-2xl border border-zinc-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 p-4">
@@ -540,6 +553,9 @@ export function UsersAdmin() {
                 Учётная запись в архиве: вход закрыт, из списков скрыта. Прогресс и попытки тестов сохранены — их видно ниже.
               </p>
             )}
+            {actionError ? (
+              <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</p>
+            ) : null}
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block space-y-1.5 text-sm font-medium">Имя
                 <input className={field} value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
@@ -607,6 +623,9 @@ export function UsersAdmin() {
       <Modal open={tagsOpen} title="Теги доступа" onClose={() => { if (!busy) setTagsOpen(false); }} disableClose={busy} className="max-w-lg"
         footer={<div className="flex justify-end"><Button variant="outline" className={btn} disabled={busy} onClick={() => setTagsOpen(false)}>Готово</Button></div>}>
         <div className="space-y-4">
+          {actionError ? (
+            <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</p>
+          ) : null}
           <p className="text-sm leading-6 text-zinc-600">
             Тег — это группа сотрудников. Модуль можно открыть только тем, у кого есть его тег,
             поэтому теги создаются здесь, а выдаются в карточке сотрудника.
@@ -647,6 +666,9 @@ export function UsersAdmin() {
           </Button>
         </div>}>
         <div className="space-y-4">
+          {actionError ? (
+            <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</p>
+          ) : null}
           <label className="block space-y-1.5 text-sm font-medium">Имя
             <input autoFocus className={field} value={newUser.name} onChange={(e) => setNewUser({ ...newUser, name: e.target.value })} />
           </label>
@@ -666,6 +688,9 @@ export function UsersAdmin() {
           <Button variant="outline" className={btn} onClick={() => void copyPassword()}>{copied ? <Check size={15} /> : <Copy size={15} />}{copied ? "Скопировано" : "Скопировать"}</Button>
           <Button className={btn} onClick={() => setTempPassword(null)}>Готово</Button>
         </div>}>
+        {actionError ? (
+          <p role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</p>
+        ) : null}
         {tempPassword && (
           <div className="space-y-3">
             <p className="text-sm text-zinc-600">Передайте пароль пользователю «{tempPassword.name}». Он больше не будет показан.</p>
@@ -680,6 +705,9 @@ export function UsersAdmin() {
           <Button variant="outline" className={btn} onClick={() => void copyResetLink()}>{linkCopied ? <Check size={15} /> : <Copy size={15} />}{linkCopied ? "Скопировано" : "Скопировать ссылку"}</Button>
           <Button className={btn} onClick={() => setResetLink(null)}>Готово</Button>
         </div>}>
+        {actionError ? (
+          <p role="alert" className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</p>
+        ) : null}
         {resetLink && (
           <div className="space-y-3">
             <p className="text-sm text-zinc-600">Отправьте ссылку пользователю «{resetLink.name}». Он сам задаст пароль — диктовать временный не нужно.</p>
