@@ -181,9 +181,14 @@ def test_system_status_reports_db_connection_usage(client, admin_headers):
     response = client.get("/admin/system/status", headers=admin_headers)
     assert response.status_code == 200, response.text
     body = response.json()
-    # На SQLite снимок pg_stat_activity недоступен — ключ есть, но пустой.
     assert "db_connections" in body
-    assert body["db_connections"] == {}
+    snapshot = body["db_connections"]
+    assert isinstance(snapshot, dict)
+    # На SQLite (локальный прогон) pg_stat_activity недоступен — снимок пустой.
+    # На PostgreSQL (CI и прод) приходят реальные числа: лимит и занятые слоты.
+    if snapshot:
+        assert snapshot["max_connections"] > 0
+        assert snapshot["total"] >= 1
     assert body["db"]["ok"] is True
 
 
