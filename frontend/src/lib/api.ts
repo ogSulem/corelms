@@ -20,6 +20,18 @@ class CoreApiError extends Error {
 
 const DEFAULT_API_TIMEOUT_MS = 25_000;
 
+/** Что сказать человеку, если сервер ответил кодом без понятного текста. */
+function _statusMessage(status: number): string {
+  if (status === 400) return "Сервер не принял запрос. Проверьте данные и повторите.";
+  if (status === 401) return "Нужно войти заново — сессия истекла.";
+  if (status === 403) return "Недостаточно прав для этого действия.";
+  if (status === 404) return "Запись не найдена — возможно, её уже удалили.";
+  if (status === 409) return "Данные уже изменились. Обновите страницу и повторите.";
+  if (status === 413) return "Файл слишком большой для загрузки.";
+  if (status === 422) return "Проверьте заполненные поля и повторите.";
+  return `Не удалось выполнить действие (код ${status}). Повторите попытку.`;
+}
+
 function _makeRequestId(): string {
   try {
     // Browser runtime
@@ -160,7 +172,13 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
       }
     }
 
-    const raw = (msg || "").trim();
+    // Тело ошибки может быть HTML-страницей nginx/Caddy («502 Bad Gateway»,
+    // «413 Request Entity Too Large») или пустым. Показывать разметку человеку
+    // нельзя: это и не по-русски, и лишняя подсказка о внутренностях сервера.
+    // Для журнала исходный текст сохраняем отдельно.
+    const bodyText = (msg || "").trim();
+    const looksLikeMarkup = /^<|<!--|<\s*(?:html|body|head|center|title|h1)\b/i.test(bodyText);
+    const raw = looksLikeMarkup ? "" : bodyText.length > 600 ? `${bodyText.slice(0, 600)}…` : bodyText;
 
     const rawLower = raw.toLowerCase();
     if (res.status >= 500) {
@@ -170,7 +188,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
         console.error(
           `[corelms] ${res.status} ${res.statusText || ""} ${clean}` +
             `${requestId ? ` request_id=${requestId}` : ""}` +
-            `${raw ? ` body=${raw.slice(0, 300)}` : ""}`,
+            `${bodyText ? ` body=${bodyText.slice(0, 300)}` : ""}`,
         );
       }
       const friendly = "Ошибка сервера. Повторите попытку позже.";
@@ -221,7 +239,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
       console.error(`[corelms] api error request_id=${requestId} status=${res.status} code=${errorCode || ""} path=${clean}`);
     }
 
-    throw new CoreApiError(raw || `HTTP ${res.status}`, {
+    throw new CoreApiError(raw || _statusMessage(res.status), {
       status: res.status,
       errorCode: errorCode || undefined,
       requestId: requestId || undefined,

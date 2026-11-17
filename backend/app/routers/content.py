@@ -930,8 +930,14 @@ def _final_quiz_composition(db: Session, module: Module) -> tuple[list[dict], li
     rng = random.Random(f"final_preview:{module.id}:{module.content_revision}")
     rows: list[dict] = []
     pools: list[tuple[Submodule, list]] = []
+    # Вопросы всех уроков — одним запросом (было по запросу на урок).
+    quiz_ids = [lesson.quiz_id for lesson in lessons if lesson.quiz_id]
+    grouped: dict[uuid.UUID, list[Question]] = {}
+    if quiz_ids:
+        for q in db.scalars(select(Question).where(Question.quiz_id.in_(quiz_ids)).order_by(Question.id)):
+            grouped.setdefault(q.quiz_id, []).append(q)
     for lesson in lessons:
-        questions = list(db.scalars(select(Question).where(Question.quiz_id == lesson.quiz_id))) if lesson.quiz_id else []
+        questions = grouped.get(lesson.quiz_id, []) if lesson.quiz_id else []
         valid = [q for q in questions if question_payload(q)["valid"]]
         contributes = bool(lesson.requires_quiz and valid)
         rows.append({"id": str(lesson.id), "title": lesson.title, "question_count": len(valid),

@@ -33,13 +33,13 @@ def require_module_access(db: Session, user: User, module_id: uuid.UUID, *, lock
         stmt = stmt.with_for_update().execution_options(populate_existing=True)
     module = db.scalar(stmt)
     if module is None:
-        raise HTTPException(404, "Модуль не найден")
+        raise HTTPException(404, {"error_code": "not_found", "error_message": "Модуль не найден — возможно, его убрали с платформы."})
     if is_admin(user):
         return module
     allowed = db.scalar(select(Module.id).where(Module.id == module_id, accessible_modules_clause(user)))
     if allowed is None:
         # Do not disclose the title/existence of private material by guessing a UUID.
-        raise HTTPException(404, "Модуль недоступен")
+        raise HTTPException(404, {"error_code": "not_found", "error_message": "Этот модуль недоступен для вашей учётной записи. Обратитесь к администратору."})
     return module
 
 
@@ -48,5 +48,5 @@ def require_submodule_access(db: Session, user: User, submodule: Submodule, *, l
     if lock:
         db.refresh(submodule)
     if submodule.is_archived and not is_admin(user):
-        raise HTTPException(404, "Материал в архиве")
+        raise HTTPException(404, {"error_code": "not_found", "error_message": "Материал в архиве — откройте его из актуального материала."})
     return module

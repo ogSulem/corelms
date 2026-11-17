@@ -110,7 +110,7 @@ def presign_upload(
     _: object = rate_limit(key_prefix="asset_presign_upload", limit=30, window_seconds=60),
 ):
     if body.object_key in referenced_storage_keys(db):
-        raise HTTPException(status_code=409, detail="object_key already exists")
+        raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": "Такой файл уже есть в хранилище."})
 
     raise HTTPException(410, "Прямая запись в произвольные S3-ключи отключена. Загружайте файлы через редактор модуля или библиотеку продаж: они сохраняют оригиналы и версии.")
 
@@ -127,11 +127,11 @@ def presign_download(
     try:
         aid = uuid.UUID(asset_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid asset id") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Файл не найден: ссылка устарела."}) from e
 
     asset = db.scalar(select(ContentAsset).where(ContentAsset.id == aid))
     if asset is None:
-        raise HTTPException(status_code=404, detail="asset not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Материал не найден — возможно, его переместили или удалили."})
 
     module_id, submodule_id = _asset_access_guard(db=db, user=user, aid=aid, asset=asset)
 
@@ -270,11 +270,11 @@ def presign_download(
         code = str((e.response or {}).get("Error", {}).get("Code") or "").strip()
         status = int((e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode") or 0)
         if code in {"NoSuchKey", "NotFound"} or status == 404:
-            raise HTTPException(status_code=404, detail="file missing in storage") from e
+            raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Файл не найден в хранилище. Обновите страницу; если не помогло — сообщите администратору."}) from e
         raise
     except Exception:
         # If storage is temporarily unavailable, keep behavior consistent with current API contract.
-        raise HTTPException(status_code=503, detail="storage unavailable")
+        raise HTTPException(status_code=503, detail={"error_code": "storage_unavailable", "error_message": "Хранилище временно недоступно. Повторите через минуту — файлы не потеряны."})
 
     url = presign_get(
         object_key=asset.object_key, bucket=asset.bucket,
@@ -301,11 +301,11 @@ def stream_asset(
     try:
         aid = uuid.UUID(asset_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid asset id") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Файл не найден: ссылка устарела."}) from e
 
     asset = db.scalar(select(ContentAsset).where(ContentAsset.id == aid))
     if asset is None:
-        raise HTTPException(status_code=404, detail="asset not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Материал не найден — возможно, его переместили или удалили."})
 
     module_id, submodule_id = _asset_access_guard(db=db, user=user, aid=aid, asset=asset)
     downloading = request.url.path.endswith("/download")
@@ -323,7 +323,7 @@ def stream_asset(
     s3 = get_s3_client()
     object_key = str(asset.object_key or "")
     if not object_key:
-        raise HTTPException(status_code=404, detail="asset not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Материал не найден — возможно, его переместили или удалили."})
 
     content_type = mimetypes.guess_type(asset.original_filename)[0] or str(asset.mime_type or "").strip() or "application/octet-stream"
     filename = str(asset.original_filename or "").strip() or "file"
@@ -426,10 +426,10 @@ def stream_asset(
                 code = str((e.response or {}).get("Error", {}).get("Code") or "").strip()
                 status = int((e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode") or 0)
                 if code in {"NoSuchKey", "NotFound"} or status == 404:
-                    raise HTTPException(status_code=404, detail="file missing in storage") from e
-                raise HTTPException(status_code=503, detail="storage unavailable") from e
+                    raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Файл не найден в хранилище. Обновите страницу; если не помогло — сообщите администратору."}) from e
+                raise HTTPException(status_code=503, detail={"error_code": "storage_unavailable", "error_message": "Хранилище временно недоступно. Повторите через минуту — файлы не потеряны."}) from e
             except Exception as e:
-                raise HTTPException(status_code=503, detail="storage unavailable") from e
+                raise HTTPException(status_code=503, detail={"error_code": "storage_unavailable", "error_message": "Хранилище временно недоступно. Повторите через минуту — файлы не потеряны."}) from e
 
             # Normalize / validate.
             invalid = False
@@ -457,7 +457,7 @@ def stream_asset(
 
             if invalid:
                 headers = {"Accept-Ranges": "bytes", "Content-Range": f"bytes */{int(size_total)}"}
-                raise HTTPException(status_code=416, detail="invalid range", headers=headers)
+                raise HTTPException(status_code=416, detail={"error_code": "invalid_range", "error_message": "Некорректный диапазон файла — обновите страницу и откройте его заново."}, headers=headers)
 
             if start is not None and end is None:
                 kwargs["Range"] = f"bytes={start}-"
@@ -467,7 +467,7 @@ def stream_asset(
         obj = s3.get_object(**kwargs)
         body = obj.get("Body")
         if body is None:
-            raise HTTPException(status_code=404, detail="asset not found")
+            raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Материал не найден — возможно, его переместили или удалили."})
 
         headers = {
             "Content-Disposition": disposition,
@@ -504,10 +504,10 @@ def stream_asset(
         code = str((e.response or {}).get("Error", {}).get("Code") or "").strip()
         status = int((e.response or {}).get("ResponseMetadata", {}).get("HTTPStatusCode") or 0)
         if code in {"NoSuchKey", "NotFound"} or status == 404:
-            raise HTTPException(status_code=404, detail="file missing in storage") from e
-        raise HTTPException(status_code=503, detail="storage unavailable") from e
+            raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Файл не найден в хранилище. Обновите страницу; если не помогло — сообщите администратору."}) from e
+        raise HTTPException(status_code=503, detail={"error_code": "storage_unavailable", "error_message": "Хранилище временно недоступно. Повторите через минуту — файлы не потеряны."}) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail="failed to stream asset") from e
+        raise HTTPException(status_code=500, detail={"error_code": "internal_error", "error_message": "Не удалось отдать файл. Повторите через минуту."}) from e
 
 
 @router.get("/{asset_id}/preview")
@@ -570,7 +570,7 @@ def asset_thumb(
     """
     asset = db.scalar(select(ContentAsset).where(ContentAsset.id == asset_id))
     if asset is None:
-        raise HTTPException(status_code=404, detail="asset not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Материал не найден — возможно, его переместили или удалили."})
     _asset_access_guard(db=db, user=user, aid=asset_id, asset=asset)
     if thumb_kind(asset.original_filename) is None:
         raise HTTPException(status_code=404, detail="у этого формата нет превью")
@@ -600,7 +600,7 @@ def asset_thumb(
         code = str((exc.response or {}).get("Error", {}).get("Code") or "")
         if code in {"NoSuchKey", "NotFound"}:
             raise HTTPException(status_code=404, detail="превью не найдено в хранилище") from exc
-        raise HTTPException(status_code=503, detail="storage unavailable") from exc
+        raise HTTPException(status_code=503, detail={"error_code": "storage_unavailable", "error_message": "Хранилище временно недоступно. Повторите через минуту — файлы не потеряны."}) from exc
     body = obj.get("Body")
     if body is None:
         raise HTTPException(status_code=404, detail="превью не найдено в хранилище")

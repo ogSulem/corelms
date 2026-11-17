@@ -17,13 +17,14 @@ from contextvars import ContextVar
 import tempfile
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 
 from rq import get_current_job
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.timeutil import utcnow
 from app.core.queue import fetch_job, get_job_status, get_queue
 from app.db.session import SessionLocal
 from app.models.asset import ContentAsset
@@ -39,10 +40,6 @@ VIDEO_EXTENSIONS = {"mp4", "mov", "m4v", "mkv", "avi", "webm", "wmv", "flv", "mp
 OFFICE_EXTENSIONS = {"docx", "pptx"}
 MAX_OUTPUT_BYTES = 1024 * 1024 * 1024
 _active_claim: ContextVar[dict | None] = ContextVar("media_claim", default=None)
-
-
-def utcnow():
-    return datetime.now(timezone.utc)
 
 
 def media_kind(filename: str) -> str | None:

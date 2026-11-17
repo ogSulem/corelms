@@ -155,13 +155,21 @@ def _select_final_question_ids_from_lessons(*, db: Session, module: Module) -> l
     rng = random.Random(f"final_open:{module.id}:{uuid.uuid4()}")
 
     # Build shuffled pools per submodule.
+    # Вопросы всех уроков читаются одним запросом: раньше на каждый урок
+    # выполнялся свой SELECT, и итоговый тест большого модуля делал до 40
+    # запросов на одно открытие.
     pools: list[list[uuid.UUID]] = []
+    quiz_ids = [sub.quiz_id for sub in subs if bool(getattr(sub, "requires_quiz", True)) and sub.quiz_id]
+    grouped: dict[uuid.UUID, list[Question]] = {}
+    if quiz_ids:
+        for q in db.scalars(select(Question).where(Question.quiz_id.in_(quiz_ids), ~func.coalesce(Question.concept_tag, "").like("needs_regen:%")).order_by(Question.id)):
+            grouped.setdefault(q.quiz_id, []).append(q)
     for sub in subs:
         if not bool(getattr(sub, "requires_quiz", True)):
             continue
         if not sub.quiz_id:
             continue
-        items = list(db.scalars(select(Question).where(Question.quiz_id == sub.quiz_id, ~func.coalesce(Question.concept_tag, "").like("needs_regen:%")).order_by(Question.id)))
+        items = grouped.get(sub.quiz_id) or []
         pool = [q.id for q in items if question_payload(q)["valid"]]
         if not pool:
             continue
@@ -276,11 +284,11 @@ def start_quiz(
     try:
         quiz_uuid = uuid.UUID(quiz_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid quiz id") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Тест не найден: ссылка устарела. Откройте урок заново."}) from e
 
     quiz = db.scalar(select(Quiz).where(Quiz.id == quiz_uuid))
     if quiz is None:
-        raise HTTPException(status_code=404, detail="quiz not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Тест не найден. Возможно, его пересобрали — откройте урок заново."})
 
     is_final_quiz = _is_final_quiz(quiz)
 
@@ -291,7 +299,7 @@ def start_quiz(
                 LearningEvent.user_id == user.id, LearningEvent.type == LearningEventType.submodule_opened,
                 LearningEvent.ref_id == sub.id))
             if not any(is_read_meta(meta) for meta in metas):
-                raise HTTPException(403, "confirm reading before starting quiz")
+                raise HTTPException(403, {"error_code": "confirm_reading_required", "error_message": "Сначала отметьте, что прочитали теорию, — тогда откроется тест."})
         else:
             progress = LearningService(db).get_module_progress(user, module.id)
             if not progress or (not progress["completed"] and not all(s["completed"] for s in progress["submodules"])):
@@ -381,10 +389,10 @@ def start_quiz(
     if is_final_quiz:
         m = db.scalar(select(Module).where(Module.final_quiz_id == quiz.id))
         if m is None:
-            raise HTTPException(status_code=404, detail="module not found")
+            raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его убрали с платформы."})
         selected_final_qids = _select_final_question_ids_from_lessons(db=db, module=m)
         if not selected_final_qids:
-            raise HTTPException(status_code=409, detail="final quiz has no source questions")
+            raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": "В уроках пока нет проверяемых вопросов, поэтому итоговый тест пуст. Сообщите преподавателю."})
 
     questions: list[Question]
     if selected_final_qids is not None:
@@ -395,17 +403,17 @@ def start_quiz(
             except ValueError:
                 continue
         if not parsed:
-            raise HTTPException(status_code=409, detail="final quiz has no source questions")
+            raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": "В уроках пока нет проверяемых вопросов, поэтому итоговый тест пуст. Сообщите преподавателю."})
         rows = list(db.scalars(select(Question).where(Question.id.in_(parsed))))
         qmap = {str(q.id): q for q in rows}
         questions = [qmap.get(qid) for qid in selected_final_qids]
         questions = [q for q in questions if q is not None]
         if not questions:
-            raise HTTPException(status_code=409, detail="final quiz has no source questions")
+            raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": "В уроках пока нет проверяемых вопросов, поэтому итоговый тест пуст. Сообщите преподавателю."})
     else:
         questions = list(db.scalars(select(Question).where(Question.quiz_id == quiz.id, ~func.coalesce(Question.concept_tag, "").like("needs_regen:%"))))
         if not questions:
-            raise HTTPException(status_code=400, detail="quiz has no questions")
+            raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "В этом тесте пока нет вопросов. Сообщите преподавателю."})
 
     if any(not question_payload(q)["valid"] for q in questions):
         raise HTTPException(409, "Вопросы теста требуют проверки администратором: варианты или правильные ответы не настроены. Свободные ответы без ручной проверки не оцениваются автоматически.")
@@ -514,11 +522,11 @@ def submit_quiz(
     try:
         quiz_uuid = uuid.UUID(quiz_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid quiz id") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Тест не найден: ссылка устарела. Откройте урок заново."}) from e
 
     quiz = db.scalar(select(Quiz).where(Quiz.id == quiz_uuid))
     if quiz is None:
-        raise HTTPException(status_code=404, detail="quiz not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Тест не найден. Возможно, его пересобрали — откройте урок заново."})
 
     module, sub = _quiz_access(db, user, quiz, historical=True)
     is_final_quiz = _is_final_quiz(quiz)
@@ -575,7 +583,7 @@ def submit_quiz(
         time_spent = min(raw_time_spent, session_limit) if session_limit else raw_time_spent
 
     if not question_ids or len(set(question_ids)) != len(question_ids):
-        raise HTTPException(409, "invalid quiz session")
+        raise HTTPException(409, {"error_code": "session_expired", "error_message": "Попытка повреждена. Начните тест заново."})
     if len({a.question_id for a in body.answers}) != len(body.answers) or any(a.question_id not in question_ids for a in body.answers):
         raise HTTPException(422, "Ответы должны относиться к вопросам текущей попытки и не повторяться")
     answers_by_qid = {a.question_id: a.answer for a in body.answers}
@@ -585,12 +593,12 @@ def submit_quiz(
         try:
             parsed_question_ids.append(uuid.UUID(qid))
         except (ValueError, TypeError):
-            raise HTTPException(409, "invalid quiz session")
+            raise HTTPException(409, {"error_code": "session_expired", "error_message": "Попытка повреждена. Начните тест заново."})
 
     if is_final_quiz:
         m = db.scalar(select(Module).where(Module.final_quiz_id == quiz.id))
         if m is None:
-            raise HTTPException(status_code=404, detail="module not found")
+            raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его убрали с платформы."})
         # Keep consistent with /start: final quiz is built from LESSON submodules only (exclude last/final submodule).
         active_lessons = list(db.scalars(select(Submodule).where(
             Submodule.module_id == m.id)))
@@ -598,7 +606,7 @@ def submit_quiz(
         allowed_quiz_ids.extend(db.scalars(select(LessonQuizVersion.quiz_id).where(
             LessonQuizVersion.submodule_id.in_([s.id for s in active_lessons]))))
         if not allowed_quiz_ids:
-            raise HTTPException(status_code=409, detail="final quiz has no source quizzes")
+            raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": "Итоговый тест собирается из тестов уроков, а они ещё не готовы. Сообщите преподавателю."})
         questions = list(db.scalars(select(Question).where(Question.id.in_(parsed_question_ids), Question.quiz_id.in_(allowed_quiz_ids))))
     else:
         questions = list(
@@ -612,7 +620,7 @@ def submit_quiz(
     qmap = {str(q.id): q for q in questions}
 
     if len(qmap) != len({str(x) for x in parsed_question_ids}):
-        raise HTTPException(status_code=409, detail="invalid questions for this quiz")
+        raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": "Вопросы не относятся к этой попытке. Начните тест заново."})
 
     if any(not question_payload(question)["valid"] for question in questions):
         raise HTTPException(409, "В старой попытке есть вопросы, которые нельзя проверить автоматически. Результат не записан и попытка не потрачена. Обратитесь к администратору для проверки теста.")

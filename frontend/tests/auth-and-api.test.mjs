@@ -583,3 +583,42 @@ test("прокси обновляет почти истёкший токен д�
   const route = await readFile(new URL("../src/app/api/backend/[...path]/route.ts", import.meta.url), "utf8");
   assert.match(route, /tokenExpiresSoon\(token\)[\s\S]{0,120}rotate\(\)/, "прокси обязан обновлять сессию до отправки тела");
 });
+
+const htmlPage = (status, body = "<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>") =>
+  new Response(body, { status, headers: { "content-type": "text/html" } });
+
+test("страница ошибки от прокси не показывается человеку как есть", async t => {
+  const { apiFetch } = await loadSource("src/lib/api.ts");
+  t.mock.method(globalThis, "fetch", async () => htmlPage(502));
+  await assert.rejects(apiFetch("/admin/modules", { method: "POST", body: "{}" }), error => {
+    assert.equal(error.status, 502);
+    assert.match(error.message, /Ошибка сервера\. Повторите попытку позже\./);
+    assert.ok(!/[<>]/.test(error.message), `в тексте осталась разметка: ${error.message}`);
+    assert.ok(!/nginx|Bad Gateway/i.test(error.message));
+    return true;
+  });
+});
+
+test("код без текста объясняется по-русски, а не «HTTP 413»", async t => {
+  const { apiFetch } = await loadSource("src/lib/api.ts");
+  t.mock.method(globalThis, "fetch", async () => htmlPage(413, "<html><head><title>413 Request Entity Too Large</title></head></html>"));
+  await assert.rejects(apiFetch("/admin/content/modules/x/assets", { method: "POST", body: "{}" }), error => {
+    assert.match(error.message, /Файл слишком большой/);
+    return true;
+  });
+  t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 404 }));
+  await assert.rejects(apiFetch("/assets/x", { method: "POST", body: "{}" }), error => {
+    assert.match(error.message, /не найдена/);
+    return true;
+  });
+});
+
+test("понятный русский ответ сервера доходит до человека без изменений", async t => {
+  const { apiFetch } = await loadSource("src/lib/api.ts");
+  t.mock.method(globalThis, "fetch", async () => json({ detail: { error_code: "not_found", error_message: "Урок не найден. Обновите страницу модуля." } }, 404));
+  await assert.rejects(apiFetch("/modules/x/submodules/y", { method: "POST", body: "{}" }), error => {
+    assert.equal(error.message, "Урок не найден. Обновите страницу модуля.");
+    assert.equal(error.errorCode, "not_found");
+    return true;
+  });
+});

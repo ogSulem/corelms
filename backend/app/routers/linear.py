@@ -33,11 +33,11 @@ def can_open_submodule(
     try:
         uid = uuid.UUID(submodule_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid submodule id") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Урок не найден: ссылка устарела."}) from e
 
     submodule = db.scalar(select(Submodule).where(Submodule.id == uid))
     if not submodule:
-        raise HTTPException(status_code=404, detail="submodule not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Урок не найден. Обновите страницу модуля."})
 
     allowed = can_access_submodule(db, str(user.id), submodule)
     return {"allowed": allowed}

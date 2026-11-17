@@ -33,7 +33,7 @@ def external_link_click(
 ):
     url = str(body.url or "").strip()
     if not url:
-        raise HTTPException(status_code=400, detail="missing url")
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Не передан адрес перехода."})
     # Событие уходит в журнал обучения как есть: без проверки туда попадала
     # ссылка любого вида и любой длины (записи вида `javascript:` и мегабайтные
     # «адреса» только раздували историю). Храним только обычные веб-ссылки.

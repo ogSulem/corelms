@@ -20,13 +20,13 @@ def module_progress(module_id: str, db: Session = Depends(get_db), user: User = 
     try:
         mid = uuid.UUID(module_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail="invalid module_id") from e
+        raise HTTPException(status_code=400, detail={"error_code": "invalid_value", "error_message": "Модуль не найден: ссылка устарела."}) from e
         
     require_module_access(db, user, mid)
     service = LearningService(db)
     progress = service.get_module_progress(user, mid)
     
     if progress is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден. Обновите страницу."})
         
     return progress
