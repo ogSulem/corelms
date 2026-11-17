@@ -200,7 +200,20 @@ docker compose up -d --no-build --no-deps backend worker worker_media frontend
 
 - `DB_CONNECT_TIMEOUT_SECONDS=10` — сколько ждать соединения с PostgreSQL. Без него при недоступной
   базе запрос висит до системного таймаута (до двух минут), а пул соединений забивается.
-- `DB_POOL_SIZE`, `DB_MAX_OVERFLOW`, `DB_POOL_TIMEOUT_SECONDS`, `DB_POOL_RECYCLE_SECONDS` — размеры пула.
+- `DB_POOL_SIZE_API` / `DB_MAX_OVERFLOW_API` (по умолчанию 12 / 8) — пул процесса API;
+  `DB_POOL_SIZE_WORKER` / `DB_MAX_OVERFLOW_WORKER` (3 / 3) — пул каждого процесса воркера;
+  `DB_POOL_SIZE_MEDIA` / `DB_MAX_OVERFLOW_MEDIA` (3 / 3) — пул медиа-воркера.
+  Старые общие `DB_POOL_SIZE` и `DB_MAX_OVERFLOW` больше не используются: в `.env` их можно
+  оставить, они ничего не сломают. Итого 38 соединений из `max_connections=80`.
+- `DB_POOL_TIMEOUT_SECONDS`, `DB_POOL_RECYCLE_SECONDS` — ожидание свободного соединения и
+  пересоздание старых (те же, что были).
+
+Если в интерфейсе появилось «Свободных соединений с базой нет…», это не потеря данных и не
+сломанная база: посмотрите «Администрирование → Настройки → Состояние сервисов» — там видно
+`Соединения Postgres: N из 80` и `Пул приложения: занято N из 20`. Если Postgres близок к 80 при
+малом числе людей, значит соединения держит кто-то ещё (например, `pg_dump` резервной копии или
+второй экземпляр приложения) — это видно по `docker compose exec postgres psql -U sdlp -c
+"select datname, state, count(*) from pg_stat_activity group by 1,2"`.
 
 Копия `.env` лежит в каждой резервной копии (`env.backup`, права 600): по ней всегда видно, какие
 значения были.

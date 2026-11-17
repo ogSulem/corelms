@@ -122,6 +122,8 @@ type ServerError = {
   user_id: string | null;
   duration_ms: number | null;
   error?: string;
+  /** Причина и SQLSTATE: «пул занят», «нет места на диске», «не та схема». */
+  hint?: string;
   traceback?: string;
 };
 
@@ -220,6 +222,11 @@ export default function AdminSettingsPage() {
   const [testingSales, setTestingSales] = useState(false);
   const [salesTest, setSalesTest] = useState<{ ok: boolean; message: string } | null>(null);
   const [health, setHealth] = useState<{ ok: boolean; message: string; at: string } | null>(null);
+  // Нагрузка на базу: без этих чисел «база перегружена» — просто догадка.
+  const [dbLoad, setDbLoad] = useState<{
+    pool?: { checked_out?: number; size?: number; max_overflow?: number; timeout_seconds?: number };
+    connections?: { total?: number; active?: number; idle_in_transaction?: number; max_connections?: number; used_percent?: number };
+  } | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
   const [security, setSecurity] = useState<SecurityPosture | null>(null);
   const [loadingSecurity, setLoadingSecurity] = useState(false);
@@ -357,6 +364,17 @@ export default function AdminSettingsPage() {
       setHealth({ ok: false, message: errorText(healthError, "Сервис не отвечает"), at: new Date().toLocaleTimeString("ru-RU") });
     } finally {
       setCheckingHealth(false);
+    }
+    // Отдельным запросом: если база лежит, health уже показал отказ, а цифры
+    // нагрузки просто не придут. Ошибку здесь не показываем — это диагностика.
+    try {
+      const status = await apiFetch<{
+        db_pool?: { checked_out?: number; size?: number; max_overflow?: number; timeout_seconds?: number };
+        db_connections?: { total?: number; active?: number; idle_in_transaction?: number; max_connections?: number; used_percent?: number };
+      }>("/admin/system/status", { timeoutMs: 20_000 });
+      setDbLoad({ pool: status.db_pool, connections: status.db_connections });
+    } catch {
+      setDbLoad(null);
     }
   }, [checkingHealth]);
 
@@ -1248,6 +1266,30 @@ export default function AdminSettingsPage() {
                 <p className="mt-2 text-xs leading-5 text-zinc-500">
                   Проверяются база данных, Redis и хранилище S3. Обновление схемы: <code className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs">alembic upgrade head</code>.
                 </p>
+                {dbLoad && (dbLoad.connections?.total || dbLoad.pool?.size) ? (
+                  <dl className="mt-3 grid gap-1 text-xs text-zinc-600 sm:grid-cols-2">
+                    {dbLoad.connections?.max_connections ? (
+                      <div>
+                        <dt className="text-zinc-500">Соединения Postgres</dt>
+                        <dd className="font-medium text-zinc-900">
+                          {dbLoad.connections.total} из {dbLoad.connections.max_connections}
+                          {typeof dbLoad.connections.used_percent === "number" ? ` · ${dbLoad.connections.used_percent}%` : ""}
+                          <span className="ml-1 font-normal text-zinc-500">
+                            (активных {dbLoad.connections.active ?? 0}
+                            {(dbLoad.connections.idle_in_transaction ?? 0) > 0 ? `, зависших транзакций ${dbLoad.connections.idle_in_transaction}` : ""})
+                          </span>
+                        </dd>
+                      </div>
+                    ) : null}
+                    <div>
+                      <dt className="text-zinc-500">Пул приложения</dt>
+                      <dd className="font-medium text-zinc-900">
+                        {dbLoad.pool?.checked_out ?? 0} из {(dbLoad.pool?.size ?? 0) + (dbLoad.pool?.max_overflow ?? 0)}
+                        {dbLoad.pool?.timeout_seconds ? <span className="ml-1 font-normal text-zinc-500">(ожидание {dbLoad.pool.timeout_seconds} с)</span> : null}
+                      </dd>
+                    </div>
+                  </dl>
+                ) : null}
               </div>
             </section>
 
@@ -1299,6 +1341,9 @@ export default function AdminSettingsPage() {
                       </div>
                       <p className="mt-2 break-all font-mono text-xs text-zinc-500">Код: {item.rid}</p>
                       {item.error ? <p className="mt-1 break-words text-sm text-rose-800">{item.error}</p> : null}
+                      {item.hint ? (
+                        <p className="mt-1 break-words rounded-lg bg-zinc-50 px-2 py-1 font-mono text-[11px] leading-5 text-zinc-600">{item.hint}</p>
+                      ) : null}
                       {item.traceback ? (
                         <details className="mt-2">
                           <summary className="cursor-pointer text-xs font-medium text-zinc-600">Где именно упало</summary>

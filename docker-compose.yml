@@ -123,6 +123,10 @@ services:
       - AUTO_MIGRATE_ON_START=false
       - RQ_WORKER_QUEUES=${RQ_WORKER_QUEUES:-corelms_import,corelms_regen,corelms_cleanup,corelms}
       - RQ_WORKER_PROCESSES=${RQ_WORKER_PROCESSES:-2}
+      # Задача воркера держит одно соединение на время работы; очередь из двух
+      # процессов больше не нужна, а лишние соединения забирают их у API.
+      - DB_POOL_SIZE=${DB_POOL_SIZE_WORKER:-3}
+      - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW_WORKER:-3}
     entrypoint: ["python", "-m", "app.worker"]
     logging:
       driver: json-file
@@ -155,6 +159,8 @@ services:
       - AUTO_MIGRATE_ON_START=false
       - RQ_WORKER_QUEUES=${RQ_WORKER_MEDIA_QUEUES:-corelms_media}
       - RQ_WORKER_PROCESSES=1
+      - DB_POOL_SIZE=${DB_POOL_SIZE_MEDIA:-3}
+      - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW_MEDIA:-3}
       - MEDIA_ENCODER_THREADS=${MEDIA_ENCODER_THREADS:-2}
     entrypoint: ["python", "-m", "app.worker"]
     logging:
@@ -207,6 +213,11 @@ services:
       - AUTO_MIGRATE_ON_START=${AUTO_MIGRATE_ON_START:-false}
       - BOOTSTRAP_ADMIN_NAME=${BOOTSTRAP_ADMIN_NAME:-}
       - BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-}
+      # Пул только для API: именно он обслуживает людей. Воркеры получают
+      # маленькие пулы (ниже) — так у API больше запаса, а общее число
+      # соединений с Postgres не растёт: 20 + 2×6 + 6 = 38 из 80.
+      - DB_POOL_SIZE=${DB_POOL_SIZE_API:-12}
+      - DB_MAX_OVERFLOW=${DB_MAX_OVERFLOW_API:-8}
       # Версия кода: её показывает /health/version и диагностика на форме входа.
       - APP_VERSION=${APP_VERSION:-}
     healthcheck:

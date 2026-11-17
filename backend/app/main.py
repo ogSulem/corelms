@@ -232,21 +232,31 @@ def create_app() -> FastAPI:
                            getattr(getattr(request, "url", None), "path", ""))
             return JSONResponse(status_code=499, content={"ok": False, "error_code": "client_disconnected"})
 
-        # Исчерпанный пул соединений и недоступная база — это 503, а не 500:
-        # пользователю нужно «повторите через минуту», а не «ошибка сервера».
-        from sqlalchemy.exc import DBAPIError, OperationalError, TimeoutError as SATimeoutError
+        # Ошибка базы данных — не всегда «перегрузка». Пул, отказ соединений,
+        # нарушение уникальности, слишком длинное значение и неприменённая
+        # миграция лечатся по-разному, поэтому ответ тоже разный: 503 «повторите»
+        # только там, где повтор действительно поможет.
+        from app.services.db_errors import classify_db_error
 
-        if isinstance(exc, (SATimeoutError, OperationalError, DBAPIError)):
+        failure = classify_db_error(exc)
+        if failure is not None:
+            pool: dict[str, object] = {}
             try:
                 from app.db.session import pool_snapshot
 
-                pool = pool_snapshot()
+                pool = dict(pool_snapshot())
             except Exception:
                 pool = {}
+            hint = failure.hint
+            if pool:
+                hint = f"{hint} | пул: занято {pool.get('checked_out', '?')} из " \
+                       f"{int(pool.get('size') or 0) + int(pool.get('max_overflow') or 0)}, " \
+                       f"ожидание {pool.get('timeout_seconds', '?')} с"
             logger.error(
-                "database unavailable rid=%s path=%s pool=%s error=%s",
+                "database error rid=%s path=%s reason=%s pool=%s error=%s",
                 rid,
                 getattr(getattr(request, "url", None), "path", ""),
+                failure.reason,
                 pool,
                 f"{type(exc).__name__}: {exc}"[:400],
             )
@@ -255,21 +265,25 @@ def create_app() -> FastAPI:
                     rid=rid,
                     method=request.method,
                     path=str(getattr(getattr(request, "url", None), "path", "")),
-                    status=503,
+                    status=failure.status,
                     user_id=getattr(getattr(request, "state", None), "user_id", None),
                     exc=exc,
+                    hint=hint,
                 )
             except Exception:
                 logger.debug("error log record failed", exc_info=True)
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "ok": False,
-                    "error_code": "database_unavailable",
-                    "error_message": "База данных перегружена или недоступна. Повторите запрос через минуту; данные не потеряны.",
-                    "request_id": rid,
-                },
-            )
+            payload: dict[str, object] = {
+                "ok": False,
+                "error_code": failure.code,
+                "error_message": failure.message,
+                "error_reason": failure.reason,
+                "request_id": rid,
+            }
+            headers = None
+            if failure.retryable:
+                payload["retry_after_seconds"] = int(failure.retry_after or 15)
+                headers = {"Retry-After": str(int(failure.retry_after or 15))}
+            return JSONResponse(status_code=failure.status, content=payload, headers=headers)
         # rid прямо в тексте строки: формат лога его не включает, а искать
         # причину приходится именно по коду из интерфейса.
         logger.exception("unhandled exception rid=%s path=%s", rid, getattr(getattr(request, "url", None), "path", ""))

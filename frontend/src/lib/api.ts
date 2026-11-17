@@ -4,14 +4,17 @@ class CoreApiError extends Error {
   requestId?: string;
   /** Модуль, к которому относится ошибка (например, «такой уже есть»). */
   moduleId?: string;
+  /** Машинная причина отказа базы: pool_busy, connections, disk, schema, integrity… */
+  reason?: string;
 
-  constructor(message: string, opts: { status: number; errorCode?: string; requestId?: string; moduleId?: string }) {
+  constructor(message: string, opts: { status: number; errorCode?: string; requestId?: string; moduleId?: string; reason?: string }) {
     super(message);
     this.name = "CoreApiError";
     this.status = opts.status;
     this.errorCode = opts.errorCode;
     this.requestId = opts.requestId;
     this.moduleId = opts.moduleId;
+    this.reason = opts.reason;
   }
 }
 
@@ -100,11 +103,25 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
     if (res.status === 401) _redirectToLogin();
   }
 
+  // Перегрузка базы обычно длится доли секунды (пул занят чужим тяжёлым
+  // запросом). Один короткий повтор избавляет от красного баннера и мигания
+  // списка; POST/DELETE не повторяем — там важен ровно один вызов.
+  const method = String(init?.method || "GET").toUpperCase();
+  if (
+    (method === "GET" || method === "HEAD") &&
+    !(init?.signal?.aborted) &&
+    (res.status === 503 || res.status === 502 || res.status === 504)
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    if (!init?.signal?.aborted) res = await doFetch();
+  }
+
   if (!res.ok) {
     let msg = "";
     let errorCode = "";
     let requestId = "";
     let moduleId = "";
+    let reason = "";
     const ct = res.headers.get("content-type") || "";
     try {
       if (ct.includes("application/json")) {
@@ -114,6 +131,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
           errorCode = String((data as any).error_code || "");
           requestId = String((data as any).request_id || "");
           moduleId = String((data as any).module_id || "");
+          reason = String((data as any).error_reason || "");
           msg = String((data as any).error_message || "");
         }
 
@@ -167,6 +185,7 @@ export async function apiFetch<T>(path: string, init?: RequestInit & { timeoutMs
         errorCode: errorCode || undefined,
         requestId: requestId || undefined,
         moduleId: moduleId || undefined,
+        reason: reason || undefined,
       });
     }
     if (res.status === 429) {
