@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.queue import get_job_status, normalize_job_status, release_job_lock
+from app.services.user_roles import learner_role, resolve_role
 from app.services import error_log
 from app.services.audit_meta import learning_meta_for_client, sanitize_learning_meta, sanitize_security_meta
 from app.services.content import require_unused_temporary_object
@@ -1349,7 +1350,8 @@ def admin_update_user(
 
     role_raw = body.role
     if role_raw is not None:
-        next_role = UserRole(str(role_raw))
+        # Учебные роли приводим к тому имени, которое принято в этой базе.
+        next_role = resolve_role(db, UserRole(str(role_raw)))
         if not is_superadmin:
             raise HTTPException(status_code=403, detail="cannot change user role")
         # Свою роль не меняем даже суперадмину: единственный суперадмин,
@@ -6270,10 +6272,12 @@ def create_user(
     if str(body.password or "").strip():
         ensure_password_complexity_or_422(temp_password, db=db)
 
-    # Product invariant: user creation always creates an employee.
+    # Product invariant: user creation always creates a learner.
     # Role escalation (admin/superadmin) must be done explicitly via update flow
-    # and is restricted to superadmin.
-    requested_role = UserRole.employee
+    # and is restricted to superadmin. Имя роли берём по фактической схеме: в
+    # базе, созданной полгода назад, обучающиеся называются `partner`, и
+    # жёсткий `employee` давал «invalid input value for enum userrole».
+    requested_role = learner_role(db)
 
     user = User(
         name=name,
@@ -6543,7 +6547,9 @@ def analytics_overview(
         "totals": {
             "users": len(users),
             "employees": sum(1 for u in users if u.role not in {UserRole.admin, UserRole.superadmin}),
-            "partners": sum(1 for u in users if u.role == UserRole.partner),
+            # Обучающийся в этой базе может называться и partner, и employee:
+            # считаем обе роли, иначе «Партнёры» перестают расти после обновления.
+            "partners": sum(1 for u in users if u.role not in {UserRole.admin, UserRole.superadmin}),
             "admins": sum(1 for u in users if u.role in {UserRole.admin, UserRole.superadmin}),
             "active_7d": active_7d,
             "modules": len(modules),

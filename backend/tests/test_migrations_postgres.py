@@ -49,7 +49,7 @@ def test_legacy_upgrade_backfills_completion_and_asset_ownership(monkeypatch):
         assert connection.execute(text("SELECT content_revision FROM modules WHERE id=:mid"), values).scalar_one() == 5
         # 0028 добавляет учебную ревизию и выравнивает её с текущей.
         assert connection.execute(text("SELECT learning_revision FROM modules WHERE id=:mid"), values).scalar_one() == 5
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0029"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0030"
         assert connection.execute(text("SELECT content_mode, content_version FROM submodules WHERE id=:sid"), values).one() == ("manual", 1)
         assert connection.execute(text("SELECT count(*) FROM lesson_revisions")).scalar_one() == 0
         assert connection.execute(text("SELECT presentation_mode, primary_asset_id FROM submodules WHERE id=:sid"), values).one() == ("auto", None)
@@ -57,6 +57,10 @@ def test_legacy_upgrade_backfills_completion_and_asset_ownership(monkeypatch):
         assert connection.execute(text("SELECT name, revision FROM sales_sections ORDER BY name")).all() == [("catalogs", 1), ("photos", 1)]
         assert connection.execute(text("SELECT count(*) FROM asset_renditions")).scalar_one() == 0
         assert connection.execute(text("SELECT count(*) FROM asset_thumbs")).scalar_one() == 0
+        # 0030: набор ролей в типе совпадает с приложением. Без 'employee'
+        # создание партнёра из админки падало на боевой базе из ранней схемы.
+        roles = set(connection.execute(text("SELECT unnest(enum_range(null::userrole))::text")).scalars().all())
+        assert {"employee", "partner", "admin", "superadmin"} <= roles, roles
     # The reverse migration is structurally valid, but intentionally loses the new
     # lifecycle metadata; production rollback must restore a DB backup instead.
     command.downgrade(cfg, "0020")
@@ -109,4 +113,4 @@ def test_hot_path_indexes_heal_after_interrupted_build(monkeypatch):
 
     assert states() == {name: True for name in names}
     with engine.connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0029"
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0030"

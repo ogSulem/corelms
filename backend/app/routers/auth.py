@@ -22,6 +22,7 @@ from app.core.security_audit_log import audit_log
 from app.core.security import get_current_user
 from app.core.tokens import create_access_token, password_version
 from app.services import auth_sessions
+from app.services.user_roles import learner_role
 from app.services.auth_policy import ensure_password_or_400, login_attempts_per_minute
 from app.services.app_settings import get_platform_settings
 from app.db.session import get_db
@@ -351,7 +352,8 @@ def register(
         name=payload.name,
         email=email_norm,
         position=payload.position,
-        role=UserRole.employee,
+        # Имя учебной роли — по фактической схеме: в старых базах это `partner`.
+        role=learner_role(db),
         xp=0,
         level=1,
         streak=0,

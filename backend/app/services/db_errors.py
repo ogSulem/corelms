@@ -145,6 +145,12 @@ def classify_db_error(exc: BaseException) -> DbFailure | None:
         return DbFailure(503, "database_unavailable", UNREACHABLE_MESSAGE, "unreachable",
                          hint=_hint(exc, reason="unreachable"), retry_after=15)
 
+    # Роль/тип есть в коде, но отсутствует в базе: это расхождение схемы, а не
+    # неверные данные. Повтор и «сократите текст» тут не помогут.
+    if isinstance(exc, (DataError, ProgrammingError)) and "invalid input value for enum" in _text(exc):
+        return DbFailure(500, "schema_outdated", SCHEMA_MESSAGE, "schema",
+                         hint=_hint(exc, reason="schema"))
+
     if isinstance(exc, ProgrammingError):
         state = _sqlstate(exc)
         if state == "57014" or "canceling statement" in _text(exc):
