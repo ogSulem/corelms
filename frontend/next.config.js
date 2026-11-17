@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Не сообщаем стек наружу: X-Powered-By — подсказка для подбора уязвимостей.
+  poweredByHeader: false,
   allowedDevOrigins: ["*.e2b.app"],
   async headers() {
     const cspReportOnly = [

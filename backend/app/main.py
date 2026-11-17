@@ -58,12 +58,25 @@ def create_app() -> FastAPI:
     _configure_logging()
     is_prod = (settings.app_env or "").strip().lower() in {"prod", "production"}
     api_docs_enabled = bool(getattr(settings, "enable_api_docs", False)) or (not is_prod)
+
+    @contextlib.asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        # Всё, что должно произойти при старте, и уборка при остановке.
+        # Lifespan вместо `on_event`: тот объявлен устаревшим и исчезнет в
+        # следующей мажорной версии FastAPI, а поведение то же самое.
+        await _startup_tasks()
+        try:
+            yield
+        finally:
+            await _stop_media_dispatcher()
+
     app = FastAPI(
         title="CoreLMS API",
         version="1.0.0",
         docs_url="/docs" if api_docs_enabled else None,
         redoc_url="/redoc" if api_docs_enabled else None,
         openapi_url="/openapi.json" if api_docs_enabled else None,
+        lifespan=_lifespan,
     )
 
     logger = logging.getLogger("corelms")
@@ -400,7 +413,6 @@ def create_app() -> FastAPI:
             except Exception:
                 logger.debug("bootstrap admin db close failed", exc_info=True)
 
-    @app.on_event("startup")
     async def _startup_tasks() -> None:
         if settings.auto_migrate_on_start:
             try:
@@ -435,7 +447,6 @@ def create_app() -> FastAPI:
         if bool(getattr(settings, "enable_inprocess_scheduler", False)):
             _start_admin_uploads_cleanup_scheduler()
 
-    @app.on_event("shutdown")
     async def _stop_media_dispatcher():
         task = getattr(app.state, "media_dispatch_task", None)
         if task:

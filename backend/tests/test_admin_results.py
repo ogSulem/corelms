@@ -173,5 +173,9 @@ def test_rename_module_does_not_mark_new_materials(client, admin_headers, db, ma
     # Повторный PATCH тем же названием — без изменений и без ошибок.
     again = client.patch(f"/admin/modules/{module.id}", headers=admin_headers, json={"title": "Новое название"})
     assert again.status_code == 200
-    duplicate = client.patch(f"/admin/modules/{module.id}", headers=admin_headers, json={"title": ""})
-    assert duplicate.status_code == 400
+    # Пустое название — не «плохой запрос», а недопустимое значение: 422,
+    # и текст на русском (админ видит его в редакторе как есть).
+    empty_title = client.patch(f"/admin/modules/{module.id}", headers=admin_headers, json={"title": ""})
+    assert empty_title.status_code == 422, empty_title.text
+    assert empty_title.json()["error_code"] == "invalid_value"
+    assert "название" in empty_title.json()["error_message"].lower()

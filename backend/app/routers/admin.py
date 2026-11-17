@@ -289,10 +289,13 @@ def enqueue_transcode_videos(
     raise HTTPException(410, "Видео обрабатываются автоматически отдельным media-worker. Для старого файла откройте просмотр; повтор подготовки доступен там же. Исходники не заменяются.")
 
 
-@router.get("/jobs/model")
-def admin_jobs_model(
-    _: User = Depends(require_roles(UserRole.admin)),
-):
+def admin_jobs_snapshot() -> dict:
+    """Состояние очередей импорта и регенерации одним снимком.
+
+    Функция синхронная намеренно: внутри Redis, RQ и короткая сессия базы.
+    Из async-кода её вызывают через `asyncio.to_thread`, чтобы не держать
+    event loop (иначе SSE-обновление раз в две секунды подвешивало API).
+    """
     rev = _admin_jobs_get_rev()
     imp = _admin_list_import_jobs(limit=200, include_terminal=True)
     reg = _admin_list_regen_jobs(limit=200, include_terminal=True)
@@ -302,6 +305,13 @@ def admin_jobs_model(
         "regen": _admin_jobs_build_lane(kind="regen", listing=reg),
         "ts": utc_iso(),
     }
+
+
+@router.get("/jobs/model")
+def admin_jobs_model(
+    _: User = Depends(require_roles(UserRole.admin)),
+):
+    return admin_jobs_snapshot()
 
 
 def _random_password(length: int = 12) -> str:
@@ -332,7 +342,7 @@ def create_tag(
 ):
     name = _normalize_tag_name(body.name)
     if not name:
-        raise HTTPException(status_code=400, detail="invalid tag name")
+        raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Название тега не может быть пустым."})
 
     # Сравнение без учёта регистра делаем в Python: SQLite (тесты и локальный
     # запуск) не умеет lower() для кириллицы, и «Смены»/«смены» давали два тега.
@@ -400,7 +410,7 @@ def get_tag_users(
     tid = _uuid(tag_id, field="tag_id")
     t = db.scalar(select(Tag).where(Tag.id == tid))
     if t is None:
-        raise HTTPException(status_code=404, detail="tag not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Тег не найден — возможно, его уже удалили. Обновите страницу."})
     uids = [str(uid) for (uid,) in db.execute(select(UserTagMap.user_id).where(UserTagMap.tag_id == tid)).all() if uid is not None]
     return {"tag_id": str(tid), "user_ids": uids}
 
@@ -417,7 +427,7 @@ def set_tag_users(
     tid = _uuid(tag_id, field="tag_id")
     t = db.scalar(select(Tag).where(Tag.id == tid))
     if t is None:
-        raise HTTPException(status_code=404, detail="tag not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Тег не найден — возможно, его уже удалили. Обновите страницу."})
 
     next_ids: list[uuid.UUID] = []
     for raw in list(body.user_ids or []):
@@ -429,7 +439,7 @@ def set_tag_users(
         existing = set(db.scalars(select(User.id).where(User.id.in_(next_ids))).all())
         missing = [str(uid) for uid in next_ids if uid not in existing]
         if missing:
-            raise HTTPException(status_code=400, detail="unknown user")
+            raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Пользователь не найден — обновите список."})
 
     db.execute(delete(UserTagMap).where(UserTagMap.tag_id == tid))
     for uid in next_ids:
@@ -855,7 +865,7 @@ def update_module(
     mid = _uuid(module_id, field="module_id")
     m = db.scalar(select(Module).where(Module.id == mid))
     if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его удалили. Обновите страницу."})
 
     m = lock_module(db, mid)
 
@@ -868,11 +878,11 @@ def update_module(
     if body.title is not None:
         next_title = str(body.title or "").strip()
         if not next_title:
-            raise HTTPException(status_code=400, detail="title is required")
+            raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Укажите название модуля."})
         if len(next_title) > 300:
-            raise HTTPException(status_code=400, detail="title too long")
+            raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Название модуля слишком длинное — сократите его."})
         if find_module_by_title(db, next_title, exclude_id=mid) is not None:
-            raise HTTPException(status_code=409, detail="module title already exists")
+            raise HTTPException(status_code=409, detail={"error_code": "conflict", "error_message": "Модуль с таким названием уже есть. Выберите другое название."})
         if next_title != m.title:
             changed["title_from"] = m.title
             changed["title_to"] = next_title
@@ -1307,7 +1317,7 @@ def admin_update_user(
     uid = _uuid(user_id, field="user_id")
     u = db.scalar(select(User).where(User.id == uid))
     if u is None:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Пользователь не найден — возможно, его удалили. Обновите список."})
 
     is_superadmin = getattr(current, "role", None) == UserRole.superadmin
     target_role = getattr(u, "role", None)
@@ -1317,7 +1327,7 @@ def admin_update_user(
     # - admin: can edit employees and self, but must not edit other admins/superadmins
     if not is_superadmin:
         if target_role in {UserRole.admin, UserRole.superadmin} and u.id != current.id:
-            raise HTTPException(status_code=403, detail="cannot modify admin user")
+            raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Изменять администратора может только суперадминистратор."})
 
     name = body.name
     if name is not None:
@@ -1353,7 +1363,7 @@ def admin_update_user(
         # Учебные роли приводим к тому имени, которое принято в этой базе.
         next_role = resolve_role(db, UserRole(str(role_raw)))
         if not is_superadmin:
-            raise HTTPException(status_code=403, detail="cannot change user role")
+            raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Менять роль может только суперадминистратор."})
         # Свою роль не меняем даже суперадмину: единственный суперадмин,
         # понизивший себя, оставляет платформу без управления навсегда
         # (bootstrap создаёт администратора только при полном отсутствии админов).
@@ -1403,13 +1413,13 @@ def admin_force_password_change(
     uid = _uuid(user_id, field="user_id")
     u = db.scalar(select(User).where(User.id == uid))
     if u is None:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Пользователь не найден — возможно, его удалили. Обновите список."})
 
     is_superadmin = getattr(current, "role", None) == UserRole.superadmin
     target_role = getattr(u, "role", None)
     if not is_superadmin:
         if target_role in {UserRole.admin, UserRole.superadmin} and u.id != current.id:
-            raise HTTPException(status_code=403, detail="cannot modify admin user")
+            raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Изменять администратора может только суперадминистратор."})
 
     u.must_change_password = True
     db.add(u)
@@ -1435,7 +1445,7 @@ def module_submodules_quality(
     mid = _uuid(module_id, field="module_id")
     m = db.scalar(select(Module).where(Module.id == mid))
     if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его удалили. Обновите страницу."})
 
     needs_regen_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("needs_regen:%"))
     ok_cond = (Question.concept_tag.is_not(None)) & (Question.concept_tag.like("ok:%"))
@@ -1553,7 +1563,11 @@ def llm_probe(
 
 
 @router.post("/modules/import-zip")
-async def import_module_zip(
+# Обычная (не async) функция — намеренно: здесь синхронная сессия SQLAlchemy и
+# блокирующие вызовы S3, включая загрузку всего архива. В async-обработчике они
+# останавливали event loop, и на время импорта ZIP весь API (вход, уроки, видео)
+# замирал у всех. FastAPI выполняет sync-обработчик в пуле потоков.
+def import_module_zip(
     request: Request,
     title: str | None = None,
     file: UploadFile = File(...),
@@ -1562,7 +1576,7 @@ async def import_module_zip(
     _: object = rate_limit(key_prefix="admin_import_module_zip", limit=15, window_seconds=60),
 ):
     if not file.filename or not file.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="only .zip is supported")
+        raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Нужен файл .zip — другие форматы не импортируются."})
 
     t = (title or "").strip()
     inferred_title: str | None = None
@@ -1667,7 +1681,12 @@ async def import_module_zip(
                     put_kwargs["SSEKMSKeyId"] = kms
         s3.put_object(**put_kwargs)
     except Exception as e:
-        raise HTTPException(status_code=500, detail="failed to upload zip") from e
+        log.warning("admin import zip: upload to storage failed", exc_info=True)
+        raise HTTPException(status_code=503, detail={
+            "error_code": "storage_unavailable",
+            "error_message": "Не удалось сохранить архив в хранилище. Проверьте доступность S3 и повторите загрузку.",
+            "error_hint": "Файл не сохранён; повтор безопасен.",
+        }) from e
 
     # Product rule: module should appear immediately in list as hidden while import/regen runs.
     stub_module = None
@@ -2365,7 +2384,7 @@ def presign_import_zip(
 ):
     fn = _normalize_import_text(str(body.filename or "")).strip()
     if not fn.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="only .zip is supported")
+        raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Нужен файл .zip — другие форматы не импортируются."})
     from app.services.import_limits import archive_max_bytes, too_large_message
 
     # Браузер сообщает размер до загрузки: отказываем сразу, а не после того,
@@ -2451,7 +2470,7 @@ def multipart_import_create(
 ):
     fn = _normalize_import_text(str(body.filename or "")).strip()
     if not fn.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="only .zip is supported")
+        raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Нужен файл .zip — другие форматы не импортируются."})
     from app.services.import_limits import archive_max_bytes, too_large_message
 
     limit = archive_max_bytes(db)
@@ -3474,7 +3493,7 @@ def delete_module(
     mid = _uuid(module_id, field="module_id")
     m = db.scalar(select(Module).where(Module.id == mid))
     if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его удалили. Обновите страницу."})
 
     m = lock_module(db, mid)
     preserve_progress(db, m)
@@ -3634,7 +3653,7 @@ def set_module_access(
     mid = _uuid(module_id, field="module_id")
     m = db.scalar(select(Module).where(Module.id == mid))
     if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его удалили. Обновите страницу."})
 
     m = lock_module(db, m.id)
     m.content_revision += 1
@@ -3642,7 +3661,7 @@ def set_module_access(
     if body.visibility is not None:
         vis = str(body.visibility).strip().lower()
         if vis not in {"public", "hidden", "restricted"}:
-            raise HTTPException(status_code=400, detail="invalid visibility")
+            raise HTTPException(status_code=422, detail={"error_code": "invalid_value", "error_message": "Неизвестный режим доступа к модулю."})
         m.visibility = vis
 
     if body.tag_ids is not None:
@@ -3656,7 +3675,7 @@ def set_module_access(
             existing = set(db.scalars(select(Tag.id).where(Tag.id.in_(next_ids))).all())
             missing = [str(tid) for tid in next_ids if tid not in existing]
             if missing:
-                raise HTTPException(status_code=400, detail="unknown tag")
+                raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Один из выбранных тегов не найден. Обновите страницу."})
 
         db.execute(delete(ModuleTagMap).where(ModuleTagMap.module_id == mid))
         for tid in next_ids:
@@ -3875,7 +3894,7 @@ def set_module_visibility(
     mid = _uuid(module_id, field="module_id")
     m = db.scalar(select(Module).where(Module.id == mid))
     if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его удалили. Обновите страницу."})
 
     target = bool(body.is_active)
 
@@ -4447,15 +4466,9 @@ async def admin_job_events(
                         await asyncio.sleep(0)
                     else:
                         last_recompute_ms = now_ms
-                        rev = _admin_jobs_get_rev()
-                        imp = _admin_list_import_jobs(limit=200, include_terminal=True)
-                        reg = _admin_list_regen_jobs(limit=200, include_terminal=True)
-                        payload = {
-                            "rev": rev,
-                            "import": _admin_jobs_build_lane(kind="import", listing=imp),
-                            "regen": _admin_jobs_build_lane(kind="regen", listing=reg),
-                            "ts": utc_iso(),
-                        }
+                        # Снимок считает синхронный код (Redis, RQ, база) — в
+                        # отдельном потоке, чтобы поток событий не блокировал API.
+                        payload = await asyncio.to_thread(admin_jobs_snapshot)
                         sig = ""
                         try:
                             sig_payload = dict(payload)
@@ -5034,7 +5047,7 @@ def create_submodule(
 
     m = db.scalar(select(Module).where(Module.id == module_id))
     if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его удалили. Обновите страницу."})
 
     q = db.scalar(select(Quiz).where(Quiz.id == quiz_id))
     if q is None:
@@ -5262,7 +5275,7 @@ def get_module_answers(
     # Verify module exists
     mod = db.scalar(select(Module).where(Module.id == mod_uuid))
     if mod is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его удалили. Обновите страницу."})
 
     # Fetch all questions via submodule->quiz->question
     rows = db.execute(
@@ -5420,7 +5433,7 @@ def get_user_detail(
     uid = _uuid(user_id, field="user_id")
     u = db.scalar(select(User).where(User.id == uid))
     if u is None:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Пользователь не найден — возможно, его удалили. Обновите список."})
 
     tag_ids = [
         str(tid)
@@ -5630,7 +5643,7 @@ def set_user_tags(
     uid = _uuid(user_id, field="user_id")
     u = db.scalar(select(User).where(User.id == uid))
     if u is None:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Пользователь не найден — возможно, его удалили. Обновите список."})
 
     # Validate tags exist.
     next_ids: list[uuid.UUID] = []
@@ -5643,7 +5656,7 @@ def set_user_tags(
         existing = set(db.scalars(select(Tag.id).where(Tag.id.in_(next_ids))).all())
         missing = [str(tid) for tid in next_ids if tid not in existing]
         if missing:
-            raise HTTPException(status_code=400, detail="unknown tag")
+            raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Один из выбранных тегов не найден. Обновите страницу."})
 
     db.execute(delete(UserTagMap).where(UserTagMap.user_id == uid))
     for tid in next_ids:
@@ -6098,7 +6111,7 @@ def delete_user(
 
     u = db.scalar(select(User).where(User.id == uid))
     if u is None:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Пользователь не найден — возможно, его удалили. Обновите список."})
 
     is_superadmin = getattr(current, "role", None) == UserRole.superadmin
     if not is_superadmin:
@@ -6180,11 +6193,11 @@ def restore_user(
     uid = _uuid(user_id, field="user_id")
     u = db.scalar(select(User).where(User.id == uid))
     if u is None:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Пользователь не найден — возможно, его удалили. Обновите список."})
 
     is_superadmin = getattr(current, "role", None) == UserRole.superadmin
     if not is_superadmin and getattr(u, "role", None) in {UserRole.admin, UserRole.superadmin}:
-        raise HTTPException(status_code=403, detail="cannot modify admin user")
+        raise HTTPException(status_code=403, detail={"error_code": "forbidden", "error_message": "Изменять администратора может только суперадминистратор."})
 
     u.is_archived = False
     db.add(u)
@@ -6319,7 +6332,7 @@ def reset_user_password(
     uid = _uuid(user_id, field="user_id")
     user = db.scalar(select(User).where(User.id == uid))
     if user is None:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Пользователь не найден — возможно, его удалили. Обновите список."})
 
     # Свой пароль меняют в профиле: там текущий пароль подтверждается, а сеанс
     # остаётся. Через админский сброс прежние сеансы отзываются, новый пароль
@@ -6368,7 +6381,7 @@ def create_user_reset_link(
     uid = _uuid(user_id, field="user_id")
     user = db.scalar(select(User).where(User.id == uid))
     if user is None:
-        raise HTTPException(status_code=404, detail="user not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Пользователь не найден — возможно, его удалили. Обновите список."})
     if bool(getattr(user, "is_archived", False)):
         raise HTTPException(status_code=409, detail="Учётная запись в архиве: ссылка не нужна")
 
@@ -6583,7 +6596,7 @@ def module_analytics(
     mid = _uuid(module_id, field="module_id")
     m = db.scalar(select(Module).where(Module.id == mid))
     if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его удалили. Обновите страницу."})
 
     learning_service = LearningService(db)
     rows = learning_service.get_modules_analytics_batch(mid)
@@ -6601,7 +6614,7 @@ def module_question_quality(
     mid = _uuid(module_id, field="module_id")
     m = db.scalar(select(Module).where(Module.id == mid))
     if m is None:
-        raise HTTPException(status_code=404, detail="module not found")
+        raise HTTPException(status_code=404, detail={"error_code": "not_found", "error_message": "Модуль не найден — возможно, его удалили. Обновите страницу."})
 
     # Collect all quiz ids participating in the module (submodules + final)
     quiz_ids = [
