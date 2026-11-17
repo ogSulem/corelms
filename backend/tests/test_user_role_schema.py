@@ -42,10 +42,19 @@ def test_pick_learner_role_prefers_what_the_database_already_uses(labels, in_use
     assert pick_learner_role(labels, in_use) is expected
 
 
-def test_schema_labels_are_empty_without_postgres(db):
-    """На SQLite типа userrole нет — модуль не должен падать и кэшировать мусор."""
-    assert user_roles.schema_role_labels(db) == set()
-    assert user_roles.used_learner_roles(db) == {}
+def test_schema_labels_are_read_where_the_type_exists(db):
+    """SQLite — пусто (типа нет), PostgreSQL — реальные значения enum."""
+    user_roles.clear_cache()
+    labels = user_roles.schema_role_labels(db)
+    user_roles.clear_cache()
+    in_use = user_roles.used_learner_roles(db)
+    if db.get_bind().dialect.name != "postgresql":
+        assert labels == set()
+        assert in_use == {}
+    else:
+        assert {"employee", "partner", "admin", "superadmin"} <= labels
+        # Ключи — только учебные роли, значения — счётчики.
+        assert set(in_use) <= {"employee", "partner"}
 
 
 def test_learner_role_falls_back_to_partner(monkeypatch, db):
