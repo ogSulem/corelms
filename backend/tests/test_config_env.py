@@ -30,3 +30,26 @@ def test_cyrillic_cookie_domain_is_kept_for_normalization(monkeypatch):
     assert Settings().cookie_domain == "edu.каркастайги.рф"
     monkeypatch.setenv("COOKIE_DOMAIN", "")
     assert Settings().cookie_domain is None
+
+
+def test_jwt_algorithm_rejects_none_and_unknown(monkeypatch):
+    """`JWT_ALGORITHM=none` отключает проверку подписи — такую настройку не пускаем.
+
+    Библиотека подписывает и проверяет токен общим секретом (HMAC). Значение
+    `none` означало бы «подпись не проверять», то есть вход под любым
+    пользователем по самодельному токену. Опечатка в имени алгоритма тоже
+    должна падать на старте, а не превращаться в другую схему проверки.
+    """
+    import pytest as _pytest
+
+    for bad in ("none", "NONE", "rs256", "HS1", "hs512x"):
+        monkeypatch.setenv("JWT_ALGORITHM", bad)
+        with _pytest.raises(Exception):
+            Settings()
+
+
+def test_jwt_algorithm_is_normalized(monkeypatch):
+    monkeypatch.setenv("JWT_ALGORITHM", " hs512 ")
+    assert Settings().jwt_algorithm == "HS512"
+    monkeypatch.delenv("JWT_ALGORITHM", raising=False)
+    assert Settings().jwt_algorithm == "HS256"

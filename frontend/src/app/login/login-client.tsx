@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { safeInternalPath } from "@/lib/request-origin";
 import Link from "next/link";
 import { Eye, EyeOff } from "lucide-react";
 
@@ -15,10 +16,7 @@ export function LoginClient() {
 
   // Куда вернуть после входа. Только внутренние пути: чужой адрес из строки
   // запроса не должен превращаться в открытый редирект.
-  const redirectTo = useMemo(() => {
-    const raw = String(searchParams?.get("redirect") || "").trim();
-    return raw.startsWith("/") && !raw.startsWith("//") ? raw : "/dashboard";
-  }, [searchParams]);
+  const redirectTo = useMemo(() => safeInternalPath(searchParams?.get("redirect")), [searchParams]);
 
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");

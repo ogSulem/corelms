@@ -74,3 +74,21 @@ test("недопустимая схема игнорируется", () => {
   assert.equal(url.protocol, "https:");
   assert.equal(url.searchParams.get("redirect"), null);
 });
+
+test("возврат после входа ведёт только внутрь приложения", () => {
+  // Обычные внутренние адреса сохраняются как есть.
+  assert.equal(mod.safeInternalPath("/admin/users?tab=partner"), "/admin/users?tab=partner");
+  assert.equal(mod.safeInternalPath("/modules/abc#lesson-3"), "/modules/abc#lesson-3");
+  // Пустой параметр — на главную кабинета.
+  assert.equal(mod.safeInternalPath(null), "/dashboard");
+  assert.equal(mod.safeInternalPath(""), "/dashboard");
+  // Чужой сайт, протокол-относительный адрес и обратный слеш (браузер приводит
+  // его к `/`, получается `//evil.example`) — отказ.
+  for (const raw of ["https://evil.example", "//evil.example", "/\\evil.example", "\\\\evil.example",
+    "javascript:alert(1)", "/admin\nLocation: https://evil.example", "/ok\u0000"]) {
+    assert.equal(mod.safeInternalPath(raw), "/dashboard", raw);
+  }
+  // Пробелы по краям — обычная небрежность, а не адрес: лишнее срезается.
+  assert.equal(mod.safeInternalPath("  /admin  "), "/admin");
+  assert.equal(mod.safeInternalPath("https://evil.example", "/login"), "/login");
+});
