@@ -105,6 +105,24 @@ class Settings(BaseSettings):
 
     jwt_secret_key: str = Field(validation_alias="JWT_SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", validation_alias="JWT_ALGORITHM")
+
+    @field_validator("jwt_algorithm", mode="before")
+    @classmethod
+    def _validate_jwt_algorithm(cls, value: object) -> str:
+        """Разрешены только HMAC-подписи, которыми этот код умеет подписывать.
+
+        Токен подписывается общим секретом (`HS256/384/512`). Если в `.env`
+        попадёт `none`, библиотека перестанет проверять подпись — любой, кто
+        соберёт токен вручную, войдёт под кем угодно. Асимметричные алгоритмы
+        (`RS*`, `ES*`) здесь тоже не работают: секрет — не пара ключей.
+        Поэтому неподдерживаемое значение — отказ на старте, а не тихая дыра.
+        """
+        algo = str(value or "").strip().upper() or "HS256"
+        if algo not in {"HS256", "HS384", "HS512"}:
+            raise ValueError(
+                f"JWT_ALGORITHM={algo!r} не поддерживается: нужен HS256, HS384 или HS512"
+            )
+        return algo
     jwt_access_token_minutes: int = Field(default=15, validation_alias="JWT_ACCESS_TOKEN_MINUTES")
     jwt_issuer: str = Field(default="corelms", validation_alias="JWT_ISSUER")
 

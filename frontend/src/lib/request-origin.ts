@@ -50,6 +50,25 @@ export function requestOrigin(headers: HeaderSource, fallback: string): string {
   return `${proto}://${host}`;
 }
 
+/**
+ * Куда вернуть человека после входа: только внутренний путь.
+ *
+ * Опасны не только `https://чужой-сайт`, но и:
+ * - `//чужой-сайт` — браузер считает это протокол-относительным адресом;
+ * - `/\чужой-сайт` — обратный слеш браузер приводит к `/`, получается то же
+ *   самое (`/\evil.com` → `//evil.com`);
+ * - управляющие символы и переводы строки, которые по-разному режут URL-парсер
+ *   и браузер.
+ * Поэтому проверяем форму строки, а не «начинается с косой черты».
+ */
+export function safeInternalPath(raw: unknown, fallback = "/dashboard"): string {
+  const value = String(raw ?? "").trim();
+  if (!value || !value.startsWith("/")) return fallback;
+  if (value.startsWith("//") || value.includes("\\")) return fallback;
+  if (/[\u0000-\u001f\u007f]/.test(value)) return fallback;
+  return value;
+}
+
 export function loginRedirectUrl(input: {
   headers: HeaderSource;
   fallbackOrigin: string;
