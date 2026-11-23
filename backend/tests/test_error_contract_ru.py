@@ -125,3 +125,32 @@ def test_admin_routes_exist_behind_roles():
     admin_paths = {getattr(route, "path", "") for route in app.routes if getattr(route, "path", "").startswith("/admin")}
     assert "/admin/users" in admin_paths
     assert callable(require_roles(UserRole.admin))
+
+
+def test_validation_error_is_russian_with_field_list(client):
+    """422 раньше приходил английским текстом pydantic («Field required»)."""
+    response = client.post("/auth/reset-password/confirm", json={})
+    body = _assert_error(response, status=422, code="invalid_value")
+    assert "данные формы" in body["error_message"]
+    fields = {item.get("field") for item in body.get("fields") or []}
+    assert {"token", "new_password"} <= fields, body
+    assert "Field required" not in response.text
+    assert "valid string" not in response.text
+
+
+def test_rejected_origin_keeps_russian_text_and_request_id(client):
+    """Отказ по Origin обязан нести X-Request-ID: иначе запрос не найти в журнале."""
+    response = client.post(
+        "/auth/token",
+        data={"username": "nobody", "password": "wrong-password-123"},
+        headers={"Origin": "https://evil.example"},
+    )
+    body = _assert_error(response, status=403, code="invalid_origin")
+    rid = response.headers.get("X-Request-ID")
+    assert rid, "нет X-Request-ID в ответе 403"
+    assert rid == body["request_id"]
+
+
+def test_bare_string_error_still_has_machine_code(client, auth_headers):
+    """`HTTPException(404, "текст")` должен отдавать not_found, а не http_error."""
+    _assert_error(client.get(f"/assets/{uuid.uuid4()}/viewer", headers=auth_headers), status=404, code="not_found")

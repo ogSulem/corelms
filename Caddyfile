@@ -19,6 +19,14 @@
   header @asset_stream >X-Frame-Options "SAMEORIGIN"
   header @not_asset_stream >X-Frame-Options "DENY"
 
+  # Оптимизатор картинок Next.js не используется (см. next.config.js), а `/_next/image`
+  # в 15.2.8 содержал неаутентифицированный RCE (CVE-2026-96889). Маршрут отключён в
+  # сборке; здесь — второй барьер, чтобы запрос не доходил до контейнера.
+  @next_image path /_next/image
+  handle @next_image {
+    respond 404
+  }
+
   # Загрузка файлов идёт прямо в backend: Next.js ограничивает время приёма
   # запроса (~5 минут), из-за чего видео обрывалось ошибкой 502.
   handle /api/upload/* {
