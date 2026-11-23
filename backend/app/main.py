@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -122,12 +123,29 @@ def create_app() -> FastAPI:
         status_code: int | None = None
         crashed = False
         try:
+            foreign_origin: str | None = None
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 origin = ascii_origin(request.headers.get("origin"))
                 if origin and origin not in allow_origins:
-                    return JSONResponse(status_code=403, content={"ok": False, "error_code": "invalid_origin", "error_message": "Origin is not allowed", "request_id": rid})
-            response = await call_next(request)
-            status_code = int(getattr(response, "status_code", 0) or 0)
+                    foreign_origin = origin
+            if foreign_origin is not None:
+                # Отказ по Origin идёт через общую ветку ответа, а не отдельным
+                # `return`: раньше такой ответ уходил без X-Request-ID, а в
+                # журнал записывался status 0 — именно те запросы, которые
+                # интересны при разборе инцидента, нельзя было сопоставить.
+                response = JSONResponse(
+                    status_code=403,
+                    content={
+                        "ok": False,
+                        "error_code": "invalid_origin",
+                        "error_message": "Запрос с недопустимого сайта отклонён. Обновите страницу и повторите.",
+                        "request_id": rid,
+                    },
+                )
+                status_code = 403
+            else:
+                response = await call_next(request)
+                status_code = int(getattr(response, "status_code", 0) or 0)
         except Exception:
             status_code = 500
             crashed = True
@@ -203,16 +221,38 @@ def create_app() -> FastAPI:
         rid = str(rid or "").strip()
         return rid or None
 
+    # Машинный код для `HTTPException`, у которой текст задан строкой, а не
+    # конвертом. Раньше всё, кроме 401/403, отдавалось как `http_error`, и
+    # интерфейс не мог отличить «файл не найден» от «слишком большой файл».
+    _STATUS_ERROR_CODES = {
+        400: "invalid_value",
+        401: "unauthorized",
+        403: "forbidden",
+        404: "not_found",
+        405: "method_not_allowed",
+        409: "conflict",
+        410: "gone",
+        413: "too_large",
+        415: "unsupported_media_type",
+        416: "invalid_range",
+        422: "invalid_value",
+        429: "rate_limited",
+        500: "internal_error",
+        503: "storage_unavailable",
+    }
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         rid = _request_id(request)
         detail = exc.detail
         if isinstance(detail, dict):
-            error_code = str(detail.get("error_code") or "http_error")
-            error_message = str(detail.get("error_message") or detail.get("detail") or "request failed")
+            error_code = str(detail.get("error_code") or _STATUS_ERROR_CODES.get(int(exc.status_code), "http_error"))
+            error_message = str(
+                detail.get("error_message") or detail.get("detail") or "Не удалось выполнить запрос. Повторите попытку."
+            )
         else:
-            error_code = "forbidden" if int(exc.status_code) == 403 else "unauthorized" if int(exc.status_code) == 401 else "http_error"
-            error_message = str(detail or "request failed")
+            error_code = _STATUS_ERROR_CODES.get(int(exc.status_code), "http_error")
+            error_message = str(detail or "Не удалось выполнить запрос. Повторите попытку.")
 
         payload = {
             "ok": False,
@@ -225,6 +265,98 @@ def create_app() -> FastAPI:
         if isinstance(detail, dict) and detail.get("module_id"):
             payload["module_id"] = str(detail["module_id"])
         return JSONResponse(status_code=int(exc.status_code), content=payload, headers=getattr(exc, "headers", None))
+
+    # Русские подписи для ошибок pydantic: без них форма показывала английское
+    # «Field required» / «Input should be a valid string» — единственный поток
+    # ответов, который обходил русский контракт ошибок.
+    _VALIDATION_TEXT = {
+        "missing": "не заполнено",
+        "string_too_short": "слишком короткое значение",
+        "string_too_long": "слишком длинное значение",
+        "string_type": "нужен текст",
+        "string_pattern_mismatch": "недопустимый формат",
+        "int_parsing": "нужно целое число",
+        "int_type": "нужно целое число",
+        "float_parsing": "нужно число",
+        "float_type": "нужно число",
+        "decimal_parsing": "некорректное число",
+        "bool_parsing": "нужно «да» или «нет»",
+        "bool_type": "нужно «да» или «нет»",
+        "uuid_parsing": "некорректный идентификатор",
+        "uuid_type": "некорректный идентификатор",
+        "json_invalid": "некорректный JSON",
+        "date_parsing": "некорректная дата",
+        "date_from_datetime_parsing": "некорректная дата",
+        "datetime_parsing": "некорректные дата и время",
+        "time_parsing": "некорректное время",
+        "url_parsing": "некорректная ссылка",
+        "url_scheme": "некорректная ссылка",
+        "value_error": "некорректное значение",
+        "enum": "недопустимое значение",
+        "literal_error": "недопустимое значение",
+        "greater_than": "слишком маленькое значение",
+        "greater_than_equal": "слишком маленькое значение",
+        "less_than": "слишком большое значение",
+        "less_than_equal": "слишком большое значение",
+        "too_short": "слишком мало элементов",
+        "too_long": "слишком много элементов",
+        "list_type": "нужен список",
+        "dict_type": "нужен объект",
+        "bytes_type": "нужны байты",
+        "file_type": "нужен файл",
+        "assertion_error": "некорректное значение",
+    }
+    # Названия полей приходят из кода (`new_password`), а видит их человек.
+    _FIELD_LABELS = {
+        "username": "логин",
+        "password": "пароль",
+        "new_password": "новый пароль",
+        "current_password": "текущий пароль",
+        "name": "имя",
+        "email": "почта",
+        "token": "токен",
+        "title": "название",
+        "answer": "ответ",
+        "answers": "ответы",
+        "file": "файл",
+        "files": "файлы",
+    }
+
+    def _validation_items(errors: list[dict]) -> tuple[str, list[dict]]:
+        items: list[dict] = []
+        for error in errors or []:
+            loc = [str(part) for part in (error.get("loc") or ()) if str(part) not in {"body", "query", "path", "header", "cookie"}]
+            field = ".".join(loc) or "запрос"
+            text = _VALIDATION_TEXT.get(str(error.get("type") or ""), "некорректное значение")
+            # «Короче 8 символов» полезнее, чем просто «слишком короткое».
+            ctx = error.get("ctx") or {}
+            if error.get("type") == "string_too_short" and ctx.get("min_length"):
+                text = f"короче {ctx['min_length']} символов"
+            elif error.get("type") == "string_too_long" and ctx.get("max_length"):
+                text = f"длиннее {ctx['max_length']} символов"
+            items.append({"field": field, "message": text})
+        if not items:
+            return "Проверьте данные формы.", []
+        head = "; ".join(
+            f"{_FIELD_LABELS.get(item['field'], item['field'])} — {item['message']}" for item in items[:3]
+        )
+        return f"Проверьте данные формы: {head}.", items
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        message, items = _validation_items(list(exc.errors()))
+        # Тело ответа pydantic может содержать несериализуемые объекты (файлы,
+        # байты) — наружу отдаём только имена полей и понятный текст.
+        return JSONResponse(
+            status_code=422,
+            content={
+                "ok": False,
+                "error_code": "invalid_value",
+                "error_message": message,
+                "request_id": _request_id(request),
+                "fields": items,
+            },
+        )
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
@@ -316,7 +448,7 @@ def create_app() -> FastAPI:
             content={
                 "ok": False,
                 "error_code": "internal_error",
-                "error_message": "internal server error",
+                "error_message": "Внутренняя ошибка сервера. Мы записали её в журнал — повторите через минуту.",
                 "request_id": rid,
             },
         )
